@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  # Reproducible toolchain: read by actions/setup-go. Local policy documented in
+  # docs/plan/baseline.md (version-fox-managed Go 1.26.0; GOCACHE is per-run /
+  # per-workspace, never a developer-global cache shared across toolchains).
+  GO_VERSION_FILE: .go-version
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          cache: true
+
+      - name: Format check
+        run: |
+          unformatted=$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))
+          if [ -n "$unformatted" ]; then
+            echo "gofmt required on:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Race
+        run: go test -race ./...
+
+      - name: Race (repeated, concurrency-sensitive suites)
+        run: |
+          go test -race ./runtime/ -count=3
+          go test -race ./integration/ -count=3
+          go test -race ./extensions/hmr/ -count=3
+          go test -race ./extensions/http/ -count=3

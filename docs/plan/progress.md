@@ -108,3 +108,19 @@
 - Phase 5 complete: recovery-exactness random stacks, concurrent ordering (incl. realm providers), generated confluence schedules (mount-only; identity-aware disposal documented out of scope), preservation invariants, fuzz smoke — race `-count=3` stable, full `go test -race ./...` green.
 - Phase 6 complete: extensions revalidated under corrected Kernel with zero source changes; HMR/WASM/E2E evidence green; single lifecycle authority confirmed.
 - Phase 7 complete (documented limitations): paper mapping + trust boundary/migration in `docs/plan/paper-mapping.md`; CI workflow added but not executed on a runner; benchmarks deferred (non-semantic); Windows runtime verification pending a Windows host.
+
+## Session: 2026-09-06 (cont.) — Reviewer-gap closures
+
+- Quiescence-with-Active, T63 withdrawal ordering, acyclic precedence invariant (oracle) added; runtime + race green. Still CONDITIONAL (automated shrink + op-level DAG schedule oracle remain).
+
+## Session: 2026-09-06 (cont.) — Code updates per review
+
+- T73 op-level DAG topological schedules: `t73ProviderConsumerDAG` (precedence edges incl. "consumers mount before provider disposal"), `topoSchedules` (bounded Kahn, deterministic seeds), `runT73DAGSchedule` (per-step Ready/Gone so schedules are truly realized), `TestT73DAGTopologicalSchedules` — PASS.
+- Earlier closures (quiescence-with-Active, T63 withdrawal ordering, T66 acyclic-precedence oracle) kept.
+- Gates: `go test ./runtime`, `-race` targeted PASS.
+
+## Session: 2026-09-06 (cont.) — "unimplemented → implemented" round
+
+- AC-12 shrinker: `runtime/minimize_test.go` `Minimize` (deterministic delta-debugging) + `TestMinimizeDeterministic` (40→2, minimality + repeatability).
+- T73 expansion: `t73TwoSubsystemDAG` + `TestT73TwoIndependentSubsystems` (two independent providers+consumers+effect, independence encoded; 16×2 schedules converge to [P1 P1 P2]).
+- All T73/T66/minimize tests + `-race` PASS; gofmt clean.

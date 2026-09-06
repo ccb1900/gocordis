@@ -56,8 +56,11 @@ func TestPropertyOrderingProviderBeforeConsumer(t *testing.T) {
 	}
 }
 
-// P4 (Progress): with finite operations and Apply/Cleanup that return, the
-// runtime converges to a quiescent state (all fibers terminal).
+// P4 (Progress, dispose convergence): with finite operations and
+// Apply/Cleanup that return, disposing every fiber reaches terminal Gone.
+// NOTE: quiescence in the theorem sense allows Active fibers (see
+// runtime/t66_t73_test.go TestT66QuiescenceAllowsActive); this test only
+// proves the dispose path completes.
 func TestPropertyProgressToQuiescence(t *testing.T) {
 	rt := newTestRuntime(t)
 

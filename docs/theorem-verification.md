@@ -38,13 +38,32 @@ step driver built on the public command queue and generation signals).
 
 - Finite fibers/effects, cooperative Apply/Cleanup, acyclic declared dependency
   graph, Runtime-managed effects only.
-- T66/T73 generators currently cover: single-root-realm provider/consumer
-  chains, effect stacks, provider withdraw/reload, mount-order interleavings.
-  Realm-sibling, nested-child and HMR/WASM-heavy interleavings are the next
+- T73 generators cover: single-root-realm provider/consumer mount permutations
+  (24×4), op-level dependency-precedence DAG topological schedules (provider
+  chain, 24×4), and two independent subsystems + effect component (16×2).
+  Realm-sibling, nested-child and HMR/WASM-heavy interleavings remain the next
   expansion surface.
 - T73 effect independence is a generator precondition (asserted by
   `t73Precondition`); duplicate-provider traces are not generated.
-- No automated shrinker yet (AC-12): failures carry theorem+seed+operation
-  trace; minimization is manual.
+- AC-12 shrinker: deterministic delta-debugging `Minimize` (op-list removal,
+  deterministic) shipped and self-tested (`runtime/minimize_test.go`
+  `TestMinimizeDeterministic`): 40-op trace → minimal `[open commit]`, each
+  single removal non-reproducing, repeatable.
 - T59 invariant checks run on the orchestrator goroutine (no cross-goroutine
   reads) and require quiescent checkpoints.
+
+## Reviewer-gap closures (next review round)
+
+- Quiescence ≠ all Gone: `TestT66QuiescenceAllowsActive` — provider+consumer
+  Active is quiescent (no pending transition); dispose completion kept as a
+  separate convergence test (`TestPropertyProgressToQuiescence` doc updated).
+- Withdrawal ordering (T63): `TestT63WithdrawalOrdering` — consumer cleanup
+  strictly precedes provider cleanup.
+- Dependency-precedence acyclicity: enforced at Load/Child
+  (`runtime/dependency_cycle.go`, `ErrDependencyCycle`) and checked as an
+  invariant oracle across randomized reloads (`TestT66AcyclicPrecedenceInvariant`).
+- T66 uses a deterministic orchestrator step driver (probe command + generation
+  signals); no `Ready(timeout)` proof.
+- T73: legal mount-permutation schedules over the same logical operation set
+  with explicit precondition; full op-level DAG topological oracle remains the
+  next expansion.

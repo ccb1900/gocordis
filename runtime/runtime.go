@@ -26,25 +26,33 @@ type Runtime struct {
 
 	nextFiberID      atomic.Uint64
 	nextActivationID atomic.Uint64
+
+	mode RuntimeMode
+	det  *deterministicState
 }
 
 // Option configures a Runtime. v0.1 defines no options; the type exists to
 // keep the constructor stable for extensions and test hooks.
 type Option func(*options)
 
-type options struct{}
+type options struct {
+	mode RuntimeMode
+}
 
 // New creates and starts a Runtime.
 func New(opts ...Option) (*Runtime, error) {
+	cfg := options{mode: RuntimeNormal}
+	for _, o := range opts {
+		if o != nil {
+			o(&cfg)
+		}
+	}
 	r := &Runtime{
 		state:     RuntimeRunning,
 		fibers:    make(map[FiberID]*Fiber),
 		rootRealm: newRealm(nil),
-	}
-	for _, o := range opts {
-		if o != nil {
-			o(&options{})
-		}
+		mode:      cfg.mode,
+		det:       newDeterministicState(),
 	}
 	r.orch = newOrchestrator(r)
 	go r.orch.run()
@@ -129,6 +137,12 @@ func (r *Runtime) Close(ctx context.Context) error {
 		}
 	}
 
+	if r.mode == RuntimeDeterministic {
+		// Shutdown admission drain: release exactly the completions Close needs
+		// to reach Closed (never arbitrary scheduling). See
+		// drainShutdownCompletions.
+		return r.drainShutdownCompletions(ctx)
+	}
 	select {
 	case <-r.orch.done:
 		return nil

@@ -228,7 +228,7 @@ func (o *orchestrator) startActivation(f *Fiber) {
 
 func (o *orchestrator) runApply(f *Fiber, act *activation) {
 	cleanup, err := callComponentApply(f.component, act.ctx)
-	o.rt.submit(&cmdApplyDone{
+	o.rt.admitCommand(&cmdApplyDone{
 		fiberID:      f.id,
 		activationID: act.id,
 		cleanup:      cleanup,
@@ -254,7 +254,7 @@ func callComponentApply(comp Component, ctx *Context) (cleanup Cleanup, err erro
 // dedicated goroutine and reports the aggregated result.
 func (o *orchestrator) runUnwind(f *Fiber, act *activation, slots []*effectSlot) {
 	err := act.ctx.runInverses(slots)
-	o.rt.submit(&cmdUnwindDone{
+	o.rt.admitCommand(&cmdUnwindDone{
 		fiberID:      f.id,
 		activationID: act.id,
 		err:          err,

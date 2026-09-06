@@ -1,36 +1,45 @@
 package runtime
 
-// This file implements the dependency graph, dependency resolution, and
-// withdrawal-gate bookkeeping. All functions run on the orchestrator goroutine
-// except where noted.
+// This file implements the realm-aware dependency graph, dependency
+// resolution, and withdrawal-gate bookkeeping. All functions run on the
+// orchestrator goroutine except where noted.
+//
+// Dependency edges are identity-resolved: an edge records the specific
+// provider identity (realm owner fiber + activation) a consumer's activation
+// resolved through its realm path. Withdrawal notifies only the fibers bound
+// to that identity, so sibling realms with the same key never cross-notify.
 
-// addGraphEdge records that f's current activation depends on key.
-func (o *orchestrator) addGraphEdge(key CapabilityKey, f *Fiber) {
-	set := o.graph[key]
+// addGraphEdge records that f's current activation depends on the provider
+// identity id (the provider it actually resolved).
+func (o *orchestrator) addGraphEdge(id ProviderIdentity, f *Fiber) {
+	set := o.graph[id]
 	if set == nil {
 		set = make(map[*Fiber]struct{})
-		o.graph[key] = set
+		o.graph[id] = set
 	}
 	set[f] = struct{}{}
 }
 
-// removeGraphEdge removes f's dependency edge for key. Edges belong to an
-// activation and are removed when that activation ends (no ghost edges).
-func (o *orchestrator) removeGraphEdge(key CapabilityKey, f *Fiber) {
-	if set := o.graph[key]; set != nil {
+// removeGraphEdge removes f's dependency edge for provider id. Edges belong to
+// an activation and are removed when that activation ends (no ghost edges).
+func (o *orchestrator) removeGraphEdge(id ProviderIdentity, f *Fiber) {
+	if set := o.graph[id]; set != nil {
 		delete(set, f)
 		if len(set) == 0 {
-			delete(o.graph, key)
+			delete(o.graph, id)
 		}
 	}
 }
 
 // resolveDependency reports whether key currently has a valid, satisfiable
-// provider and returns its identity. A provider is valid only while its owner
-// Fiber is Active on the same activation that registered it and the record is
-// not retiring.
-func (o *orchestrator) resolveDependency(key CapabilityKey) (ProviderIdentity, bool) {
-	rec, ok := o.rt.providers.lookup(key)
+// provider in the consumer realm r's path, and returns that provider identity.
+// A provider is valid only while its owner Fiber is Active on the same
+// activation that registered it and the record is not retiring.
+func (o *orchestrator) resolveDependency(r *realm, key CapabilityKey) (ProviderIdentity, bool) {
+	if r == nil {
+		return ProviderIdentity{}, false
+	}
+	rec, ok := r.lookup(key)
 	if !ok || rec.retiring {
 		return ProviderIdentity{}, false
 	}
@@ -50,10 +59,10 @@ func (o *orchestrator) resolveDependency(key CapabilityKey) (ProviderIdentity, b
 }
 
 // dependenciesSatisfied reports whether every declared dependency currently has
-// a valid provider.
+// a valid provider on f's realm path.
 func (o *orchestrator) dependenciesSatisfied(f *Fiber) bool {
 	for _, dep := range f.inject {
-		if _, ok := o.resolveDependency(dep.Key); !ok {
+		if _, ok := o.resolveDependency(f.realm, dep.Key); !ok {
 			return false
 		}
 	}
@@ -61,11 +70,12 @@ func (o *orchestrator) dependenciesSatisfied(f *Fiber) bool {
 }
 
 // captureDependencies snapshots the provider identity of every declared
-// dependency. Called when the fiber enters Loading, before Apply runs.
+// dependency as resolved through f's realm path. Called when the fiber enters
+// Loading, before Apply runs.
 func (o *orchestrator) captureDependencies(f *Fiber) []DependencySnapshot {
 	var snaps []DependencySnapshot
 	for _, dep := range f.inject {
-		id, ok := o.resolveDependency(dep.Key)
+		id, ok := o.resolveDependency(f.realm, dep.Key)
 		if !ok {
 			// reconcile() only starts Loading when all deps are satisfied, so
 			// this is unreachable in a consistent runtime.
@@ -77,13 +87,14 @@ func (o *orchestrator) captureDependencies(f *Fiber) []DependencySnapshot {
 }
 
 // dependenciesStillValid reports whether the activation's captured snapshot is
-// still valid after Apply completed (identity + provider validity).
+// still valid after Apply completed (identity + provider validity on the
+// fiber's realm path).
 func (o *orchestrator) dependenciesStillValid(f *Fiber, act *activation) bool {
 	if act == nil {
 		return false
 	}
 	for _, snap := range act.deps {
-		id, ok := o.resolveDependency(snap.Key)
+		id, ok := o.resolveDependency(f.realm, snap.Key)
 		if !ok || id != snap.Provider {
 			return false
 		}

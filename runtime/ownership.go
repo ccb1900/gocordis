@@ -51,9 +51,28 @@ func (c *cmdSpawnChild) apply(o *orchestrator) {
 	child.inject = c.inject
 	child.provide = c.provide
 	child.parent = parent
+	// Default ctx.Child inherits the parent's scope/realm. An explicit scope
+	// (WithScope) derives a child realm whose parent is this realm, enabling
+	// shadowing and sibling isolation.
+	if c.newScope {
+		child.realm = newRealm(parent.realm)
+	} else {
+		child.realm = parent.realm
+	}
 
 	o.rt.mu.Lock()
 	child.id = FiberID(o.rt.nextFiberID.Add(1))
+	// Reject a declared dependency cycle at the Child boundary before the new
+	// child is published.
+	var existing []*Fiber
+	for _, x := range o.rt.fibers {
+		existing = append(existing, x)
+	}
+	if err := findDeclaredCycle(child, existing); err != nil {
+		o.rt.mu.Unlock()
+		reply(nil, err)
+		return
+	}
 	o.rt.fibers[child.id] = child
 	o.rt.mu.Unlock()
 

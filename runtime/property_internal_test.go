@@ -56,7 +56,7 @@ func TestPropertyRecoveryExactness(t *testing.T) {
 	}
 
 	// S1: provider registered + resource open.
-	if rec, ok := rt.providers.lookup(key); !ok || rec.value != "v" {
+	if rec, ok := rt.rootRealm.lookup(key); !ok || rec.value != "v" {
 		t.Fatalf("S1 provider missing: %+v", rec)
 	}
 
@@ -70,7 +70,7 @@ func TestPropertyRecoveryExactness(t *testing.T) {
 	}
 
 	// S2: provider record gone and resource closed exactly once -> S0.
-	if rec, ok := rt.providers.lookup(key); ok {
+	if rec, ok := rt.rootRealm.lookup(key); ok {
 		t.Fatalf("S2 provider still present: %+v", rec)
 	}
 	mu.Lock()

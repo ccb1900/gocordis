@@ -45,6 +45,7 @@ type cmdSpawnChild struct {
 	component Component
 	inject    []Dependency
 	provide   []Capability
+	newScope  bool
 	reply     chan spawnChildReply
 }
 

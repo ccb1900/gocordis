@@ -21,6 +21,11 @@ type Fiber struct {
 	component Component
 	rt        *Runtime
 
+	// realm is the provider scope this fiber belongs to. Runtime.Load defaults
+	// to the Runtime root realm; ctx.Child defaults to the parent's realm; an
+	// explicit scope derives a child realm (Phase 3).
+	realm *realm
+
 	parent   *Fiber
 	children map[FiberID]*Fiber
 
@@ -59,6 +64,7 @@ func newFiber(rt *Runtime, component Component) *Fiber {
 	return &Fiber{
 		component: component,
 		rt:        rt,
+		realm:     rt.rootRealm,
 		state:     StatePending,
 		intent:    IntentMounted,
 		signal:    wait.New(),

@@ -115,27 +115,25 @@ func (o *orchestrator) beginWithdrawal(f *Fiber) {
 		act.cancel()
 	}
 
-	// 1. Retire every capability this activation provides.
-	caps := o.rt.providers.providesBy(f.id, act.id)
+	// 1. Retire every capability this activation provides (its own realm).
 	id := ProviderIdentity{FiberID: f.id, ActivationID: act.id}
-	for _, key := range caps {
-		o.rt.providers.markRetiring(key, id)
+	for _, rec := range f.realm.recordsOwnedBy(id) {
+		f.realm.markRetiringOwn(rec.key, id)
 	}
 
-	// 2. Collect direct consumers (unique) across all provided capabilities.
+	// 2. Collect direct consumers (unique) bound to THIS provider identity via
+	// realm-resolved dependency edges.
 	var consumers []*Fiber
 	seen := make(map[*Fiber]struct{})
-	for _, key := range caps {
-		for c := range o.graph[key] {
-			if c == f {
-				continue
-			}
-			if _, dup := seen[c]; dup {
-				continue
-			}
-			seen[c] = struct{}{}
-			consumers = append(consumers, c)
+	for c := range o.graph[id] {
+		if c == f {
+			continue
 		}
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		consumers = append(consumers, c)
 	}
 
 	// 3. Gate this fiber's Unload on every live consumer ending.

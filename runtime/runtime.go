@@ -17,7 +17,10 @@ type Runtime struct {
 
 	fibers map[FiberID]*Fiber
 
-	providers *providerRegistry
+	// rootRealm is the Runtime root provider realm. Every fiber composed
+	// without an explicit scope resolves through this realm (single-realm
+	// behavior); explicit scopes derive child realms from it.
+	rootRealm *realm
 
 	orch *orchestrator
 
@@ -36,7 +39,7 @@ func New(opts ...Option) (*Runtime, error) {
 	r := &Runtime{
 		state:     RuntimeRunning,
 		fibers:    make(map[FiberID]*Fiber),
-		providers: newProviderRegistry(),
+		rootRealm: newRealm(nil),
 	}
 	for _, o := range opts {
 		if o != nil {
@@ -69,6 +72,16 @@ func (r *Runtime) Load(component Component) (*Fiber, error) {
 		return nil, ErrRuntimeClosed
 	}
 	f.id = FiberID(r.nextFiberID.Add(1))
+	// Reject a declared dependency cycle at the mount boundary (deterministic,
+	// actionable) before the new Fiber is published.
+	var existing []*Fiber
+	for _, x := range r.fibers {
+		existing = append(existing, x)
+	}
+	if err := findDeclaredCycle(f, existing); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
 	r.fibers[f.id] = f
 	r.mu.Unlock()
 

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -59,18 +60,39 @@ type Context struct {
 	effects   []*effectSlot
 	nextSeq   uint64
 	unwindErr error
+
+	// declaredInject / declaredProvide are activation-local, immutable copies
+	// of the owning Component's Inject/Provide declarations, captured when the
+	// Context is created. Require/Provide outside these sets are rejected:
+	// declarations are authoritative.
+	declaredInject  map[CapabilityKey]struct{}
+	declaredProvide map[CapabilityKey]struct{}
+
+	// realm is the provider scope of this activation (the owning fiber's
+	// realm). Provide writes here; Require resolves through this realm path.
+	realm *realm
 }
 
-func newContext(rt *Runtime, fiberID FiberID, activationID ActivationID) *Context {
+func newContext(rt *Runtime, fiberID FiberID, activationID ActivationID, inject []Dependency, provide []Capability, r *realm) *Context {
 	base, cancel := context.WithCancel(context.Background())
-	return &Context{
-		rt:           rt,
-		fiberID:      fiberID,
-		activationID: activationID,
-		cancel:       cancel,
-		base:         base,
-		state:        contextActive,
+	c := &Context{
+		rt:              rt,
+		fiberID:         fiberID,
+		activationID:    activationID,
+		cancel:          cancel,
+		base:            base,
+		state:           contextActive,
+		realm:           r,
+		declaredInject:  make(map[CapabilityKey]struct{}, len(inject)),
+		declaredProvide: make(map[CapabilityKey]struct{}, len(provide)),
 	}
+	for _, d := range inject {
+		c.declaredInject[d.Key] = struct{}{}
+	}
+	for _, cap := range provide {
+		c.declaredProvide[cap] = struct{}{}
+	}
+	return c
 }
 
 // Context exposes the cancellable Go context for this activation.
@@ -111,7 +133,7 @@ func (c *Context) addCommittedEffect(inverse func() error) {
 	// exactly once instead of leaking.
 	var err error
 	if inverse != nil {
-		err = inverse()
+		err = guardedInverse(inverse)
 	}
 	c.mu.Lock()
 	c.state = contextUnwound
@@ -146,8 +168,11 @@ func (c *Context) Effect(install func() (func() error, error)) error {
 	c.effects = append(c.effects, s)
 	c.mu.Unlock()
 
-	// Step 3: run install outside the lock.
-	inverse, installErr := install()
+	// Step 3: run install outside the lock; a panic is contained and reported
+	// as ErrEffectInstallPanic (the reserved Installing slot is then removed).
+	var inverse func() error
+	var installErr error
+	inverse, installErr = guardedInstall(install)
 
 	// Step 4: re-acquire the lock and commit or self-undo.
 	c.mu.Lock()
@@ -186,9 +211,29 @@ func (c *Context) Effect(install func() (func() error, error)) error {
 // Ownership means the parent's lifecycle contains the child: when the parent
 // activation withdraws, owned children are disposed and must reach Gone before
 // the parent finalizes. Ownership is distinct from dependency.
-func (c *Context) Child(component Component) (*Fiber, error) {
+// ScopeOption configures Context.Child scope derivation.
+type ScopeOption func(*scopeOptions)
+
+type scopeOptions struct {
+	newRealm bool
+}
+
+// WithScope makes Child create an explicit child realm (parent = this fiber's
+// realm) instead of inheriting this fiber's realm. Only explicit scoping
+// introduces sibling isolation; child realms may shadow ancestor bindings.
+func WithScope() ScopeOption {
+	return func(o *scopeOptions) { o.newRealm = true }
+}
+
+func (c *Context) Child(component Component, opts ...ScopeOption) (*Fiber, error) {
 	if component == nil {
 		return nil, ErrInvalidState
+	}
+	o := scopeOptions{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
 	}
 	// Cache declarations on the caller goroutine so the orchestrator never
 	// executes Component code while making lifecycle decisions.
@@ -201,6 +246,7 @@ func (c *Context) Child(component Component) (*Fiber, error) {
 		component: component,
 		inject:    inject,
 		provide:   provide,
+		newScope:  o.newRealm,
 		reply:     reply,
 	}) {
 		return nil, ErrRuntimeClosed
@@ -210,13 +256,16 @@ func (c *Context) Child(component Component) (*Fiber, error) {
 }
 
 func (c *Context) provideCap(key CapabilityKey, value any) error {
+	if _, ok := c.declaredProvide[key]; !ok {
+		return fmt.Errorf("%w: %s is not declared in this activation's Provide set", ErrUndeclaredProvide, key)
+	}
 	id := ProviderIdentity{FiberID: c.fiberID, ActivationID: c.activationID}
 	return c.Effect(func() (func() error, error) {
-		if err := c.rt.providers.register(key, id, value); err != nil {
+		if err := c.realm.registerOwn(key, id, value); err != nil {
 			return nil, err
 		}
 		return func() error {
-			c.rt.providers.remove(key, id)
+			c.realm.removeOwn(key, id)
 			return nil
 		}, nil
 	})
@@ -236,15 +285,76 @@ func Provide[T any](c *Context, key Key[T], value T) error {
 // dependency. It returns ErrDependencyMissing when no provider is registered.
 func Require[T any](c *Context, key Key[T]) (T, error) {
 	var zero T
-	rec, ok := c.rt.providers.lookup(key.Capability())
+	if _, ok := c.declaredInject[key.Capability()]; !ok {
+		return zero, fmt.Errorf("%w: %s is not declared in this activation's Inject set", ErrUndeclaredRequire, key.Capability())
+	}
+	rec, ok := c.realm.lookup(key.Capability())
 	if !ok || rec.value == nil {
 		return zero, ErrDependencyMissing
 	}
-	v, ok := rec.value.(T)
+	// Apply the read-time interception chain (ancestor -> this realm).
+	val := rec.value
+	for _, e := range c.realm.interceptsForKey(key.Capability()) {
+		if e == nil || e.apply == nil {
+			continue
+		}
+		nv, err := e.apply(val)
+		if err != nil {
+			return zero, err
+		}
+		val = nv
+	}
+	v, ok := val.(T)
 	if !ok {
 		return zero, errors.New("runtime: provider value type mismatch")
 	}
 	return v, nil
+}
+
+// Intercept installs a read-time interceptor for key on this Context's realm.
+//
+// It is a generic FREE function (Go methods cannot be generic). Every Require
+// of key that resolves through this realm path first applies the chain from
+// ancestor scopes to this scope (install order within a scope). Installation is
+// reversible: it goes through ctx.Effect, so unwinding removes the interceptor
+// in reverse install order. Interceptors may only transform the returned value
+// or reject a read; they never mutate the provider registry, provider identity,
+// or bypass declaration/realm checks. A panic inside an interceptor is
+// contained and returned as an error.
+func Intercept[T any](c *Context, key Key[T], fn func(value T, key Key[T]) (T, error)) error {
+	if c == nil {
+		return errors.New("runtime: nil context")
+	}
+	if fn == nil {
+		return errors.New("runtime: nil interceptor")
+	}
+	entry := &interceptEntry{key: key.Capability()}
+	entry.apply = func(value any) (out any, err error) {
+		v, ok := value.(T)
+		if !ok {
+			return nil, errors.New("runtime: interceptor value type mismatch")
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("interceptor panic for %s: %v", key.Capability(), r)
+					out = nil
+				}
+			}()
+			out, err = fn(v, key)
+		}()
+		return out, err
+	}
+	return c.Effect(func() (func() error, error) {
+		if c.realm == nil {
+			return nil, errors.New("runtime: activation has no realm")
+		}
+		c.realm.addIntercept(entry)
+		return func() error {
+			c.realm.removeIntercept(entry)
+			return nil
+		}, nil
+	})
 }
 
 // removeSlot drops an uncommitted Installing slot (install failed).
@@ -294,7 +404,7 @@ func (c *Context) runInverses(slots []*effectSlot) error {
 		c.mu.Unlock()
 
 		if s.inverse != nil {
-			if err := s.inverse(); err != nil {
+			if err := guardedInverse(s.inverse); err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -309,4 +419,29 @@ func (c *Context) runInverses(slots []*effectSlot) error {
 	err := c.unwindErr
 	c.mu.Unlock()
 	return err
+}
+
+// guardedInstall runs an Effect install and converts a panic into an
+// ErrEffectInstallPanic-wrapped error, so user code can never crash the
+// activation boundary from inside an install function.
+func guardedInstall(install func() (func() error, error)) (inverse func() error, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			inverse = nil
+			err = fmt.Errorf("%w: %v", ErrEffectInstallPanic, r)
+		}
+	}()
+	return install()
+}
+
+// guardedInverse runs one effect inverse (or Component Cleanup) and converts a
+// panic into an ErrInversePanic-wrapped error. Unwinding always continues past
+// a panicking inverse so no remaining effect is skipped.
+func guardedInverse(inverse func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%w: %v", ErrInversePanic, r)
+		}
+	}()
+	return inverse()
 }

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -30,9 +31,10 @@ type orchestrator struct {
 	// activation may start.
 	closing bool
 
-	// graph records, per capability key, the fibers whose current activation
-	// depends on a provider of that key.
-	graph map[CapabilityKey]map[*Fiber]struct{}
+	// graph records, per provider identity, the fibers whose current activation
+	// resolved a dependency to that specific provider (realm-aware: edges are
+	// identity-resolved, never key-only).
+	graph map[ProviderIdentity]map[*Fiber]struct{}
 
 	// gateWaiters is the reverse of Fiber.waitGates: fiber id -> set of
 	// provider fibers waiting for that fiber's activation to end.
@@ -45,7 +47,7 @@ func newOrchestrator(rt *Runtime) *orchestrator {
 		commands:    make(chan command, 256),
 		stop:        make(chan struct{}),
 		done:        make(chan struct{}),
-		graph:       make(map[CapabilityKey]map[*Fiber]struct{}),
+		graph:       make(map[ProviderIdentity]map[*Fiber]struct{}),
 		gateWaiters: make(map[FiberID]map[*Fiber]struct{}),
 	}
 }
@@ -199,7 +201,7 @@ func (o *orchestrator) startActivation(f *Fiber) {
 		return
 	}
 	actID := ActivationID(o.rt.nextActivationID.Add(1))
-	ctx := newContext(o.rt, f.id, actID)
+	ctx := newContext(o.rt, f.id, actID, f.inject, f.provide, f.realm)
 	act := &activation{
 		id:     actID,
 		fiber:  f,
@@ -211,7 +213,7 @@ func (o *orchestrator) startActivation(f *Fiber) {
 	// state is published as Loading.
 	act.deps = o.captureDependencies(f)
 	for _, d := range act.deps {
-		o.addGraphEdge(d.Key, f)
+		o.addGraphEdge(d.Provider, f)
 	}
 
 	f.mu.Lock()
@@ -225,13 +227,27 @@ func (o *orchestrator) startActivation(f *Fiber) {
 }
 
 func (o *orchestrator) runApply(f *Fiber, act *activation) {
-	cleanup, err := f.component.Apply(act.ctx)
+	cleanup, err := callComponentApply(f.component, act.ctx)
 	o.rt.submit(&cmdApplyDone{
 		fiberID:      f.id,
 		activationID: act.id,
 		cleanup:      cleanup,
 		err:          err,
 	})
+}
+
+// callComponentApply invokes Component.Apply and contains a panic at the Kernel
+// boundary: it is converted to an ErrComponentApplyPanic-wrapped lifecycle
+// error, so a panicking Component can never crash the process. Committed
+// effects installed before the panic are unwound by the normal failure path.
+func callComponentApply(comp Component, ctx *Context) (cleanup Cleanup, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			cleanup = nil
+			err = fmt.Errorf("%w: %v", ErrComponentApplyPanic, r)
+		}
+	}()
+	return comp.Apply(ctx)
 }
 
 // runUnwind executes the activation's committed effects in LIFO order on a
@@ -316,7 +332,7 @@ func (o *orchestrator) activationBecameActive(f *Fiber, act *activation) {
 func (o *orchestrator) activationEnded(f *Fiber) {
 	if act := f.activation; act != nil {
 		for _, d := range act.deps {
-			o.removeGraphEdge(d.Key, f)
+			o.removeGraphEdge(d.Provider, f)
 		}
 	}
 	o.notifyGateWaiters(f)

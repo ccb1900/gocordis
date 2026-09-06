@@ -38,3 +38,73 @@
   - Verified on Go 1.26.0 (version-fox) with isolated GOCACHE: `go test -count=1 ./...` twice + `go test -race -count=1 ./...` all PASS; no environment-induced skips.
 - Corrected prior record: the "Go 1.25 vs 1.26 cache mismatch blocks tests" finding no longer applies with the pinned-toolchain + isolated-cache policy (baseline was already green this session).
 - Not started (awaiting authorization): Phase 2 (Kernel declaration enforcement), Phases 3–7.
+
+## Session: 2026-09-06 (cont.) — Phase 2 executed
+
+- **Status:** Phase 2 complete.
+- Kernel changes (`runtime/`): activation-local immutable Inject/Provide declaration sets; `Require`/`Provide` membership enforcement (upper-bound/subset rule, see `docs/plan/phase2-decision.md`); panic containment at Apply / Effect install / inverse & Cleanup boundaries (`ErrComponentApplyPanic`, `ErrEffectInstallPanic`, `ErrInversePanic`).
+- Tests: `runtime/declarations_containment_test.go` (D1–D8) added; all existing suites pass unchanged (declarations were already honest).
+- Not started: Phase 3 (scoped Context) — awaits ADR + authorization per plan.
+
+## Session: 2026-09-06 (cont.) — Phase 3 ADR
+
+- **Status:** ADR written (`docs/plan/phase3-adr.md`); Kernel implementation NOT started (needs authorization + 3 decisions in ADR §11).
+- Realm model: activation-owned realms; child derivation (inherit + override, no parent mutation); read-through resolution; per-realm exclusivity; interceptors = read-time transform chains; root-realm = today's single-realm special case (source compatible).
+
+## Session: 2026-09-06 (cont.) — Phase 3 implementation (incremental)
+
+- **Status:** increment 1 done.
+- ADR revised per architect feedback (`docs/plan/phase3-adr.md` v2): realm = explicit scope/ownership domain; Runtime.Load → root realm; ctx.Child → inherit; explicit scope creates child realm; child may shadow ancestors; per-realm own-map exclusivity; identity-resolved dependency edges; `runtime.Intercept` generic free function (Go methods can't be generic).
+- Kernel increment 1 (backward compatible): `realm` type (`runtime/providers.go`), Runtime.rootRealm, Fiber/Context realm, Provide→own realm, Require→realm-path lookup, orchestrator dependency edges keyed by resolved provider identity; internal registry tests migrated.
+- Gates: `go test ./...`, `go test -race ./...`, `go vet ./...` green (incl. fix of pre-existing E2E-11 timing flake: wait for replaced config fiber Active).
+- Remaining (increment 2+): explicit scope derivation (`ctx.Derive`/Child scope option → child realm + shadow), `runtime.Intercept`, sibling-isolation/override/interception acceptance tests, full Phase-3 gate re-run.
+
+## Session: 2026-09-06 (cont.) — Phase 3 increment 2 done
+
+- Explicit scope derivation: `Context.Child(comp, runtime.WithScope())` creates a child realm (parent = current realm); default inherits; child realms may shadow ancestors (`ownership.go`/`command.go`).
+- Interception: generic free function `runtime.Intercept[T](ctx, key, fn)`; per-realm install-order chain applied on Require in ancestor->descendant order; Effect-reversible; panic contained. Realm stores/removes chain (`providers.go`, `context.go`).
+- Acceptance tests: sibling isolation + parent-realm invisibility; intercept order (5 -> 6 -> 60); interceptor panic contained (`runtime/scoped_realm_test.go`).
+- Gates green: `go test ./...`, `go test -race ./...`, `go vet ./...`.
+- Next: Phase 4 (dependency-graph cycle detection + progress/linearization audits + bounded randomized tests).
+
+## Session: 2026-09-06 (cont.) — Paper-Level Theorem Verification (docs/review) Phase 1–3
+
+- Phase 1/2 (harness): `runtime/theorem_verification_test.go` — independent Model/ObservableState/Trace (seed replay) + deterministic `math/rand/v2` + failure taxonomy + oracle self-checks. No production change.
+- Phase 3 (T59 Preservation): `runtime/t59_internal_test.go` — white-box P1..P5 invariant checker (parent validity, per-realm provider uniqueness + identity validity, active-fiber dependency validity, snapshot consistency), deterministic provider dispose/reload/consumer-drop cycles over 5 seeds × 60 steps; no sleep-based proof (signal waits only).
+- Gates: runtime tests + `-race` green.
+- Next: Phase 4 (T61 baseline observational equivalence), then T63/T66/T73 + FuzzInterleaving + docs/theorem-verification.md (§44 final report only when all pass).
+
+## Session: 2026-09-06 (cont.) — Theorem Verification Phase 4–5
+
+- Phase 4 (T61): `runtime/t61_internal_test.go` — LIFO/exactly-once effect recovery (open:1,2,3 → close:3,2,1), baseline equivalence (R1 loads+disposes transient F ⇒ same active set as R0, no provider/effect residue). Signal-driven, no sleep.
+- Phase 5 (T63): `runtime/t63_internal_test.go` — randomized provider up/down cycles (5 seeds × 40) with user-level event oracle: every consumer Apply must lie between P:up and P:down; consumers also assert dep present at Apply.
+- Gates: runtime tests + `-race` green (T59/T61/T63).
+- Next: Phase 6 T66 (deterministic bounded-progress driver), Phase 7 T73 (DAG legal schedules), Phase 8 FuzzInterleaving, Phase 10 docs/theorem-verification.md + final §44 report.
+
+## Session: 2026-09-06 (cont.) — Theorem Verification Phase 6–8 + docs
+
+- T66: test-only deterministic quiescence driver (scan runs on orchestrator via probe command; waits via generation signals, no sleeps) + bounded-progress randomized test; fixed transient false deadlock with settling probe.
+- T73: 24 legal mount permutations × 4 seeds observational-equivalence; explicit `t73Precondition`; synchronized recorder.
+- Fuzz: `FuzzInterleaving` (seed corpus; signal-driven scenario; checks T59/T63); 10s fuzz PASS (~700k execs). Go forbids `-fuzz` across multiple packages → AC-04 targets `./runtime/`.
+- Docs: `docs/theorem-verification.md` (matrix + limitations).
+- Overall: **CONDITIONAL PASS** (remaining: automated shrinker, broader generators). Gates: `go test ./...`, `go test -race ./...`, AC-03, AC-04 all PASS.
+
+## Session: 2026-09-06 (cont.) — Phase 4 done
+
+- Declared-dependency cycle detection (`runtime/dependency_cycle.go`), realm-aware (provider reachable only along consumer realm path; sibling scopes can't false-positive), self-loops ignored; rejects at `Runtime.Load` and `ctx.Child` with ErrDependencyCycle + actionable chain diagnostics.
+- Tests: `runtime/phase4_cycle_test.go` (root two-node cycle rejected both orders; child-boundary same-realm cycle fails activator), `runtime/phase4_random_test.go` (seeded bounded random load/dispose churn).
+- Linearization/sync audit: single serialized orchestrator decision domain; all external reads snapshot-guarded; no new gaps found.
+- Gates green: `go test ./...`, `go test -race ./...`, `go vet ./...`.
+- Next: Phase 5 (theorem-to-test evidence suite: invariants, randomized effect/provider/context schedules, ordering & confluence generators, fuzz smoke).
+
+## Session: 2026-09-06 (cont.) — Phase 5 (partial)
+
+- Executable preservation invariants (`runtime/proof_invariants_test.go`), checked synchronously inside the orchestrator decision domain (no mid-transition sampling): ownership tree valid/acyclic; provider records never outlive their owning activation (Loading/Active/Unloading same activation); every Active consumer's declared deps satisfiable on its realm path.
+- Bounded random schedules over providers/consumers with per-step invariant checks (seeds 1,7,42,2026, count=5 stable) + fuzz smoke `FuzzPreservation` (1416 execs, 3s, PASS) + `-race ./runtime/` green.
+- Remaining: recovery-exactness randomized effect stacks; ordering incl. realm-specific providers; generated confluence schedules with canonical observables.
+
+## Session: 2026-09-06 (cont.) — Phases 5–7 closed
+
+- Phase 5 complete: recovery-exactness random stacks, concurrent ordering (incl. realm providers), generated confluence schedules (mount-only; identity-aware disposal documented out of scope), preservation invariants, fuzz smoke — race `-count=3` stable, full `go test -race ./...` green.
+- Phase 6 complete: extensions revalidated under corrected Kernel with zero source changes; HMR/WASM/E2E evidence green; single lifecycle authority confirmed.
+- Phase 7 complete (documented limitations): paper mapping + trust boundary/migration in `docs/plan/paper-mapping.md`; CI workflow added but not executed on a runner; benchmarks deferred (non-semantic); Windows runtime verification pending a Windows host.

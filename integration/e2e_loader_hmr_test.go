@@ -263,6 +263,7 @@ func TestE2E11ConfigHMRSeparation(t *testing.T) {
 	if cfgFiber2.ID() == cfgFiber.ID() {
 		t.Fatal("config fiber should have been replaced by config pipeline")
 	}
+	waitActive(t, cfgFiber2)
 	b, _ := he.h.CurrentBinding("h1")
 	if b.Fiber != hf {
 		t.Fatal("HMR binding changed by config reconcile")

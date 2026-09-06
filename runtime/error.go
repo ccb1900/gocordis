@@ -31,4 +31,23 @@ var (
 	// ErrFiberGone is returned by waiters when the target Fiber reached Gone
 	// without carrying a lifecycle error.
 	ErrFiberGone = errors.New("fiber gone")
+
+	// ErrUndeclaredRequire is returned when an activation requires a capability
+	// that is not declared in its Inject set. Declarations are authoritative:
+	// reads outside the declared dependency surface are rejected.
+	ErrUndeclaredRequire = errors.New("undeclared require")
+	// ErrUndeclaredProvide is returned when an activation provides a capability
+	// that is not declared in its Provide set. Declarations are authoritative:
+	// writes outside the declared provider surface are rejected.
+	ErrUndeclaredProvide = errors.New("undeclared provide")
+
+	// ErrComponentApplyPanic is returned when a Component.Apply panics. The
+	// panic is contained at the Kernel boundary: committed effects unwind and
+	// the Fiber continues through its normal lifecycle.
+	ErrComponentApplyPanic = errors.New("component apply panic")
+	// ErrEffectInstallPanic is returned when an Effect install function panics.
+	ErrEffectInstallPanic = errors.New("effect install panic")
+	// ErrInversePanic is returned when an Effect inverse (or a Component
+	// Cleanup) panics during unwind. Unwinding continues past the panic.
+	ErrInversePanic = errors.New("effect inverse panic")
 )

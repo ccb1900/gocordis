@@ -108,6 +108,12 @@ func observe(rt *Runtime) Observation {
 		}
 		f.mu.RUnlock()
 
+		// Terminal Gone fibers carry no paper-level observable state (no
+		// activation/resources), so they are excluded from the semantic
+		// observation.
+		if st == StateGone {
+			continue
+		}
 		obs.Fibers = append(obs.Fibers, FiberObservation{ID: f.id, Name: f.Name(), State: st, Activation: actID, Parent: parent})
 		for _, cid := range childIDs {
 			obs.Children = append(obs.Children, ChildObservation{ParentID: uint64(f.id), ChildID: uint64(cid)})
@@ -118,7 +124,9 @@ func observe(rt *Runtime) Observation {
 				ProviderFiberID: uint64(d.Provider.FiberID), ProviderActID: uint64(d.Provider.ActivationID),
 			})
 		}
-		obs.Effects = append(obs.Effects, EffectObservation{OwnerFiberID: uint64(f.id), ActivationID: actID, Committed: effCommitted, Undone: effUndone})
+		if actID != 0 {
+			obs.Effects = append(obs.Effects, EffectObservation{OwnerFiberID: uint64(f.id), ActivationID: actID, Committed: effCommitted, Undone: effUndone})
+		}
 	}
 
 	// Providers across realm tree (root today; child realms added with scoping).

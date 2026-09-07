@@ -142,3 +142,12 @@
 - Audit: Runtime has NO public Observation API; only test-internal semantic projection (`observe()` in `runtime/obs_test.go`, quiescence-gated). Extension precedent: `registry.Snapshot()/Subscribe()`.
 - Deliverable: `docs/plan/devconsole-ui01-observation-model.md` — frozen UI-01 model (RuntimeSnapshot/FiberSnapshot/ProviderView/DependencyView/EffectView/ScopeSnapshot/RuntimeEvent), expressiveness matrix vs kernel internals, and 6 decisions required before UI-02 (component identity, stable ScopeID, effect Type/Key metadata, timestamps, snapshot consistency semantics, RuntimeID source). No production code, no UI, no Snapshot/Subscribe (per §41/§42).
 - Next (not started, awaiting authorization): UI-02 Snapshot API producer per §5 decisions.
+
+## Session: 2026-09-07 — GAP-01 Retiring Record Shadowing conformance closure
+
+- Closed the sole P0 PARTIAL from the v0.1 convergence audit (`b09462c`) without touching production code.
+- Frozen decision (convergence-matrix.md §F): a nearest Retiring provider record shadows ancestor providers for the same key; `Retiring != Absent`; shadowing is realm-local; owner Gone / record removed re-opens ancestor eligibility. Recorded as operational refinement preserving the Paper's nearest-binding/lifecycle semantics (not a verbatim Paper rule); stc-go correspondence external-required (GAP-03).
+- Conformance test: `runtime/gap01_retiring_shadow_test.go` `TestRetiringProviderShadowsAncestor` — deterministic kernel driver (det mode) timeline Active → Retiring → Gone; orchestrator-linearized resolve probes + Snapshot assert no-ancestor-fallback while the retiring record is physically present (incl. through B's own gated Unloading), ancestor valid at root throughout, Gone → ancestor eligible, explicit driver reconcile rebinds the child consumer onto the ancestor.
+- C-2/C-3 open spec question (realm resolution over a retiring child record vs ancestor fallback) resolved in favor of block-no-fallback, matching the existing `resolveDependency` implementation.
+- Gates: `go test ./runtime/...` PASS; `go test -race ./runtime/...` PASS; production diff zero (test + docs only).
+- Matrix: P0-12 → PASS; Status Summary P0 12 PASS / 0 PARTIAL; GAP-01 gap log CLOSED.

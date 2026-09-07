@@ -23,12 +23,12 @@ tests / Status / Priority / Gap / Action，作为 v0.1 Completion Gate (§25) �
 
 | Bucket | PASS | PARTIAL | MISSING | N/A | Blocker |
 |---|---|---|---|---|---|
-| P0 paper semantics (§8.1–8.8, §10–§14) | 11 | 1 (GAP-01) | 0 | 0 | GAP-01 |
+| P0 paper semantics (§8.1–8.8, §10–§14) | 12 | 0 | 0 | 0 | — |
 | Theorem closure (§9) | 5 | 0 | 0 | 0 | breadth items GAP-02 |
 | Required P1 engineering (§7 P1, §15–§21) | 12 | 0 | 0 | 0 | — |
 | P2 ecosystem (§3) | 0 | 0 | 0 | 5 | — |
 
-Completion gate (§25) NOT yet satisfiable：GAP-01（P0 PARTIAL）、GAP-02（P1 breadth）、GAP-03（external correspondence）未闭合。
+Completion gate (§25) NOT yet satisfiable：GAP-02（P1 breadth）、GAP-03（external correspondence）未闭合。GAP-01（唯一 P0 PARTIAL）已闭合为 PASS（见文末 Closure Record）。
 
 ---
 
@@ -47,7 +47,7 @@ Completion gate (§25) NOT yet satisfiable：GAP-01（P0 PARTIAL）、GAP-02（P
 | P0-09 | Dynamic composition / Provider replacement barrier：old Gone → new Active，无 overlap (§11) | realm own-map 独占（`ErrDuplicateProvider`）；retire → remove；`resolveDependency` owner Active+同 act；`Fiber.Load` 在 Gone 后 | `TestDuplicateProviderRejected`；`TestProviderReplacementConsumerRebinds`；`TestSameFiberReactivationIsNewProviderGeneration`；`TestPropertyConfluenceReplacement`；hmr H9/H15/H18；http H16–H23 | PASS |
 | P0-10 | Failed fiber contract：registry 成员、dependency visibility、Ready/Gone/replacement/Close 确定 (§12) | `finalizeActivation` Failed 分支（applyErr && Mounted，无自动重试）；Failed fiber 保留在 registry | `TestApplyFailureEndsFailed`；`TestFailedDisposeLoadRetryCycle`；`runtime/phase4_contract_test.go`；`TestUI02EffectMetadataAndEvents`（Failed row、providers 空、事件） | PASS |
 | P0-11 | Kernel Registry 为权威状态来源；extension registry 不改 Kernel lifecycle (§14) | `runtime/runtime.go` fibers map + orchestrator 单决策域；observation snapshot 投影；`extensions/registry` 为独立 extension | T59 P1..P5（`runtime/t59_internal_test.go`）；C-2 every-step（`runtime/c2_t59_every_step_test.go`）；UI-02 snapshot；`extensions/registry/runtime_registry_test.go` | PASS |
-| P0-12 | Retiring-record shadowing 语义边界：child realm 持 retiring record 时 ancestor 同 key provider 是否可回退 (§8.5/§8.6 + progress C-3 precondition) | 实现已定：`resolveDependency` 对 nearest retiring 返回不可满足，**不回退 ancestor**（`runtime/dependency_graph.go:38`）；snapshot `DependencyWithdrawn` 同语义（`runtime/observation.go`） | 无直接 conformance 覆盖（child realm retiring + ancestor active 场景）；文档未冻结该决策（`docs/plan/progress.md` 仍列为 open） | **PARTIAL** → GAP-01 |
+| P0-12 | Retiring-record shadowing 语义边界：child realm 持 retiring record 时 ancestor 同 key provider 是否可回退 (§8.5/§8.6 + progress C-3 precondition) | 决策已冻结：nearest retiring record 阻断 ancestor fallback（`runtime/dependency_graph.go:38` `resolveDependency` 对 nearest retiring 返回不可满足，不继续 ancestor）；record 由 owner unwind inverse 物理移除（`runtime/context.go` provideCap inverse → `removeOwn`）；shadowing 为 realm-local | `runtime/gap01_retiring_shadow_test.go` `TestRetiringProviderShadowsAncestor`（deterministic driver：Active → Retiring → Gone；orchestrator probe resolve + Snapshot 断言 no-fallback / record-retiring-present / ancestor-valid-outside / Gone→eligible）；决策冻结记录见文末 Closure Record | **PASS** |
 
 ## B. Theorem Closure (§9)
 
@@ -96,20 +96,99 @@ Completion gate (§25) NOT yet satisfiable：GAP-01（P0 PARTIAL）、GAP-02（P
 
 | Gap | Class | Evidence | Action | Blocking |
 |---|---|---|---|---|
-| GAP-01 | P0 semantic boundary（PARTIAL） | retiring-record shadowing 无冻结决策 + 无直接 conformance 测试（progress.md C-3 precondition；实现 `dependency_graph.go:38` 为 block-no-fallback） | 1) 冻结决策并记录（nearest retiring 阻断 ancestor fallback）；2) 新增 conformance test：child realm provider retiring → child consumer Pending/Withdrawn（不落到 ancestor Active provider）；child record 移除（owner Gone）后 → child consumer rebind ancestor；3) paper/stc-go 对照（external） | YES |
+| GAP-01 | P0 semantic boundary | **CLOSED**：决策冻结 + 直接 conformance 测试（`runtime/gap01_retiring_shadow_test.go`，deterministic PASS + `-race` PASS）；矩阵 P0-12 → PASS；paper/stc-go 对照保留 external（GAP-03），详见文末 Closure Record | 1) 冻结决策（Closure Record §Rule）；2) conformance test 落地：retiring 期间 child consumer Withdrawn/Pending 且 resolve 不落到 ancestor；B 的 record 在 B 自身 Unloading（cleanup gated）期间仍物理存在且 retiring；owner Gone 后 record 移除、ancestor eligible；driver reconcile 显式 rebind child consumer → 绑定 ancestor；3) paper/stc-go 逐字对照仍待外部材料（转 GAP-03） | NO（已闭合） |
 | GAP-02 | P1 theorem breadth（documented） | T73 生成器未覆盖 realm-sibling / nested-child / HMR-heavy interleavings（`docs/theorem-verification.md`）；C-2 的 orchestrator-boundary harness 债务（progress.md） | 1) C-2 增加 orchestrator 边界 checkpoint（沿用 T59 on-orchestrator 模式）消除 harness 债务；2) T73 生成器扩展或正式记录为有依据的 limitation | YES (per §25 Unverified Semantic Boundary = 0) |
 | GAP-03 | P1 process / correspondence | §5 matrix 的 Paper / stc-go / Cordis reference 列无法在仓库内逐项验证 | 需要提供 paper / stc-go / Cordis 源材料后逐行补 correspondence 证据；在此之前不宣称跨源 PASS | YES (matrix completion) |
 | GAP-04 | P2 non-semantic | CI workflow 未在 runner 上执行；Windows 未验证 | 环境项，不阻断语义 completion | NO |
 
 ## Recommended Closure Order
 
-1. GAP-01（P0，自足于仓库内）：conformance test + 决策冻结文档 → 可消除唯一 P0 PARTIAL。
+1. GAP-01（P0）：✅ 完成（conformance test + 决策冻结，见文末 Closure Record；P0 12 PASS / 0 PARTIAL）。
 2. GAP-02（P1）：C-2 orchestrator-boundary checkpoint；T73 生成器扩展或正式记录 limitation。
 3. GAP-03（P1）：等外部源材料后逐行补 correspondence。
 4. 全部闭合后重跑 `go test ./...` + `go test -race ./...`（§25 gate）。
 
+## F. GAP-01 Closure Record — Retiring Record Shadowing (frozen decision)
+
+Status: **CLOSED → PASS** (was P0 PARTIAL in v0.1 audit). Freezing scope is
+confined to the already-implemented semantics verified below; **zero
+production code changed** by this closure.
+
+### Rule
+
+A nearest Retiring provider record shadows ancestor providers for the same
+dependency key:
+
+```text
+resolve(K, realm) walks own -> ancestor.
+Nearest record found but Retiring  =>  unavailable.
+NO fallback to an Active ancestor record.
+```
+
+`Retiring != Absent`: the record remains in the realm own-map (physically
+present, `providerRecord.retiring`) until the owning activation's unwind
+inverse removes it, so a dependent in that realm can never resolve two
+simultaneously-valid bindings (nearest retiring + ancestor active) for one key.
+
+### Transition
+
+```text
+Retiring (record present, shadows ancestor)
+    |
+    | owner activation unwind completes; inverse removes the record
+    v
+Gone / record removed
+    |
+    v
+ancestor provider may become eligible for the child realm again
+```
+
+### Scope
+
+Shadowing is **realm-local**: only consumers whose realm path crosses the
+retiring record are blocked. The ancestor record stays valid and resolvable
+everywhere outside that child realm (root consumer unaffected).
+
+### Rationale
+
+Retiring is a decided withdrawal, not absence. Treating the nearest retiring
+binding as absent and falling back to the ancestor would expose two valid
+provider binding interpretations during the withdrawal window, break
+nearest-binding determinism, and could rebind dependents to an ancestor while
+the retiring provider is still in the process of unloading.
+
+### Correspondence
+
+- **Paper**: the Paper is not available in-repo for verbatim citation
+  (N/A-03 / GAP-03). The Paper's nearest dependency binding / spatial
+  composability principles do not literally spell out this operational rule.
+  This is an **operational refinement required to preserve the Paper's
+  nearest-binding / lifecycle semantics**, not a Paper-verbatim claim.
+- **stc-go**: nearest provider binding is preserved across the lifecycle
+  transition and a retiring nearest binding is not treated as absent for
+  ancestor fallback. Exact stc-go identifiers cannot be verified in-repo
+  (GAP-03, external-required) — no names are fabricated here.
+
+### Evidence
+
+- Conformance test: `runtime/gap01_retiring_shadow_test.go`
+  `TestRetiringProviderShadowsAncestor` — deterministic driver timeline
+  `Active → Retiring → Gone`; orchestrator-linearized probes assert:
+  - no-fallback: `resolveDependency(childRealm, K)` unavailable while B
+    Retiring (phases 1a/1b), never `A`;
+  - record physically present + `Retiring` (Snapshot ProviderView) through
+    B's own gated Unloading (deepest Retiring point, not `remove`-simulated);
+  - ancestor valid outside shadow: root `resolve(K) == A`, root consumer D
+    stays Active/Satisfied-A;
+  - Gone permits visibility: after B Gone + record removal,
+    `resolveDependency(childRealm, K) == A`; explicit driver reconcile
+    (documented as harness-driven; the runtime sweeps Pending only on a new
+    activation becoming Active) rebinds C to A and C activates on A.
+- Verification: `go test ./runtime/...` PASS; `go test -race ./runtime/...`
+  PASS.
+
 ## Explicit Non-Claims
 
-- 本文档未修改任何 production code / test。
+- 本文档（v0.1 audit 本体）未修改任何 production code；GAP-01 closure 新增的是 conformance test（`runtime/gap01_retiring_shadow_test.go`）与决策记录，production code 修改为零。
 - 所有 `external-required` 的 cross-source 判定均未臆造。
 - UI-02 之后仍未实现：Runtime-level `Subscribe()`（UI-03）。按 §20，Observation contract 已由 read-only `Snapshot()` 满足；`Subscribe()` 属 UI-03 roadmap 的 Future Extension，不阻塞 v0.1 semantic completion（registry extension 已提供 extension 级 subscribe 先例）。

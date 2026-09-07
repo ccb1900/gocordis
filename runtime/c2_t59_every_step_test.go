@@ -13,41 +13,96 @@ import (
 //	Load(P) -> [ApplyDone parked] -> Execute(ApplyDone) -> Active ->
 //	Dispose() -> [UnwindDone parked] -> Execute(UnwindDone) -> Gone -> Close
 //
-// After EVERY driver step the preservation oracle checkT59 must hold. checkT59
-// is deliberately NOT a quiescence oracle: it must hold in the transitional
-// Loading/Unloading states where semanticQuiescent reports non-quiescence, and
-// it never requires the runtime to be idle. The single-fiber scenario
-// exercises the registry well-formedness arms that exist for an isolated
-// fiber: fiber registry identity, ownership links, and activation/state
-// coherence. Provider/dependency arms join when C-2 grows consumer/provider
-// and child scenarios. Runtime production code is untouched.
+// checkT59 is the preservation oracle: it must hold after EVERY driver step,
+// including the transitional Loading/Unloading states where semanticQuiescent
+// reports non-quiescence. It never waits, sleeps, or requires quiescence.
+//
+// T59 is grounded in the recorded definitions, not in implementation habits:
+//   - docs/review/GOCORDIS — Paper-Level Theorem Verification Specification
+//     v0.1 §9.1: P1 parent validity, P2 provider uniqueness (identity includes
+//     the activation generation), P3 dependency validity (Active fiber),
+//     P4 provider state validity, P5 snapshot consistency.
+//   - docs/review/GOCORDIS — Theorem Verification Infrastructure Spec v0.2
+//     §25 (per-step CheckWellFormed): provider uniqueness, provider identity
+//     (an old activation inverse must never delete a newer activation's
+//     provider), active dependency -> valid provider generation, no dangling
+//     graph edges, ownership validity.
+//
+// Oracle arms (Paper-required | status):
+//
+//	A Fiber registry     | map identity/integrity is Implementation-only; kept
+//	                      | as a precondition so corrupt registries cannot mask
+//	                      | the paper arms below.
+//	B Ownership          | P1 parent-exists + v0.2 child-owner-exists: Yes.
+//	C Activation         | state/activation coherence is Implementation-only:
+//	                      | it is the identity-model precondition that makes D/E
+//	                      | reads meaningful (single ActivationID model, §10).
+//	D Provider registry  | P2 uniqueness per resolution realm + P4/v0.2
+//	                      | record-owner generation coherence: Yes. retiring is
+//	                      | a legal transitional state, never "retiring ==
+//	                      | invalid": a retiring record must still carry the
+//	                      | owning generation until its inverse removes it.
+//	E Dependency/graph   | P3 (Active deps satisfied), P5 (Active snapshot ==
+//	                      | resolved), v0.2 dependency validity (snapshot ->
+//	                      | existing record, same generation, no dangling
+//	                      | edges): Yes.
+//	F Other              | effect stack = T61, withdrawal ordering = T63,
+//	                      | quiescence/progress = T66: explicitly excluded.
+//
+// Explicitly NOT in T59 (boundary discipline): provider-ready-before-Loading
+// and consumer-before-provider withdrawal ordering (T63), runtime idleness
+// (T66), effect LIFO/exactness (T61).
 
-// checkT59 reports the first registry well-formedness violation. It reads only
-// semantic runtime state under the established lock order (rt.mu -> f.mu),
-// mirroring observe/t59CheckP, and is safe to call between driver steps.
+type c2FiberSnap struct {
+	f        *Fiber
+	id       FiberID
+	state    FiberState
+	realm    *realm
+	parent   *Fiber
+	act      *activation
+	actID    ActivationID
+	childIDs []FiberID
+	inject   []Dependency
+	deps     []DependencySnapshot
+}
+
+type c2RecordSnap struct {
+	identity ProviderIdentity
+	retiring bool
+}
+
+type c2RealmSnap struct {
+	byKey map[CapabilityKey]c2RecordSnap
+}
+
+// checkT59 reports the first registry well-formedness violation, or nil.
 //
-// Activation/state coherence is constrained in the direction that is true at
-// every driver-step boundary:
-//   - a live activation requires state Loading/Active/Unloading;
-//   - state Loading/Active requires a live activation.
-//
-// (State Unloading may transiently hold a nil activation while a finished
-// activation is being finalized into Gone, so Unloading alone is not
-// constrained.)
+// It snapshots semantic state under the established lock order (rt.mu -> f.mu;
+// realm.mu taken alone afterwards), mirroring observe/t59CheckP, and must be
+// invoked at driver step boundaries where the orchestrator is idle (the C-2
+// protocol: wait for the target state after Execute). The provider->consumer
+// edge index (o.graph) is orchestrator-owned and read only at such boundaries;
+// a concurrent multi-fiber harness (C-3) should run checkT59 on the
+// orchestrator via a probe instead.
 func checkT59(rt *Runtime) error {
-	rt.mu.RLock()
-	type entry struct {
+	// --- fiber registry snapshot (rt.mu -> f.mu) ---
+	type regEntry struct {
 		key FiberID
 		f   *Fiber
 	}
-	entries := make([]entry, 0, len(rt.fibers))
+	rt.mu.RLock()
+	entries := make([]regEntry, 0, len(rt.fibers))
 	byID := make(map[FiberID]*Fiber, len(rt.fibers))
 	for key, f := range rt.fibers {
-		entries = append(entries, entry{key, f})
-		byID[f.id] = f
+		entries = append(entries, regEntry{key, f})
+		if f != nil {
+			byID[f.id] = f
+		}
 	}
 	rt.mu.RUnlock()
 
+	fsnaps := make([]*c2FiberSnap, 0, len(entries))
+	fsnapByFiber := make(map[*Fiber]*c2FiberSnap, len(entries))
 	for _, e := range entries {
 		if e.f == nil {
 			return fmt.Errorf("T59 registry: nil fiber under id %v", e.key)
@@ -55,58 +110,287 @@ func checkT59(rt *Runtime) error {
 		if e.f.id != e.key {
 			return fmt.Errorf("T59 registry: fiber %v registered under key %v", e.f.id, e.key)
 		}
-		f := e.f
-
-		f.mu.RLock()
-		state := f.state
-		parent := f.parent
-		realm := f.realm
-		act := f.activation
-		var actID ActivationID
-		var actFiber *Fiber
-		var actCtx *Context
-		if act != nil {
-			actID = act.id
-			actFiber = act.fiber
-			actCtx = act.ctx
+		if e.f.id == 0 {
+			return fmt.Errorf("T59 registry: fiber with invalid id 0")
 		}
-		childIDs := make([]FiberID, 0, len(f.children))
+		f := e.f
+		s := &c2FiberSnap{f: f, id: f.id}
+		f.mu.RLock()
+		s.state = f.state
+		s.realm = f.realm
+		s.parent = f.parent
+		if act := f.activation; act != nil {
+			s.act = act
+			s.actID = act.id
+		}
+		s.childIDs = make([]FiberID, 0, len(f.children))
 		for cid := range f.children {
-			childIDs = append(childIDs, cid)
+			s.childIDs = append(s.childIDs, cid)
+		}
+		s.inject = append([]Dependency(nil), f.inject...)
+		if s.act != nil {
+			s.deps = append([]DependencySnapshot(nil), s.act.deps...)
 		}
 		f.mu.RUnlock()
+		fsnaps = append(fsnaps, s)
+		fsnapByFiber[f] = s
+	}
 
-		if realm == nil {
-			return fmt.Errorf("T59 fiber %d (%s): nil realm", f.id, f.Name())
+	// --- realm snapshot (realm.mu, taken alone after fiber locks are free) ---
+	realmSnaps := make(map[*realm]*c2RealmSnap)
+	snapRealm := func(r *realm) *c2RealmSnap {
+		if r == nil {
+			return nil
 		}
-		if parent != nil && byID[parent.id] == nil {
-			return fmt.Errorf("T59 fiber %d (%s): parent %d not registered", f.id, f.Name(), parent.id)
+		if s, ok := realmSnaps[r]; ok {
+			return s
 		}
-		for _, cid := range childIDs {
-			if byID[cid] == nil {
-				return fmt.Errorf("T59 fiber %d (%s): child %d not registered", f.id, f.Name(), cid)
-			}
+		s := &c2RealmSnap{byKey: make(map[CapabilityKey]c2RecordSnap)}
+		realmSnaps[r] = s
+		r.mu.RLock()
+		for k, rec := range r.own {
+			s.byKey[k] = c2RecordSnap{identity: rec.identity, retiring: rec.retiring}
 		}
-
-		switch {
-		case act != nil:
-			if state != StateLoading && state != StateActive && state != StateUnloading {
-				return fmt.Errorf("T59 fiber %d (%s): live activation in state %v", f.id, f.Name(), state)
-			}
-			if actID == 0 {
-				return fmt.Errorf("T59 fiber %d (%s): activation id 0", f.id, f.Name())
-			}
-			if actFiber != f {
-				return fmt.Errorf("T59 fiber %d (%s): activation owner mismatch", f.id, f.Name())
-			}
-			if actCtx == nil {
-				return fmt.Errorf("T59 fiber %d (%s): activation has nil context", f.id, f.Name())
-			}
-		case state == StateLoading || state == StateActive:
-			return fmt.Errorf("T59 fiber %d (%s): state %v without live activation", f.id, f.Name(), state)
+		r.mu.RUnlock()
+		return s
+	}
+	snapRealm(rt.rootRealm)
+	for _, s := range fsnaps {
+		for r := s.realm; r != nil; r = r.parent {
+			snapRealm(r)
 		}
 	}
+
+	// --- provider->consumer edge index snapshot (orchestrator-owned; read at
+	// idle step boundaries only) ---
+	edgesByID := make(map[ProviderIdentity]map[*Fiber]struct{})
+	for id, set := range rt.orch.graph {
+		m := make(map[*Fiber]struct{}, len(set))
+		for c := range set {
+			m[c] = struct{}{}
+		}
+		edgesByID[id] = m
+	}
+
+	// A registry integrity (precondition).
+	for _, s := range fsnaps {
+		if s.realm == nil {
+			return fmt.Errorf("T59 fiber %d (%s): nil realm", s.id, s.f.Name())
+		}
+	}
+
+	// B ownership: P1 parent validity + v0.2 child-owner existence.
+	for _, s := range fsnaps {
+		f := s.f
+		if s.parent != nil {
+			if byID[s.parent.id] == nil {
+				return fmt.Errorf("T59 P1 parent validity: fiber %d (%s) parent %d not registered", f.id, f.Name(), s.parent.id)
+			}
+			if s.parent.id == f.id {
+				return fmt.Errorf("T59 P1 parent validity: fiber %d (%s) is its own parent", f.id, f.Name())
+			}
+		}
+		for _, cid := range s.childIDs {
+			if byID[cid] == nil {
+				return fmt.Errorf("T59 ownership validity: fiber %d (%s) child %d not registered", f.id, f.Name(), cid)
+			}
+		}
+	}
+
+	// C activation/state coherence (identity-model precondition).
+	for _, s := range fsnaps {
+		f := s.f
+		switch {
+		case s.act != nil:
+			if s.state != StateLoading && s.state != StateActive && s.state != StateUnloading {
+				return fmt.Errorf("T59 activation coherence: fiber %d (%s) live activation in state %v", f.id, f.Name(), s.state)
+			}
+			if s.actID == 0 {
+				return fmt.Errorf("T59 activation coherence: fiber %d (%s) activation id 0", f.id, f.Name())
+			}
+			if s.act.fiber != f {
+				return fmt.Errorf("T59 activation coherence: fiber %d (%s) activation owner mismatch", f.id, f.Name())
+			}
+			if s.act.ctx == nil {
+				return fmt.Errorf("T59 activation coherence: fiber %d (%s) activation has nil context", f.id, f.Name())
+			}
+		case s.state == StateLoading || s.state == StateActive:
+			return fmt.Errorf("T59 activation coherence: fiber %d (%s) state %v without live activation", f.id, f.Name(), s.state)
+		}
+	}
+
+	// D provider registry: P2 (at most one record per capability per realm is
+	// structural: realm.own is a map) + P4/v0.2 record-owner generation
+	// coherence. A retiring record is legal; it must still name the live
+	// owning generation (its inverse removes it physically on unwind).
+	for _, rsnap := range realmSnaps {
+		for key, rec := range rsnap.byKey {
+			id := rec.identity
+			if id.FiberID == 0 || id.ActivationID == 0 {
+				return fmt.Errorf("T59 P2 provider registry: record %s has invalid identity %d/%d", key, id.FiberID, id.ActivationID)
+			}
+			owner := byID[id.FiberID]
+			if owner == nil {
+				return fmt.Errorf("T59 P2/P4 provider registry: record %s owner fiber %d not registered", key, id.FiberID)
+			}
+			osnap := fsnapByFiber[owner]
+			if osnap == nil || osnap.act == nil || osnap.actID != id.ActivationID {
+				return fmt.Errorf("T59 P2/P4 provider registry: record %s generation %d/%d no longer matches owner %d activation %v",
+					key, id.FiberID, id.ActivationID, id.FiberID, actOrNone(osnap))
+			}
+		}
+	}
+
+	// E dependency registry / graph.
+	//
+	// E3 (v0.2 dependency validity): every dependency snapshot of a live
+	// activation corresponds to an existing provider record in the owner
+	// fiber's realm, same key and same generation. Retiring is allowed: a
+	// consumer may legitimately hold a snapshot of a provider that is
+	// withdrawing (consumer-first unload, T63) while the record still exists.
+	for _, s := range fsnaps {
+		if s.act == nil {
+			continue
+		}
+		for _, dep := range s.deps {
+			owner := byID[dep.Provider.FiberID]
+			if owner == nil {
+				return fmt.Errorf("T59 dependency validity: fiber %d (%s) dep %s references unregistered provider fiber %d",
+					s.id, s.f.Name(), dep.Key, dep.Provider.FiberID)
+			}
+			osnap := fsnapByFiber[owner]
+			if osnap == nil {
+				return fmt.Errorf("T59 dependency validity: fiber %d (%s) dep %s provider fiber %d missing snapshot",
+					s.id, s.f.Name(), dep.Key, dep.Provider.FiberID)
+			}
+			orealm := realmSnaps[osnap.realm]
+			if orealm == nil {
+				return fmt.Errorf("T59 dependency validity: fiber %d (%s) dep %s provider realm missing",
+					s.id, s.f.Name(), dep.Key)
+			}
+			rec, ok := orealm.byKey[dep.Key]
+			if !ok {
+				return fmt.Errorf("T59 dependency validity: fiber %d (%s) dep %s snapshot %d/%d has no registry record (dangling)",
+					s.id, s.f.Name(), dep.Key, dep.Provider.FiberID, dep.Provider.ActivationID)
+			}
+			if rec.identity != dep.Provider {
+				return fmt.Errorf("T59 dependency validity: fiber %d (%s) dep %s snapshot generation %d/%d != registry generation %d/%d",
+					s.id, s.f.Name(), dep.Key, dep.Provider.FiberID, dep.Provider.ActivationID,
+					rec.identity.FiberID, rec.identity.ActivationID)
+			}
+		}
+	}
+
+	// E4 (v0.2 graph validity): every edge names a live provider generation and
+	// a registered consumer whose live activation snapshots that identity, and
+	// every snapshot of a live activation has its provider->consumer edge.
+	for id, consumers := range edgesByID {
+		owner := byID[id.FiberID]
+		if owner == nil {
+			return fmt.Errorf("T59 graph validity: edge for unregistered provider %d/%d", id.FiberID, id.ActivationID)
+		}
+		osnap := fsnapByFiber[owner]
+		if osnap == nil || osnap.act == nil || osnap.actID != id.ActivationID {
+			return fmt.Errorf("T59 graph validity: edge for ended provider generation %d/%d", id.FiberID, id.ActivationID)
+		}
+		for c := range consumers {
+			csnap := fsnapByFiber[c]
+			if csnap == nil {
+				return fmt.Errorf("T59 graph validity: edge %d/%d -> consumer not registered", id.FiberID, id.ActivationID)
+			}
+			if csnap.act == nil {
+				return fmt.Errorf("T59 graph validity: edge %d/%d -> fiber %d (%s) has no live activation",
+					id.FiberID, id.ActivationID, csnap.id, csnap.f.Name())
+			}
+			if !c2SnapRefs(csnap.deps, id) {
+				return fmt.Errorf("T59 graph validity: edge %d/%d -> fiber %d (%s) has no matching dependency snapshot",
+					id.FiberID, id.ActivationID, csnap.id, csnap.f.Name())
+			}
+		}
+	}
+	for _, s := range fsnaps {
+		if s.act == nil {
+			continue
+		}
+		for _, dep := range s.deps {
+			if _, ok := edgesByID[dep.Provider]; !ok {
+				return fmt.Errorf("T59 graph validity: fiber %d (%s) dep %s missing provider->consumer edge %d/%d",
+					s.id, s.f.Name(), dep.Key, dep.Provider.FiberID, dep.Provider.ActivationID)
+			}
+			if _, ok := edgesByID[dep.Provider][s.f]; !ok {
+				return fmt.Errorf("T59 graph validity: fiber %d (%s) dep %s missing edge from provider %d/%d",
+					s.id, s.f.Name(), dep.Key, dep.Provider.FiberID, dep.Provider.ActivationID)
+			}
+		}
+	}
+
+	// E1 (P3) + E2 (P5): an Active fiber's declared dependencies resolve to an
+	// Active provider on its realm path, and the resolved identity equals the
+	// captured snapshot. Loading/Unloading dependency progress is T63
+	// ordering, not T59, so the check is state-conditional on Active only.
+	resolve := func(s *c2FiberSnap, key CapabilityKey) (ProviderIdentity, bool) {
+		for r := s.realm; r != nil; r = r.parent {
+			rs := realmSnaps[r]
+			if rs == nil {
+				continue
+			}
+			rec, ok := rs.byKey[key]
+			if !ok {
+				continue
+			}
+			// The nearest record decides, retiring blocks re-binding.
+			if rec.retiring {
+				return ProviderIdentity{}, false
+			}
+			owner := byID[rec.identity.FiberID]
+			os := fsnapByFiber[owner]
+			if owner == nil || os == nil || os.state != StateActive || os.act == nil || os.actID != rec.identity.ActivationID {
+				return ProviderIdentity{}, false
+			}
+			return rec.identity, true
+		}
+		return ProviderIdentity{}, false
+	}
+	for _, s := range fsnaps {
+		if s.state != StateActive || s.act == nil {
+			continue
+		}
+		snapByKey := make(map[CapabilityKey]ProviderIdentity, len(s.deps))
+		for _, dep := range s.deps {
+			snapByKey[dep.Key] = dep.Provider
+		}
+		for _, dep := range s.inject {
+			resolved, ok := resolve(s, dep.Key)
+			if !ok {
+				return fmt.Errorf("T59 P3 dependency validity: Active fiber %d (%s) dep %s unsatisfied",
+					s.id, s.f.Name(), dep.Key)
+			}
+			if snap, has := snapByKey[dep.Key]; !has || snap != resolved {
+				return fmt.Errorf("T59 P5 snapshot consistency: Active fiber %d (%s) dep %s resolved %d/%d != snapshot %+v",
+					s.id, s.f.Name(), dep.Key, resolved.FiberID, resolved.ActivationID, snapByKey[dep.Key])
+			}
+		}
+	}
+
 	return nil
+}
+
+// actOrNone renders a fiber snapshot's live activation id for diagnostics.
+func actOrNone(s *c2FiberSnap) any {
+	if s == nil || s.act == nil {
+		return nil
+	}
+	return s.actID
+}
+
+// c2SnapRefs reports whether any dependency snapshot references identity id.
+func c2SnapRefs(deps []DependencySnapshot, id ProviderIdentity) bool {
+	for _, d := range deps {
+		if d.Provider == id {
+			return true
+		}
+	}
+	return false
 }
 
 func c2Wait(ms int, cond func() bool) bool {

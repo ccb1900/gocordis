@@ -67,3 +67,33 @@ func (k EventKey[T]) valid() bool { return k.key.typeID != nil }
 // dispatch (handler errors are aggregated with errors.Join by every dispatch
 // mode).
 type EventHandler[T any] func(context.Context, T) error
+
+// Next is the continuation of one Waterfall chain node (P1.4).
+//
+// Calling next() advances the chain to the next handler in the dispatch
+// snapshot and returns only after the downstream chain has completed (Next
+// Contract: next is synchronous). The returned error is the downstream chain
+// result — a downstream handler error propagates back through next() so the
+// current handler can observe, transform, or handle it.
+//
+// A node's next may advance the chain at most once: a second invocation is a
+// Handler contract violation and returns ErrWaterfallNextTwice without
+// re-running the downstream chain. next() must be called synchronously from
+// the handler goroutine (go next() is not a legal Waterfall middleware
+// pattern).
+type Next func() error
+
+// WaterfallHandler[T] is the handler contract for a Waterfall chain node
+// (P1.4). It receives the dispatch context, the typed payload, and the chain
+// continuation:
+//
+//	before := do()
+//	if err := next(); err != nil { ... }
+//	after := do()
+//
+// Not calling next() short-circuits the chain (the node handled the event);
+// returning an error without calling next() fails the dispatch. The payload is
+// passed through the chain unchanged: state flows between handlers only
+// through the caller-supplied payload/state the handlers share, never through
+// a second channel invented by the Kernel.
+type WaterfallHandler[T any] func(context.Context, T, Next) error

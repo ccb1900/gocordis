@@ -13,6 +13,13 @@ import (
 // Emit broadcast continues to the remaining handlers (Emit semantics).
 var ErrEventHandlerPanic = errors.New("event handler panic")
 
+// ErrWaterfallNextTwice is returned by the second invocation of one Waterfall
+// node's next() (P1.4 Next Contract: a node's next may advance the chain at
+// most once; a repeated call is a Handler contract violation). The second call
+// never re-runs the downstream chain, and the violation is surfaced in the
+// dispatch result even if the handler ignores the returned error.
+var ErrWaterfallNextTwice = errors.New("event waterfall: next called twice")
+
 // eventRegistry is the Runtime-owned Kernel Event registry (P1.1).
 //
 // It is a plain data structure and dispatch infrastructure — NOT a lifecycle
@@ -46,6 +53,13 @@ type eventReg struct {
 	seq     uint64 // global registration order
 	owner   ProviderIdentity
 	handler func(context.Context, any) error
+	// chain is non-nil only for chain-aware registrations (OnWaterfall, P1.4):
+	// a handler that receives a real Next continuation. Waterfall dispatch
+	// invokes it with a Next bound to the remaining snapshot; every other
+	// dispatch mode invokes the handler projection instead (a terminal node
+	// whose next() is trivially satisfied). Plain On registrations keep
+	// chain == nil.
+	chain func(context.Context, any, Next) error
 }
 
 func newEventRegistry() *eventRegistry {
@@ -53,12 +67,14 @@ func newEventRegistry() *eventRegistry {
 }
 
 // register appends one registration and assigns the next global registration
-// sequence number.
-func (g *eventRegistry) register(owner ProviderIdentity, realm *realm, key eventKeyID, handler func(context.Context, any) error) *eventReg {
+// sequence number. handler is the projection used by Emit/Serial/Parallel (and
+// by Waterfall for plain On registrations); chain is the chain-aware variant
+// used by Waterfall for OnWaterfall registrations (nil for plain On).
+func (g *eventRegistry) register(owner ProviderIdentity, realm *realm, key eventKeyID, handler func(context.Context, any) error, chain func(context.Context, any, Next) error) *eventReg {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.seq++
-	reg := &eventReg{key: key, realm: realm, seq: g.seq, owner: owner, handler: handler}
+	reg := &eventReg{key: key, realm: realm, seq: g.seq, owner: owner, handler: handler, chain: chain}
 	g.byKey[key] = append(g.byKey[key], reg)
 	return reg
 }
@@ -150,6 +166,31 @@ func (r *Runtime) eventSnapshot(key eventKeyID, emitterRealm *realm) []*eventReg
 	return out
 }
 
+// onEvent installs one Event registration as an Effect on ctx (shared by On
+// and OnWaterfall). handler is the projection used by Emit/Serial/Parallel;
+// chain is the chain-aware variant used by Waterfall (nil for plain On).
+func onEvent(c *Context, key eventKeyID, handler func(context.Context, any) error, chain func(context.Context, any, Next) error) error {
+	return c.effect(EffectKindEvent, CapabilityKey{}, func() (func() error, error) {
+		if c.rt == nil || c.rt.eventReg == nil {
+			return nil, errors.New("runtime: event registry unavailable")
+		}
+		if c.realm == nil {
+			return nil, errors.New("runtime: activation has no realm")
+		}
+		reg := c.rt.eventReg.register(
+			ProviderIdentity{FiberID: c.fiberID, ActivationID: c.activationID},
+			c.realm,
+			key,
+			handler,
+			chain,
+		)
+		return func() error {
+			c.rt.eventReg.unregister(reg)
+			return nil
+		}, nil
+	})
+}
+
 // On registers handler for key on ctx's current activation (Decision Record
 // §20 contract 1).
 //
@@ -158,6 +199,13 @@ func (r *Runtime) eventSnapshot(key eventKeyID, emitterRealm *realm) []*eventReg
 // LIFO, install/unwind-race, and late-effect protections. Unwinding runs the
 // inverse, which removes exactly this registration — there is no global
 // handler registry and no handler can outlive its owner activation.
+//
+// On handlers receive (ctx, payload): they cannot continue a chain, which is
+// the Emit/Serial/Parallel contract. Chain-aware handlers (P1.4) use
+// OnWaterfall instead. Both live in the SAME registry, Event identity, Realm
+// scope, snapshot, and ownership model — a plain handler reached by a
+// Waterfall dispatch runs as a transparent node (it holds no chain authority,
+// so the chain continues automatically after it returns nil).
 func On[T any](c *Context, key EventKey[T], handler EventHandler[T]) error {
 	if c == nil {
 		return errors.New("runtime: nil context")
@@ -171,24 +219,44 @@ func On[T any](c *Context, key EventKey[T], handler EventHandler[T]) error {
 	typed := func(ctx context.Context, payload any) error {
 		return handler(ctx, payload.(T))
 	}
-	return c.effect(EffectKindEvent, CapabilityKey{}, func() (func() error, error) {
-		if c.rt == nil || c.rt.eventReg == nil {
-			return nil, errors.New("runtime: event registry unavailable")
-		}
-		if c.realm == nil {
-			return nil, errors.New("runtime: activation has no realm")
-		}
-		reg := c.rt.eventReg.register(
-			ProviderIdentity{FiberID: c.fiberID, ActivationID: c.activationID},
-			c.realm,
-			key.id(),
-			typed,
-		)
-		return func() error {
-			c.rt.eventReg.unregister(reg)
-			return nil
-		}, nil
-	})
+	return onEvent(c, key.id(), typed, nil)
+}
+
+// OnWaterfall registers a chain-aware handler for key on ctx's current
+// activation (P1.4 §3, §20).
+//
+// The handler receives a Next continuation and participates in Waterfall's
+// ordered middleware chain: calling next() advances to the next snapshot
+// handler and returns when the downstream chain completed; not calling next()
+// short-circuits the chain. Registration ownership is identical to On — the
+// handler is an Effect of its owner activation and can never outlive it.
+//
+// The handler is stored once and shared by every dispatch mode: Emit/Serial/
+// Parallel invoke it as a terminal node (its next() is trivially satisfied and
+// returns nil), and Waterfall invokes it with a Next bound to the remaining
+// snapshot. Waterfall dispatch strategy is therefore the ONLY difference — the
+// four modes share one registry, identity, scope, snapshot, and ownership
+// (P1.4 §30).
+func OnWaterfall[T any](c *Context, key EventKey[T], handler WaterfallHandler[T]) error {
+	if c == nil {
+		return errors.New("runtime: nil context")
+	}
+	if !key.valid() {
+		return errors.New("runtime: zero-value EventKey (use NewEventKey)")
+	}
+	if handler == nil {
+		return errors.New("runtime: nil waterfall handler")
+	}
+	chain := func(ctx context.Context, payload any, next Next) error {
+		return handler(ctx, payload.(T), next)
+	}
+	// Projection for Emit/Serial/Parallel and for snapshots that mix plain and
+	// chain-aware handlers: a terminal node whose next() is trivially
+	// satisfied (there is no downstream in those dispatch frames).
+	plain := func(ctx context.Context, payload any) error {
+		return handler(ctx, payload.(T), func() error { return nil })
+	}
+	return onEvent(c, key.id(), plain, chain)
 }
 
 // Emit synchronously broadcasts payload to every handler of key visible from
@@ -355,6 +423,106 @@ func Parallel[T any](ctx context.Context, c *Context, key EventKey[T], payload T
 		}
 	}
 	return errors.Join(joined...)
+}
+
+// Waterfall dispatches payload through an ordered, synchronous middleware
+// chain (P1.4 semantics). Execution is driven by the handlers themselves:
+//
+//	snapshot [A, B, C]
+//	A.before → A.next() → B.before → B.next() → C → B.after → A.after
+//
+// The caller-supplied ctx is the dispatch context and the payload is passed
+// through the chain unchanged. next() returns only once the downstream chain
+// has completed; not calling next() short-circuits the chain (a node that
+// handled the event), which is a nil result — never conflated with
+// cancellation. A node's next() may advance the chain at most once; a second
+// call returns ErrWaterfallNextTwice and the violation is surfaced in the
+// dispatch result.
+//
+// Error semantics follow the chain, not Serial/Parallel aggregation: a
+// downstream handler error propagates back through every upstream next() so
+// each handler can observe/transform/handle it, and the dispatch returns the
+// error the chain produced. There is no automatic error aggregation (a single
+// error propagation path). A handler that returns an error without calling
+// next() fails the dispatch and the downstream chain never starts.
+//
+// Cancellation (dispatch ctx and emitter activation ctx) is checked before the
+// snapshot and before every handler starts — including every next() boundary:
+// a canceled dispatch stops the chain from advancing and reports ctx.Err(),
+// but a running handler is never force-terminated. Panics are contained by the
+// unified Event panic policy (ErrEventHandlerPanic) and then follow chain
+// error propagation. Snapshot, scope, registration order, Effect ownership,
+// reentrancy, and nested dispatch semantics are identical to Emit/Serial/
+// Parallel: one registry, one dispatch snapshot per Waterfall call, chain
+// state is pure call-stack state (no global waterfall stack/scheduler).
+func Waterfall[T any](ctx context.Context, c *Context, key EventKey[T], payload T) error {
+	if c == nil {
+		return errors.New("runtime: nil context")
+	}
+	if !key.valid() {
+		return errors.New("runtime: zero-value EventKey (use NewEventKey)")
+	}
+	if c.rt == nil || c.rt.eventReg == nil {
+		return errors.New("runtime: event registry unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := c.eventCancelErr(ctx); err != nil {
+		return err
+	}
+	snap := c.rt.eventSnapshot(key.id(), c.realm)
+	return runWaterfallChain(ctx, c, snap, 0, payload)
+}
+
+// runWaterfallChain drives the Waterfall snapshot starting at index i. All
+// chain state lives on this call stack: nested/reentrant Waterfall dispatches
+// capture their own snapshots and never touch an outer chain's next or index.
+func runWaterfallChain(ctx context.Context, c *Context, snap []*eventReg, i int, payload any) error {
+	if i >= len(snap) {
+		return nil
+	}
+	if err := c.eventCancelErr(ctx); err != nil {
+		return err
+	}
+	reg := snap[i]
+	if reg.chain == nil {
+		// Plain On registration: it holds no chain authority, so it runs as a
+		// transparent node and the chain continues automatically. An error
+		// still fails the dispatch (downstream never starts), matching the
+		// §10 chain error rule.
+		if err := guardedEventHandler(reg.handler, ctx, payload); err != nil {
+			return err
+		}
+		return runWaterfallChain(ctx, c, snap, i+1, payload)
+	}
+
+	// Chain-aware node: hand the handler a Next bound to the remaining
+	// snapshot. Handler execution is guarded per node, outside the registry
+	// lock (T-08), and runs on the caller goroutine.
+	calls := 0
+	next := func() error {
+		calls++
+		if calls > 1 {
+			return ErrWaterfallNextTwice
+		}
+		return runWaterfallChain(ctx, c, snap, i+1, payload)
+	}
+	err := guardedEventHandler(func(hctx context.Context, p any) error {
+		return reg.chain(hctx, p, next)
+	}, ctx, payload)
+
+	// A duplicated next() is a Handler contract violation: it must surface
+	// even if the handler ignores the returned error (the downstream chain
+	// already ran exactly once).
+	if calls > 1 && !errors.Is(err, ErrWaterfallNextTwice) {
+		if err == nil {
+			err = ErrWaterfallNextTwice
+		} else {
+			err = errors.Join(ErrWaterfallNextTwice, err)
+		}
+	}
+	return err
 }
 
 // eventCancelErr returns the first cancellation error in effect: the dispatch

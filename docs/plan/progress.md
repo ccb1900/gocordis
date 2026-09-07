@@ -135,3 +135,10 @@
   1. First C-3 spec rule: **T63 test observation boundary = orchestrator probe / orchestrator-owned semantic checkpoint** (same pattern as `t59CheckOnOrchestrator`), so the C-2 boundary gap is not replicated when `o.graph` becomes a real oracle input.
   2. Open spec question to settle before C-3 (do NOT reverse-derive from runtime code): realm resolution when a child realm holds a retiring record while an ancestor realm holds an active provider for the same key — does the retiring child record block parent fallback, or is it treated as unavailable and resolution continues to the ancestor?
 - Next (not started, awaiting authorization): C-3 (T63 ordering, multi-fiber P→C scenarios), then C-2 full-oracle arms get committed multi-fiber exercise.
+
+## Session: 2026-09-07 — Developer Console UI-01 (Observation Model, design-only)
+
+- New spec: Developer Console Specification v0.1 (UI-01 → UI-09 ladder).
+- Audit: Runtime has NO public Observation API; only test-internal semantic projection (`observe()` in `runtime/obs_test.go`, quiescence-gated). Extension precedent: `registry.Snapshot()/Subscribe()`.
+- Deliverable: `docs/plan/devconsole-ui01-observation-model.md` — frozen UI-01 model (RuntimeSnapshot/FiberSnapshot/ProviderView/DependencyView/EffectView/ScopeSnapshot/RuntimeEvent), expressiveness matrix vs kernel internals, and 6 decisions required before UI-02 (component identity, stable ScopeID, effect Type/Key metadata, timestamps, snapshot consistency semantics, RuntimeID source). No production code, no UI, no Snapshot/Subscribe (per §41/§42).
+- Next (not started, awaiting authorization): UI-02 Snapshot API producer per §5 decisions.

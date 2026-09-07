@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -28,6 +29,12 @@ type deterministicState struct {
 	mu      sync.Mutex
 	pending map[Step]command
 
+	// admitOverride, when non-nil, replaces enqueueNonBlocking for detExecute.
+	// It exists so deterministic-driver tests can stage transient admission
+	// failures (queue full / orchestrator stopped) deterministically. nil means
+	// the production admission path (enqueueNonBlocking).
+	admitOverride func(command) bool
+
 	// parked is a non-blocking wake-up for Close's shutdown drain (buffered 1):
 	// it fires whenever a completion is parked while we are draining.
 	parked chan struct{}
@@ -36,6 +43,19 @@ type deterministicState struct {
 func newDeterministicState() *deterministicState {
 	return &deterministicState{pending: make(map[Step]command), parked: make(chan struct{}, 1)}
 }
+
+var (
+	// errDetStale reports that a parked completion is no longer valid: the
+	// fiber/activation already moved past the step, so the completion is
+	// obsolete and will never be admitted.
+	errDetStale = errors.New("runtime: stale completion")
+
+	// errDetAdmission reports that the orchestrator rejected a deterministic
+	// completion (command queue full or stopped). The completion REMAINS
+	// parked: enqueue-before-delete guarantees a failed admission never loses
+	// it, and the driver may retry.
+	errDetAdmission = errors.New("runtime: deterministic completion admission rejected")
+)
 
 type StepKind uint8
 
@@ -158,20 +178,32 @@ func (r *Runtime) detExecute(step Step) error {
 		return fmt.Errorf("runtime: detExecute requires RuntimeDeterministic")
 	}
 	if !stepStillValid(r, step) {
-		return fmt.Errorf("runtime: stale completion %v", step)
+		return fmt.Errorf("%w: %v", errDetStale, step)
 	}
+
+	// Enqueue-before-delete: a completion is admitted to the orchestrator
+	// FIRST and only removed from pending after the admission succeeded. If the
+	// orchestrator rejects the command (queue full / stopped), the parked
+	// completion must remain so a later attempt can admit it. The whole
+	// lookup/admit/delete is one critical section so a step can never be
+	// enqueued twice, even under a concurrent retry.
 	r.det.mu.Lock()
 	cmd, ok := r.det.pending[step]
-	if ok {
-		delete(r.det.pending, step)
-	}
-	r.det.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("runtime: no parked completion for %v", step)
+		r.det.mu.Unlock()
+		return nil // nothing parked for this step; nothing to admit
 	}
-	if !r.enqueueNonBlocking(cmd) {
-		return fmt.Errorf("runtime: queue full/stopped admitting %v", step)
+
+	admit := r.det.admitOverride
+	if admit == nil {
+		admit = r.enqueueNonBlocking
 	}
+	if !admit(cmd) {
+		r.det.mu.Unlock()
+		return fmt.Errorf("%w: %v", errDetAdmission, step)
+	}
+	delete(r.det.pending, step)
+	r.det.mu.Unlock()
 	return nil
 }
 
@@ -190,15 +222,27 @@ func (r *Runtime) detPending() int {
 func (r *Runtime) drainShutdownCompletions(ctx context.Context) error {
 	for {
 		// Admit every currently-valid parked completion (idempotent: each step
-		// is removed once; stale steps are rejected and left out).
+		// is removed on successful admission). Stale completions (the fiber
+		// moved past the step) are obsolete and drop out of detEnabledSteps.
 		for {
 			en := r.detEnabledSteps()
 			if len(en) == 0 {
 				break
 			}
+			blocked := false
 			for _, s := range en {
-				_ = r.detExecute(s) // stale -> error; shutdown-required -> admitted
+				if err := r.detExecute(s); err != nil && !errors.Is(err, errDetStale) {
+					// Admission rejected (queue full/stopped): the completion
+					// stays parked (never lost). Do NOT report it as drained;
+					// back off and retry below.
+					blocked = true
+					break
+				}
 			}
+			if !blocked {
+				continue
+			}
+			break
 		}
 		select {
 		case <-r.orch.done:

@@ -286,6 +286,77 @@ func Serial[T any](ctx context.Context, c *Context, key EventKey[T], payload T) 
 	return errors.Join(errs...)
 }
 
+// Parallel concurrently dispatches the same snapshot to every matching
+// handler (Decision Record D10 framework; P1.3 semantics).
+//
+// Parallel is a synchronous-waiting concurrent dispatch — NOT fire-and-forget:
+// every handler the dispatch starts runs in its own goroutine and Parallel
+// returns only after ALL started handlers have completed. Handler start order
+// and completion order are intentionally out of contract; only the snapshot
+// membership is deterministic (the same registration-sequence-ordered snapshot
+// as Emit/Serial, captured before any handler starts, under the registry lock,
+// with handler execution strictly outside the lock).
+//
+// Cancellation (dispatch ctx and emitter activation ctx) is checked before
+// each handler starts: a canceled dispatch stops starting further handlers but
+// never force-terminates an already-started handler (no goroutine killing).
+// Cancellation that skipped handlers is reported as ctx.Err() joined with the
+// collected handler errors.
+//
+// Handler errors and contained panics (P1.1 panic containment policy) are
+// aggregated in snapshot registration order, so the aggregated error is
+// deterministic across runs regardless of completion order (P1.3 error
+// ordering). Each handler receives the same dispatch ctx; the payload is
+// passed through without copying (payload thread-safety is the caller's
+// contract).
+func Parallel[T any](ctx context.Context, c *Context, key EventKey[T], payload T) error {
+	if c == nil {
+		return errors.New("runtime: nil context")
+	}
+	if !key.valid() {
+		return errors.New("runtime: zero-value EventKey (use NewEventKey)")
+	}
+	if c.rt == nil || c.rt.eventReg == nil {
+		return errors.New("runtime: event registry unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := c.eventCancelErr(ctx); err != nil {
+		return err
+	}
+	snap := c.rt.eventSnapshot(key.id(), c.realm)
+	errs := make([]error, len(snap))
+	var wg sync.WaitGroup
+	started := 0
+	for i, reg := range snap {
+		if err := c.eventCancelErr(ctx); err != nil {
+			break
+		}
+		wg.Add(1)
+		go func(i int, h func(context.Context, any) error) {
+			defer wg.Done()
+			errs[i] = guardedEventHandler(h, ctx, payload)
+		}(i, reg.handler)
+		started++
+	}
+	wg.Wait()
+
+	// Aggregate non-nil handler errors in snapshot (registration) order.
+	var joined []error
+	for _, e := range errs {
+		if e != nil {
+			joined = append(joined, e)
+		}
+	}
+	if started < len(snap) {
+		if err := c.eventCancelErr(ctx); err != nil {
+			joined = append(joined, err)
+		}
+	}
+	return errors.Join(joined...)
+}
+
 // eventCancelErr returns the first cancellation error in effect: the dispatch
 // context or the emitter activation context. It is the checkpoint Serial uses
 // between handlers (Emit uses the emitter context alone, P1.1 semantics).

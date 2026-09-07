@@ -80,9 +80,13 @@ func TestC1T61MinimalBaseline(t *testing.T) {
 	}
 	c1Step(t, step, "Active-quiescent", "P", f.State(), c1Activation(f), rt.detPending())
 	step++
-	obsA := observe(rt)
-	if ObservationsEquivalent(obsA, base) {
-		t.Fatal("active observation unexpectedly equals never-loaded baseline")
+	active := observe(rt)
+	if ObservationsEquivalent(base, active) {
+		t.Fatalf(
+			"active observation unexpectedly equals never-loaded baseline:\nbase %s\nactive %s",
+			base.canonical(),
+			active.canonical(),
+		)
 	}
 
 	// Close with diagnostic fuse.

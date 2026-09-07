@@ -81,6 +81,9 @@ func TestC1T61MinimalBaseline(t *testing.T) {
 	c1Step(t, step, "Active-quiescent", "P", f.State(), c1Activation(f), rt.detPending())
 	step++
 	obsA := observe(rt)
+	if ObservationsEquivalent(obsA, base) {
+		t.Fatal("active observation unexpectedly equals never-loaded baseline")
+	}
 
 	// Close with diagnostic fuse.
 	t.Logf("Close begin")
@@ -104,7 +107,6 @@ func TestC1T61MinimalBaseline(t *testing.T) {
 	if !ObservationsEquivalent(base, post) {
 		t.Fatalf("T61 post-close != never-loaded baseline:\nbase %s\npost %s", base.canonical(), post.canonical())
 	}
-	_ = obsA
 	t.Logf("C-1 PASS: driver->Close boundary clean (steps=%d)", step+1)
 }
 

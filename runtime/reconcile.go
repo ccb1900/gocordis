@@ -167,6 +167,7 @@ func (o *orchestrator) maybeStartUnload(f *Fiber) {
 		return
 	}
 	o.transition(f, StateUnloading, nil)
+	o.rt.emitEvent(EventActivationUnloading, f.id, act.id, nil)
 	slots := act.ctx.beginUnwind()
 	go o.runUnwind(f, act, slots)
 }

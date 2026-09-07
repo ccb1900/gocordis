@@ -26,12 +26,46 @@ const (
 	effectUndone
 )
 
+// EffectKind classifies what an effect slot represents. The kind is
+// observability metadata recorded at registration time so a Developer Console
+// can interpret an effect (Provider registration, Component Cleanup, or a
+// generic reversible Effect) without re-deriving semantics.
+type EffectKind uint8
+
+const (
+	// EffectKindCustom is a generic reversible Effect installed by Component
+	// code through Context.Effect.
+	EffectKindCustom EffectKind = iota
+	// EffectKindProvider is a provider registration made through Provide.
+	EffectKindProvider
+	// EffectKindCleanup is the inverse of the Component.Apply Cleanup return.
+	EffectKindCleanup
+)
+
+func (k EffectKind) String() string {
+	switch k {
+	case EffectKindProvider:
+		return "Provider"
+	case EffectKindCleanup:
+		return "Cleanup"
+	case EffectKindCustom:
+		return "Custom"
+	default:
+		return fmt.Sprintf("EffectKind(%d)", uint8(k))
+	}
+}
+
 // effectSlot is one reversible effect. Its state machine guarantees that an
 // inverse is executed exactly once, even when installation races with unwind.
 type effectSlot struct {
 	seq uint64
 
 	state effectSlotState
+
+	// kind + key are registration-time observability metadata (UI-02): kind is
+	// always set; key is set for Provider effects and empty otherwise.
+	kind EffectKind
+	key  CapabilityKey
 
 	inverse func() error
 }
@@ -119,10 +153,11 @@ func (c *Context) acceptingWork() bool {
 func (c *Context) addCommittedEffect(inverse func() error) {
 	c.mu.Lock()
 	if c.state == contextActive {
-		s := &effectSlot{seq: c.nextSeq, state: effectCommitted, inverse: inverse}
+		s := &effectSlot{seq: c.nextSeq, state: effectCommitted, kind: EffectKindCleanup, inverse: inverse}
 		c.nextSeq++
 		c.effects = append(c.effects, s)
 		c.mu.Unlock()
+		c.emitEffectEvent(EventEffectCommitted, s)
 		return
 	}
 	c.mu.Unlock()
@@ -131,14 +166,21 @@ func (c *Context) addCommittedEffect(inverse func() error) {
 	// sequential lifecycle this is unreachable (unwind never starts before
 	// Apply finishes), but if it ever happens the inverse must still run
 	// exactly once instead of leaking.
+	s := &effectSlot{seq: c.nextSeq, state: effectUndoing, kind: EffectKindCleanup, inverse: inverse}
+	c.mu.Lock()
+	c.state = contextUnwound
+	c.nextSeq++
+	c.mu.Unlock()
+	c.emitEffectEvent(EventEffectUndoing, s)
 	var err error
 	if inverse != nil {
 		err = guardedInverse(inverse)
 	}
 	c.mu.Lock()
-	c.state = contextUnwound
+	s.state = effectUndone
 	c.unwindErr = errors.Join(c.unwindErr, err)
 	c.mu.Unlock()
+	c.emitEffectEvent(EventEffectUndone, s)
 }
 
 // Effect records a Runtime-managed reversible mutation.
@@ -152,6 +194,11 @@ func (c *Context) addCommittedEffect(inverse func() error) {
 // effect is NOT committed as a persistent effect: the returned inverse is
 // executed immediately, exactly once, preventing late-effect leakage.
 func (c *Context) Effect(install func() (func() error, error)) error {
+	return c.effect(EffectKindCustom, CapabilityKey{}, install)
+}
+
+// effect is the metadata-aware implementation behind Effect.
+func (c *Context) effect(kind EffectKind, key CapabilityKey, install func() (func() error, error)) error {
 	if install == nil {
 		return errors.New("runtime: nil effect install")
 	}
@@ -163,7 +210,7 @@ func (c *Context) Effect(install func() (func() error, error)) error {
 		c.mu.Unlock()
 		return ErrContextClosed
 	}
-	s := &effectSlot{seq: c.nextSeq, state: effectInstalling}
+	s := &effectSlot{seq: c.nextSeq, state: effectInstalling, kind: kind, key: key}
 	c.nextSeq++
 	c.effects = append(c.effects, s)
 	c.mu.Unlock()
@@ -185,6 +232,7 @@ func (c *Context) Effect(install func() (func() error, error)) error {
 		s.inverse = inverse
 		s.state = effectCommitted
 		c.mu.Unlock()
+		c.emitEffectEvent(EventEffectCommitted, s)
 		return nil
 	}
 
@@ -193,6 +241,7 @@ func (c *Context) Effect(install func() (func() error, error)) error {
 	s.inverse = inverse
 	s.state = effectUndoing
 	c.mu.Unlock()
+	c.emitEffectEvent(EventEffectUndoing, s)
 
 	var invErr error
 	if inverse != nil {
@@ -203,7 +252,18 @@ func (c *Context) Effect(install func() (func() error, error)) error {
 	s.state = effectUndone
 	c.unwindErr = errors.Join(c.unwindErr, invErr)
 	c.mu.Unlock()
+	c.emitEffectEvent(EventEffectUndone, s)
 	return nil
+}
+
+// emitEffectEvent publishes one effect-lifecycle event for slot s. Called
+// without holding the context lock.
+func (c *Context) emitEffectEvent(t EventType, s *effectSlot) {
+	var key string
+	if s.kind == EffectKindProvider {
+		key = s.key.String()
+	}
+	c.rt.emitEvent(t, c.fiberID, c.activationID, EffectEventData{Kind: s.kind, Key: key})
 }
 
 // Child creates a new Fiber owned by this activation's Fiber.
@@ -260,15 +320,26 @@ func (c *Context) provideCap(key CapabilityKey, value any) error {
 		return fmt.Errorf("%w: %s is not declared in this activation's Provide set", ErrUndeclaredProvide, key)
 	}
 	id := ProviderIdentity{FiberID: c.fiberID, ActivationID: c.activationID}
-	return c.Effect(func() (func() error, error) {
+	err := c.effect(EffectKindProvider, key, func() (func() error, error) {
 		if err := c.realm.registerOwn(key, id, value); err != nil {
 			return nil, err
 		}
 		return func() error {
-			c.realm.removeOwn(key, id)
+			removed, wasRetiring := c.realm.removeOwn(key, id)
+			if removed && !wasRetiring {
+				// The record was never satisfiable (e.g. failed-Apply cleanup);
+				// a retiring record already announced its withdrawal to its
+				// dependents at the retirement decision.
+				c.rt.emitEvent(EventProviderWithdrawn, c.fiberID, c.activationID, ProviderEventData{Key: key.String()})
+			}
 			return nil
 		}, nil
 	})
+	if err != nil {
+		return err
+	}
+	c.rt.emitEvent(EventProviderPublished, c.fiberID, c.activationID, ProviderEventData{Key: key.String()})
+	return nil
 }
 
 // Provide registers c's activation as the exclusive provider of key.
@@ -402,6 +473,7 @@ func (c *Context) runInverses(slots []*effectSlot) error {
 		}
 		s.state = effectUndoing
 		c.mu.Unlock()
+		c.emitEffectEvent(EventEffectUndoing, s)
 
 		if s.inverse != nil {
 			if err := guardedInverse(s.inverse); err != nil {
@@ -412,6 +484,7 @@ func (c *Context) runInverses(slots []*effectSlot) error {
 		c.mu.Lock()
 		s.state = effectUndone
 		c.mu.Unlock()
+		c.emitEffectEvent(EventEffectUndone, s)
 	}
 	c.mu.Lock()
 	c.state = contextUnwound

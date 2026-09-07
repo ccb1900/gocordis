@@ -55,9 +55,10 @@ type Fiber struct {
 	// finalizePending defers the final state (Failed/Gone/Pending) until owned
 	// children have reached Gone. Only set while a finished activation is
 	// waiting for its children.
-	finalizePending  bool
-	pendingApplyErr  error
-	pendingUnwindErr error
+	finalizePending     bool
+	pendingActivationID ActivationID // activation whose final state is deferred
+	pendingApplyErr     error
+	pendingUnwindErr    error
 }
 
 func newFiber(rt *Runtime, component Component) *Fiber {

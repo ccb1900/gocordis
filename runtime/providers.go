@@ -16,6 +16,12 @@ import "sync"
 // other. A realm is not a lifecycle authority — it lives and dies with its
 // owning fiber/scope and never mutates Fiber state.
 type realm struct {
+	// id is the stable scope identity. The Runtime root realm has id 0; child
+	// realms (explicit scopes) are assigned increasing IDs at creation. The id
+	// is fixed before the realm is published to any fiber, so it is read
+	// without a lock once creation completes.
+	id ScopeID
+
 	mu     sync.RWMutex
 	parent *realm
 	own    map[CapabilityKey]*providerRecord
@@ -109,12 +115,21 @@ func (r *realm) registerOwn(key CapabilityKey, identity ProviderIdentity, value 
 
 // removeOwn deletes a provider only when its identity matches (stale-cleanup
 // safety). It never deletes a newer activation's or a different realm's record.
-func (r *realm) removeOwn(key CapabilityKey, identity ProviderIdentity) {
+//
+// It reports whether a record was actually removed and whether that record had
+// already been marked retiring (the semantic withdrawal point). A removal
+// without prior retirement means the owning activation never became Active
+// (e.g. a failed Apply that registered a provider and then unwound).
+func (r *realm) removeOwn(key CapabilityKey, identity ProviderIdentity) (removed bool, wasRetiring bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if rec, ok := r.own[key]; ok && rec.identity == identity {
-		delete(r.own, key)
+	rec, ok := r.own[key]
+	if !ok || rec.identity != identity {
+		return false, false
 	}
+	wasRetiring = rec.retiring
+	delete(r.own, key)
+	return true, wasRetiring
 }
 
 // markRetiringOwn flags the record for key as retiring when it belongs to

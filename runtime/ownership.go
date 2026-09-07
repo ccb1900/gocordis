@@ -56,6 +56,7 @@ func (c *cmdSpawnChild) apply(o *orchestrator) {
 	// shadowing and sibling isolation.
 	if c.newScope {
 		child.realm = newRealm(parent.realm)
+		child.realm.id = o.rt.newScopeID()
 	} else {
 		child.realm = parent.realm
 	}
@@ -82,6 +83,7 @@ func (c *cmdSpawnChild) apply(o *orchestrator) {
 	parent.children[child.id] = child
 
 	o.reconcile(child)
+	o.rt.emitEvent(EventFiberCreated, child.id, 0, nil)
 	reply(child, nil)
 }
 

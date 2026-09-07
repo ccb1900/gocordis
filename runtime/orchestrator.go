@@ -93,6 +93,7 @@ func (o *orchestrator) lookupFiber(id FiberID) *Fiber {
 // ---------------------------------------------------------------------------
 
 func (c *cmdLoad) apply(o *orchestrator) {
+	o.rt.emitEvent(EventFiberCreated, c.fiber.id, 0, nil)
 	o.reconcile(c.fiber)
 }
 
@@ -138,6 +139,7 @@ func (c *cmdApplyDone) apply(o *orchestrator) {
 
 	if c.err != nil {
 		act.applyErr = c.err
+		o.rt.emitEvent(EventFailure, f.id, act.id, FailureEventData{Phase: "Apply", Err: c.err.Error()})
 		o.unwindAfterApply(f, act)
 		return
 	}
@@ -155,6 +157,7 @@ func (c *cmdApplyDone) apply(o *orchestrator) {
 	}
 
 	o.transition(f, StateActive, nil)
+	o.rt.emitEvent(EventActivationActive, f.id, act.id, nil)
 	o.activationBecameActive(f, act)
 }
 
@@ -162,6 +165,7 @@ func (c *cmdApplyDone) apply(o *orchestrator) {
 // finished (per-fiber exclusivity: Unwind never overlaps Apply).
 func (o *orchestrator) unwindAfterApply(f *Fiber, act *activation) {
 	o.transition(f, StateUnloading, nil)
+	o.rt.emitEvent(EventActivationUnloading, f.id, act.id, nil)
 	slots := act.ctx.beginUnwind()
 	go o.runUnwind(f, act, slots)
 }
@@ -223,6 +227,19 @@ func (o *orchestrator) startActivation(f *Fiber) {
 	f.signal.Broadcast()
 	f.mu.Unlock()
 
+	o.rt.emitEvent(EventActivationLoading, f.id, actID, nil)
+	if len(act.deps) > 0 {
+		deps := make([]DependencyData, 0, len(act.deps))
+		for _, d := range act.deps {
+			deps = append(deps, DependencyData{
+				Key:                  d.Key.String(),
+				ProviderFiberID:      d.Provider.FiberID,
+				ProviderActivationID: d.Provider.ActivationID,
+			})
+		}
+		o.rt.emitEvent(EventDependencyCaptured, f.id, actID, deps)
+	}
+
 	go o.runApply(f, act)
 }
 
@@ -273,22 +290,27 @@ func (o *orchestrator) finishActivation(f *Fiber, act *activation, unwindErr err
 	f.withdrawing = false
 	f.unloadRequested = false
 
+	if unwindErr != nil {
+		o.rt.emitEvent(EventFailure, f.id, act.id, FailureEventData{Phase: "Cleanup", Err: unwindErr.Error()})
+	}
+
 	// Owned resources (children) must reach Gone before their owner finalizes.
 	if o.disposeChildren(f) {
 		// Defer the final state until every live child is Gone.
 		f.finalizePending = true
+		f.pendingActivationID = act.id
 		f.pendingApplyErr = act.applyErr
 		f.pendingUnwindErr = unwindErr
 		return
 	}
 
-	o.finalizeActivation(f, act.applyErr, unwindErr)
+	o.finalizeActivation(f, act.id, act.applyErr, unwindErr)
 }
 
 // finalizeActivation publishes the terminal state of a finished activation
 // (Failed on apply failure with Mounted intent; otherwise Gone followed by a
 // reconcile toward Pending/Loading).
-func (o *orchestrator) finalizeActivation(f *Fiber, applyErr, unwindErr error) {
+func (o *orchestrator) finalizeActivation(f *Fiber, actID ActivationID, applyErr, unwindErr error) {
 	desired := o.desiredIntent(f)
 	failed := applyErr != nil && desired == IntentMounted
 
@@ -299,24 +321,32 @@ func (o *orchestrator) finalizeActivation(f *Fiber, applyErr, unwindErr error) {
 		err = unwindErr
 	}
 
+	errStr := ""
+	if err != nil {
+		errStr = err.Error()
+	}
 	if failed {
 		o.transition(f, StateFailed, err)
+		o.rt.emitEvent(EventActivationEnded, f.id, actID, ActivationEndedData{State: StateFailed, Err: errStr})
 		return
 	}
 
 	o.transition(f, StateGone, err)
+	o.rt.emitEvent(EventActivationEnded, f.id, actID, ActivationEndedData{State: StateGone, Err: errStr})
 	o.reconcile(f)
 }
 
 // finalizePendingFiber completes a deferred finalization once owned children
 // are Gone.
 func (o *orchestrator) finalizePendingFiber(f *Fiber) {
+	actID := f.pendingActivationID
 	applyErr := f.pendingApplyErr
 	unwindErr := f.pendingUnwindErr
 	f.finalizePending = false
+	f.pendingActivationID = 0
 	f.pendingApplyErr = nil
 	f.pendingUnwindErr = nil
-	o.finalizeActivation(f, applyErr, unwindErr)
+	o.finalizeActivation(f, actID, applyErr, unwindErr)
 }
 
 // activationBecameActive is called after a Fiber becomes Active. Fibers that

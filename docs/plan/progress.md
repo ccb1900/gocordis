@@ -124,3 +124,14 @@
 - AC-12 shrinker: `runtime/minimize_test.go` `Minimize` (deterministic delta-debugging) + `TestMinimizeDeterministic` (40→2, minimality + repeatability).
 - T73 expansion: `t73TwoSubsystemDAG` + `TestT73TwoIndependentSubsystems` (two independent providers+consumers+effect, independence encoded; 16×2 schedules converge to [P1 P1 P2]).
 - All T73/T66/minimize tests + `-race` PASS; gofmt clean.
+
+## Session: 2026-09-07 — Theorem review arc C-1/C-2 (deterministic single-fiber)
+
+- C-1 (T61 single-fiber baseline, `runtime/c1_t61_min_test.go`): reviewer verdict **PASS** at `4a5e8fc`. Active-phase observation sanity (`base != active`, canonical diagnostics) + `post == base`; observation oracle proven non-degenerate.
+- C-2 (T59 every-step, `runtime/c2_t59_every_step_test.go`): reviewer verdict **CONDITIONAL PASS** at `6f1f1b4` (this session's review, no rework requested):
+  - PASS: oracle implementation (registry → fiber snapshot → realm snapshot → provider registry → dependency snapshot → provider→consumer graph → P1–P5), P1–P5 coverage, T59/quiescence separation (T59 PASS at Loading/Unloading while quiescence FAIL; T66 ≠ T59), single-fiber every-step, production isolation (test-only).
+  - CONDITIONAL: **orchestrator boundary** — `checkT59()` reads orchestrator-owned `o.graph`; the C-2 driver only establishes `Fiber.State()`/pending based boundaries, not an explicit "orchestrator idle / current command fully applied" proof. Classified as **theorem harness boundary debt**, not oracle correctness failure (single-fiber scenario has no real graph edges).
+- Recorded debt (C-3 precondition):
+  1. First C-3 spec rule: **T63 test observation boundary = orchestrator probe / orchestrator-owned semantic checkpoint** (same pattern as `t59CheckOnOrchestrator`), so the C-2 boundary gap is not replicated when `o.graph` becomes a real oracle input.
+  2. Open spec question to settle before C-3 (do NOT reverse-derive from runtime code): realm resolution when a child realm holds a retiring record while an ancestor realm holds an active provider for the same key — does the retiring child record block parent fallback, or is it treated as unavailable and resolution continues to the ancestor?
+- Next (not started, awaiting authorization): C-3 (T63 ordering, multi-fiber P→C scenarios), then C-2 full-oracle arms get committed multi-fiber exercise.

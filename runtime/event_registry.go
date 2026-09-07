@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -44,7 +45,7 @@ type eventReg struct {
 	realm   *realm // HR: the registration realm used for emitter-path matching
 	seq     uint64 // global registration order
 	owner   ProviderIdentity
-	handler func(any) error
+	handler func(context.Context, any) error
 }
 
 func newEventRegistry() *eventRegistry {
@@ -53,7 +54,7 @@ func newEventRegistry() *eventRegistry {
 
 // register appends one registration and assigns the next global registration
 // sequence number.
-func (g *eventRegistry) register(owner ProviderIdentity, realm *realm, key eventKeyID, handler func(any) error) *eventReg {
+func (g *eventRegistry) register(owner ProviderIdentity, realm *realm, key eventKeyID, handler func(context.Context, any) error) *eventReg {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.seq++
@@ -167,7 +168,9 @@ func On[T any](c *Context, key EventKey[T], handler EventHandler[T]) error {
 	if handler == nil {
 		return errors.New("runtime: nil event handler")
 	}
-	typed := func(payload any) error { return handler(payload.(T)) }
+	typed := func(ctx context.Context, payload any) error {
+		return handler(ctx, payload.(T))
+	}
 	return c.effect(EffectKindEvent, CapabilityKey{}, func() (func() error, error) {
 		if c.rt == nil || c.rt.eventReg == nil {
 			return nil, errors.New("runtime: event registry unavailable")
@@ -220,28 +223,94 @@ func Emit[T any](c *Context, key EventKey[T], payload T) error {
 	if c.base != nil && c.base.Err() != nil {
 		return c.base.Err()
 	}
+	emitCtx := c.base
+	if emitCtx == nil {
+		emitCtx = context.Background()
+	}
 	snap := c.rt.eventSnapshot(key.id(), c.realm)
 	var errs []error
 	for _, reg := range snap {
 		if c.base != nil && c.base.Err() != nil {
 			return errors.Join(append(errs, c.base.Err())...)
 		}
-		if err := guardedEventHandler(reg.handler, payload); err != nil {
+		if err := guardedEventHandler(reg.handler, emitCtx, payload); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
+// Serial performs an ordered, awaited dispatch (Decision Record D9 framework;
+// P1.2 semantics).
+//
+// The caller-supplied ctx is the dispatch context: cancellation prevents
+// further handlers from starting, and every invoked handler receives ctx so it
+// can observe cancellation cooperatively (a running handler is never
+// force-terminated). A nil ctx behaves like context.Background(). The emitter
+// activation context (c) also governs the dispatch: once the emitting
+// activation is canceled, remaining handlers do not start.
+//
+// Execution is strictly sequential (A → B → C: the previous handler completes
+// before the next starts) in deterministic registration order over the same
+// dispatch snapshot as Emit (scope matching, snapshot immutability,
+// reentrancy, and owner-validity semantics are identical). Serial is NOT
+// fail-fast: one handler's error (or contained panic) never stops later
+// handlers; handler errors are aggregated with errors.Join and preserved (no
+// error overwrites an earlier one).
+func Serial[T any](ctx context.Context, c *Context, key EventKey[T], payload T) error {
+	if c == nil {
+		return errors.New("runtime: nil context")
+	}
+	if !key.valid() {
+		return errors.New("runtime: zero-value EventKey (use NewEventKey)")
+	}
+	if c.rt == nil || c.rt.eventReg == nil {
+		return errors.New("runtime: event registry unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := c.eventCancelErr(ctx); err != nil {
+		return err
+	}
+	snap := c.rt.eventSnapshot(key.id(), c.realm)
+	var errs []error
+	for _, reg := range snap {
+		if err := c.eventCancelErr(ctx); err != nil {
+			return errors.Join(append(errs, err)...)
+		}
+		if err := guardedEventHandler(reg.handler, ctx, payload); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// eventCancelErr returns the first cancellation error in effect: the dispatch
+// context or the emitter activation context. It is the checkpoint Serial uses
+// between handlers (Emit uses the emitter context alone, P1.1 semantics).
+func (c *Context) eventCancelErr(ctx context.Context) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	if c.base != nil {
+		if err := c.base.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // guardedEventHandler invokes one Event handler on the caller goroutine and
 // converts a panic into an ErrEventHandlerPanic-wrapped handler error, so one
-// panicking handler can never stop the remaining handlers of an Emit
-// broadcast.
-func guardedEventHandler(h func(any) error, payload any) (err error) {
+// panicking handler can never stop the remaining handlers of a dispatch.
+func guardedEventHandler(h func(context.Context, any) error, ctx context.Context, payload any) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("%w: %v", ErrEventHandlerPanic, r)
 		}
 	}()
-	return h(payload)
+	return h(ctx, payload)
 }

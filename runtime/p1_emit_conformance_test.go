@@ -144,12 +144,14 @@ func TestP1EmitTypedIdentityAndMatching(t *testing.T) {
 		name: "R",
 		rec:  rec,
 		on: []func(*Context) error{
-			func(ctx *Context) error { return On(ctx, p1IntKey, func(p int) error { rec.add("int"); return nil }) },
 			func(ctx *Context) error {
-				return On(ctx, p1SameInt, func(p int) error { rec.add("same-int"); return nil })
+				return On(ctx, p1IntKey, func(_ context.Context, p int) error { rec.add("int"); return nil })
 			},
 			func(ctx *Context) error {
-				return On(ctx, p1SameStr, func(s string) error { rec.add("same-str"); return nil })
+				return On(ctx, p1SameInt, func(_ context.Context, p int) error { rec.add("same-int"); return nil })
+			},
+			func(ctx *Context) error {
+				return On(ctx, p1SameStr, func(_ context.Context, s string) error { rec.add("same-str"); return nil })
 			},
 		},
 	})
@@ -187,7 +189,7 @@ func TestP1EmitEffectOwnedRegistrationAndUnwindRemoval(t *testing.T) {
 		rec:  rec,
 		on: []func(*Context) error{
 			func(ctx *Context) error {
-				return On(ctx, p1IntKey, func(p int) error { rec.add("r"); return nil })
+				return On(ctx, p1IntKey, func(_ context.Context, p int) error { rec.add("r"); return nil })
 			},
 		},
 	})
@@ -257,7 +259,7 @@ func TestP1EmitDeterministicOrdering(t *testing.T) {
 	for _, tag := range tags {
 		tag := tag
 		on = append(on, func(ctx *Context) error {
-			return On(ctx, p1IntKey, func(p int) error { rec.add(tag); return nil })
+			return On(ctx, p1IntKey, func(_ context.Context, p int) error { rec.add(tag); return nil })
 		})
 	}
 	r := p1Ready(t, rt, &p1Registrar{name: "R", rec: rec, on: on})
@@ -284,13 +286,13 @@ func TestP1EmitDispatchSnapshotIsolation(t *testing.T) {
 		rec:  rec,
 		on: []func(*Context) error{
 			func(ctx *Context) error {
-				return On(ctx, p1IntKey, func(p int) error {
+				return On(ctx, p1IntKey, func(_ context.Context, p int) error {
 					rec.add("h1")
-					return On(reg.ctx, p1IntKey, func(p int) error { rec.add("h3"); return nil })
+					return On(reg.ctx, p1IntKey, func(_ context.Context, p int) error { rec.add("h3"); return nil })
 				})
 			},
 			func(ctx *Context) error {
-				return On(ctx, p1IntKey, func(p int) error { rec.add("h2"); return nil })
+				return On(ctx, p1IntKey, func(_ context.Context, p int) error { rec.add("h2"); return nil })
 			},
 		},
 	}
@@ -324,15 +326,21 @@ func TestP1EmitErrorAggregationAndPanicIsolation(t *testing.T) {
 		name: "R",
 		rec:  rec,
 		on: []func(*Context) error{
-			func(ctx *Context) error { return On(ctx, p1IntKey, func(p int) error { rec.add("e1"); return errA }) },
 			func(ctx *Context) error {
-				return On(ctx, p1IntKey, func(p int) error {
+				return On(ctx, p1IntKey, func(_ context.Context, p int) error { rec.add("e1"); return errA })
+			},
+			func(ctx *Context) error {
+				return On(ctx, p1IntKey, func(_ context.Context, p int) error {
 					rec.add("panic")
 					panic("boom")
 				})
 			},
-			func(ctx *Context) error { return On(ctx, p1IntKey, func(p int) error { rec.add("ok"); return nil }) },
-			func(ctx *Context) error { return On(ctx, p1IntKey, func(p int) error { rec.add("e2"); return errB }) },
+			func(ctx *Context) error {
+				return On(ctx, p1IntKey, func(_ context.Context, p int) error { rec.add("ok"); return nil })
+			},
+			func(ctx *Context) error {
+				return On(ctx, p1IntKey, func(_ context.Context, p int) error { rec.add("e2"); return errB })
+			},
 		},
 	})
 	c := p1Ctx(r)
@@ -362,14 +370,14 @@ func TestP1EmitSynchronousSequentialDispatch(t *testing.T) {
 		rec:  rec,
 		on: []func(*Context) error{
 			func(ctx *Context) error {
-				return On(ctx, p1IntKey, func(p int) error {
+				return On(ctx, p1IntKey, func(_ context.Context, p int) error {
 					time.Sleep(40 * time.Millisecond)
 					rec.add("s1")
 					return nil
 				})
 			},
 			func(ctx *Context) error {
-				return On(ctx, p1IntKey, func(p int) error {
+				return On(ctx, p1IntKey, func(_ context.Context, p int) error {
 					time.Sleep(40 * time.Millisecond)
 					rec.add("s2")
 					return nil
@@ -404,14 +412,14 @@ func TestP1EmitCancellationStopsFurtherDispatch(t *testing.T) {
 		rec:  rec,
 		on: []func(*Context) error{
 			func(ctx *Context) error {
-				return On(ctx, p1CancelKey, func(p p1CancelPayload) error {
+				return On(ctx, p1CancelKey, func(_ context.Context, p p1CancelPayload) error {
 					p.cancel()
 					rec.add("c1")
 					return nil
 				})
 			},
 			func(ctx *Context) error {
-				return On(ctx, p1CancelKey, func(p p1CancelPayload) error { rec.add("c2"); return nil })
+				return On(ctx, p1CancelKey, func(_ context.Context, p p1CancelPayload) error { rec.add("c2"); return nil })
 			},
 		},
 	})
@@ -444,7 +452,9 @@ func TestP1EmitNoLifecycleAuthorityLeak(t *testing.T) {
 		name: "R",
 		rec:  rec,
 		on: []func(*Context) error{
-			func(ctx *Context) error { return On(ctx, p1IntKey, func(p int) error { rec.add("r"); return nil }) },
+			func(ctx *Context) error {
+				return On(ctx, p1IntKey, func(_ context.Context, p int) error { rec.add("r"); return nil })
+			},
 		},
 	})
 	c := p1Ctx(r)
@@ -491,10 +501,10 @@ func TestP1EmitAndOnGuardRails(t *testing.T) {
 	c := p1Ctx(r)
 	var zeroKey EventKey[int]
 
-	if err := On[int](nil, p1IntKey, func(p int) error { return nil }); err == nil {
+	if err := On[int](nil, p1IntKey, func(_ context.Context, p int) error { return nil }); err == nil {
 		t.Fatal("On(nil ctx) returned nil")
 	}
-	if err := On(c, zeroKey, func(p int) error { return nil }); err == nil {
+	if err := On(c, zeroKey, func(_ context.Context, p int) error { return nil }); err == nil {
 		t.Fatal("On(zero key) returned nil")
 	}
 	if err := On[int](c, p1IntKey, nil); err == nil {
@@ -595,7 +605,7 @@ func (c *p1Leaf) Name() string          { return "leaf:" + c.tag }
 func (c *p1Leaf) Inject() []Dependency  { return nil }
 func (c *p1Leaf) Provide() []Capability { return nil }
 func (c *p1Leaf) Apply(ctx *Context) (Cleanup, error) {
-	return nil, On(ctx, p1IntKey, func(p int) error { c.rec.add(c.tag); return nil })
+	return nil, On(ctx, p1IntKey, func(_ context.Context, p int) error { c.rec.add(c.tag); return nil })
 }
 
 // p1ScopeA registers handler "a" (realm RA) and mounts a scoped child GA.
@@ -608,7 +618,7 @@ func (c *p1ScopeA) Name() string          { return "scope-a" }
 func (c *p1ScopeA) Inject() []Dependency  { return nil }
 func (c *p1ScopeA) Provide() []Capability { return nil }
 func (c *p1ScopeA) Apply(ctx *Context) (Cleanup, error) {
-	if err := On(ctx, p1IntKey, func(p int) error { c.rec.add("a"); return nil }); err != nil {
+	if err := On(ctx, p1IntKey, func(_ context.Context, p int) error { c.rec.add("a"); return nil }); err != nil {
 		return nil, err
 	}
 	g, err := ctx.Child(&p1Leaf{tag: "ga", rec: c.rec}, WithScope())
@@ -630,7 +640,7 @@ func (c *p1ScopeHost) Name() string          { return "scope-host" }
 func (c *p1ScopeHost) Inject() []Dependency  { return nil }
 func (c *p1ScopeHost) Provide() []Capability { return nil }
 func (c *p1ScopeHost) Apply(ctx *Context) (Cleanup, error) {
-	if err := On(ctx, p1IntKey, func(p int) error { c.rec.add("root"); return nil }); err != nil {
+	if err := On(ctx, p1IntKey, func(_ context.Context, p int) error { c.rec.add("root"); return nil }); err != nil {
 		return nil, err
 	}
 	a, err := ctx.Child(&p1ScopeA{rec: c.rec, hs: c.hs}, WithScope())

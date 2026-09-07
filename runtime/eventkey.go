@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 )
@@ -54,9 +55,15 @@ func (k EventKey[T]) valid() bool { return k.key.typeID != nil }
 
 // EventHandler[T] is the Kernel-facing handler contract for one Event.
 //
-// A handler is a synchronous function of the typed payload; it returns an
-// error to report failure without interrupting the Emit broadcast (handler
-// errors are aggregated). The handler-facing Context / listener signature is
-// a P2 decision (Decision Record D6): P1.1 handlers never hold Runtime,
-// Orchestrator, or Registry internal authority.
-type EventHandler[T any] func(T) error
+// A handler is a synchronous function of the typed payload that receives the
+// dispatch context (P1.2 extension of the P1.1 contract): Emit passes the
+// emitter activation context; Serial passes the caller-supplied dispatch
+// context. The context is a cooperative cancellation signal only — it carries
+// NO Runtime / Orchestrator / Registry internal authority, and a handler can
+// never obtain lifecycle authority or registry write access through it
+// (Decision Record D6: richer handler-facing Context is a P2 decision).
+//
+// A handler returns an error to report failure without interrupting the
+// dispatch (handler errors are aggregated with errors.Join by every dispatch
+// mode).
+type EventHandler[T any] func(context.Context, T) error

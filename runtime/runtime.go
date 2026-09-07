@@ -33,6 +33,12 @@ type Runtime struct {
 	// events is the canonical Runtime state-transition event store (UI-02).
 	events *eventLog
 
+	// eventReg is the Kernel Event registry (P1.1): handler registrations with
+	// owner + registration realm + deterministic registration order. It is a
+	// plain data structure and dispatch infrastructure, never a lifecycle
+	// authority.
+	eventReg *eventRegistry
+
 	// nextScopeID allocates stable ScopeIDs for explicit child realms. Realm
 	// creation is serialized on the orchestrator goroutine (or happens before
 	// it starts), so a plain field is race-free.
@@ -86,6 +92,7 @@ func New(opts ...Option) (*Runtime, error) {
 		fibers:    make(map[FiberID]*Fiber),
 		rootRealm: newRealm(nil), // ScopeID 0
 		events:    newEventLog(),
+		eventReg:  newEventRegistry(),
 		mode:      cfg.mode,
 		det:       newDeterministicState(),
 	}

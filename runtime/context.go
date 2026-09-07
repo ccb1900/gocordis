@@ -40,6 +40,9 @@ const (
 	EffectKindProvider
 	// EffectKindCleanup is the inverse of the Component.Apply Cleanup return.
 	EffectKindCleanup
+	// EffectKindEvent is a Kernel Event handler registration made through
+	// Context.On (P1.1). Metadata only: the slot carries no Capability key.
+	EffectKindEvent
 )
 
 func (k EffectKind) String() string {
@@ -50,6 +53,8 @@ func (k EffectKind) String() string {
 		return "Cleanup"
 	case EffectKindCustom:
 		return "Custom"
+	case EffectKindEvent:
+		return "Event"
 	default:
 		return fmt.Sprintf("EffectKind(%d)", uint8(k))
 	}

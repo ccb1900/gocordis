@@ -123,9 +123,11 @@ stc-go)自本文起停用,改用论文编号。
       deterministic 插桩为定理基础设施,保留)。
 - 验收:kernel 公开 API 逐项可锚定论文条目或 ADR;全量测试 + race 绿。
 
-### P7 — §6 讨论项的扩展层落地(按需排序)
+### P7 — §6 讨论项的扩展层落地(按需排序)◐ 2026-09-08 首项落地
 
-- [ ] Service broker / 多路复用(§6.2):与 registry extension 合流(独占绑定 vs broker)。
+- [x] Service broker / 多路复用(§6.2):`extensions/broker` — 可逆 effect 注册、
+      RoundRobin/First 策略、滚动升级消费者无感(broker_test.go 两项一致性)。
+      与 registry extension(独占绑定)互补,覆盖 §6.2 的两种形态。
 - [ ] 跨进程调用(§6.2):异步契约 + RPC 适配(现有 http extension 为基)。
 - [ ] WASM 沙箱一致性(§6.3):guest 能力面 = 声明集的形式化。
 - [ ] 依赖类型/版本(§6.6):Key 元数据演进的自然延伸。

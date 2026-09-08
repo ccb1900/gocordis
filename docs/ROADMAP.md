@@ -74,7 +74,7 @@ stc-go)自本文起停用,改用论文编号。
       `0004-kernel-event-demotion.md`(P6 预研)。
 - 验收:`go test -count=1 ./...`、`go vet`、gofmt、`go test -race ./...` 全绿。
 
-### P2 — ADR-I:Isolation 回归论文语义(Def 24/25)
+### P2 — ADR-I:Isolation 回归论文语义(Def 24/25)✅ 2026-09-08 完成(ADR-0001 Accepted,实施记录见 ADR)
 
 - [ ] 决策:以**逐 key realm 表(插入时固定)**为原语;运行时 isolate(k, r) 落为 revision
       (卸下→重插,§4.4 Configuration 复合)。
@@ -85,7 +85,7 @@ stc-go)自本文起停用,改用论文编号。
 - 验收:Def 24/25 逐条 conformance(get/set/isolate 运输预条件、重指派语义);
   Theorem 80 合流生成器含 realm 交错。
 
-### P3 — ADR-II:Interception 回归论文语义(Def 26/27)
+### P3 — ADR-II:Interception 回归论文语义(Def 26/27)✅ 2026-09-08 完成(ADR-0002 Accepted)
 
 - [ ] Key[T] 携带元数据类型 ℳₖ 与 monoid(⊕ₖ, εₖ);provider 可声明为解释元数据的函数。
 - [ ] `runtime.Intercept` 演进为 `intercept(k, ν)` 元数据合并(right-biased),旧函数链适配或废弃。
@@ -93,7 +93,7 @@ stc-go)自本文起停用,改用论文编号。
       (论文:"it affects only how a dependency is invoked, not whether it is satisfied")。
 - 验收:Def 26/27 conformance;访问控制示例进入 case study;fuzz 覆盖合并序。
 
-### P4 — 效果迭代器(§3.1.3 / L-Iter / L-Divert)
+### P4 — 效果迭代器(§3.1.3 / L-Iter / L-Divert)✅ 2026-09-08 完成(ADR-0003 Accepted)
 
 - [ ] 组件激活可选表达为 `iter.Seq`(Go 1.23 range-over-func)效果迭代器:每 yield 一个
       (context 变换, inverse);Apply-once 形态保留为单迭代特例(源兼容)。

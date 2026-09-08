@@ -99,6 +99,11 @@ type Context struct {
 	// read-only for the context's lifetime.
 	fiber *Fiber
 
+	// diverted records that an iterator activation observed a target-view
+	// turn between iterations (paper L-Divert). Written only by the Apply
+	// goroutine between its own probe and its completion; read by the same.
+	diverted bool
+
 	cancel context.CancelFunc
 	base   context.Context
 
@@ -149,6 +154,13 @@ func newContext(rt *Runtime, fiberID FiberID, activationID ActivationID, inject 
 		c.declaredProvide[cap] = struct{}{}
 	}
 	return c
+}
+
+// markDiverted records the divert observed by this activation's iterator.
+func (c *Context) markDiverted() {
+	c.mu.Lock()
+	c.diverted = true
+	c.mu.Unlock()
 }
 
 // Context exposes the cancellable Go context for this activation.

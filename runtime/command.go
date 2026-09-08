@@ -29,6 +29,11 @@ type cmdApplyDone struct {
 	activationID ActivationID
 	cleanup      Cleanup
 	err          error
+
+	// diverted marks an iterator activation that observed a target-view turn
+	// between iterations (inertial L-Divert): route to Unloading with the
+	// accumulated inverses; never a Component failure.
+	diverted bool
 }
 
 // cmdUnwindDone reports that an activation's unwind finished.

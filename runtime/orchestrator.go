@@ -111,6 +111,39 @@ func (c *cmdDispose) apply(o *orchestrator) {
 // cmdApplyDone handles an Apply completion. Stale completions (activation ID
 // mismatch) are ignored: an old activation's async completion must never
 // mutate the current activation.
+// cmdDivertProbe is the iterator's between-iterations target-view check. It
+// runs on the orchestrator so the divert decision is serialized with every
+// other lifecycle decision.
+type cmdDivertProbe struct {
+	fiberID      FiberID
+	activationID ActivationID
+	reply        chan error
+}
+
+func (c *cmdDivertProbe) apply(o *orchestrator) {
+	f := o.lookupFiber(c.fiberID)
+	if f == nil {
+		c.reply <- ErrDiverted
+		return
+	}
+	f.mu.RLock()
+	act := f.activation
+	f.mu.RUnlock()
+	if act == nil || act.id != c.activationID {
+		c.reply <- ErrDiverted
+		return
+	}
+	if o.closing || o.desiredIntent(f) == IntentUnmounted || f.unloadRequested {
+		c.reply <- ErrDiverted
+		return
+	}
+	if !o.dependenciesStillValid(f, act) {
+		c.reply <- ErrDiverted
+		return
+	}
+	c.reply <- nil
+}
+
 func (c *cmdApplyDone) apply(o *orchestrator) {
 	f := o.lookupFiber(c.fiberID)
 	if f == nil {
@@ -135,6 +168,16 @@ func (c *cmdApplyDone) apply(o *orchestrator) {
 	// effect (unwound first).
 	if c.cleanup != nil {
 		act.ctx.addCommittedEffect(c.cleanup)
+	}
+
+	// An iterator activation that observed a divert between iterations routes
+	// to Unloading with the accumulated inverses (paper L-Divert, landing
+	// alternative). This is a routing decision, never a Component failure:
+	// dependency-loss diverts end Pending, dispose/replace diverts proceed
+	// with their own teardown.
+	if c.diverted {
+		o.unwindAfterApply(f, act)
+		return
 	}
 
 	if c.err != nil {
@@ -245,6 +288,10 @@ func (o *orchestrator) startActivation(f *Fiber) {
 }
 
 func (o *orchestrator) runApply(f *Fiber, act *activation) {
+	if ic, ok := f.component.(IterComponent); ok {
+		o.runApplyIter(f, act, ic)
+		return
+	}
 	cleanup, err := callComponentApply(f.component, act.ctx)
 	o.rt.admitCommand(&cmdApplyDone{
 		fiberID:      f.id,
@@ -252,6 +299,94 @@ func (o *orchestrator) runApply(f *Fiber, act *activation) {
 		cleanup:      cleanup,
 		err:          err,
 	})
+}
+
+// runApplyIter drives an IterComponent activation (paper §3.1.3): each yield
+// is one L-Iter — the step runs on the activation goroutine, its Cleanup is
+// committed as the step's inverse (LIFO), and an orchestrator probe decides
+// whether the target view still holds before the next iteration may begin.
+// The probe keeps the divert DECISION in the orchestrator's decision domain;
+// the landing alternative is inertial: a step already handed to the component
+// always lands, the divert falls only between iterations.
+func (o *orchestrator) runApplyIter(f *Fiber, act *activation, ic IterComponent) {
+	diverted := false
+	yield := func(step func() (Cleanup, error)) error {
+		if step == nil {
+			return errors.New("runtime: nil iterator step")
+		}
+		if diverted {
+			return ErrDiverted
+		}
+		// L-Divert probe at the iteration boundary: the previous iteration
+		// has landed; the orchestrator decides whether the next may start.
+		if err := o.probeDivert(f, act); err != nil {
+			diverted = true
+			act.ctx.markDiverted()
+			return err
+		}
+		cleanup, err := callIteratorStep(step)
+		if err != nil {
+			return err // paper raise: routed to the failure path via cmdApplyDone
+		}
+		if cleanup != nil {
+			act.ctx.addCommittedEffect(cleanup)
+		}
+		return nil
+	}
+
+	err := callComponentApplyIter(ic, act.ctx, yield)
+	if diverted {
+		// Routing decision wins over whatever the component returned after
+		// the divert signal.
+		err = nil
+	}
+	o.rt.admitCommand(&cmdApplyDone{
+		fiberID:      f.id,
+		activationID: act.id,
+		err:          err,
+		diverted:     diverted,
+	})
+}
+
+// probeDivert asks the orchestrator (non-blocking for the decision itself,
+// synchronous for the probe) whether the activation's target view still holds:
+// mounted intent, no pending unload/replace, runtime open, and the captured
+// dependency snapshot still resolvable. Any violation is a divert.
+func (o *orchestrator) probeDivert(f *Fiber, act *activation) error {
+	reply := make(chan error, 1)
+	if !o.rt.submit(&cmdDivertProbe{fiberID: f.id, activationID: act.id, reply: reply}) {
+		return ErrDiverted
+	}
+	select {
+	case err := <-reply:
+		return err
+	case <-act.ctx.Done():
+		return ErrDiverted
+	}
+}
+
+// callComponentApplyIter invokes IterComponent.ApplyIter and contains a panic
+// at the Kernel boundary (same discipline as callComponentApply).
+func callComponentApplyIter(ic IterComponent, ctx *Context, yield func(func() (Cleanup, error)) error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%w: %v", ErrComponentApplyPanic, r)
+		}
+	}()
+	return ic.ApplyIter(ctx, yield)
+}
+
+// callIteratorStep invokes one iterator step and contains a panic at the
+// Kernel boundary: a panicking step is a raise (activation failure), with all
+// previously committed inverses unwound by the normal failure path.
+func callIteratorStep(step func() (Cleanup, error)) (cleanup Cleanup, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			cleanup = nil
+			err = fmt.Errorf("%w: iterator step: %v", ErrComponentApplyPanic, r)
+		}
+	}()
+	return step()
 }
 
 // callComponentApply invokes Component.Apply and contains a panic at the Kernel

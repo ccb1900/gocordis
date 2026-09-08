@@ -1,6 +1,6 @@
 # ADR-0003: 效果迭代器 — range-over-func 激活与迭代边界 divert
 
-Status: **Proposed** → 实施 = P4
+Status: **Accepted**(2026-09-08)
 Date: 2026-09-08
 Authority: 论文 §3.1.3(effect iterators)、§4.2.2(L-Iter/L-Divert/L-Finish)、§4.4 Asynchrony
 
@@ -48,3 +48,28 @@ Apply-once 丢失了迭代粒度:激活中途目标翻转(依赖消失/替换)�
 - − orchestrator 的 fiber 状态机需要容纳"Loading 且在飞迭代"的补全路由
   (现有 det 模式的 parked-completion 机制是现成底座);
   双形态 API 增加文档与测试面。
+
+---
+
+## 实施记录 (2026-09-08, Status → Accepted)
+
+- API:`IterComponent`(嵌入 Component;`ApplyIter(ctx, yield) error`,yield 接收
+  `func(step func() (Cleanup, error)) error`)。ApplyIter 在激活装配时优先于 Apply,
+  Apply 不再被调用。迭代器形态即论文 §3.1.3 的效果迭代器:一次 yield = 一次 L-Iter,
+  step 的 Cleanup 即该次迭代的逆,提交到激活的 LIFO unwind 栈(复用 effect slot 机制)。
+- **L-Divert 落在迭代边界**(inertial landing 替代):yield 内部先向 orchestrator 提交
+  `cmdDivertProbe` 探针(决策仍在决策域内:mounted intent / 无 unloadRequested /
+  未 closing / 依赖快照仍有效),divert 则 yield 返回 `ErrDiverted`,组件停止;已落地
+  的迭代照常保留其逆(论文 §4.4 Asynchrony:an iteration in flight cannot be
+  declined)。divert 是路由决策而非失败:`cmdApplyDone.diverted` → unwindAfterApply,
+  依赖损失 divert 终点为 Pending(Err()==nil)。
+- **raise**:step 在提交逆之前返回错误 = 论文 raise(未安装任何东西),走既有
+  Failed 路径,outcome 阻止重入;step panic 经 `callIteratorStep` 受控为
+  `ErrComponentApplyPanic`。
+- **已知限制(记录)**:deterministic driver 仍以 ApplyDone 粒度停靠(整条迭代器激活
+  一个停靠点),per-step 停靠留作 driver 细化;divert 探针语义依赖依赖快照有效性,
+  依赖变化在 step 执行中发生时于下一边界被探针捕获(恰为 landing 替代)。
+- 一致性测试:`runtime/iterator_test.go` 三项(Thm68 divert-LIFO-恰好一次、
+  Thm70 依赖损失 divert + 全新迭代器恢复、Thm68 raise-撤销-失败-阻止重入),
+  `-count=3` 稳定,`-race` 绿。
+- 门禁:`go test -count=1 ./...`、`go test -race -count=1 ./...`、vet、gofmt 全绿。

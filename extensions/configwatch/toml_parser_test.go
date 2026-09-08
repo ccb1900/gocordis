@@ -154,3 +154,46 @@ func TestTOMLParserEmpty(t *testing.T) {
 		}
 	}
 }
+
+// T-enabled — the plugin switch parses from the declaration store and defaults
+// to enabled when absent (paper §5.2.1: the declarative layer may disable and
+// later re-enable a component).
+func TestTOMLParserEnabledFlag(t *testing.T) {
+	cfg, err := parseTOML(t, `
+[[components]]
+id = "live"
+type = "svc"
+
+[[components]]
+id = "off"
+type = "svc"
+enabled = false
+
+[[components]]
+id = "explicit"
+type = "svc"
+enabled = true
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Components) != 3 {
+		t.Fatalf("components = %d, want 3", len(cfg.Components))
+	}
+	for _, c := range cfg.Components {
+		switch c.ID {
+		case "live":
+			if c.Enabled != nil {
+				t.Fatalf("live: Enabled = %v, want nil (default enabled)", *c.Enabled)
+			}
+		case "off":
+			if c.Enabled == nil || *c.Enabled {
+				t.Fatalf("off: Enabled = %v, want false", c.Enabled)
+			}
+		case "explicit":
+			if c.Enabled == nil || !*c.Enabled {
+				t.Fatalf("explicit: Enabled = %v, want true", c.Enabled)
+			}
+		}
+	}
+}

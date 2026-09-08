@@ -65,6 +65,13 @@ type ComponentConfig struct {
 	Type string
 	// Config is the factory-specific configuration.
 	Config map[string]any
+	// Enabled is the plugin switch (paper §5.2.1: the declarative layer may
+	// "disable and later re-enable" a component). nil means enabled. A
+	// disabled entry REMAINS a declared entry — the Controller keeps its
+	// definition and reconciles the Runtime to not having a live fiber for it
+	// (the entry identity survives; the fiber is the identity of one
+	// enablement). Flipping the flag is the Load/Dispose switch.
+	Enabled *bool
 }
 
 // Config is a desired Component set.
@@ -135,18 +142,22 @@ type OwnedComponent struct {
 // componentSpec is the canonicalized, immutable-in-practice internal form of a
 // ComponentConfig.
 type componentSpec struct {
-	id     string
-	typ    string
-	config map[string]any
+	id      string
+	typ     string
+	config  map[string]any
+	enabled bool // canonicalized: ComponentConfig.Enabled nil => true
 }
 
 func (s componentSpec) equal(o componentSpec) bool {
-	return s.id == o.id && s.typ == o.typ && valuesEqual(s.config, o.config)
+	return s.id == o.id && s.typ == o.typ && s.enabled == o.enabled && valuesEqual(s.config, o.config)
 }
 
+// ownedEntry is one applied declaration. A disabled entry owns NO fiber
+// (fiber == nil): the declaration survives, the Runtime has no live object
+// for it (paper §4.4 Configuration: the entry is the surviving identity).
 type ownedEntry struct {
 	spec  componentSpec
-	fiber *runtime.Fiber
+	fiber *runtime.Fiber // nil while the entry is disabled
 }
 
 // Controller reconciles a Runtime toward desired Configs and owns the
@@ -329,7 +340,9 @@ func (cmd *cmdClose) run(c *Controller) {
 	if !c.cleanupStarted {
 		c.cleanupStarted = true
 		for id, e := range c.applied {
-			c.cleaning[e.fiber] = struct{}{}
+			if e.fiber != nil {
+				c.cleaning[e.fiber] = struct{}{}
+			}
 			delete(c.applied, id)
 		}
 	}
@@ -508,6 +521,15 @@ func (c *Controller) removeOne(ctx context.Context, id string) error {
 	if e == nil {
 		return nil
 	}
+	if e.fiber == nil {
+		// Disabled entry: no live object; only the declaration is removed.
+		c.stateMu.Lock()
+		if cur := c.applied[id]; cur == e {
+			delete(c.applied, id)
+		}
+		c.stateMu.Unlock()
+		return nil
+	}
 	if err := e.fiber.Dispose(); err != nil {
 		return err
 	}
@@ -535,6 +557,22 @@ func (c *Controller) addOne(ctx context.Context, spec componentSpec) error {
 	}
 	if comp == nil {
 		return fmt.Errorf("%w: factory %q returned a nil component", ErrInvalidConfig, spec.typ)
+	}
+
+	// Disabled entry (paper §4.4 Configuration: disable = retire): the
+	// declaration is applied and its definition kept valid (the factory ran),
+	// but no fiber exists — "the entry is the surviving identity, the fiber
+	// the identity of one enablement". Enabling later goes through the normal
+	// replace path (Load).
+	if !spec.enabled {
+		c.stateMu.Lock()
+		if c.closed {
+			c.stateMu.Unlock()
+			return ErrControllerClosed
+		}
+		c.applied[spec.id] = &ownedEntry{spec: spec, fiber: nil}
+		c.stateMu.Unlock()
+		return nil
 	}
 
 	fiber, err := c.rt.Load(comp)
@@ -592,16 +630,18 @@ func validateAndCanonicalize(desired Config, factories FactoryRegistry) ([]compo
 			return nil, fmt.Errorf("%w: %q", ErrUnknownComponentType, cc.Type)
 		}
 		out = append(out, componentSpec{
-			id:     cc.ID,
-			typ:    cc.Type,
-			config: copyConfig(cc.Config),
+			id:      cc.ID,
+			typ:     cc.Type,
+			config:  copyConfig(cc.Config),
+			enabled: cc.Enabled == nil || *cc.Enabled,
 		})
 	}
 	return out, nil
 }
 
 func componentConfigFromSpec(s componentSpec) ComponentConfig {
-	return ComponentConfig{ID: s.id, Type: s.typ, Config: copyConfig(s.config)}
+	enabled := s.enabled
+	return ComponentConfig{ID: s.id, Type: s.typ, Config: copyConfig(s.config), Enabled: &enabled}
 }
 
 // copyConfig returns a defensive deep copy in canonical form (string-keyed maps

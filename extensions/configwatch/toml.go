@@ -79,6 +79,13 @@ func (p *tomlParser) Parse(ctx context.Context, source Source, data []byte) (con
 					return config.Config{}, fmt.Errorf("%w: source %q component #%d type must be a string", ErrInvalidSource, source.ID, i)
 				}
 				cc.Type = s
+			case "enabled":
+				b, ok := v.(bool)
+				if !ok {
+					return config.Config{}, fmt.Errorf("%w: source %q component #%d enabled must be a bool", ErrInvalidSource, source.ID, i)
+				}
+				enabled := b
+				cc.Enabled = &enabled
 			case "config":
 				m, ok := v.(map[string]any)
 				if !ok {

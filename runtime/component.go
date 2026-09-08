@@ -48,9 +48,23 @@ type Capability = CapabilityKey
 type Dependency struct {
 	// Key identifies the required capability.
 	Key CapabilityKey
+
+	// Meta is the component-DECLARED metadata d(k) of paper Definition 26 (a
+	// declaration on a MetaKey). It is merged (⊕ₖ, right-biased) with the
+	// context-carried metadata ι(k) at read time and interpreted by the
+	// provider. Nil means εₖ (no declared metadata). Resolution never reads
+	// it: interception affects how a binding is used, not whether it is
+	// satisfied (paper §6.3), so declaring metadata cannot gate activation.
+	Meta any
 }
 
 // Requires builds a required-dependency declaration from a typed key.
 func Requires[T any](key Key[T]) Dependency {
 	return Dependency{Key: key.Capability()}
+}
+
+// RequiresMeta declares a dependency on a metadata-interpreting key with the
+// component-declared metadata d(k) (paper Definition 26).
+func RequiresMeta[T, M any](key MetaKey[T, M], declared M) Dependency {
+	return Dependency{Key: key.Capability(), Meta: declared}
 }

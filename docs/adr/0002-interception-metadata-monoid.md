@@ -50,3 +50,22 @@ per-realm 安装链的存放方式不同。
   合流生成器无需为拦截建模交错。
 - − Key 类型面扩展(泛型参数或伴随注册),扩展与测试需迁移;
   现有 `Intercept` 用户的语义需逐个核对(链序 vs monoid 合并的差别)。
+
+---
+
+## 实施记录 (2026-09-08, Status → Accepted)
+
+- `MetaKey[T, M]`(`runtime/key.go`):携带 monoid(εₖ = zero,⊕ₖ = combine,右偏)的
+  metadata key;capability 身份派生自 (func(M) T, name),与普通 Key 不碰撞。
+- `Dependency.Meta` + `RequiresMeta(key, d)`:组件**声明侧**元数据 d(k)(Def 26)。
+  声明不参与满足性判定——拦截只影响"绑定如何被使用",不影响"解析到什么"(§6.3)。
+- `ProvideMeta(ctx, key, func(M) T)`:provider 即元数据解释器(σ(k): ℳₖ → 𝒱ₖ)。
+- `RequireMeta(ctx, key)`:读取 = `provider(d(k) ⊕ₖ ι(k))`;ι 为 context 携带元数据。
+- `InterceptMeta(ctx, key, ν)`:向 context 合并 ν(ι ⊕ₖ ν,右偏、context 优先),经
+  ctx.Effect 可逆;安装/调整/卸除不触发 reload;combine panic 受控返回错误。
+- ι 存储于 realm 的 per-key meta 表,沿 context 链继承(祖先先装、安装序折叠)——与
+  既有 Intercept 同位;与论文"derives a context"的偏差同 P2 §context 链说明。
+- 一致性测试:`runtime/meta_intercept_test.go` 六项(声明单独生效、context 右偏覆盖
+  声明、monoid 折叠序、不触发 reload、可逆恢复、未声明拒绝)。
+- 旧 `Intercept[T]` 函数链保留为适配层(内建"值为函数"monoid 的特例),P6 复审去留。
+- 门禁:`go test -count=1 ./...`、`go test -race -count=1 ./runtime/`、vet、gofmt 全绿。

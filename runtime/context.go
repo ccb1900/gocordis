@@ -43,6 +43,9 @@ const (
 	// EffectKindEvent is a Kernel Event handler registration made through
 	// Context.On (P1.1). Metadata only: the slot carries no Capability key.
 	EffectKindEvent
+	// EffectKindIntercept is a read-time interception installment (value
+	// interceptor or context-carried metadata ν, paper Definition 27).
+	EffectKindIntercept
 )
 
 func (k EffectKind) String() string {
@@ -55,6 +58,8 @@ func (k EffectKind) String() string {
 		return "Custom"
 	case EffectKindEvent:
 		return "Event"
+	case EffectKindIntercept:
+		return "Intercept"
 	default:
 		return fmt.Sprintf("EffectKind(%d)", uint8(k))
 	}
@@ -109,7 +114,10 @@ type Context struct {
 	// of the owning Component's Inject/Provide declarations, captured when the
 	// Context is created. Require/Provide outside these sets are rejected:
 	// declarations are authoritative.
-	declaredInject  map[CapabilityKey]struct{}
+	declaredInject map[CapabilityKey]struct{}
+	// declaredMeta carries the component-declared metadata d(k) for declared
+	// MetaKey dependencies (paper Definition 26), if any.
+	declaredMeta    map[CapabilityKey]any
 	declaredProvide map[CapabilityKey]struct{}
 
 	// realm is the provider scope of this activation (the owning fiber's
@@ -128,10 +136,14 @@ func newContext(rt *Runtime, fiberID FiberID, activationID ActivationID, inject 
 		state:           contextActive,
 		realm:           r,
 		declaredInject:  make(map[CapabilityKey]struct{}, len(inject)),
+		declaredMeta:    make(map[CapabilityKey]any),
 		declaredProvide: make(map[CapabilityKey]struct{}, len(provide)),
 	}
 	for _, d := range inject {
 		c.declaredInject[d.Key] = struct{}{}
+		if d.Meta != nil {
+			c.declaredMeta[d.Key] = d.Meta
+		}
 	}
 	for _, cap := range provide {
 		c.declaredProvide[cap] = struct{}{}
@@ -394,6 +406,100 @@ func (c *Context) provideCap(key CapabilityKey, value any) error {
 // disturbs the existing provider.
 func Provide[T any](c *Context, key Key[T], value T) error {
 	return c.provideCap(key.Capability(), value)
+}
+
+// ProvideMeta registers c's activation as the exclusive provider of key with
+// a metadata-INTERPRETING provider (paper Definition 26: σ(k): ℳₖ → 𝒱ₖ). Every
+// RequireMeta of key evaluates the provider on merged metadata
+// d(k) ⊕ₖ ι(k): the component-declared metadata merged with the
+// context-carried metadata, right-biased (context wins).
+func ProvideMeta[T, M any](c *Context, key MetaKey[T, M], provider func(M) T) error {
+	return c.provideCap(key.Capability(), provider)
+}
+
+// RequireMeta resolves key's provider and evaluates it on the merged metadata
+// d(k) ⊕ₖ ι(k) (paper Definition 27 get): the DECLARED metadata from this
+// activation's Inject set merged with the CONTEXT-CARRIED metadata installed
+// by interceptors (ancestor realms first, install order; rightmost wins).
+// Interception affects only how the binding is USED — it never changes what
+// the key resolves to and cannot gate activation (paper §6.3).
+func RequireMeta[T, M any](c *Context, key MetaKey[T, M]) (T, error) {
+	var zero T
+	cap := key.Capability()
+	if _, ok := c.declaredInject[cap]; !ok {
+		return zero, fmt.Errorf("%w: %s is not declared in this activation's Inject set", ErrUndeclaredRequire, cap)
+	}
+	rec, ok := effectiveRealm(c.fiber, cap).lookupOwn(cap)
+	if !ok || rec.value == nil {
+		return zero, ErrDependencyMissing
+	}
+	fn, ok := rec.value.(func(M) T)
+	if !ok {
+		return zero, errors.New("runtime: provider value type mismatch")
+	}
+	// Declared metadata d(k).
+	var mu M
+	if dep, ok := c.declaredMeta[cap]; ok {
+		dm, ok := dep.(M)
+		if !ok {
+			return zero, errors.New("runtime: declared dependency metadata type mismatch")
+		}
+		mu = key.merge(mu, dm)
+	}
+	// Context-carried metadata ι(k): ancestor installments first, install
+	// order; each ν folds onto the inherited value (rightmost wins).
+	if iota, found := c.realm.metaForKey(cap); found {
+		im, ok := iota.(M)
+		if !ok {
+			return zero, errors.New("runtime: context metadata type mismatch")
+		}
+		mu = key.merge(mu, im)
+	}
+	return fn(mu), nil
+}
+
+// InterceptMeta installs context-carried metadata ν for key (paper Definition
+// 27 intercept): the derived context merges ν onto the inherited metadata at
+// key (ι(k) ⊕ₖ ν, right-biased — the context constrains how components use the
+// coeffect without modifying the provider or the dependency value).
+//
+// It is a generic FREE function. Installation is reversible: it goes through
+// ctx.Effect, so unwinding restores the inherited metadata. Like the value
+// interceptor chain, metadata is not part of the dependency graph: installing
+// it never triggers a reload and never changes what the key resolves to. A
+// panic inside a combine function is contained and returned as an error.
+func InterceptMeta[T, M any](c *Context, key MetaKey[T, M], nu M) error {
+	if c == nil {
+		return errors.New("runtime: nil context")
+	}
+	cap := key.Capability()
+	combineAny := func(a, b any) (out any) {
+		av, aok := a.(M)
+		bv, bok := b.(M)
+		if a != nil && !aok {
+			return errors.New("runtime: context metadata type mismatch")
+		}
+		if b != nil && !bok {
+			return errors.New("runtime: context metadata type mismatch")
+		}
+		defer func() {
+			if r := recover(); r != nil {
+				out = fmt.Errorf("runtime: metadata combine panicked: %v", r)
+			}
+		}()
+		return key.merge(av, bv)
+	}
+	entry := &metaEntry{key: cap, nu: nu, combine: combineAny}
+	if err := c.effect(EffectKindIntercept, cap, func() (func() error, error) {
+		c.realm.addMeta(entry)
+		return func() error {
+			c.realm.removeMeta(entry)
+			return nil
+		}, nil
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Require resolves the value provided for key by the activation's declared

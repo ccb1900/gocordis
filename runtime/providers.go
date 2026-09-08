@@ -28,6 +28,9 @@ type realm struct {
 	// intercept maps a capability key to the read-time interceptor chain
 	// installed in THIS realm (install order). Ancestor chains apply first.
 	intercept map[CapabilityKey][]*interceptEntry
+	// meta holds context-carried metadata installments ι(k) (paper Definition
+	// 26) for THIS realm; ancestor installments apply first.
+	meta map[CapabilityKey][]*metaEntry
 }
 
 func newRealm(parent *realm) *realm {
@@ -35,6 +38,7 @@ func newRealm(parent *realm) *realm {
 		parent:    parent,
 		own:       make(map[CapabilityKey]*providerRecord),
 		intercept: make(map[CapabilityKey][]*interceptEntry),
+		meta:      make(map[CapabilityKey][]*metaEntry),
 	}
 }
 
@@ -43,6 +47,71 @@ func newRealm(parent *realm) *realm {
 type interceptEntry struct {
 	key   CapabilityKey
 	apply func(value any) (any, error)
+}
+
+// metaEntry is one context-carried metadata installment ι(k) (paper
+// Definition 26). nu merges onto the inherited metadata with the key's own
+// ⊕ₖ; combine/zero are carried so reads can fold without reifying the key.
+type metaEntry struct {
+	key     CapabilityKey
+	nu      any
+	combine func(a, b any) any
+}
+
+// addMeta appends a context-carried metadata entry for key in this realm
+// (install order).
+func (r *realm) addMeta(e *metaEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.meta == nil {
+		r.meta = make(map[CapabilityKey][]*metaEntry)
+	}
+	r.meta[e.key] = append(r.meta[e.key], e)
+}
+
+// removeMeta removes exactly e from this realm's metadata table (idempotent).
+func (r *realm) removeMeta(e *metaEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	chain := r.meta[e.key]
+	for i, x := range chain {
+		if x == e {
+			r.meta[e.key] = append(chain[:i], chain[i+1:]...)
+			if len(r.meta[e.key]) == 0 {
+				delete(r.meta, e.key)
+			}
+			return
+		}
+	}
+}
+
+// metaForKey folds the context-carried metadata for key along the context
+// chain (ancestor -> this realm, install order within a realm): ι = ι ⊕ ν.
+// Rightmost (most recent / most derived) installment wins on conflicts.
+// Returns false when no installment exists (ι = εₖ).
+func (r *realm) metaForKey(key CapabilityKey) (any, bool) {
+	var cur any
+	found := false
+	var walk func(x *realm)
+	walk = func(x *realm) {
+		if x == nil {
+			return
+		}
+		walk(x.parent)
+		x.mu.RLock()
+		chain := x.meta[key]
+		for _, e := range chain {
+			if found {
+				cur = e.combine(cur, e.nu)
+			} else {
+				cur = e.nu
+				found = true
+			}
+		}
+		x.mu.RUnlock()
+	}
+	walk(r)
+	return cur, found
 }
 
 // addIntercept appends an interceptor for key in this realm (install order).

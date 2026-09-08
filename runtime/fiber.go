@@ -258,6 +258,23 @@ func (f *Fiber) Gone(ctx context.Context) error {
 	}
 }
 
+// ReviseOption configures one revision composite.
+type ReviseOption func(*reviseOptions)
+
+type reviseOptions struct {
+	freshIsolation bool
+}
+
+// WithFreshIsolation reassigns the revised fiber's realm pairs (paper §4.4
+// Configuration): the reinserted fiber receives a FRESH namespace and every
+// declared key of the new definition resolves and provides there. Dependents
+// whose own ρ still points at the old namespace see a withdrawal (Pending) —
+// they follow only through their own revision, which is the paper-faithful
+// reading of crossing a realm reassignment.
+func WithFreshIsolation() ReviseOption {
+	return func(o *reviseOptions) { o.freshIsolation = true }
+}
+
 // Revise replaces the fiber's component definition in place, following the
 // paper's revision composite (§4.4 Configuration): retire (target view to ⊥),
 // let the lifecycle rules deactivate it (the relied-upon guard orders the
@@ -276,12 +293,23 @@ func (f *Fiber) Gone(ctx context.Context) error {
 // reinserted fiber is published; Ready the returned fiber to await its
 // activation. A revision of a Failed fiber is a sanctioned retry (a revision
 // reinserts without an outcome).
-func (f *Fiber) Revise(ctx context.Context, component Component) (*Fiber, error) {
+//
+// Contract: Revise must not be called from the revising fiber's own activation
+// (it waits for that activation to end — a self-revision would deadlock). The
+// revision composite is a loader/orchestrator-level operation, not a component
+// step.
+func (f *Fiber) Revise(ctx context.Context, component Component, opts ...ReviseOption) (*Fiber, error) {
 	if ctx == nil || component == nil {
 		return nil, ErrInvalidState
 	}
 	if f.rt.stateSnapshot() != RuntimeRunning {
 		return nil, ErrRuntimeClosed
+	}
+	var o reviseOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
 	}
 	// Snapshot the ownership position and the per-key isolation table before
 	// retiring (the table is fixed at insertion, paper Definition 24).
@@ -310,13 +338,14 @@ func (f *Fiber) Revise(ctx context.Context, component Component) (*Fiber, error)
 	provide := component.Provide()
 	reply := make(chan reviseInsertReply, 1)
 	if !f.rt.submit(&cmdReviseInsert{
-		parent:    parent,
-		component: component,
-		inject:    inject,
-		provide:   provide,
-		realm:     scope,
-		keyRealms: keyRealms,
-		reply:     reply,
+		parent:         parent,
+		component:      component,
+		inject:         inject,
+		provide:        provide,
+		realm:          scope,
+		keyRealms:      keyRealms,
+		freshIsolation: o.freshIsolation,
+		reply:          reply,
 	}) {
 		return nil, ErrRuntimeClosed
 	}

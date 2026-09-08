@@ -115,10 +115,23 @@ func (o *orchestrator) beginWithdrawal(f *Fiber) {
 		act.cancel()
 	}
 
-	// 1. Retire every capability this activation provides (its own realm).
+	// 1. Retire every capability this activation provides. Provisions live in
+	// the key's effective namespace (paper Definition 24), which may differ
+	// per key, so scan the scope realm plus every isolated namespace.
 	id := ProviderIdentity{FiberID: f.id, ActivationID: act.id}
-	for _, rec := range f.realm.recordsOwnedBy(id) {
-		f.realm.markRetiringOwn(rec.key, id)
+	realmSeen := make(map[*realm]bool, len(f.keyRealms)+1)
+	realms := []*realm{f.realm}
+	realmSeen[f.realm] = true
+	for _, r := range f.keyRealms {
+		if !realmSeen[r] {
+			realmSeen[r] = true
+			realms = append(realms, r)
+		}
+	}
+	for _, rr := range realms {
+		for _, rec := range rr.recordsOwnedBy(id) {
+			rr.markRetiringOwn(rec.key, id)
+		}
 	}
 
 	// 2. Collect direct consumers (unique) bound to THIS provider identity via

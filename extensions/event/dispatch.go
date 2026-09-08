@@ -106,9 +106,17 @@ func Serial[T any](ctx context.Context, c *runtime.Context, key runtime.EventKey
 }
 
 // Bail dispatches sequentially in registration order and stops at the FIRST
-// handler error (or contained panic): the Cordis bail semantics. Cancellation
-// before a handler starts returns the cancellation error. The returned error
-// is the first failure, not an aggregation.
+// handler error (or contained panic): fail-fast serial. Cancellation before a
+// handler starts returns the cancellation error. The returned error is the
+// first failure, not an aggregation.
+//
+// Divergence note (ADR-0004): JS Cordis's `bail` is value-short-circuit
+// (stop at the first handler returning a non-undefined value). That semantics
+// requires a value-returning handler shape, which the kernel's
+// error-returning registration surface does not carry; the paper defines no
+// dispatch modes. Bail here is therefore defined independently as fail-fast
+// serial, and the name is kept only as the conventional word for
+// stop-on-condition.
 func Bail[T any](ctx context.Context, c *runtime.Context, key runtime.EventKey[T], payload T) error {
 	if c == nil {
 		return errors.New("event: nil context")

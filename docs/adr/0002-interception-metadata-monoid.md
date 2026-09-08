@@ -68,4 +68,8 @@ per-realm 安装链的存放方式不同。
 - 一致性测试:`runtime/meta_intercept_test.go` 六项(声明单独生效、context 右偏覆盖
   声明、monoid 折叠序、不触发 reload、可逆恢复、未声明拒绝)。
 - 旧 `Intercept[T]` 函数链保留为适配层(内建"值为函数"monoid 的特例),P6 复审去留。
+- **P6 复审决定 (2026-09-08):保留。** 无生产扩展消费它,但它是"值变换"这一合法
+  用例的最短表达,且 scoped_realm 套件持续约束其可逆/panic 受控语义;裁撤的收益
+  (API 面 -1)低于迁移成本。与 MetaKey 的边界:改值用 Intercept,策略/访问控制
+  用 InterceptMeta(§6.3)。
 - 门禁:`go test -count=1 ./...`、`go test -race -count=1 ./runtime/`、vet、gofmt 全绿。

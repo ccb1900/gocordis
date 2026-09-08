@@ -111,6 +111,8 @@ stc-go)自本文起停用,改用论文编号。
       自发重激活;Failed fiber 的 Revise = 有据重试(重插无 outcome)。
 - [x] Theorem 80 终点性质:`TestThm80RevisionEndpointEquivalence` — revision 终点的
       无身份 canonical observable(逐名状态/绑定/提供集)与从头加载修订配置逐行相等。
+- [x] (R1 评审补齐,2026-09-08)`WithFreshIsolation()` — revision 重指派 realm 对
+      (论文 §4.4:"the new realm pairs");`TestReviseReassignsIsolation` 固化。
 - [ ] loader/HMR 短路径(候选先行、载荷不变不 reload)对齐同一终点 — 扩展层改造,随后续阶段。
 - 验收(已完成部分):全量 + race + vet + gofmt 绿;Thm80 终点等价测试 -count=3 稳定。
 

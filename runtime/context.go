@@ -321,6 +321,7 @@ type ScopeOption func(*scopeOptions)
 
 type scopeOptions struct {
 	newRealm  bool
+	scopeKeys []CapabilityKey
 	keyRealms map[CapabilityKey]*realm
 }
 
@@ -333,6 +334,20 @@ type scopeOptions struct {
 // (interception metadata, extension event scoping) — never for resolution.
 func WithScope() ScopeOption {
 	return func(o *scopeOptions) { o.newRealm = true }
+}
+
+// Isolate derives a fresh namespace for ONLY the listed declared keys of the
+// child (paper Definition 24/25: per-key realm assignment ρ, fixed at
+// insertion). The child's other declared keys keep resolving and providing in
+// the parent's namespace, so a component can isolate one key while sharing the
+// rest of its context — per-key isolation with sharing. Isolate implies a
+// fresh namespace like WithScope; combining it with WithScope re-homes the
+// union (explicitly listed keys plus nothing else — WithScope alone is full).
+func Isolate(keys ...Capability) ScopeOption {
+	return func(o *scopeOptions) {
+		o.newRealm = true
+		o.scopeKeys = append(o.scopeKeys, keys...)
+	}
 }
 
 // scopeRealms carries a per-key isolation table built by IsolateIn.
@@ -399,12 +414,15 @@ func (c *Context) provideCap(key CapabilityKey, value any) error {
 		return fmt.Errorf("%w: %s is not declared in this activation's Provide set", ErrUndeclaredProvide, key)
 	}
 	id := ProviderIdentity{FiberID: c.fiberID, ActivationID: c.activationID}
+	// The provision lives in the key's EFFECTIVE namespace (paper Definition
+	// 24: the fiber provides (k, ρ(k))) — not blindly in its scope realm.
+	eff := effectiveRealm(c.fiber, key)
 	err := c.effect(EffectKindProvider, key, func() (func() error, error) {
-		if err := c.realm.registerOwn(key, id, value); err != nil {
+		if err := eff.registerOwn(key, id, value); err != nil {
 			return nil, err
 		}
 		return func() error {
-			removed, wasRetiring := c.realm.removeOwn(key, id)
+			removed, wasRetiring := eff.removeOwn(key, id)
 			if removed && !wasRetiring {
 				// The record was never satisfiable (e.g. failed-Apply cleanup);
 				// a retiring record already announced its withdrawal to its

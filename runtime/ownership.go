@@ -67,10 +67,11 @@ func (c *cmdSpawnChild) apply(o *orchestrator) {
 		if len(c.keyRealms) > 0 {
 			child.keyRealms = make(map[CapabilityKey]*realm, len(c.keyRealms))
 			for k, r := range c.keyRealms {
-				if r == parent.realm {
-					// WithScope re-homes keys that defaulted to the parent's
-					// namespace into the fresh child namespace; explicit
-					// per-key overrides (a different realm) survive.
+				if r == parent.realm && rehomesKey(c.scopeKeys, k) {
+					// Keys that defaulted to the parent's namespace are
+					// re-homed into the fresh child namespace (all of them
+					// for WithScope; only the listed ones for Isolate).
+					// Explicit per-key overrides survive.
 					r = child.realm
 				}
 				child.keyRealms[k] = r
@@ -166,4 +167,18 @@ func (o *orchestrator) unlinkTerminalChild(child *Fiber) {
 		delete(m, child.id)
 	}
 	child.parent = nil
+}
+
+// rehomesKey reports whether k belongs to the re-homing set: every key when
+// the set is empty (WithScope), else exactly the listed keys (Isolate).
+func rehomesKey(scopeKeys []CapabilityKey, k CapabilityKey) bool {
+	if len(scopeKeys) == 0 {
+		return true
+	}
+	for _, sk := range scopeKeys {
+		if sk == k {
+			return true
+		}
+	}
+	return false
 }

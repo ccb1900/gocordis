@@ -51,6 +51,9 @@ type cmdSpawnChild struct {
 	inject    []Dependency
 	provide   []Capability
 	newScope  bool
+	// scopeKeys lists the declared keys to re-home into the fresh namespace
+	// when newScope is set (empty = all, the WithScope behavior).
+	scopeKeys []CapabilityKey
 	// keyRealms assigns per-key isolation realms for the new fiber (nil when
 	// the child has no isolated key; WithScope-derived entry is pre-built).
 	keyRealms map[CapabilityKey]*realm
@@ -80,7 +83,14 @@ type cmdReviseInsert struct {
 	provide   []Capability
 	realm     *realm
 	keyRealms map[CapabilityKey]*realm
-	reply     chan reviseInsertReply
+	// freshIsolation reassigns the revised fiber's realm pairs (paper §4.4
+	// Configuration: a revision may carry "the new realm pairs"): the new
+	// fiber gets a FRESH namespace and all its declared keys are re-homed to
+	// it. Dependents bound to the old namespace see withdrawal and go Pending
+	// (their own ρ still points there) — crossing namespaces requires their
+	// own revision, which is the paper-faithful reading.
+	freshIsolation bool
+	reply          chan reviseInsertReply
 }
 
 type reviseInsertReply struct {
@@ -107,6 +117,22 @@ func (c *cmdReviseInsert) apply(o *orchestrator) {
 		child.keyRealms = make(map[CapabilityKey]*realm, len(c.keyRealms))
 		for k, r := range c.keyRealms {
 			child.keyRealms[k] = r
+		}
+	}
+	if c.freshIsolation {
+		chainParent := c.realm
+		if c.parent != nil {
+			chainParent = c.parent.realm
+		}
+		fresh := newRealm(chainParent)
+		fresh.id = o.rt.newScopeID()
+		child.realm = fresh
+		child.keyRealms = make(map[CapabilityKey]*realm, len(child.inject)+len(child.provide))
+		for _, d := range child.inject {
+			child.keyRealms[d.Key] = fresh
+		}
+		for _, k := range child.provide {
+			child.keyRealms[k] = fresh
 		}
 	}
 	if c.parent != nil {

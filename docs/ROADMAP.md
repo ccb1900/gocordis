@@ -103,13 +103,16 @@ stc-go)自本文起停用,改用论文编号。
 - 验收:Theorem 68/70 在迭代粒度交错下保持;T66(T73 Progress)驱动器覆盖 divert 路径;
   新增 FuzzIteratorInterleaving。
 
-### P5 — 声明式 revision 统一(§4.4 Configuration + §5.2)
+### P5 — 声明式 revision 统一(§4.4 Configuration + §5.2)✅ 2026-09-08 内核原语完成
 
-- [ ] 把 loader/HMR/configwatch 的替换语义统一为论文 revision 复合:
-      retire → deactivate(L-Leave/L-Divert + relied 守卫)→ O-Remove(子先父后)→
-      同名重插(新 payload / 新 realm 对 / re-enable);entry 是存活身份,fiber 是单次 enablement 身份。
-- [ ] 短路径优化(载荷不变不 reload、realm 迁移不重载 provider)按论文 §5.2.1 落地。
-- 验收:Theorem 80 的"revision 终点 = 从头加载修订配置的 quiescent 终点"性质测试。
+- [x] 内核 revision 原语:`Fiber.Revise(ctx, component)` — 论文复合的严格实现
+      (retire → deactivate(relied 守卫排序)→ O-Remove(子先父后)→ 同位重插:
+      同 parent / 同 namespace / 同逐 key 表 + 新定义);依赖者经 target-view 比较
+      自发重激活;Failed fiber 的 Revise = 有据重试(重插无 outcome)。
+- [x] Theorem 80 终点性质:`TestThm80RevisionEndpointEquivalence` — revision 终点的
+      无身份 canonical observable(逐名状态/绑定/提供集)与从头加载修订配置逐行相等。
+- [ ] loader/HMR 短路径(候选先行、载荷不变不 reload)对齐同一终点 — 扩展层改造,随后续阶段。
+- 验收(已完成部分):全量 + race + vet + gofmt 绿;Thm80 终点等价测试 -count=3 稳定。
 
 ### P6 — ADR-III:内核瘦身至论文面
 

@@ -66,3 +66,83 @@ type spawnChildReply struct {
 type cmdClose struct {
 	ack chan error
 }
+
+// cmdReviseInsert reinserts a revised fiber at the same ownership position
+// (paper §4.4 Configuration revision composite, reinsert step). It mirrors
+// cmdSpawnChild's construction but is keyed on the parent FIBER rather than a
+// parent Context: the old fiber's activation is gone by insert time, so no
+// parent Context exists. Runs on the orchestrator; lifecycle authority stays
+// with the Runtime.
+type cmdReviseInsert struct {
+	parent    *Fiber // nil for a root-loaded fiber
+	component Component
+	inject    []Dependency
+	provide   []Capability
+	realm     *realm
+	keyRealms map[CapabilityKey]*realm
+	reply     chan reviseInsertReply
+}
+
+type reviseInsertReply struct {
+	fiber *Fiber
+	err   error
+}
+
+func (c *cmdReviseInsert) apply(o *orchestrator) {
+	reply := func(f *Fiber, err error) { c.reply <- reviseInsertReply{fiber: f, err: err} }
+	if c.component == nil {
+		reply(nil, ErrInvalidState)
+		return
+	}
+	if o.closing {
+		reply(nil, ErrRuntimeClosed)
+		return
+	}
+
+	child := newFiber(o.rt, c.component)
+	child.inject = c.inject
+	child.provide = c.provide
+	child.realm = c.realm
+	if len(c.keyRealms) > 0 {
+		child.keyRealms = make(map[CapabilityKey]*realm, len(c.keyRealms))
+		for k, r := range c.keyRealms {
+			child.keyRealms[k] = r
+		}
+	}
+	if c.parent != nil {
+		c.parent.mu.RLock()
+		parentState := c.parent.state
+		c.parent.mu.RUnlock()
+		if parentState == StateGone {
+			reply(nil, ErrInvalidState)
+			return
+		}
+		child.parent = c.parent
+	}
+
+	o.rt.mu.Lock()
+	child.id = FiberID(o.rt.nextFiberID.Add(1))
+	var existing []*Fiber
+	for _, x := range o.rt.fibers {
+		existing = append(existing, x)
+	}
+	if err := findDeclaredCycle(child, existing); err != nil {
+		o.rt.mu.Unlock()
+		reply(nil, err)
+		return
+	}
+	o.rt.fibers[child.id] = child
+	o.rt.mu.Unlock()
+
+	if c.parent != nil {
+		if c.parent.children == nil {
+			c.parent.children = make(map[FiberID]*Fiber)
+		}
+		c.parent.children[child.id] = child
+	}
+
+	child.intent = IntentMounted
+	o.reconcile(child)
+	o.rt.emitEvent(EventFiberCreated, child.id, 0, nil)
+	reply(child, nil)
+}

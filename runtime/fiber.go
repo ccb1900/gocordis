@@ -257,3 +257,72 @@ func (f *Fiber) Gone(ctx context.Context) error {
 		}
 	}
 }
+
+// Revise replaces the fiber's component definition in place, following the
+// paper's revision composite (§4.4 Configuration): retire (target view to ⊥),
+// let the lifecycle rules deactivate it (the relied-upon guard orders the
+// withdrawal consumer-first), remove the entry (owned children reach Gone
+// first, children before parent), then reinsert a fresh fiber at the same
+// ownership position — same parent, same provider namespace and per-key
+// isolation table — with the new component definition. Dependents follow
+// unprompted: once the reinserted fiber provides its keys again, the
+// target-view comparison reactivates them.
+//
+// By Theorem 80 the system quiesces where a load of the revised configuration
+// from scratch would have left it; Revise is the strict composite that HMR's
+// warm routes may only shortcut while answering to the same endpoint.
+//
+// Revise blocks the caller until the old fiber's entry is removed and the
+// reinserted fiber is published; Ready the returned fiber to await its
+// activation. A revision of a Failed fiber is a sanctioned retry (a revision
+// reinserts without an outcome).
+func (f *Fiber) Revise(ctx context.Context, component Component) (*Fiber, error) {
+	if ctx == nil || component == nil {
+		return nil, ErrInvalidState
+	}
+	if f.rt.stateSnapshot() != RuntimeRunning {
+		return nil, ErrRuntimeClosed
+	}
+	// Snapshot the ownership position and the per-key isolation table before
+	// retiring (the table is fixed at insertion, paper Definition 24).
+	f.mu.RLock()
+	parent := f.parent
+	scope := f.realm
+	var keyRealms map[CapabilityKey]*realm
+	for k, r := range f.keyRealms {
+		if keyRealms == nil {
+			keyRealms = make(map[CapabilityKey]*realm, len(f.keyRealms))
+		}
+		keyRealms[k] = r
+	}
+	f.mu.RUnlock()
+
+	// Retire + deactivate + remove (children first). Dispose is idempotent;
+	// Gone waits for the entry's removal with the deferred-finalization gate.
+	if err := f.Dispose(); err != nil {
+		return nil, err
+	}
+	if err := f.Gone(ctx); err != nil {
+		return nil, err
+	}
+
+	inject := component.Inject()
+	provide := component.Provide()
+	reply := make(chan reviseInsertReply, 1)
+	if !f.rt.submit(&cmdReviseInsert{
+		parent:    parent,
+		component: component,
+		inject:    inject,
+		provide:   provide,
+		realm:     scope,
+		keyRealms: keyRealms,
+		reply:     reply,
+	}) {
+		return nil, ErrRuntimeClosed
+	}
+	res := <-reply
+	if res.err != nil {
+		return nil, res.err
+	}
+	return res.fiber, nil
+}

@@ -46,13 +46,20 @@ stc-go)自本文起停用,改用论文编号。
 | **§3.1.3 + L-Iter/L-Divert** | 激活 = **效果迭代器**逐 yield(L-Iter 一步一迭代,L-Divert 可落在迭代之间);异步 host 取 landing 替代(inertial) | Apply 一次到位 + ctx.Effect 槽位注册,激活不可中断(仅完成时检查 stale) | 宿主化简化(stc-go 同);per-iteration divert 粒度缺失 |
 | §4.2.2 末段 | guard 沿 coeffect 排序,**不沿 fiber 树**("a parent may run its inverse while a child is still Unloading");仅 O-Remove(entry 移除)要求子先父后 | ownership 树强制 child cleanup 严格先于 parent(P0-08) | 比论文更强的保证(不违背,但表述应改为 operational strengthening) |
 
-### 1.3 论文之外、暂予保留(非内核语义,不得成为第二生命周期权威)
+### 1.3 扩展层分类(非内核语义,不得成为第二生命周期权威)
 
-- `RuntimeDeterministic` 调度插桩:定理验证基础设施(Theorem 73/80 的 step driver 依赖它)。
-- extensions:config/configwatch、event、hmr、http、loader、registry、scheduler、watch、loader/wasm。
-- `cmd/` 演示程序(backfill/collector/host/example/wasmhmr):对应论文 §5.3 case study 的角色。
-- **待裁撤**(P6 ADR-III):kernel 内的事件派发(emit/serial/parallel/waterfall)不是论文内容;
-  kernel 应只保留"注册处理器 = 可逆 effect"这一论文支持的形态,派发模式移入 extensions/event。
+R4 评审(2026-09-09)按"是否服务论文实现"将扩展定类:
+
+| 类 | 判据 | 成员 |
+|---|---|---|
+| **A — 论文 §5.2 实现章** | 直接实现 declarative loader / config reconciliation / HMR | loader、config、configwatch、watch、hmr |
+| **B — 论文 §6 讨论项落地** | P7 逐项实现 | broker(§6.2)、loader/wasm(§6.3 沙箱) |
+| **C — 平台能力(非论文语义,有消费方与测试约束)** | runtime 的通用补充 | event(派发模式之家,P6 起)、registry(稳定成员,broker 底座)、scheduler(周期任务) |
+| **D — 实例/演示(转移)** | 某绑定模式的可运行样例,非语义、非通用能力 | ~~extensions/http~~ → **cmd/httpd**(2026-09-09:外部资源绑定模式参考——Active ⇔ serving、撤销先于终态、同地址重绑;零生产消费方,聚焦测试随迁) |
+
+- `RuntimeDeterministic` 调度插桩:定理验证基础设施(已内部化,R3),保留。
+- `cmd/` 演示程序(backfill/collector/host/example/wasmhmr/httpd):论文 §5.3 case study 的角色。
+- kernel 内事件派发已按 ADR-0004 移入 extensions/event(P6 完成);Bus 已移除(R3)。
 
 ## 2. 演进阶段
 

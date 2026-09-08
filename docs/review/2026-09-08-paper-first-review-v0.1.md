@@ -111,3 +111,23 @@ Scope: P1–P7 七个提交(`b849141`..`ed9cd27`)后的全量评审。本文档�
    (convergence-matrix P0-15 记录),与本轮改动无关。
 
 **R3 判定:全仓再无"仅靠测试续命的生产公开面";收敛维持。**
+
+## 8. 第四轮 (R4, 2026-09-09):http 扩展转移 + 扩展层定类
+
+用户质疑 http 扩展"只是实例",裁决转移。全仓消费方核查:
+- **http:零包外消费**(仅自身测试引用),doc 自称示例,矩阵标 "P2 示例能力"
+  → **转移 `extensions/http` → `cmd/httpd`**(自包含 demo:外部资源绑定模式参考,
+  只依赖 runtime;保留最高价值行为测试 Active⇔serving、撤销先于终态、同地址重绑;
+  1400 行针对扩展自身 API 的套件随扩展消亡)。
+- 同类扫描定类(ROADMAP §1.3):A=论文 §5.2(loader/config/configwatch/watch/hmr)、
+  B=§6 落地(broker/wasm)、C=平台能力(event/registry/scheduler,有消费方、有边界
+  审计、非论文语义但属 runtime 补充)、D=实例(http,已转移)。
+- C 类的保留依据:event 是 P6 后派发模式之家且被 p2.1/门禁套件依赖;registry 是
+  broker(§6.2)底座;scheduler 有 3 个集成消费点。三者均通过"仅靠测试续命"审计
+  (有集成消费方),但均明确标注**非论文语义**。
+
+**R4 判定:扩展层边界自此与"服务论文实现"的目标对齐;无其余 D 类候选。**
+
+观察名单(非阻断):`TestWHMR16CloseDuringReplacement` 在一次全仓并行执行中失败
+一次("hmr closed"),独立复跑 3 次、集成+runtime 高负载复跑 3 次、基线 6 次均未
+复现;与 http 转移无依赖关系。列为时序敏感观察项,后续复现时再立项。

@@ -8,26 +8,22 @@ import (
 	"time"
 )
 
-// GAP-01 conformance: a nearest Retiring provider record shadows ancestor
-// providers for the same dependency key until the owner reaches Gone; after
-// the record is physically removed, the ancestor becomes eligible again.
+// Isolation conformance under the paper model (ADR-0001; paper §4.4 Isolation,
+// Definition 24) — supersedes the archived GAP-01 "retiring shadows ancestor"
+// decision, which presumed an ancestor-fallback lookup the paper does not have.
 //
-// Frozen semantic (this test + docs/plan/convergence-matrix.md, GAP-01):
+// Paper semantics verified here:
 //
-//	resolve(K, realm) walks own -> ancestor. If the nearest record exists but
-//	is Retiring, resolution reports unavailable and MUST NOT fall back to an
-//	Active ancestor provider (Retiring != Absent). Shadowing is realm-local:
-//	the ancestor remains valid everywhere outside the child realm. Once the
-//	owner's unwind physically removes the retiring record (owner Gone), the
-//	ancestor may become visible to the child realm again.
-//
-// Paper correspondence: the Paper does not literally spell out this
-// "retiring shadows ancestor" operational rule in-repo (source not available
-// here). It is an operational refinement required to preserve the Paper's
-// nearest-binding / spatial-composability semantics and matches stc-go's
-// nearest provider binding across the lifecycle transition (verified against
-// stc-go behavior; exact stc-go identifiers not verifiable in-repo, see
-// GAP-03 in the convergence matrix).
+//	Each declared key resolves against EXACTLY ONE realm — the fiber's
+//	effective realm for that key (the per-key table ρ, Definition 24). There
+//	is no ancestor walk: a child namespace simply has no provider after its
+//	provider goes Gone, and the root namespace is unaffected either way.
+//	Retiring != Absent is preserved: while a provider record is Retiring it
+//	stays physically present in its namespace (owner still unwinding) and the
+//	namespace keeps reporting unavailable; after the owner's unwind removes
+//	the record, recovery happens when a provider becomes Active again IN THE
+//	SAME namespace (B reload), never by falling back to another realm's
+//	provider.
 //
 // The scenario is executed on the deterministic kernel driver: every
 // lifecycle step (Active -> Retiring -> Gone) is controlled by parked
@@ -263,13 +259,15 @@ func gap01RecvTag(t *testing.T, ch chan string, what string) string {
 // Orchestrator-linearized semantic probes
 // ---------------------------------------------------------------------------
 
-// gap01Resolve runs resolveDependency at the orchestrator boundary: the probe
-// reports the actual dependency resolution result for realm path r — the same
-// decision captureDependencies/dependenciesSatisfied rely on.
+// gap01Resolve runs resolveDependency at the orchestrator boundary for ONE
+// consumer fiber: the probe reports the actual dependency resolution result
+// the consumer would see — the same decision captureDependencies /
+// dependenciesSatisfied rely on. Paper model (ADR-0001): resolution is a
+// fiber-level question; the consumer's per-key table decides the namespace.
 type gap01ResolveProbe struct {
-	realm *realm
-	key   CapabilityKey
-	reply chan gap01ResolveResult
+	consumer *Fiber
+	key      CapabilityKey
+	reply    chan gap01ResolveResult
 }
 
 type gap01ResolveResult struct {
@@ -278,13 +276,13 @@ type gap01ResolveResult struct {
 }
 
 func (p *gap01ResolveProbe) apply(o *orchestrator) {
-	id, ok := o.resolveDependency(p.realm, p.key)
+	id, ok := o.resolveDependency(p.consumer, p.key)
 	p.reply <- gap01ResolveResult{id: id, ok: ok}
 }
 
-func gap01Resolve(t *testing.T, rt *Runtime, r *realm, key CapabilityKey) (ProviderIdentity, bool) {
+func gap01Resolve(t *testing.T, rt *Runtime, consumer *Fiber, key CapabilityKey) (ProviderIdentity, bool) {
 	t.Helper()
-	p := &gap01ResolveProbe{realm: r, key: key, reply: make(chan gap01ResolveResult, 1)}
+	p := &gap01ResolveProbe{consumer: consumer, key: key, reply: make(chan gap01ResolveResult, 1)}
 	if !rt.submit(p) {
 		t.Fatalf("gap01: resolve probe rejected (runtime closed?)")
 	}
@@ -377,11 +375,12 @@ func gap01Dep(s RuntimeSnapshot, consumer FiberID, key CapabilityKey) (Dependenc
 //	T2 child realm {Provider B(K), Consumer C(K)}; C binds B (nearest)
 //	T3 B.Dispose() -> B record retiring; C withdraws (consumer-first)
 //	T4 observation while B is still gated / then while B is Unloading with its
-//	   retiring record physically present: resolve(C.realm, K) != A; A valid at
-//	   root; D unaffected
+//	   retiring record physically present: resolve(C, K) unavailable (and
+//	   never A); A valid at root (D binds A); D unaffected
 //	T5 release B's gated Cleanup -> B's unwind removes the record -> B Gone
-//	T6 resolve(C.realm, K) == A (ancestor eligible); explicit driver reconcile
-//	   rebinds C to A and C activates on A
+//	T6 resolve(C, K) still unavailable — no ancestor fallback (paper §4.4:
+//	   one namespace per binding); B reload makes B Active again in the child
+//	   namespace; a driver reconcile rebinds C onto B and C activates on B
 func TestRetiringProviderShadowsAncestor(t *testing.T) {
 	rt := detNew(t)
 	ctx := ctxBG(t)
@@ -477,7 +476,7 @@ func TestRetiringProviderShadowsAncestor(t *testing.T) {
 	if st := bF.State(); st != StateActive {
 		t.Fatalf("B state = %v during consumer gate, want Active (withdrawing but gated)", st)
 	}
-	gap01AssertRetiringShadow(t, rt, key, aF, bF, cF, "phase-1a (C Unloading)")
+	gap01AssertRetiringShadow(t, rt, key, aF, bF, cF, dF, "phase-1a (C Unloading)")
 	snap1a := gap01Snap(t, rt)
 	row, ok := gap01FiberRow(snap1a, cF.ID())
 	if !ok || row.State != StateUnloading {
@@ -501,7 +500,7 @@ func TestRetiringProviderShadowsAncestor(t *testing.T) {
 	if err := cF.Err(); err != nil {
 		t.Fatalf("C Err() = %v, want nil (dependency loss is not a failure)", err)
 	}
-	gap01AssertRetiringShadow(t, rt, key, aF, bF, cF, "phase-1b (B Unloading, record present)")
+	gap01AssertRetiringShadow(t, rt, key, aF, bF, cF, dF, "phase-1b (B Unloading, record present)")
 	snap1b := gap01Snap(t, rt)
 	if row, ok := gap01ProviderRow(snap1b, bF.ID()); !ok {
 		t.Fatal("B's retiring record must still exist during B's own Unloading")
@@ -521,14 +520,15 @@ func TestRetiringProviderShadowsAncestor(t *testing.T) {
 	gap01Boundary(t, rt)
 	gap01WaitState(t, rt, bF, StateGone)
 
-	// T6 — after the record is removed (owner Gone), the ancestor becomes
-	// eligible for the child realm again.
-	rb := cF.realm
-	if id, ok := gap01Resolve(t, rt, rb, key.Capability()); !ok || id.FiberID != aF.ID() {
-		t.Fatalf("phase-2 resolve(child realm) = %+v ok=%v, want A (%d) eligible after B Gone", id, ok, aF.ID())
+	// T6 — after the record is removed (owner Gone): paper §4.4 Isolation —
+	// C's key resolves in exactly one namespace, the child realm. It has no
+	// provider there and MUST NOT fall back to A; the root namespace is
+	// unaffected (D still binds A).
+	if id, ok := gap01Resolve(t, rt, cF, key.Capability()); ok {
+		t.Fatalf("phase-2 resolve(C) = %+v, want unavailable (no ancestor fallback after B Gone)", id)
 	}
-	if id, ok := gap01Resolve(t, rt, rt.rootRealm, key.Capability()); !ok || id.FiberID != aF.ID() {
-		t.Fatalf("root resolve = %+v ok=%v after B Gone, want A", id, ok)
+	if id, ok := gap01Resolve(t, rt, dF, key.Capability()); !ok || id.FiberID != aF.ID() {
+		t.Fatalf("root resolve (as D) = %+v ok=%v after B Gone, want A", id, ok)
 	}
 	snap2 := gap01Snap(t, rt)
 	if row, ok := gap01ProviderRow(snap2, bF.ID()); ok {
@@ -544,22 +544,33 @@ func TestRetiringProviderShadowsAncestor(t *testing.T) {
 		t.Fatalf("C state after B Gone = %v, want Pending (no automatic rebind on record removal)", st)
 	}
 
-	// Explicit driver rebind (the runtime sweeps Pending fibers only when a
-	// provider activation becomes Active — ancestor fallback after removal has
-	// no such event, so the harness drives reconcile explicitly). C captures
-	// A and activates on it.
+	// T7 — recovery INSIDE the child namespace: B reloads and becomes Active
+	// again; C re-activates on B (never on A). This is the paper-true rebinding
+	// path that the archived GAP-01 rule attributed to ancestor fallback.
+	if err := bF.Load(); err != nil {
+		t.Fatal(err)
+	}
+	gap01AdmitApply(t, rt, bF)
+	gap01WaitState(t, rt, bF, StateActive)
 	gap01ReconcileFiber(t, rt, cF)
 	gap01AdmitApply(t, rt, cF)
-	gap01Boundary(t, rt)
 	gap01WaitState(t, rt, cF, StateActive)
-	if v := gap01RecvTag(t, cSeen, "C rebind activation"); v != "A" {
-		t.Fatalf("C rebind resolved %q, want A's tag (ancestor after Gone)", v)
+	if id, ok := gap01Resolve(t, rt, cF, key.Capability()); !ok || id.FiberID != bF.ID() {
+		t.Fatalf("phase-3 resolve(C) = %+v ok=%v, want B (%d) after reload", id, ok, bF.ID())
 	}
+	if v := gap01RecvTag(t, cSeen, "C re-activation"); v != "B" {
+		t.Fatalf("C re-activation resolved %q, want B's tag", v)
+	}
+	if st := dF.State(); st != StateActive {
+		t.Fatalf("root consumer D disturbed by child recovery: state %v", st)
+	}
+
+	// Post-recovery snapshot: C bound to B, root D still bound to A.
 	post := gap01Snap(t, rt)
 	if row, ok := gap01FiberRow(post, cF.ID()); !ok || row.State != StateActive {
-		t.Fatalf("C not Active after rebind: %+v", row)
-	} else if dep, ok := gap01Dep(post, cF.ID(), key.Capability()); !ok || dep.Status != DependencySatisfied || dep.ProviderFiberID != aF.ID() {
-		t.Fatalf("C post-bound to %+v (want A %d): %+v", dep, aF.ID(), dep)
+		t.Fatalf("C not Active after recovery: %+v", row)
+	} else if dep, ok := gap01Dep(post, cF.ID(), key.Capability()); !ok || dep.Status != DependencySatisfied || dep.ProviderFiberID != bF.ID() {
+		t.Fatalf("C post-bound to %+v (want B %d): %+v", dep, bF.ID(), dep)
 	}
 
 	// Deterministic Close: every fiber reaches Gone, pending completions zero,
@@ -583,24 +594,23 @@ func TestRetiringProviderShadowsAncestor(t *testing.T) {
 }
 
 // gap01AssertRetiringShadow asserts the shared Phase-1 invariants at an
-// orchestrator boundary:
-//   - resolveDependency on the child realm reports unavailable (B shadows A;
-//     no ancestor fallback);
+// orchestrator boundary (paper model):
+//   - resolveDependency for the child consumer reports unavailable (the child
+//     namespace has no Active provider while B retires; no ancestor fallback);
 //   - B's record exists and is retiring (never removed while Retiring);
-//   - A remains resolvable at the root realm (shadowing is realm-local).
-func gap01AssertRetiringShadow(t *testing.T, rt *Runtime, key Key[string], aF, bF, cF *Fiber, when string) {
+//   - A remains resolvable in the root namespace (D's binding unaffected).
+func gap01AssertRetiringShadow(t *testing.T, rt *Runtime, key Key[string], aF, bF, cF, dF *Fiber, when string) {
 	t.Helper()
-	rb := cF.realm
-	id, ok := gap01Resolve(t, rt, rb, key.Capability())
+	id, ok := gap01Resolve(t, rt, cF, key.Capability())
 	if ok {
-		t.Fatalf("%s: resolve(child realm) unexpectedly selected %+v — Retiring must not fall back to ancestor", when, id)
+		t.Fatalf("%s: resolve(C) unexpectedly selected %+v — retiring namespace must report unavailable", when, id)
 	}
 	if id.FiberID == aF.ID() {
-		t.Fatalf("%s: resolve(child realm) selected ancestor A while B retires", when)
+		t.Fatalf("%s: resolve(C) selected root provider A (%d) while B retires — no ancestor fallback", when, aF.ID())
 	}
-	id, ok = gap01Resolve(t, rt, rt.rootRealm, key.Capability())
+	id, ok = gap01Resolve(t, rt, dF, key.Capability())
 	if !ok || id.FiberID != aF.ID() {
-		t.Fatalf("%s: resolve(root realm) = %+v ok=%v, want A (ancestor stays valid outside child shadow)", when, id, ok)
+		t.Fatalf("%s: resolve(D) = %+v ok=%v, want A (root namespace unaffected)", when, id, ok)
 	}
 	snap := gap01Snap(t, rt)
 	row, found := gap01ProviderRow(snap, bF.ID())

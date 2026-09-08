@@ -52,13 +52,38 @@ func (c *cmdSpawnChild) apply(o *orchestrator) {
 	child.provide = c.provide
 	child.parent = parent
 	// Default ctx.Child inherits the parent's scope/realm. An explicit scope
-	// (WithScope) derives a child realm whose parent is this realm, enabling
-	// shadowing and sibling isolation.
+	// (WithScope) derives a fresh namespace for the keys the child declares.
+	// Paper ADR-0001 (Definition 24): isolation is a per-key realm table fixed
+	// at insertion — resolution reads exactly one realm, never an ancestor
+	// chain. WithScope also inherits nothing: keys default to the child's own
+	// scope realm, which the parent realm cannot see.
 	if c.newScope {
+		// The fresh namespace gets a context-chain parent (interception
+		// metadata inheritance, paper Definition 26; extension event scoping).
+		// Provider resolution NEVER walks this chain: lookupOwn +
+		// effectiveRealm read exactly one namespace per key.
 		child.realm = newRealm(parent.realm)
 		child.realm.id = o.rt.newScopeID()
+		if len(c.keyRealms) > 0 {
+			child.keyRealms = make(map[CapabilityKey]*realm, len(c.keyRealms))
+			for k, r := range c.keyRealms {
+				if r == parent.realm {
+					// WithScope re-homes keys that defaulted to the parent's
+					// namespace into the fresh child namespace; explicit
+					// per-key overrides (a different realm) survive.
+					r = child.realm
+				}
+				child.keyRealms[k] = r
+			}
+		}
 	} else {
 		child.realm = parent.realm
+		if len(c.keyRealms) > 0 {
+			child.keyRealms = make(map[CapabilityKey]*realm, len(c.keyRealms))
+			for k, r := range c.keyRealms {
+				child.keyRealms[k] = r
+			}
+		}
 	}
 
 	o.rt.mu.Lock()

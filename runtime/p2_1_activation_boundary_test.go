@@ -16,7 +16,7 @@ func TestP21PB06StaleCompletionDoesNotTouchNewActivation(t *testing.T) {
 	rec := c3NewRecorder(key)
 
 	// Generation 1: P Active (activation A1).
-	p := c3LoadFiber(t, rt, rec, &t66Comp{name: "P", key: key, provide: true}, true)
+	p := c3LoadFiber(t, rt, rec, &thm73Comp{name: "P", key: key, provide: true}, true)
 	pAct1 := c3ActivateProvider(t, rt, rec, p)
 
 	// Full withdrawal of generation 1.

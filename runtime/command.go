@@ -46,6 +46,9 @@ type cmdSpawnChild struct {
 	inject    []Dependency
 	provide   []Capability
 	newScope  bool
+	// keyRealms assigns per-key isolation realms for the new fiber (nil when
+	// the child has no isolated key; WithScope-derived entry is pre-built).
+	keyRealms map[CapabilityKey]*realm
 	reply     chan spawnChildReply
 }
 

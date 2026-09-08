@@ -96,7 +96,7 @@ func (rt *Runtime) checkPreservationInvariants() error {
 			continue
 		}
 		for _, dep := range f.inject {
-			if _, ok := rt.orch.resolveDependency(f.realm, dep.Key); !ok {
+			if _, ok := rt.orch.resolveDependency(f, dep.Key); !ok {
 				return fmt.Errorf("invariant: Active fiber %d dependency %s unsatisfiable", f.id, dep.Key)
 			}
 		}
@@ -189,7 +189,7 @@ func (c *invConsumer) Name() string          { return "inv-consumer" }
 func (c *invConsumer) Inject() []Dependency  { return []Dependency{{Key: c.key}} }
 func (c *invConsumer) Provide() []Capability { return nil }
 func (c *invConsumer) Apply(ctx *Context) (Cleanup, error) {
-	_, ok := ctx.realm.lookup(c.key)
+	_, ok := ctx.realm.lookupOwn(c.key)
 	if !ok {
 		return nil, ErrDependencyMissing
 	}

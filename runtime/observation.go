@@ -193,17 +193,6 @@ type realmSnap struct {
 	fibers   []FiberID
 }
 
-// nearestRecord walks the scope path (own -> parent) and returns the nearest
-// record for key.
-func (r *realmSnap) nearestRecord(key CapabilityKey) (recordSnap, bool) {
-	for cur := r; cur != nil; cur = cur.parent {
-		if rec, ok := cur.byKey[key]; ok {
-			return rec, true
-		}
-	}
-	return recordSnap{}, false
-}
-
 // buildSnapshot projects the whole Runtime state. MUST run on the orchestrator
 // goroutine: fiber state/intent/activation/children are orchestrator-published
 // and therefore stable here; realm records and effect slots are read under
@@ -287,8 +276,10 @@ func (o *orchestrator) buildSnapshot() RuntimeSnapshot {
 		sort.Strings(rs.keys)
 	}
 
-	// Link scope parents (walk realm.parent; every intermediate realm has a
-	// live owner fiber and is therefore in the set).
+	// Link context-chain parents for the scope tree view. Provider resolution
+	// does not walk this chain (ADR-0001: one namespace per binding), but the
+	// hierarchy remains the inheritance chain for interception metadata and
+	// extension event scoping.
 	for realm, rs := range realmByPtr {
 		for p := realm.parent; p != nil; p = p.parent {
 			if parentSnap, ok := realmByPtr[p]; ok {
@@ -340,10 +331,16 @@ func (o *orchestrator) buildSnapshot() RuntimeSnapshot {
 		if info.state == StateGone {
 			continue
 		}
-		rs := realmByPtr[info.f.realm]
 		for _, dep := range info.declared {
 			dv := DependencyView{Key: dep.Key.String(), ConsumerFiberID: info.f.id, ConsumerActivationID: info.actID}
-			cur, has := rs.nearestRecord(dep.Key)
+			// Paper Definition 24: resolve in exactly one namespace — the
+			// fiber's effective realm for the key, own-map only.
+			cur, has := recordSnap{}, false
+			if depRealm := effectiveRealm(info.f, dep.Key); depRealm != nil {
+				if snap, ok := realmByPtr[depRealm]; ok {
+					cur, has = snap.byKey[dep.Key]
+				}
+			}
 			captured, bound := capturedBinding(info.captured, dep.Key)
 			switch {
 			case bound && has && cur.identity == captured.Provider && satisfiable(cur):

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// C-3 (T63 Ordering) — activation/dependency-binding-level ordering theorem.
+// C-3 (Thm70 Ordering) — activation/dependency-binding-level ordering theorem.
 //
 // Paper mapping (recorded project authority, NOT derived from the runtime):
 //
@@ -24,30 +24,30 @@ import (
 //	          never observes an unready dependency during activation.
 //	  §24 (withdrawal): C Unwind ≺ P Unwind AND C Cleanup ≺ P Cleanup.
 //
-// This file upgrades the T63 tests from component-event sequencing to a
+// This file upgrades the Thm70 tests from component-event sequencing to a
 // paper-level, activation-identity ordering oracle over the four semantic
 // events of the C-3 specification:
 //
-//	Runtime transition / state            -> recorded T63 semantic event
+//	Runtime transition / state            -> recorded Thm70 semantic event
 //	P: Loading -> Active + live record    -> ProviderReady(P/Fiber,Act)
 //	C: -> Loading (deps snapshot binds P) -> ConsumerLoading(C -> P)
 //	C: Loading -> Active (same snapshot)  -> ConsumerActive(C -> P)
 //	P: provided record becomes retiring / -> ProviderWithdrawn(P/Fiber,Act)
 //	   P leaves Active (same activation)
 //
-// Identity model: T63 constrains ACTIVATION ordering, never Fiber ordering.
+// Identity model: Thm70 constrains ACTIVATION ordering, never Fiber ordering.
 // Every provider event is bound to ProviderIdentity{FiberID, ActivationID};
 // every consumer event carries the provider identity from the consumer
 // activation's captured DependencySnapshot — the runtime binding fact source.
 // The oracle NEVER re-resolves dependencies through realm.lookup: that would
 // verify the test's own lookup instead of the Runtime's binding.
 //
-// T63-A (establishment), per binding C → P:
+// Thm70-A (establishment), per binding C → P:
 //
 //	seq(ProviderReady(P)) < seq(ConsumerLoading(C -> P))
 //	seq(ConsumerLoading(C -> P)) < seq(ConsumerActive(C -> P))
 //
-// T63-B (withdrawal), per binding C → P:
+// Thm70-B (withdrawal), per binding C → P:
 //
 //	seq(ConsumerActive(C -> P)) < seq(ProviderWithdrawn(P))   (if Active)
 //	no ConsumerLoading / ConsumerActive for P after Withdrawn(P)
@@ -56,10 +56,10 @@ import (
 // oldProvider.ActivationID != newProvider.ActivationID even though the FiberID
 // is identical, and generation-2 consumer bindings must reference P/A2 only.
 //
-// Explicitly NOT tested here (boundary discipline): final convergence (T66),
-// schedule-independent quiescence (T73), registry well-formedness as the T63
-// oracle (T59; checkT59 is used only as a per-step diagnostic), exact
-// effect unwind (T61), goroutine scheduling fairness, and time.Sleep as a
+// Explicitly NOT tested here (boundary discipline): final convergence (Thm73),
+// schedule-independent quiescence (Thm80), registry well-formedness as the Thm70
+// oracle (Thm64; checkThm64 is used only as a per-step diagnostic), exact
+// effect unwind (Thm68), goroutine scheduling fairness, and time.Sleep as a
 // theorem step. All ordering is decided by detEnabledSteps/detExecute;
 // c2Wait-style parking waits are only async-completion ADMISSION SETUP.
 //
@@ -245,7 +245,7 @@ func (r *c3Recorder) emitConsumerActive(f *Fiber, cur c3FiberObs) {
 }
 
 // observe diffs the previous boundary snapshot against the current one and
-// emits T63 semantic events. It must only be called at an orchestrator
+// emits Thm70 semantic events. It must only be called at an orchestrator
 // boundary (after c3Boundary). It returns an error when the observed
 // lifecycle contradicts the event model (e.g., a provider Active without a
 // live non-retiring record, or a consumer Loading without a scenario-provider
@@ -386,7 +386,7 @@ func c3Counts(events []c3Event) (ready, loading, active, withdrawn int) {
 }
 
 // ---------------------------------------------------------------------------
-// Pure-function T63 oracle (no Runtime access, no waiting). The oracle checks
+// Pure-function Thm70 oracle (no Runtime access, no waiting). The oracle checks
 // the recorded trace only — it is the theorem evidence, and it is agnostic to
 // how many bindings a scenario exercised.
 // ---------------------------------------------------------------------------
@@ -409,7 +409,7 @@ func c3ExpectConsumerBindingEvent(events []c3Event, kind c3EventKind, cid FiberI
 	return c3Event{}, fmt.Errorf("missing %s(C %d/%d -> P %s); ledger:\n%s", kind, cid, cact, c3ID(prov), c3Ledger(events))
 }
 
-// c3CheckT63 validates every binding in the ledger:
+// c3CheckThm70 validates every binding in the ledger:
 //
 //	ProviderReady(P) ≺ ConsumerLoading(C->P) ≺ ConsumerActive(C->P)
 //	ConsumerActive(C->P) ≺ ProviderWithdrawn(P)  (when both exist)
@@ -418,7 +418,7 @@ func c3ExpectConsumerBindingEvent(events []c3Event, kind c3EventKind, cid FiberI
 //
 // All comparisons are STRICT on Seq. Identities are activation-level
 // (FiberID + ActivationID); the oracle never compares by FiberID alone.
-func c3CheckT63(events []c3Event) error {
+func c3CheckThm70(events []c3Event) error {
 	readySeq := make(map[ProviderIdentity]int)
 	withdrawnSeq := make(map[ProviderIdentity]int)
 	loadingSeq := make(map[ProviderIdentity]int) // key: consumer activation identity; one scenario dep per consumer
@@ -427,62 +427,62 @@ func c3CheckT63(events []c3Event) error {
 		case c3ProviderReady, c3ProviderWithdrawn:
 			id := e.Provider
 			if id.FiberID == 0 || id.ActivationID == 0 {
-				return fmt.Errorf("T63: %s with invalid provider identity %s (event %s)", e.Kind, c3ID(id), e)
+				return fmt.Errorf("Thm70: %s with invalid provider identity %s (event %s)", e.Kind, c3ID(id), e)
 			}
 			if id != (ProviderIdentity{FiberID: e.FiberID, ActivationID: e.ActivationID}) {
-				return fmt.Errorf("T63: %s subject %d/%d does not match provider identity %s (event %s)",
+				return fmt.Errorf("Thm70: %s subject %d/%d does not match provider identity %s (event %s)",
 					e.Kind, e.FiberID, e.ActivationID, c3ID(id), e)
 			}
 			if e.Kind == c3ProviderReady {
 				if _, dup := readySeq[id]; dup {
-					return fmt.Errorf("T63: duplicate ProviderReady for provider activation %s", c3ID(id))
+					return fmt.Errorf("Thm70: duplicate ProviderReady for provider activation %s", c3ID(id))
 				}
 				readySeq[id] = e.Seq
 				continue
 			}
 			if _, dup := withdrawnSeq[id]; dup {
-				return fmt.Errorf("T63: duplicate ProviderWithdrawn for provider activation %s", c3ID(id))
+				return fmt.Errorf("Thm70: duplicate ProviderWithdrawn for provider activation %s", c3ID(id))
 			}
 			if rs, ok := readySeq[id]; !ok || rs >= e.Seq {
-				return fmt.Errorf("T63-B: ProviderWithdrawn(%s) at seq %d without an earlier ProviderReady", c3ID(id), e.Seq)
+				return fmt.Errorf("Thm70-B: ProviderWithdrawn(%s) at seq %d without an earlier ProviderReady", c3ID(id), e.Seq)
 			}
 			withdrawnSeq[id] = e.Seq
 
 		case c3ConsumerLoading, c3ConsumerActive:
 			consID := ProviderIdentity{FiberID: e.FiberID, ActivationID: e.ActivationID}
 			if e.Consumer != consID {
-				return fmt.Errorf("T63: consumer event subject %s does not match consumer identity %s (event %s)",
+				return fmt.Errorf("Thm70: consumer event subject %s does not match consumer identity %s (event %s)",
 					c3ID(consID), c3ID(e.Consumer), e)
 			}
 			prov := e.Provider
 			if prov.FiberID == 0 || prov.ActivationID == 0 {
-				return fmt.Errorf("T63: %s with invalid bound provider identity (event %s)", e.Kind, e)
+				return fmt.Errorf("Thm70: %s with invalid bound provider identity (event %s)", e.Kind, e)
 			}
 			// Establishment direction: Ready must precede Loading and Active.
 			if rs, ok := readySeq[prov]; !ok || rs >= e.Seq {
-				return fmt.Errorf("T63-A: %s(C %s -> P %s) at seq %d before ProviderReady(P %s)",
+				return fmt.Errorf("Thm70-A: %s(C %s -> P %s) at seq %d before ProviderReady(P %s)",
 					e.Kind, c3ID(consID), c3ID(prov), e.Seq, c3ID(prov))
 			}
 			// Withdrawal direction: nothing may bind a withdrawn generation.
 			if ws, ok := withdrawnSeq[prov]; ok && ws < e.Seq {
-				return fmt.Errorf("T63-B: %s(C %s -> P %s) at seq %d AFTER ProviderWithdrawn(P %s) at seq %d",
+				return fmt.Errorf("Thm70-B: %s(C %s -> P %s) at seq %d AFTER ProviderWithdrawn(P %s) at seq %d",
 					e.Kind, c3ID(consID), c3ID(prov), e.Seq, c3ID(prov), ws)
 			}
 			ckey := ProviderIdentity{FiberID: e.FiberID, ActivationID: e.ActivationID}
 			if e.Kind == c3ConsumerActive {
 				ls, ok := loadingSeq[ckey]
 				if !ok {
-					return fmt.Errorf("T63-A: ConsumerActive(C %s -> P %s) without a preceding ConsumerLoading for the same activation",
+					return fmt.Errorf("Thm70-A: ConsumerActive(C %s -> P %s) without a preceding ConsumerLoading for the same activation",
 						c3ID(consID), c3ID(prov))
 				}
 				if ls >= e.Seq {
-					return fmt.Errorf("T63-A: ConsumerLoading seq %d not strictly before ConsumerActive seq %d for C %s -> P %s",
+					return fmt.Errorf("Thm70-A: ConsumerLoading seq %d not strictly before ConsumerActive seq %d for C %s -> P %s",
 						ls, e.Seq, c3ID(consID), c3ID(prov))
 				}
 				continue
 			}
 			if _, dup := loadingSeq[ckey]; dup {
-				return fmt.Errorf("T63: duplicate ConsumerLoading for consumer activation %s", c3ID(consID))
+				return fmt.Errorf("Thm70: duplicate ConsumerLoading for consumer activation %s", c3ID(consID))
 			}
 			loadingSeq[ckey] = e.Seq
 		}
@@ -517,17 +517,17 @@ func c3Boundary(t *testing.T, rt *Runtime) {
 }
 
 // c3Settle reaches an orchestrator boundary and then runs the full per-step
-// verification: recorder diff -> recorder model check -> T59 diagnostic ->
-// T63 oracle over the accumulated ledger.
+// verification: recorder diff -> recorder model check -> Thm64 diagnostic ->
+// Thm70 oracle over the accumulated ledger.
 func c3Settle(t *testing.T, rt *Runtime, rec *c3Recorder, when string) {
 	t.Helper()
 	c3Boundary(t, rt)
 	if err := rec.observe(); err != nil {
-		t.Fatalf("T63 recorder model violation at %s: %v", when, err)
+		t.Fatalf("Thm70 recorder model violation at %s: %v", when, err)
 	}
 	c3Check59(t, rt, when)
-	if err := c3CheckT63(rec.Events); err != nil {
-		t.Fatalf("T63 at %s: %v\nledger:\n%s", when, err, c3Ledger(rec.Events))
+	if err := c3CheckThm70(rec.Events); err != nil {
+		t.Fatalf("Thm70 at %s: %v\nledger:\n%s", when, err, c3Ledger(rec.Events))
 	}
 }
 
@@ -589,8 +589,8 @@ func c3Drain(t *testing.T, rt *Runtime, rec *c3Recorder) {
 
 func c3Check59(t *testing.T, rt *Runtime, when string) {
 	t.Helper()
-	if err := checkT59(rt); err != nil {
-		t.Fatalf("T59 diagnostic at %s: %v", when, err)
+	if err := checkThm64(rt); err != nil {
+		t.Fatalf("Thm64 diagnostic at %s: %v", when, err)
 	}
 }
 
@@ -648,7 +648,7 @@ func c3AssertRecord(t *testing.T, p *Fiber, key CapabilityKey, want ProviderIden
 	t.Helper()
 	rec := c3snapProviderRecord(p, key)
 	if !rec.present || rec.id != want || rec.retiring != wantRetiring {
-		t.Fatalf("T63 %s: provider record = present=%v id=%s retiring=%v, want %s/%v",
+		t.Fatalf("Thm70 %s: provider record = present=%v id=%s retiring=%v, want %s/%v",
 			when, rec.present, c3ID(rec.id), rec.retiring, c3ID(want), wantRetiring)
 	}
 }
@@ -685,16 +685,16 @@ func c3ActivateConsumer(t *testing.T, rt *Runtime, rec *c3Recorder, c *Fiber) Ac
 // C3-01 — P -> C basic activation ordering
 // ---------------------------------------------------------------------------
 
-func TestC3T63ActivationOrderingSingleProviderConsumer(t *testing.T) {
+func TestC3Thm70ActivationOrderingSingleProviderConsumer(t *testing.T) {
 	rt := detNew(t)
-	key := NewKey[string]("c3.t63.activation").Capability()
+	key := NewKey[string]("c3.thm70.activation").Capability()
 	rec := c3NewRecorder(key)
 
-	p := c3LoadFiber(t, rt, rec, &t66Comp{name: "P", key: key, provide: true}, true)
+	p := c3LoadFiber(t, rt, rec, &thm73Comp{name: "P", key: key, provide: true}, true)
 	pAct := c3ActivateProvider(t, rt, rec, p)
 	c3AssertRecord(t, p, key, ProviderIdentity{FiberID: p.ID(), ActivationID: pAct}, false, "after P Active")
 
-	c := c3LoadFiber(t, rt, rec, &t66Comp{name: "C", key: key, consumer: true}, false)
+	c := c3LoadFiber(t, rt, rec, &thm73Comp{name: "C", key: key, consumer: true}, false)
 	cAct := c3ActivateConsumer(t, rt, rec, c)
 
 	prov := ProviderIdentity{FiberID: p.ID(), ActivationID: pAct}
@@ -711,13 +711,13 @@ func TestC3T63ActivationOrderingSingleProviderConsumer(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !(ready.Seq < load.Seq && load.Seq < active.Seq) {
-		t.Fatalf("T63-A ordering violated: ready=%d load=%d active=%d", ready.Seq, load.Seq, active.Seq)
+		t.Fatalf("Thm70-A ordering violated: ready=%d load=%d active=%d", ready.Seq, load.Seq, active.Seq)
 	}
 	if bind, ok := c3BoundProvider(c, key); !ok || bind != prov {
-		t.Fatalf("T63: consumer binding = %+v (ok=%v), want P %s", bind, ok, c3ID(prov))
+		t.Fatalf("Thm70: consumer binding = %+v (ok=%v), want P %s", bind, ok, c3ID(prov))
 	}
 	if pAct == 0 || cAct == 0 {
-		t.Fatalf("T63: zero activation ids (P=%d C=%d)", pAct, cAct)
+		t.Fatalf("Thm70: zero activation ids (P=%d C=%d)", pAct, cAct)
 	}
 	c3Close(t, rt)
 	t.Log("C3-01 PASS: ProviderReady < ConsumerLoading < ConsumerActive with binding from DependencySnapshot")
@@ -727,14 +727,14 @@ func TestC3T63ActivationOrderingSingleProviderConsumer(t *testing.T) {
 // C3-02 — Provider withdrawal: no consumer stays Active after Withdrawn
 // ---------------------------------------------------------------------------
 
-func TestC3T63WithdrawalOrderingSingleProviderConsumer(t *testing.T) {
+func TestC3Thm70WithdrawalOrderingSingleProviderConsumer(t *testing.T) {
 	rt := detNew(t)
-	key := NewKey[string]("c3.t63.withdrawal").Capability()
+	key := NewKey[string]("c3.thm70.withdrawal").Capability()
 	rec := c3NewRecorder(key)
 
-	p := c3LoadFiber(t, rt, rec, &t66Comp{name: "P", key: key, provide: true}, true)
+	p := c3LoadFiber(t, rt, rec, &thm73Comp{name: "P", key: key, provide: true}, true)
 	pAct := c3ActivateProvider(t, rt, rec, p)
-	c := c3LoadFiber(t, rt, rec, &t66Comp{name: "C", key: key, consumer: true}, false)
+	c := c3LoadFiber(t, rt, rec, &thm73Comp{name: "C", key: key, consumer: true}, false)
 	cAct := c3ActivateConsumer(t, rt, rec, c)
 
 	prov := ProviderIdentity{FiberID: p.ID(), ActivationID: pAct}
@@ -746,10 +746,10 @@ func TestC3T63WithdrawalOrderingSingleProviderConsumer(t *testing.T) {
 	// Consumer-first withdrawal: P must still be Active (not yet Unloading)
 	// while C is leaving Active.
 	if p.State() != StateActive {
-		t.Fatalf("T63-B: P = %v while C unwinding; provider must not unload before consumers end", p.State())
+		t.Fatalf("Thm70-B: P = %v while C unwinding; provider must not unload before consumers end", p.State())
 	}
 	if c.State() == StateActive {
-		t.Fatalf("T63-B: C still Active after ProviderWithdrawn; C=%v", c.State())
+		t.Fatalf("Thm70-B: C still Active after ProviderWithdrawn; C=%v", c.State())
 	}
 	if _, err := c3ExpectProviderEvent(rec.Events, c3ProviderWithdrawn, prov); err != nil {
 		t.Fatal(err)
@@ -760,10 +760,10 @@ func TestC3T63WithdrawalOrderingSingleProviderConsumer(t *testing.T) {
 		t.Fatalf("P not Gone after drain: %v", p.State())
 	}
 	if c.State() == StateActive {
-		t.Fatalf("T63-B: C=%v Active after provider withdrawal drained; want Pending/Gone", c.State())
+		t.Fatalf("Thm70-B: C=%v Active after provider withdrawal drained; want Pending/Gone", c.State())
 	}
 	if bind, ok := c3BoundProvider(c, key); ok {
-		t.Fatalf("T63-B: C still carries a live dependency snapshot %+v after withdrawal", bind)
+		t.Fatalf("Thm70-B: C still carries a live dependency snapshot %+v after withdrawal", bind)
 	}
 	active, err := c3ExpectConsumerBindingEvent(rec.Events, c3ConsumerActive, c.ID(), cAct, prov)
 	if err != nil {
@@ -774,7 +774,7 @@ func TestC3T63WithdrawalOrderingSingleProviderConsumer(t *testing.T) {
 		t.Fatal(err)
 	}
 	if active.Seq >= wd.Seq {
-		t.Fatalf("T63-B: ConsumerActive seq %d not before ProviderWithdrawn seq %d", active.Seq, wd.Seq)
+		t.Fatalf("Thm70-B: ConsumerActive seq %d not before ProviderWithdrawn seq %d", active.Seq, wd.Seq)
 	}
 	c3Close(t, rt)
 	t.Log("C3-02 PASS: ConsumerActive < ProviderWithdrawn; no Active consumer after withdrawal")
@@ -784,14 +784,14 @@ func TestC3T63WithdrawalOrderingSingleProviderConsumer(t *testing.T) {
 // C3-03 — Provider reload: generations never mix
 // ---------------------------------------------------------------------------
 
-func TestC3T63ReloadGeneration(t *testing.T) {
+func TestC3Thm70ReloadGeneration(t *testing.T) {
 	rt := detNew(t)
-	key := NewKey[string]("c3.t63.reload").Capability()
+	key := NewKey[string]("c3.thm70.reload").Capability()
 	rec := c3NewRecorder(key)
 
-	p := c3LoadFiber(t, rt, rec, &t66Comp{name: "P", key: key, provide: true}, true)
+	p := c3LoadFiber(t, rt, rec, &thm73Comp{name: "P", key: key, provide: true}, true)
 	pAct1 := c3ActivateProvider(t, rt, rec, p)
-	c := c3LoadFiber(t, rt, rec, &t66Comp{name: "C", key: key, consumer: true}, false)
+	c := c3LoadFiber(t, rt, rec, &thm73Comp{name: "C", key: key, consumer: true}, false)
 	cAct1 := c3ActivateConsumer(t, rt, rec, c)
 	prov1 := ProviderIdentity{FiberID: p.ID(), ActivationID: pAct1}
 
@@ -816,14 +816,14 @@ func TestC3T63ReloadGeneration(t *testing.T) {
 	pAct2 := c3ActivateProvider(t, rt, rec, p)
 	prov2 := ProviderIdentity{FiberID: p.ID(), ActivationID: pAct2}
 	if pAct2 == pAct1 {
-		t.Fatalf("T63 reload: provider activation did not advance (A1=%d A2=%d)", pAct1, pAct2)
+		t.Fatalf("Thm70 reload: provider activation did not advance (A1=%d A2=%d)", pAct1, pAct2)
 	}
 	if prov1 == prov2 {
-		t.Fatalf("T63 reload: ProviderIdentity did not change across reload (%s)", c3ID(prov1))
+		t.Fatalf("Thm70 reload: ProviderIdentity did not change across reload (%s)", c3ID(prov1))
 	}
 	cAct2 := c3ActivateConsumer(t, rt, rec, c)
 	if cAct2 == cAct1 {
-		t.Fatalf("T63 reload: consumer activation did not advance (A1=%d A2=%d)", cAct1, cAct2)
+		t.Fatalf("Thm70 reload: consumer activation did not advance (A1=%d A2=%d)", cAct1, cAct2)
 	}
 
 	// Generation-2 events must bind P/A2, never P/A1.
@@ -836,18 +836,18 @@ func TestC3T63ReloadGeneration(t *testing.T) {
 	for _, e := range rec.Events {
 		if e.Kind == c3ConsumerLoading || e.Kind == c3ConsumerActive {
 			if e.ActivationID == cAct2 && e.Provider == prov1 {
-				t.Fatalf("T63 reload: generation-2 consumer event bound to withdrawn generation 1: %s", e)
+				t.Fatalf("Thm70 reload: generation-2 consumer event bound to withdrawn generation 1: %s", e)
 			}
 		}
 	}
 	c3AssertRecord(t, p, key, prov2, false, "after reload")
 	if bind, ok := c3BoundProvider(c, key); !ok || bind != prov2 {
-		t.Fatalf("T63 reload: consumer binding = %+v (ok=%v), want P %s", bind, ok, c3ID(prov2))
+		t.Fatalf("Thm70 reload: consumer binding = %+v (ok=%v), want P %s", bind, ok, c3ID(prov2))
 	}
 
 	// Full generation-1 + generation-2 ledger is ordered per binding.
-	if err := c3CheckT63(rec.Events); err != nil {
-		t.Fatalf("T63 reload ledger: %v\nledger:\n%s", err, c3Ledger(rec.Events))
+	if err := c3CheckThm70(rec.Events); err != nil {
+		t.Fatalf("Thm70 reload ledger: %v\nledger:\n%s", err, c3Ledger(rec.Events))
 	}
 	c3Close(t, rt)
 	t.Logf("C3-03 PASS: P/A1 -> C/Ac1 -> Withdrawn(A1) -> P/A2 -> C/Ac2 binds %s only", c3ID(prov2))
@@ -857,19 +857,19 @@ func TestC3T63ReloadGeneration(t *testing.T) {
 // C3-04 — Multiple consumers of one provider activation
 // ---------------------------------------------------------------------------
 
-func TestC3T63MultiConsumerOrdering(t *testing.T) {
+func TestC3Thm70MultiConsumerOrdering(t *testing.T) {
 	rt := detNew(t)
-	key := NewKey[string]("c3.t63.multi").Capability()
+	key := NewKey[string]("c3.thm70.multi").Capability()
 	rec := c3NewRecorder(key)
 
-	p := c3LoadFiber(t, rt, rec, &t66Comp{name: "P", key: key, provide: true}, true)
+	p := c3LoadFiber(t, rt, rec, &thm73Comp{name: "P", key: key, provide: true}, true)
 	pAct := c3ActivateProvider(t, rt, rec, p)
 	prov := ProviderIdentity{FiberID: p.ID(), ActivationID: pAct}
 
 	var cs []*Fiber
 	var cActs []ActivationID
 	for i := 0; i < 3; i++ {
-		c := c3LoadFiber(t, rt, rec, &t66Comp{name: fmt.Sprintf("C%d", i), key: key, consumer: true}, false)
+		c := c3LoadFiber(t, rt, rec, &thm73Comp{name: fmt.Sprintf("C%d", i), key: key, consumer: true}, false)
 		cs = append(cs, c)
 		cActs = append(cActs, c3ActivateConsumer(t, rt, rec, c))
 	}
@@ -887,7 +887,7 @@ func TestC3T63MultiConsumerOrdering(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !(ready.Seq < load.Seq && load.Seq < active.Seq) {
-			t.Fatalf("T63-A C%d: ready=%d load=%d active=%d not strictly ordered", i, ready.Seq, load.Seq, active.Seq)
+			t.Fatalf("Thm70-A C%d: ready=%d load=%d active=%d not strictly ordered", i, ready.Seq, load.Seq, active.Seq)
 		}
 	}
 
@@ -902,10 +902,10 @@ func TestC3T63MultiConsumerOrdering(t *testing.T) {
 	c3Drain(t, rt, rec)
 	for i, c := range cs {
 		if c.State() == StateActive {
-			t.Fatalf("T63-B: C%d=%v still Active after provider withdrawal", i, c.State())
+			t.Fatalf("Thm70-B: C%d=%v still Active after provider withdrawal", i, c.State())
 		}
 		if _, ok := c3BoundProvider(c, key); ok {
-			t.Fatalf("T63-B: C%d still carries a live dependency snapshot after withdrawal", i)
+			t.Fatalf("Thm70-B: C%d still carries a live dependency snapshot after withdrawal", i)
 		}
 	}
 	c3Close(t, rt)
@@ -916,18 +916,18 @@ func TestC3T63MultiConsumerOrdering(t *testing.T) {
 // C3-05 — Deterministic randomized schedules (5 seeds x 40 cycles)
 // ---------------------------------------------------------------------------
 
-func TestC3T63RandomizedSchedule(t *testing.T) {
+func TestC3Thm70RandomizedSchedule(t *testing.T) {
 	for _, seed := range []uint64{1, 2, 3, 4, 5} {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
 			rt := detNew(t)
-			key := NewKey[string]("c3.t63.random").Capability()
+			key := NewKey[string]("c3.thm70.random").Capability()
 			rec := c3NewRecorder(key)
 
-			p := c3LoadFiber(t, rt, rec, &t66Comp{name: "P", key: key, provide: true}, true)
+			p := c3LoadFiber(t, rt, rec, &thm73Comp{name: "P", key: key, provide: true}, true)
 			var cs []*Fiber
 			for i := 0; i < 3; i++ {
-				cs = append(cs, c3LoadFiber(t, rt, rec, &t66Comp{name: fmt.Sprintf("C%d", i), key: key, consumer: true}, false))
+				cs = append(cs, c3LoadFiber(t, rt, rec, &thm73Comp{name: fmt.Sprintf("C%d", i), key: key, consumer: true}, false))
 			}
 			all := append([]*Fiber{p}, cs...)
 			mounted := make(map[FiberID]bool, len(all))
@@ -947,7 +947,7 @@ func TestC3T63RandomizedSchedule(t *testing.T) {
 			// Randomized cycles. op=4 executes ONE currently-parked enabled
 			// step chosen by the seed; the set of parked steps is the
 			// timing-dependent completion set, so two runs of a seed may take
-			// different (but always legal) interleavings. The T63 oracle is
+			// different (but always legal) interleavings. The Thm70 oracle is
 			// schedule-agnostic: every prefix must satisfy the ordering.
 			for cycle := 0; cycle < 40; cycle++ {
 				op := rng.IntN(5)
@@ -978,7 +978,7 @@ func TestC3T63RandomizedSchedule(t *testing.T) {
 				t.Fatalf("C3-05 seed %d: degenerate schedule (ready=%d loading=%d active=%d withdrawn=%d); ledger:\n%s",
 					seed, nReady, nLoading, nActive, nWithdrawn, c3Ledger(rec.Events))
 			}
-			if err := c3CheckT63(rec.Events); err != nil {
+			if err := c3CheckThm70(rec.Events); err != nil {
 				t.Fatalf("C3-05 seed %d: %v\nledger:\n%s", seed, err, c3Ledger(rec.Events))
 			}
 			c3Close(t, rt)
@@ -1013,14 +1013,14 @@ func c3Toggle(t *testing.T, rt *Runtime, f *Fiber, mounted map[FiberID]bool) {
 // revive a withdrawn generation or rebind a consumer to it.
 // ---------------------------------------------------------------------------
 
-func TestC3T63StaleApplyDoneInjection(t *testing.T) {
+func TestC3Thm70StaleApplyDoneInjection(t *testing.T) {
 	rt := detNew(t)
-	key := NewKey[string]("c3.t63.stale.apply").Capability()
+	key := NewKey[string]("c3.thm70.stale.apply").Capability()
 	rec := c3NewRecorder(key)
 
-	p := c3LoadFiber(t, rt, rec, &t66Comp{name: "P", key: key, provide: true}, true)
+	p := c3LoadFiber(t, rt, rec, &thm73Comp{name: "P", key: key, provide: true}, true)
 	pAct1 := c3ActivateProvider(t, rt, rec, p)
-	c := c3LoadFiber(t, rt, rec, &t66Comp{name: "C", key: key, consumer: true}, false)
+	c := c3LoadFiber(t, rt, rec, &thm73Comp{name: "C", key: key, consumer: true}, false)
 	cAct1 := c3ActivateConsumer(t, rt, rec, c)
 
 	// Sentinel: if a stale ApplyDone ever leaks into the NEW activation's
@@ -1055,13 +1055,13 @@ func TestC3T63StaleApplyDoneInjection(t *testing.T) {
 	}
 	c3Settle(t, rt, rec, "stale ApplyDone(P/A1) while P/A2 Loading")
 	if p.State() != StateLoading || ActivationID(actIDOf(p)) != pAct2 {
-		t.Fatalf("T63 stale: P = %v act=%d after stale ApplyDone, want Loading/%d", p.State(), actIDOf(p), pAct2)
+		t.Fatalf("Thm70 stale: P = %v act=%d after stale ApplyDone, want Loading/%d", p.State(), actIDOf(p), pAct2)
 	}
 	if staleFired {
-		t.Fatal("T63 stale: stale ApplyDone effect was committed into the new activation")
+		t.Fatal("Thm70 stale: stale ApplyDone effect was committed into the new activation")
 	}
 	if len(rec.Events) != eventsBeforeInject {
-		t.Fatalf("T63 stale: stale ApplyDone produced events; before=%d after=%d\n%s", eventsBeforeInject, len(rec.Events), c3Ledger(rec.Events))
+		t.Fatalf("Thm70 stale: stale ApplyDone produced events; before=%d after=%d\n%s", eventsBeforeInject, len(rec.Events), c3Ledger(rec.Events))
 	}
 	prov2 := ProviderIdentity{FiberID: p.ID(), ActivationID: pAct2}
 
@@ -1082,10 +1082,10 @@ func TestC3T63StaleApplyDoneInjection(t *testing.T) {
 	}
 	c3Settle(t, rt, rec, "stale ApplyDone(C/Ac1) while C/Ac2 Loading")
 	if c.State() != StateLoading || ActivationID(actIDOf(c)) != cAct2 {
-		t.Fatalf("T63 stale: C = %v act=%d after stale consumer ApplyDone, want Loading/%d", c.State(), actIDOf(c), cAct2)
+		t.Fatalf("Thm70 stale: C = %v act=%d after stale consumer ApplyDone, want Loading/%d", c.State(), actIDOf(c), cAct2)
 	}
 	if len(rec.Events) != before1b {
-		t.Fatalf("T63 stale: stale consumer ApplyDone produced events\n%s", c3Ledger(rec.Events))
+		t.Fatalf("Thm70 stale: stale consumer ApplyDone produced events\n%s", c3Ledger(rec.Events))
 	}
 
 	// Complete generation 2 activation.
@@ -1094,7 +1094,7 @@ func TestC3T63StaleApplyDoneInjection(t *testing.T) {
 		t.Fatalf("C not Active after real A2 ApplyDone: %v", c.State())
 	}
 	if bind, ok := c3BoundProvider(c, key); !ok || bind != prov2 {
-		t.Fatalf("T63 stale: consumer bound to %+v (ok=%v), want %s", bind, ok, c3ID(prov2))
+		t.Fatalf("Thm70 stale: consumer bound to %+v (ok=%v), want %s", bind, ok, c3ID(prov2))
 	}
 
 	// Injection point 2: stale ApplyDone(P/A1) + ApplyDone(C/Ac1) while both
@@ -1108,13 +1108,13 @@ func TestC3T63StaleApplyDoneInjection(t *testing.T) {
 	}
 	c3Settle(t, rt, rec, "stale ApplyDones while A2 Active")
 	if p.State() != StateActive || ActivationID(actIDOf(p)) != pAct2 {
-		t.Fatalf("T63 stale: P disturbed by stale apply; P=%v act=%d", p.State(), actIDOf(p))
+		t.Fatalf("Thm70 stale: P disturbed by stale apply; P=%v act=%d", p.State(), actIDOf(p))
 	}
 	if c.State() != StateActive || ActivationID(actIDOf(c)) != cAct2 {
-		t.Fatalf("T63 stale: C disturbed by stale apply; C=%v act=%d", c.State(), actIDOf(c))
+		t.Fatalf("Thm70 stale: C disturbed by stale apply; C=%v act=%d", c.State(), actIDOf(c))
 	}
 	if len(rec.Events) != before2 {
-		t.Fatalf("T63 stale: stale apply while Active produced events\n%s", c3Ledger(rec.Events))
+		t.Fatalf("Thm70 stale: stale apply while Active produced events\n%s", c3Ledger(rec.Events))
 	}
 
 	// Withdraw generation 2 fully; the stale sentinel must never have fired.
@@ -1124,7 +1124,7 @@ func TestC3T63StaleApplyDoneInjection(t *testing.T) {
 	c3Settle(t, rt, rec, "Dispose(P/A2)")
 	c3Drain(t, rt, rec)
 	if staleFired {
-		t.Fatal("T63 stale: stale ApplyDone effect leaked into generation 2 and ran during unwind")
+		t.Fatal("Thm70 stale: stale ApplyDone effect leaked into generation 2 and ran during unwind")
 	}
 	if _, err := c3ExpectProviderEvent(rec.Events, c3ProviderWithdrawn, prov2); err != nil {
 		t.Fatal(err)
@@ -1137,14 +1137,14 @@ func TestC3T63StaleApplyDoneInjection(t *testing.T) {
 // C3-07 — Stale UnwindDone injection
 // ---------------------------------------------------------------------------
 
-func TestC3T63StaleUnwindDoneInjection(t *testing.T) {
+func TestC3Thm70StaleUnwindDoneInjection(t *testing.T) {
 	rt := detNew(t)
-	key := NewKey[string]("c3.t63.stale.unwind").Capability()
+	key := NewKey[string]("c3.thm70.stale.unwind").Capability()
 	rec := c3NewRecorder(key)
 
-	p := c3LoadFiber(t, rt, rec, &t66Comp{name: "P", key: key, provide: true}, true)
+	p := c3LoadFiber(t, rt, rec, &thm73Comp{name: "P", key: key, provide: true}, true)
 	pAct1 := c3ActivateProvider(t, rt, rec, p)
-	c := c3LoadFiber(t, rt, rec, &t66Comp{name: "C", key: key, consumer: true}, false)
+	c := c3LoadFiber(t, rt, rec, &thm73Comp{name: "C", key: key, consumer: true}, false)
 	cAct1 := c3ActivateConsumer(t, rt, rec, c)
 	prov1 := ProviderIdentity{FiberID: p.ID(), ActivationID: pAct1}
 
@@ -1175,10 +1175,10 @@ func TestC3T63StaleUnwindDoneInjection(t *testing.T) {
 	}
 	c3Settle(t, rt, rec, "stale UnwindDone(P/A1) while P/A2 Loading")
 	if p.State() != StateLoading || ActivationID(actIDOf(p)) != pAct2 {
-		t.Fatalf("T63 stale: P = %v act=%d after stale UnwindDone, want Loading/%d", p.State(), actIDOf(p), pAct2)
+		t.Fatalf("Thm70 stale: P = %v act=%d after stale UnwindDone, want Loading/%d", p.State(), actIDOf(p), pAct2)
 	}
 	if len(rec.Events) != before {
-		t.Fatalf("T63 stale: stale UnwindDone produced events\n%s", c3Ledger(rec.Events))
+		t.Fatalf("Thm70 stale: stale UnwindDone produced events\n%s", c3Ledger(rec.Events))
 	}
 
 	// Complete generation 2 activation (P/A2 Active, C/Ac2 Active binding A2).
@@ -1190,7 +1190,7 @@ func TestC3T63StaleUnwindDoneInjection(t *testing.T) {
 		t.Fatalf("C not Active: %v", c.State())
 	}
 	if bind, ok := c3BoundProvider(c, key); !ok || bind != prov2 {
-		t.Fatalf("T63 stale: consumer bound to %+v (ok=%v), want %s", bind, ok, c3ID(prov2))
+		t.Fatalf("Thm70 stale: consumer bound to %+v (ok=%v), want %s", bind, ok, c3ID(prov2))
 	}
 
 	// Withdraw generation 2; drain the consumer, leave P Unloading with its
@@ -1222,14 +1222,14 @@ func TestC3T63StaleUnwindDoneInjection(t *testing.T) {
 	}
 	c3Settle(t, rt, rec, "stale UnwindDones while P/A2 Unloading")
 	if p.State() != StateUnloading || ActivationID(actIDOf(p)) != pAct2 {
-		t.Fatalf("T63 stale: P disturbed by stale unwind; P=%v act=%d", p.State(), actIDOf(p))
+		t.Fatalf("Thm70 stale: P disturbed by stale unwind; P=%v act=%d", p.State(), actIDOf(p))
 	}
 	if len(rec.Events) != before2 {
-		t.Fatalf("T63 stale: stale UnwindDones produced events\n%s", c3Ledger(rec.Events))
+		t.Fatalf("Thm70 stale: stale UnwindDones produced events\n%s", c3Ledger(rec.Events))
 	}
 	en := rt.detEnabledSteps()
 	if len(en) != 1 || en[0] != pUw {
-		t.Fatalf("T63 stale: enabled steps = %v, want exactly [%v]", en, pUw)
+		t.Fatalf("Thm70 stale: enabled steps = %v, want exactly [%v]", en, pUw)
 	}
 
 	// Real UnwindDone(A2): P/A2 ends; generation-1 events untouched.
@@ -1248,11 +1248,11 @@ func TestC3T63StaleUnwindDoneInjection(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Oracle self-check: the pure T63 oracle recognizes violations in synthetic
+// Oracle self-check: the pure Thm70 oracle recognizes violations in synthetic
 // traces (no Runtime needed).
 // ---------------------------------------------------------------------------
 
-func TestC3T63OracleSanity(t *testing.T) {
+func TestC3Thm70OracleSanity(t *testing.T) {
 	p1 := ProviderIdentity{FiberID: 1, ActivationID: 1}
 	p2 := ProviderIdentity{FiberID: 1, ActivationID: 2}
 	c1 := ProviderIdentity{FiberID: 2, ActivationID: 1}
@@ -1277,7 +1277,7 @@ func TestC3T63OracleSanity(t *testing.T) {
 		ev(c3ConsumerLoading, c2, p2),
 		ev(c3ConsumerActive, c2, p2),
 	}
-	if err := c3CheckT63(good); err != nil {
+	if err := c3CheckThm70(good); err != nil {
 		t.Fatalf("good two-generation ledger must PASS: %v", err)
 	}
 
@@ -1288,7 +1288,7 @@ func TestC3T63OracleSanity(t *testing.T) {
 		evP(c3ProviderReady, p1),
 		ev(c3ConsumerActive, c1, p1),
 	}
-	if err := c3CheckT63(early); err == nil {
+	if err := c3CheckThm70(early); err == nil {
 		t.Fatal("ConsumerLoading before ProviderReady must FAIL")
 	}
 
@@ -1298,7 +1298,7 @@ func TestC3T63OracleSanity(t *testing.T) {
 		evP(c3ProviderReady, p1),
 		ev(c3ConsumerActive, c1, p1),
 	}
-	if err := c3CheckT63(noLoad); err == nil {
+	if err := c3CheckThm70(noLoad); err == nil {
 		t.Fatal("ConsumerActive without ConsumerLoading must FAIL")
 	}
 
@@ -1310,7 +1310,7 @@ func TestC3T63OracleSanity(t *testing.T) {
 		evP(c3ProviderWithdrawn, p1),
 		ev(c3ConsumerActive, c1, p1),
 	}
-	if err := c3CheckT63(lateActive); err == nil {
+	if err := c3CheckThm70(lateActive); err == nil {
 		t.Fatal("ConsumerActive after ProviderWithdrawn must FAIL")
 	}
 
@@ -1323,14 +1323,14 @@ func TestC3T63OracleSanity(t *testing.T) {
 		evP(c3ProviderWithdrawn, p1),
 		ev(c3ConsumerLoading, c2, p1),
 	}
-	if err := c3CheckT63(lateLoad); err == nil {
+	if err := c3CheckThm70(lateLoad); err == nil {
 		t.Fatal("ConsumerLoading after ProviderWithdrawn must FAIL")
 	}
 
 	// Mutation 5: Withdrawn without Ready.
 	seq = 0
 	orphanWd := []c3Event{evP(c3ProviderWithdrawn, p1)}
-	if err := c3CheckT63(orphanWd); err == nil {
+	if err := c3CheckThm70(orphanWd); err == nil {
 		t.Fatal("ProviderWithdrawn without ProviderReady must FAIL")
 	}
 
@@ -1341,7 +1341,7 @@ func TestC3T63OracleSanity(t *testing.T) {
 		ev(c3ConsumerLoading, c1, p1),
 		evP(c3ProviderReady, p1),
 	}
-	if err := c3CheckT63(dupReady); err == nil {
+	if err := c3CheckThm70(dupReady); err == nil {
 		t.Fatal("duplicate ProviderReady must FAIL")
 	}
 
@@ -1351,7 +1351,7 @@ func TestC3T63OracleSanity(t *testing.T) {
 		evP(c3ProviderReady, p1),
 		{Seq: 1, Kind: c3ConsumerLoading, FiberID: c1.FiberID, ActivationID: c1.ActivationID, Provider: p1, Consumer: c1},
 	}
-	if err := c3CheckT63(eq); err == nil {
+	if err := c3CheckThm70(eq); err == nil {
 		t.Fatal("non-strict ProviderReady == ConsumerLoading must FAIL")
 	}
 
@@ -1364,7 +1364,7 @@ func TestC3T63OracleSanity(t *testing.T) {
 		evP(c3ProviderReady, p2),
 		ev(c3ConsumerLoading, c2, p1), // new consumer activation bound to OLD generation
 	}
-	if err := c3CheckT63(wrongGen); err == nil {
+	if err := c3CheckThm70(wrongGen); err == nil {
 		t.Fatal("generation-2 consumer bound to withdrawn generation-1 must FAIL")
 	}
 

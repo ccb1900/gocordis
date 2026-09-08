@@ -10,36 +10,36 @@ import (
 	"time"
 )
 
-// T63 — Ordering. A consumer may enter Apply only when every required
+// Thm70 — Ordering. A consumer may enter Apply only when every required
 // dependency is satisfied (provider Active). We drive randomized provider
 // up/down cycles and assert, from a user-level event log, that every consumer
 // Apply sits between a provider-up and the next provider-down.
 
-type t63Rec struct {
+type thm70Rec struct {
 	mu sync.Mutex
 	ev []string
 }
 
-func (r *t63Rec) add(e string) {
+func (r *thm70Rec) add(e string) {
 	r.mu.Lock()
 	r.ev = append(r.ev, e)
 	r.mu.Unlock()
 }
-func (r *t63Rec) all() []string {
+func (r *thm70Rec) all() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.ev...)
 }
 
-type t63Provider struct {
-	rec *t63Rec
+type thm70Provider struct {
+	rec *thm70Rec
 }
 
-func (c *t63Provider) Name() string          { return "P" }
-func (c *t63Provider) Inject() []Dependency  { return nil }
-func (c *t63Provider) Provide() []Capability { return []Capability{t63Key.Capability()} }
-func (c *t63Provider) Apply(ctx *Context) (Cleanup, error) {
-	if err := ctx.provideCap(t63Key.Capability(), "v"); err != nil {
+func (c *thm70Provider) Name() string          { return "P" }
+func (c *thm70Provider) Inject() []Dependency  { return nil }
+func (c *thm70Provider) Provide() []Capability { return []Capability{thm70Key.Capability()} }
+func (c *thm70Provider) Apply(ctx *Context) (Cleanup, error) {
+	if err := ctx.provideCap(thm70Key.Capability(), "v"); err != nil {
 		return nil, err
 	}
 	c.rec.add("P:up")
@@ -49,25 +49,25 @@ func (c *t63Provider) Apply(ctx *Context) (Cleanup, error) {
 	}, nil
 }
 
-var t63Key = NewKey[string]("t63.order")
+var thm70Key = NewKey[string]("thm70.order")
 
-type t63Consumer struct {
+type thm70Consumer struct {
 	name string
-	rec  *t63Rec
+	rec  *thm70Rec
 }
 
-func (c *t63Consumer) Name() string          { return c.name }
-func (c *t63Consumer) Inject() []Dependency  { return []Dependency{{Key: t63Key.Capability()}} }
-func (c *t63Consumer) Provide() []Capability { return nil }
-func (c *t63Consumer) Apply(ctx *Context) (Cleanup, error) {
-	if _, ok := ctx.realm.lookup(t63Key.Capability()); !ok {
+func (c *thm70Consumer) Name() string          { return c.name }
+func (c *thm70Consumer) Inject() []Dependency  { return []Dependency{{Key: thm70Key.Capability()}} }
+func (c *thm70Consumer) Provide() []Capability { return nil }
+func (c *thm70Consumer) Apply(ctx *Context) (Cleanup, error) {
+	if _, ok := ctx.realm.lookupOwn(thm70Key.Capability()); !ok {
 		return nil, fmt.Errorf("consumer %s applied without provider", c.name)
 	}
 	c.rec.add("apply:" + c.name)
 	return nil, nil
 }
 
-func t63Validate(events []string) error {
+func thm70Validate(events []string) error {
 	up := false
 	for _, e := range events {
 		switch {
@@ -77,15 +77,15 @@ func t63Validate(events []string) error {
 			up = false
 		case strings.HasPrefix(e, "apply:"):
 			if !up {
-				return fmt.Errorf("T63_ORDERING: %s occurred while provider inactive", e)
+				return fmt.Errorf("THM70_ORDERING: %s occurred while provider inactive", e)
 			}
 		}
 	}
 	return nil
 }
 
-func TestT63RandomizedOrdering(t *testing.T) {
-	rec := &t63Rec{}
+func TestThm70RandomizedOrdering(t *testing.T) {
+	rec := &thm70Rec{}
 	for _, seed := range []uint64{1, 2, 3, 4, 5} {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
@@ -95,7 +95,7 @@ func TestT63RandomizedOrdering(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			p := &t63Provider{rec: rec}
+			p := &thm70Provider{rec: rec}
 			pf, err := rt.Load(p)
 			if err != nil {
 				t.Fatal(err)
@@ -105,7 +105,7 @@ func TestT63RandomizedOrdering(t *testing.T) {
 			}
 			consumers := []*Fiber{}
 			for i := 0; i < 3; i++ {
-				cf, err := rt.Load(&t63Consumer{name: fmt.Sprintf("C%d", i), rec: rec})
+				cf, err := rt.Load(&thm70Consumer{name: fmt.Sprintf("C%d", i), rec: rec})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -114,7 +114,7 @@ func TestT63RandomizedOrdering(t *testing.T) {
 				}
 				consumers = append(consumers, cf)
 			}
-			if err := t63Validate(rec.all()); err != nil {
+			if err := thm70Validate(rec.all()); err != nil {
 				t.Fatal(err)
 			}
 
@@ -148,8 +148,8 @@ func TestT63RandomizedOrdering(t *testing.T) {
 						}
 					}
 				}
-				if err := t63Validate(rec.all()); err != nil {
-					t.Fatalf("T63 seed=%d cycle=%d: %v", seed, cycle, err)
+				if err := thm70Validate(rec.all()); err != nil {
+					t.Fatalf("Thm70 seed=%d cycle=%d: %v", seed, cycle, err)
 				}
 			}
 			_ = pf.Dispose()

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// C-1 (minimal): single-fiber T61 baseline under the deterministic driver.
+// C-1 (minimal): single-fiber Thm68 baseline under the deterministic driver.
 //   baseline run: nothing loaded -> quiescent -> Observe(base)
 //   subject run:  Load(P) -> driver -> Active -> Observe(A) -> Close ->
 //                 Observe(post) ; assert post == base.
@@ -37,7 +37,7 @@ func c1Activation(f *Fiber) uint64 {
 	return uint64(f.activation.id)
 }
 
-func TestC1T61MinimalBaseline(t *testing.T) {
+func TestC1Thm68MinimalBaseline(t *testing.T) {
 	// baseline run
 	rtB := detNew(t)
 	if err := semanticQuiescent(rtB); err != nil {
@@ -49,7 +49,7 @@ func TestC1T61MinimalBaseline(t *testing.T) {
 	// subject run
 	rt := detNew(t)
 	step := 0
-	f, err := rt.Load(&t66Comp{name: "P"}) // independent single fiber
+	f, err := rt.Load(&thm73Comp{name: "P"}) // independent single fiber
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestC1T61MinimalBaseline(t *testing.T) {
 	}
 	post := observe(rt)
 	if !ObservationsEquivalent(base, post) {
-		t.Fatalf("T61 post-close != never-loaded baseline:\nbase %s\npost %s", base.canonical(), post.canonical())
+		t.Fatalf("Thm68 post-close != never-loaded baseline:\nbase %s\npost %s", base.canonical(), post.canonical())
 	}
 	t.Logf("C-1 PASS: driver->Close boundary clean (steps=%d)", step+1)
 }

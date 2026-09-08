@@ -82,17 +82,19 @@ func (r *realm) interceptsForKey(key CapabilityKey) []*interceptEntry {
 	return out
 }
 
-// lookup resolves key along the realm chain (own first, then ancestors).
-func (r *realm) lookup(key CapabilityKey) (*providerRecord, bool) {
-	for cur := r; cur != nil; cur = cur.parent {
-		cur.mu.RLock()
-		rec, ok := cur.own[key]
-		cur.mu.RUnlock()
-		if ok {
-			return rec, true
-		}
+// lookupOwn resolves key in THIS realm's own map only — one namespace, no
+// ancestor fallback (paper §4.4 Isolation: each declared key resolves against
+// exactly one realm, the realm of the fiber declaring it; the one shared realm
+// is the diagonal case). Which namespace a fiber reads for a key is decided by
+// its per-key isolation table (paper Definition 24), not by a realm walk.
+func (r *realm) lookupOwn(key CapabilityKey) (*providerRecord, bool) {
+	if r == nil {
+		return nil, false
 	}
-	return nil, false
+	r.mu.RLock()
+	rec, ok := r.own[key]
+	r.mu.RUnlock()
+	return rec, ok
 }
 
 // registerOwn inserts a provider into THIS realm's own map. It fails with

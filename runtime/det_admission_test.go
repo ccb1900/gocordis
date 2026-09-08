@@ -130,8 +130,8 @@ func TestBExec03ShutdownRegressions(t *testing.T) {
 // returns nil with pending 0 and the orchestrator done.
 func testBExecCloseActive(t *testing.T) {
 	rt := detNew(t)
-	key := t66Key()
-	pf, err := rt.Load(&t66Comp{name: "P", key: key, provide: true})
+	key := thm73Key()
+	pf, err := rt.Load(&thm73Comp{name: "P", key: key, provide: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,8 +161,8 @@ func testBExecCloseNormal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := t66Key()
-	pf, err := rt.Load(&t66Comp{name: "P", key: key, provide: true})
+	key := thm73Key()
+	pf, err := rt.Load(&thm73Comp{name: "P", key: key, provide: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,8 +181,8 @@ func testBExecCloseNormal(t *testing.T) {
 // becoming Active and without a new activation being started.
 func testBExecCloseLoadingConsumer(t *testing.T) {
 	rt := detNew(t)
-	key := t66Key()
-	pf, err := rt.Load(&t66Comp{name: "P", key: key, provide: true})
+	key := thm73Key()
+	pf, err := rt.Load(&thm73Comp{name: "P", key: key, provide: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func testBExecCloseLoadingConsumer(t *testing.T) {
 	if !waitB(t, rt, 3000, func() bool { return pf.State() == StateActive }) {
 		t.Fatalf("P not Active")
 	}
-	xf, err := rt.Load(&t66Comp{name: "X", key: key, consumer: true})
+	xf, err := rt.Load(&thm73Comp{name: "X", key: key, consumer: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,19 +11,19 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// T66 — Progress: deterministic quiescence driver (no sleeps; test-only; uses
+// Thm73 — Progress: deterministic quiescence driver (no sleeps; test-only; uses
 // the public command queue + per-fiber state signals).
 // ---------------------------------------------------------------------------
 
-type t66Probe struct{ done chan struct{} }
+type thm73Probe struct{ done chan struct{} }
 
-func (p *t66Probe) apply(*orchestrator) { close(p.done) }
+func (p *thm73Probe) apply(*orchestrator) { close(p.done) }
 
 func resolveFor(rt *Runtime, f *Fiber, key CapabilityKey) (ProviderIdentity, bool) {
 	if f.realm == nil {
 		return ProviderIdentity{}, false
 	}
-	rec, ok := f.realm.lookup(key)
+	rec, ok := f.realm.lookupOwn(key)
 	if !ok || rec.retiring {
 		return ProviderIdentity{}, false
 	}
@@ -39,14 +39,14 @@ func resolveFor(rt *Runtime, f *Fiber, key CapabilityKey) (ProviderIdentity, boo
 	return rec.identity, valid
 }
 
-type t66ScanProbe struct {
+type thm73ScanProbe struct {
 	done       chan struct{}
 	inFlight   bool
 	waiterID   FiberID
 	pendingSat string
 }
 
-func (p *t66ScanProbe) apply(o *orchestrator) {
+func (p *thm73ScanProbe) apply(o *orchestrator) {
 	o.rt.mu.RLock()
 	fs := make([]*Fiber, 0, len(o.rt.fibers))
 	for _, f := range o.rt.fibers {
@@ -76,14 +76,14 @@ func (p *t66ScanProbe) apply(o *orchestrator) {
 	close(p.done)
 }
 
-// t66Drain advances the orchestrator deterministically until quiescence. The
+// thm73Drain advances the orchestrator deterministically until quiescence. The
 // state scan runs on the orchestrator goroutine (no cross-goroutine race);
 // waiting for the next transition uses the generation signal under the fiber
 // lock.
-func t66Drain(rt *Runtime) (int, error) {
+func thm73Drain(rt *Runtime) (int, error) {
 	iter := 0
 	for {
-		scan := &t66ScanProbe{done: make(chan struct{})}
+		scan := &thm73ScanProbe{done: make(chan struct{})}
 		if !rt.submit(scan) {
 			return iter, nil
 		}
@@ -113,7 +113,7 @@ func t66Drain(rt *Runtime) (int, error) {
 		}
 		// Settling probe: a Pending fiber with a satisfied dependency may be
 		// about to be started by a sweep racing our observation.
-		again := &t66ScanProbe{done: make(chan struct{})}
+		again := &thm73ScanProbe{done: make(chan struct{})}
 		if !rt.submit(again) {
 			return iter, nil
 		}
@@ -122,15 +122,15 @@ func t66Drain(rt *Runtime) (int, error) {
 			continue
 		}
 		if again.pendingSat != "" {
-			return iter, fmt.Errorf("T66_DEADLOCK: pending fiber %s has satisfied dep", again.pendingSat)
+			return iter, fmt.Errorf("THM73_DEADLOCK: pending fiber %s has satisfied dep", again.pendingSat)
 		}
 		return iter, nil
 	}
 }
 
-func t66Key() CapabilityKey { return NewKey[string]("t66.progress").Capability() }
+func thm73Key() CapabilityKey { return NewKey[string]("thm73.progress").Capability() }
 
-type t66Comp struct {
+type thm73Comp struct {
 	name     string
 	key      CapabilityKey
 	provide  bool
@@ -138,27 +138,27 @@ type t66Comp struct {
 	n        int
 }
 
-func (c *t66Comp) Name() string { return c.name }
-func (c *t66Comp) Inject() []Dependency {
+func (c *thm73Comp) Name() string { return c.name }
+func (c *thm73Comp) Inject() []Dependency {
 	if c.consumer {
 		return []Dependency{{Key: c.key}}
 	}
 	return nil
 }
-func (c *t66Comp) Provide() []Capability {
+func (c *thm73Comp) Provide() []Capability {
 	if c.provide {
 		return []Capability{c.key}
 	}
 	return nil
 }
-func (c *t66Comp) Apply(ctx *Context) (Cleanup, error) {
+func (c *thm73Comp) Apply(ctx *Context) (Cleanup, error) {
 	if c.provide {
 		if err := ctx.provideCap(c.key, c.name); err != nil {
 			return nil, err
 		}
 	}
 	if c.consumer {
-		if _, ok := ctx.realm.lookup(c.key); !ok {
+		if _, ok := ctx.realm.lookupOwn(c.key); !ok {
 			return nil, fmt.Errorf("consumer %s applied without provider", c.name)
 		}
 	}
@@ -172,7 +172,7 @@ func (c *t66Comp) Apply(ctx *Context) (Cleanup, error) {
 	return nil, nil
 }
 
-func TestT66BoundedProgress(t *testing.T) {
+func TestThm73BoundedProgress(t *testing.T) {
 	for _, seed := range []uint64{1, 2, 3, 4, 5} {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
@@ -188,24 +188,24 @@ func TestT66BoundedProgress(t *testing.T) {
 				fibers = append(fibers, f)
 				names = append(names, n)
 			}
-			pf, err := rt.Load(&t66Comp{name: "P", key: t66Key(), provide: true})
+			pf, err := rt.Load(&thm73Comp{name: "P", key: thm73Key(), provide: true})
 			if err != nil {
 				t.Fatal(err)
 			}
 			mk(pf, "P")
 			for i := 0; i < 3; i++ {
-				cf, err := rt.Load(&t66Comp{name: fmt.Sprintf("C%d", i), key: t66Key(), consumer: true})
+				cf, err := rt.Load(&thm73Comp{name: fmt.Sprintf("C%d", i), key: thm73Key(), consumer: true})
 				if err != nil {
 					t.Fatal(err)
 				}
 				mk(cf, fmt.Sprintf("C%d", i))
 			}
-			ef, err := rt.Load(&t66Comp{name: "E", n: 2})
+			ef, err := rt.Load(&thm73Comp{name: "E", n: 2})
 			if err != nil {
 				t.Fatal(err)
 			}
 			mk(ef, "E")
-			iter, derr := t66Drain(rt)
+			iter, derr := thm73Drain(rt)
 			if derr != nil {
 				t.Fatal(derr)
 			}
@@ -238,26 +238,26 @@ func TestT66BoundedProgress(t *testing.T) {
 						}
 					}
 				}
-				n, derr := t66Drain(rt)
+				n, derr := thm73Drain(rt)
 				if derr != nil {
-					t.Fatalf("T66 seed=%d cycle=%d: %v", seed, cycle, derr)
+					t.Fatalf("Thm73 seed=%d cycle=%d: %v", seed, cycle, derr)
 				}
 				iter += n
 			}
 			bound := (ops+1)*(2*len(fibers)+4) + 8
 			if iter > bound {
-				t.Fatalf("T66_PROGRESS seed=%d iterations=%d bound=%d ops=%d", seed, iter, bound, ops)
+				t.Fatalf("THM73_PROGRESS seed=%d iterations=%d bound=%d ops=%d", seed, iter, bound, ops)
 			}
 			for _, f := range fibers {
 				_ = f.Dispose()
 			}
-			if _, err := t66Drain(rt); err != nil {
+			if _, err := thm73Drain(rt); err != nil {
 				t.Fatal(err)
 			}
 			cl, ccl := context.WithTimeout(context.Background(), 20*time.Second)
 			defer ccl()
 			if err := rt.Close(cl); err != nil {
-				t.Fatalf("T66 close: %v", err)
+				t.Fatalf("Thm73 close: %v", err)
 			}
 			_ = ctx
 		})
@@ -279,41 +279,41 @@ func allStableActive(t *testing.T, rt *Runtime, names []string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// T73 — Confluence: same logical operation set, many legal mount schedules,
+// Thm80 — Confluence: same logical operation set, many legal mount schedules,
 // same quiescent observable state.
 // ---------------------------------------------------------------------------
 
-type t73Obs struct {
+type thm80Obs struct {
 	active []string
 	seen   []string
 }
 
-type t73Rec struct {
+type thm80Rec struct {
 	mu   sync.Mutex
 	vals []string
 }
 
-func (r *t73Rec) add(s string) {
+func (r *thm80Rec) add(s string) {
 	r.mu.Lock()
 	r.vals = append(r.vals, s)
 	r.mu.Unlock()
 }
 
-func (r *t73Rec) snapshot() []string {
+func (r *thm80Rec) snapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.vals...)
 }
 
-type t73Provider struct {
+type thm80Provider struct {
 	key CapabilityKey
 	tag string // default "P"
 }
 
-func (c *t73Provider) Name() string          { return "P" }
-func (c *t73Provider) Inject() []Dependency  { return nil }
-func (c *t73Provider) Provide() []Capability { return []Capability{c.key} }
-func (c *t73Provider) Apply(ctx *Context) (Cleanup, error) {
+func (c *thm80Provider) Name() string          { return "P" }
+func (c *thm80Provider) Inject() []Dependency  { return nil }
+func (c *thm80Provider) Provide() []Capability { return []Capability{c.key} }
+func (c *thm80Provider) Apply(ctx *Context) (Cleanup, error) {
 	val := c.tag
 	if val == "" {
 		val = "P"
@@ -321,16 +321,16 @@ func (c *t73Provider) Apply(ctx *Context) (Cleanup, error) {
 	return nil, ctx.provideCap(c.key, val)
 }
 
-type t73Consumer struct {
+type thm80Consumer struct {
 	key CapabilityKey
-	rec *t73Rec
+	rec *thm80Rec
 }
 
-func (c *t73Consumer) Name() string          { return "consumer" }
-func (c *t73Consumer) Inject() []Dependency  { return []Dependency{{Key: c.key}} }
-func (c *t73Consumer) Provide() []Capability { return nil }
-func (c *t73Consumer) Apply(ctx *Context) (Cleanup, error) {
-	rec, ok := ctx.realm.lookup(c.key)
+func (c *thm80Consumer) Name() string          { return "consumer" }
+func (c *thm80Consumer) Inject() []Dependency  { return []Dependency{{Key: c.key}} }
+func (c *thm80Consumer) Provide() []Capability { return nil }
+func (c *thm80Consumer) Apply(ctx *Context) (Cleanup, error) {
+	rec, ok := ctx.realm.lookupOwn(c.key)
 	if !ok {
 		return nil, fmt.Errorf("consumer applied without provider")
 	}
@@ -338,9 +338,9 @@ func (c *t73Consumer) Apply(ctx *Context) (Cleanup, error) {
 	return nil, nil
 }
 
-// runT73Schedule mounts the same logical set in the given legal order and
+// runThm80Schedule mounts the same logical set in the given legal order and
 // returns the quiescent observable state (explicit signal waits: Ready/Gone).
-func runT73Schedule(t *testing.T, order []string, key CapabilityKey) t73Obs {
+func runThm80Schedule(t *testing.T, order []string, key CapabilityKey) thm80Obs {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -348,12 +348,12 @@ func runT73Schedule(t *testing.T, order []string, key CapabilityKey) t73Obs {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := &t73Rec{}
+	rec := &thm80Rec{}
 	comps := map[string]Component{
-		"P":  &t73Provider{key: key},
-		"C1": &t73Consumer{key: key, rec: rec},
-		"C2": &t73Consumer{key: key, rec: rec},
-		"E":  &t66Comp{name: "E", n: 1},
+		"P":  &thm80Provider{key: key},
+		"C1": &thm80Consumer{key: key, rec: rec},
+		"C2": &thm80Consumer{key: key, rec: rec},
+		"E":  &thm73Comp{name: "E", n: 1},
 	}
 	handles := map[string]*Fiber{}
 	for _, name := range order {
@@ -394,12 +394,12 @@ func runT73Schedule(t *testing.T, order []string, key CapabilityKey) t73Obs {
 	if err := rt.Close(context.Background()); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	return t73Obs{active: active, seen: seen}
+	return thm80Obs{active: active, seen: seen}
 }
 
-// legalT73Schedules returns all distinct legal permutations of the mount set
+// legalThm80Schedules returns all distinct legal permutations of the mount set
 // (mounting a consumer before its provider is legal — it waits Pending).
-func legalT73Schedules(seed uint64) [][]string {
+func legalThm80Schedules(seed uint64) [][]string {
 	set := []string{"P", "C1", "C2", "E"}
 	rng := rand.New(rand.NewPCG(seed, seed^0x243f6a8885a308d3))
 	var out [][]string
@@ -431,11 +431,11 @@ func legalT73Schedules(seed uint64) [][]string {
 	return out
 }
 
-// t73Precondition documents the theorem precondition for the generated trace:
+// thm80Precondition documents the theorem precondition for the generated trace:
 // at most one provider per capability in the realm and effects are independent
 // (observable-free). If a generator ever violated it, the property would be
 // reported NOT APPLICABLE rather than skipped silently.
-func t73Precondition(key CapabilityKey, order []string) error {
+func thm80Precondition(key CapabilityKey, order []string) error {
 	providers := 0
 	consumers := 0
 	for _, n := range order {
@@ -447,100 +447,100 @@ func t73Precondition(key CapabilityKey, order []string) error {
 		}
 	}
 	if providers != 1 {
-		return fmt.Errorf("T73_PRECONDITION: expected exactly one provider, got %d", providers)
+		return fmt.Errorf("THM80_PRECONDITION: expected exactly one provider, got %d", providers)
 	}
 	if consumers < 2 {
-		return fmt.Errorf("T73_PRECONDITION: need at least two consumers, got %d", consumers)
+		return fmt.Errorf("THM80_PRECONDITION: need at least two consumers, got %d", consumers)
 	}
 	_ = key
 	return nil
 }
 
-func TestT73ConfluenceRandomizedSchedules(t *testing.T) {
-	key := NewKey[string]("t73.confluence").Capability()
+func TestThm80ConfluenceRandomizedSchedules(t *testing.T) {
+	key := NewKey[string]("thm80.confluence").Capability()
 	for _, seed := range []uint64{11, 12, 13, 14} {
-		if err := t73Precondition(key, []string{"P", "C1", "C2", "E"}); err != nil {
+		if err := thm80Precondition(key, []string{"P", "C1", "C2", "E"}); err != nil {
 			t.Fatalf("%v", err)
 		}
-		schedules := legalT73Schedules(seed)
-		baseline := t73Obs{}
+		schedules := legalThm80Schedules(seed)
+		baseline := thm80Obs{}
 		for i, s := range schedules {
-			obs := runT73Schedule(t, s, key)
+			obs := runThm80Schedule(t, s, key)
 			if i == 0 {
 				baseline = obs
 				continue
 			}
 			if fmt.Sprint(obs) != fmt.Sprint(baseline) {
-				t.Fatalf("T73_CONFLUENCE seed=%d schedule#%d diverged:\n got %+v\nbase %+v", seed, i, obs, baseline)
+				t.Fatalf("THM80_CONFLUENCE seed=%d schedule#%d diverged:\n got %+v\nbase %+v", seed, i, obs, baseline)
 			}
 		}
 		if len(baseline.active) != 4 {
-			t.Fatalf("T73 seed=%d expected 4 active, got %v", seed, baseline.active)
+			t.Fatalf("Thm80 seed=%d expected 4 active, got %v", seed, baseline.active)
 		}
 		if len(baseline.seen) != 2 || baseline.seen[0] != "P" || baseline.seen[1] != "P" {
-			t.Fatalf("T73 seed=%d consumers seen %v, want [P P]", seed, baseline.seen)
+			t.Fatalf("Thm80 seed=%d consumers seen %v, want [P P]", seed, baseline.seen)
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Reviewer-gap closures: (1) quiescence with Active fibers allowed, (2) T63
+// Reviewer-gap closures: (1) quiescence with Active fibers allowed, (2) Thm70
 // withdrawal ordering, (3) acyclic dependency-precedence invariant.
 // ---------------------------------------------------------------------------
 
-// TestT66QuiescenceAllowsActive — a legal quiescent state may contain Active
+// TestThm73QuiescenceAllowsActive — a legal quiescent state may contain Active
 // fibers (provider + consumer) with no pending lifecycle transition.
-func TestT66QuiescenceAllowsActive(t *testing.T) {
+func TestThm73QuiescenceAllowsActive(t *testing.T) {
 	rt, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := NewKey[string]("t66.quiescent").Capability()
-	pf, err := rt.Load(&t66Comp{name: "P", key: key, provide: true})
+	key := NewKey[string]("thm73.quiescent").Capability()
+	pf, err := rt.Load(&thm73Comp{name: "P", key: key, provide: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cf, err := rt.Load(&t66Comp{name: "C", key: key, consumer: true})
+	cf, err := rt.Load(&thm73Comp{name: "C", key: key, consumer: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := t66Drain(rt); err != nil {
+	if _, err := thm73Drain(rt); err != nil {
 		t.Fatal(err)
 	}
 	// Quiescent AND both Active (quiescence != all fibers Gone).
 	if pf.State() != StateActive || cf.State() != StateActive {
 		t.Fatalf("expected quiescent-with-Active, got P=%v C=%v", pf.State(), cf.State())
 	}
-	if err := t59CheckOnOrchestrator(rt); err != nil {
+	if err := thm64CheckOnOrchestrator(rt); err != nil {
 		t.Fatalf("preservation at quiescence: %v", err)
 	}
 	_ = pf.Dispose()
 	_ = cf.Dispose()
-	if _, err := t66Drain(rt); err != nil {
+	if _, err := thm73Drain(rt); err != nil {
 		t.Fatal(err)
 	}
 	_ = rt.Close(context.Background())
 }
 
-// TestT63WithdrawalOrdering — consumer deactivation completes before the
+// TestThm70WithdrawalOrdering — consumer deactivation completes before the
 // provider's own withdrawal cleanup (consumer-first), recorded from user-level
 // cleanup events.
-func TestT63WithdrawalOrdering(t *testing.T) {
+func TestThm70WithdrawalOrdering(t *testing.T) {
 	rt, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := &t63Rec{}
-	key := NewKey[string]("t63.withdraw").Capability()
-	pf, err := rt.Load(&t63ProviderOrdered{rec: rec, key: key})
+	rec := &thm70Rec{}
+	key := NewKey[string]("thm70.withdraw").Capability()
+	pf, err := rt.Load(&thm70ProviderOrdered{rec: rec, key: key})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cf, err := rt.Load(&t63ConsumerOrdered{name: "C", rec: rec, key: key})
+	cf, err := rt.Load(&thm70ConsumerOrdered{name: "C", rec: rec, key: key})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := t63Ctx(t)
+	ctx := thm70Ctx(t)
 	if err := pf.Ready(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -565,19 +565,19 @@ func TestT63WithdrawalOrdering(t *testing.T) {
 		}
 	}
 	if ci < 0 || pi < 0 || !(ci < pi) {
-		t.Fatalf("T63_ORDERING withdrawal: consumer cleanup (%d) must precede provider cleanup (%d): %v", ci, pi, events)
+		t.Fatalf("THM70_ORDERING withdrawal: consumer cleanup (%d) must precede provider cleanup (%d): %v", ci, pi, events)
 	}
 }
 
-type t63ProviderOrdered struct {
-	rec *t63Rec
+type thm70ProviderOrdered struct {
+	rec *thm70Rec
 	key CapabilityKey
 }
 
-func (c *t63ProviderOrdered) Name() string          { return "P" }
-func (c *t63ProviderOrdered) Inject() []Dependency  { return nil }
-func (c *t63ProviderOrdered) Provide() []Capability { return []Capability{c.key} }
-func (c *t63ProviderOrdered) Apply(ctx *Context) (Cleanup, error) {
+func (c *thm70ProviderOrdered) Name() string          { return "P" }
+func (c *thm70ProviderOrdered) Inject() []Dependency  { return nil }
+func (c *thm70ProviderOrdered) Provide() []Capability { return []Capability{c.key} }
+func (c *thm70ProviderOrdered) Apply(ctx *Context) (Cleanup, error) {
 	if err := ctx.provideCap(c.key, "v"); err != nil {
 		return nil, err
 	}
@@ -588,17 +588,17 @@ func (c *t63ProviderOrdered) Apply(ctx *Context) (Cleanup, error) {
 	}, nil
 }
 
-type t63ConsumerOrdered struct {
+type thm70ConsumerOrdered struct {
 	name string
-	rec  *t63Rec
+	rec  *thm70Rec
 	key  CapabilityKey
 }
 
-func (c *t63ConsumerOrdered) Name() string          { return c.name }
-func (c *t63ConsumerOrdered) Inject() []Dependency  { return []Dependency{{Key: c.key}} }
-func (c *t63ConsumerOrdered) Provide() []Capability { return nil }
-func (c *t63ConsumerOrdered) Apply(ctx *Context) (Cleanup, error) {
-	if _, ok := ctx.realm.lookup(c.key); !ok {
+func (c *thm70ConsumerOrdered) Name() string          { return c.name }
+func (c *thm70ConsumerOrdered) Inject() []Dependency  { return []Dependency{{Key: c.key}} }
+func (c *thm70ConsumerOrdered) Provide() []Capability { return nil }
+func (c *thm70ConsumerOrdered) Apply(ctx *Context) (Cleanup, error) {
+	if _, ok := ctx.realm.lookupOwn(c.key); !ok {
 		return nil, fmt.Errorf("consumer applied without provider")
 	}
 	c.rec.add("C:apply")
@@ -608,17 +608,17 @@ func (c *t63ConsumerOrdered) Apply(ctx *Context) (Cleanup, error) {
 	}, nil
 }
 
-func t63Ctx(t *testing.T) context.Context {
+func thm70Ctx(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
 	return ctx
 }
 
-// t66AcyclicPrecedence verifies the theorem precondition: the declared
+// thm73AcyclicPrecedence verifies the theorem precondition: the declared
 // dependency-precedence graph over mounted fibers is acyclic. (Load/Child
 // already reject cycles; this is the invariant oracle at every check point.)
-func t66AcyclicPrecedence(rt *Runtime) error {
+func thm73AcyclicPrecedence(rt *Runtime) error {
 	rt.mu.RLock()
 	fs := make([]*Fiber, 0, len(rt.fibers))
 	for _, f := range rt.fibers {
@@ -654,7 +654,7 @@ func t66AcyclicPrecedence(rt *Runtime) error {
 		color[id] = gray
 		for _, n := range adj[id] {
 			if color[n] == gray {
-				return fmt.Errorf("T66_PRECONDITION: dependency cycle %v -> %v", chain, n)
+				return fmt.Errorf("THM73_PRECONDITION: dependency cycle %v -> %v", chain, n)
 			}
 			if color[n] == white {
 				if err := visit(n, append(chain, n)); err != nil {
@@ -675,9 +675,9 @@ func t66AcyclicPrecedence(rt *Runtime) error {
 	return nil
 }
 
-// TestT66AcyclicPrecedenceInvariant — the dependency-precedence graph stays
+// TestThm73AcyclicPrecedenceInvariant — the dependency-precedence graph stays
 // acyclic across randomized provider reload cycles (precondition of Progress).
-func TestT66AcyclicPrecedenceInvariant(t *testing.T) {
+func TestThm73AcyclicPrecedenceInvariant(t *testing.T) {
 	for _, seed := range []uint64{1, 2, 3, 4, 5} {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			rng := rand.New(rand.NewPCG(seed, seed^0xabcdef012345678))
@@ -685,23 +685,23 @@ func TestT66AcyclicPrecedenceInvariant(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			key := t66Key()
-			pf, err := rt.Load(&t66Comp{name: "P", key: key, provide: true})
+			key := thm73Key()
+			pf, err := rt.Load(&thm73Comp{name: "P", key: key, provide: true})
 			if err != nil {
 				t.Fatal(err)
 			}
 			var cs []*Fiber
 			for i := 0; i < 2; i++ {
-				cf, err := rt.Load(&t66Comp{name: fmt.Sprintf("C%d", i), key: key, consumer: true})
+				cf, err := rt.Load(&thm73Comp{name: fmt.Sprintf("C%d", i), key: key, consumer: true})
 				if err != nil {
 					t.Fatal(err)
 				}
 				cs = append(cs, cf)
 			}
-			if _, err := t66Drain(rt); err != nil {
+			if _, err := thm73Drain(rt); err != nil {
 				t.Fatal(err)
 			}
-			if err := t66AcyclicPrecedence(rt); err != nil {
+			if err := thm73AcyclicPrecedence(rt); err != nil {
 				t.Fatal(err)
 			}
 			for cycle := 0; cycle < 12; cycle++ {
@@ -710,10 +710,10 @@ func TestT66AcyclicPrecedenceInvariant(t *testing.T) {
 				} else if pf.State() == StateGone {
 					_ = pf.Load()
 				}
-				if _, err := t66Drain(rt); err != nil {
+				if _, err := thm73Drain(rt); err != nil {
 					t.Fatal(err)
 				}
-				if err := t66AcyclicPrecedence(rt); err != nil {
+				if err := thm73AcyclicPrecedence(rt); err != nil {
 					t.Fatalf("seed=%d cycle=%d: %v", seed, cycle, err)
 				}
 			}
@@ -721,26 +721,26 @@ func TestT66AcyclicPrecedenceInvariant(t *testing.T) {
 				_ = c.Dispose()
 			}
 			_ = pf.Dispose()
-			_, _ = t66Drain(rt)
+			_, _ = thm73Drain(rt)
 			_ = rt.Close(context.Background())
 		})
 	}
 }
 
 // ---------------------------------------------------------------------------
-// T73 (reviewer form): logical operation set -> dependency-precedence DAG ->
+// Thm80 (reviewer form): logical operation set -> dependency-precedence DAG ->
 // random legal topological schedules -> runtime execution -> quiescence ->
 // Observe() equivalence.
 // ---------------------------------------------------------------------------
 
-// t73DAG describes a logical scenario: steps and precedence edges.
-type t73DAG struct {
+// thm80DAG describes a logical scenario: steps and precedence edges.
+type thm80DAG struct {
 	steps []string
 	edges [][2]string // a must come before b
 }
 
-func t73ProviderConsumerDAG() t73DAG {
-	return t73DAG{
+func thm80ProviderConsumerDAG() thm80DAG {
+	return thm80DAG{
 		steps: []string{"M(P)", "M(C1)", "M(C2)", "D(C1)", "D(C2)", "D(P)"},
 		edges: [][2]string{
 			// Consumers may only mount after their provider is mounted
@@ -760,7 +760,7 @@ func t73ProviderConsumerDAG() t73DAG {
 
 // topoSchedules deterministically yields up to n random legal topological
 // orders of the DAG (Kahn with seeded tie-break).
-func topoSchedules(d t73DAG, seed uint64, n int) [][]string {
+func topoSchedules(d thm80DAG, seed uint64, n int) [][]string {
 	rng := rand.New(rand.NewPCG(seed, seed^0xdeadbeefcafef00d))
 	indeg := map[string]int{}
 	succ := map[string][]string{}
@@ -800,7 +800,7 @@ func topoSchedules(d t73DAG, seed uint64, n int) [][]string {
 			}
 		}
 		if len(order) != len(d.steps) {
-			panic("t73 DAG has a cycle (test bug)")
+			panic("thm80 DAG has a cycle (test bug)")
 		}
 		k := fmt.Sprint(order)
 		if !seen[k] {
@@ -811,9 +811,9 @@ func topoSchedules(d t73DAG, seed uint64, n int) [][]string {
 	return out
 }
 
-// runT73DAGSchedule executes one legal topological schedule and returns the
+// runThm80DAGSchedule executes one legal topological schedule and returns the
 // quiescent observable state.
-func runT73DAGSchedule(t *testing.T, order []string, key CapabilityKey) t73Obs {
+func runThm80DAGSchedule(t *testing.T, order []string, key CapabilityKey) thm80Obs {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -821,12 +821,12 @@ func runT73DAGSchedule(t *testing.T, order []string, key CapabilityKey) t73Obs {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := &t73Rec{}
+	rec := &thm80Rec{}
 	loaded := map[string]*Fiber{}
 	comp := map[string]Component{
-		"P":  &t73Provider{key: key},
-		"C1": &t73Consumer{key: key, rec: rec},
-		"C2": &t73Consumer{key: key, rec: rec},
+		"P":  &thm80Provider{key: key},
+		"C1": &thm80Consumer{key: key, rec: rec},
+		"C2": &thm80Consumer{key: key, rec: rec},
 	}
 	for _, step := range order {
 		switch {
@@ -867,7 +867,7 @@ func runT73DAGSchedule(t *testing.T, order []string, key CapabilityKey) t73Obs {
 		}
 	}
 	// Quiescence (deterministic step driver) before observing.
-	if _, err := t66Drain(rt); err != nil {
+	if _, err := thm73Drain(rt); err != nil {
 		t.Fatal(err)
 	}
 	var active []string
@@ -891,28 +891,28 @@ func runT73DAGSchedule(t *testing.T, order []string, key CapabilityKey) t73Obs {
 	if err := rt.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return t73Obs{active: active, seen: seen}
+	return thm80Obs{active: active, seen: seen}
 }
 
-// TestT73DAGTopologicalSchedules — same logical op set, DAG-derived legal
+// TestThm80DAGTopologicalSchedules — same logical op set, DAG-derived legal
 // topological schedules, identical quiescent observable states.
-func TestT73DAGTopologicalSchedules(t *testing.T) {
-	key := NewKey[string]("t73.dag").Capability()
-	dag := t73ProviderConsumerDAG()
+func TestThm80DAGTopologicalSchedules(t *testing.T) {
+	key := NewKey[string]("thm80.dag").Capability()
+	dag := thm80ProviderConsumerDAG()
 	for _, seed := range []uint64{21, 22, 23, 24} {
 		schedules := topoSchedules(dag, seed, 24)
 		if len(schedules) < 2 {
 			t.Fatalf("expected multiple schedules, got %d", len(schedules))
 		}
-		base := t73Obs{}
+		base := thm80Obs{}
 		for i, sch := range schedules {
-			obs := runT73DAGSchedule(t, sch, key)
+			obs := runThm80DAGSchedule(t, sch, key)
 			if i == 0 {
 				base = obs
 				continue
 			}
 			if fmt.Sprint(obs) != fmt.Sprint(base) {
-				t.Fatalf("T73_CONFLUENCE seed=%d schedule#%d diverged:\n got %+v\nbase %+v", seed, i, obs, base)
+				t.Fatalf("THM80_CONFLUENCE seed=%d schedule#%d diverged:\n got %+v\nbase %+v", seed, i, obs, base)
 			}
 		}
 		if len(base.active) != 0 {
@@ -925,13 +925,13 @@ func TestT73DAGTopologicalSchedules(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// T73 expansion: two independent single-provider subsystems + an effect
+// Thm80 expansion: two independent single-provider subsystems + an effect
 // component. Independence is a generator-level premise: different capability
 // keys, no cross-component effects. Interleaving the two subsystems must be
 // confluent.
 // ---------------------------------------------------------------------------
 
-func t73TwoSubsystemDAG() t73DAG {
+func thm80TwoSubsystemDAG() thm80DAG {
 	steps := []string{"M(P1)", "M(C1)", "M(C2)", "M(P2)", "M(C3)", "M(E)",
 		"D(C1)", "D(C2)", "D(C3)", "D(E)", "D(P1)", "D(P2)"}
 	var edges [][2]string
@@ -950,10 +950,10 @@ func t73TwoSubsystemDAG() t73DAG {
 	must("M(C2)", "D(P1)")
 	must("M(P2)", "D(P2)")
 	must("M(C3)", "D(P2)")
-	return t73DAG{steps: steps, edges: edges}
+	return thm80DAG{steps: steps, edges: edges}
 }
 
-func runT73TwoSubsystemSchedule(t *testing.T, order []string, keyA, keyB CapabilityKey) t73Obs {
+func runThm80TwoSubsystemSchedule(t *testing.T, order []string, keyA, keyB CapabilityKey) thm80Obs {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
@@ -961,15 +961,15 @@ func runT73TwoSubsystemSchedule(t *testing.T, order []string, keyA, keyB Capabil
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := &t73Rec{}
+	rec := &thm80Rec{}
 	loaded := map[string]*Fiber{}
 	comps := map[string]Component{
-		"P1": &t73Provider{key: keyA, tag: "P1"},
-		"C1": &t73Consumer{key: keyA, rec: rec},
-		"C2": &t73Consumer{key: keyA, rec: rec},
-		"P2": &t73Provider{key: keyB, tag: "P2"},
-		"C3": &t73Consumer{key: keyB, rec: rec},
-		"E":  &t66Comp{name: "E", n: 1},
+		"P1": &thm80Provider{key: keyA, tag: "P1"},
+		"C1": &thm80Consumer{key: keyA, rec: rec},
+		"C2": &thm80Consumer{key: keyA, rec: rec},
+		"P2": &thm80Provider{key: keyB, tag: "P2"},
+		"C3": &thm80Consumer{key: keyB, rec: rec},
+		"E":  &thm73Comp{name: "E", n: 1},
 	}
 	for _, step := range order {
 		name := ""
@@ -997,7 +997,7 @@ func runT73TwoSubsystemSchedule(t *testing.T, order []string, keyA, keyB Capabil
 			}
 		}
 	}
-	if _, err := t66Drain(rt); err != nil {
+	if _, err := thm73Drain(rt); err != nil {
 		t.Fatal(err)
 	}
 	var active []string
@@ -1014,30 +1014,30 @@ func runT73TwoSubsystemSchedule(t *testing.T, order []string, keyA, keyB Capabil
 	if err := rt.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return t73Obs{active: active, seen: seen}
+	return thm80Obs{active: active, seen: seen}
 }
 
-// TestT73TwoIndependentSubsystems — interleaving two independent subsystems is
+// TestThm80TwoIndependentSubsystems — interleaving two independent subsystems is
 // confluent: identical observables (seen [P1 P1 P2]) across topological
 // schedules that mix the two subsystems and the effect component.
-func TestT73TwoIndependentSubsystems(t *testing.T) {
-	keyA := NewKey[string]("t73.sysA").Capability()
-	keyB := NewKey[string]("t73.sysB").Capability()
-	dag := t73TwoSubsystemDAG()
+func TestThm80TwoIndependentSubsystems(t *testing.T) {
+	keyA := NewKey[string]("thm80.sysA").Capability()
+	keyB := NewKey[string]("thm80.sysB").Capability()
+	dag := thm80TwoSubsystemDAG()
 	for _, seed := range []uint64{31, 32} {
 		schedules := topoSchedules(dag, seed, 16)
 		if len(schedules) < 2 {
 			t.Fatalf("seed=%d expected multiple schedules, got %d", seed, len(schedules))
 		}
-		base := t73Obs{}
+		base := thm80Obs{}
 		for i, sch := range schedules {
-			obs := runT73TwoSubsystemSchedule(t, sch, keyA, keyB)
+			obs := runThm80TwoSubsystemSchedule(t, sch, keyA, keyB)
 			if i == 0 {
 				base = obs
 				continue
 			}
 			if fmt.Sprint(obs) != fmt.Sprint(base) {
-				t.Fatalf("T73_CONFLUENCE seed=%d schedule#%d diverged:\n got %+v\nbase %+v", seed, i, obs, base)
+				t.Fatalf("THM80_CONFLUENCE seed=%d schedule#%d diverged:\n got %+v\nbase %+v", seed, i, obs, base)
 			}
 		}
 		if len(base.active) != 0 {

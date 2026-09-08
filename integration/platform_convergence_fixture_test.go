@@ -287,6 +287,15 @@ func pcScopedConsHost(ch chan<- *runtime.Fiber, out chan<- string) *pcComp {
 	return &pcComp{
 		name: "pc-scoped-consumer-host",
 		apply: func(ctx *runtime.Context) (runtime.Cleanup, error) {
+			// Paper model (ADR-0001): the scope namespace must contain its own
+			// provider for the consumer to bind — no ancestor fallback.
+			pf, err := ctx.Child(pcProv("v1"))
+			if err != nil {
+				return nil, err
+			}
+			if err := pf.Ready(ctx.Context()); err != nil {
+				return nil, err
+			}
 			xf, err := ctx.Child(pcCons(nil, out))
 			if err != nil {
 				return nil, err
@@ -297,9 +306,8 @@ func pcScopedConsHost(ch chan<- *runtime.Fiber, out chan<- string) *pcComp {
 	}
 }
 
-// pcScopedConsActivator mounts a single explicit scope realm whose consumer
-// must resolve the root-scope provider through the parent chain (PC-08
-// parent-fallback rule).
+// pcScopedConsActivator mounts a single explicit scope realm containing a
+// scope-local provider and consumer (PC-08 scope composition).
 func pcScopedConsActivator(ch chan<- *runtime.Fiber, out chan<- string) *pcComp {
 	return &pcComp{
 		name: "pc-scoped-consumer-activator",
@@ -307,6 +315,22 @@ func pcScopedConsActivator(ch chan<- *runtime.Fiber, out chan<- string) *pcComp 
 			if _, err := ctx.Child(pcScopedConsHost(ch, out), runtime.WithScope()); err != nil {
 				return nil, err
 			}
+			return nil, nil
+		},
+	}
+}
+
+// pcEmptyScopeConsActivator mounts an explicit scope whose ONLY content is a
+// consumer — its namespace has no provider for the key (PC-08 no-fallback).
+func pcEmptyScopeConsActivator(ch chan<- *runtime.Fiber, out chan<- string) *pcComp {
+	return &pcComp{
+		name: "pc-empty-scope-cons-activator",
+		apply: func(ctx *runtime.Context) (runtime.Cleanup, error) {
+			xf, err := ctx.Child(pcCons(nil, out), runtime.WithScope())
+			if err != nil {
+				return nil, err
+			}
+			ch <- xf
 			return nil, nil
 		},
 	}
@@ -458,7 +482,7 @@ func pcRecv[T any](t *testing.T, ch <-chan T, what string) T {
 }
 
 // pcCanonical reduces a Snapshot to a deterministic, runtime-ID-independent
-// summary for cross-runtime equivalence checks (T73): the sorted live fiber
+// summary for cross-runtime equivalence checks (Thm80): the sorted live fiber
 // set, provider bindings, and dependency status.
 func pcCanonical(snap runtime.RuntimeSnapshot) string {
 	var b strings.Builder

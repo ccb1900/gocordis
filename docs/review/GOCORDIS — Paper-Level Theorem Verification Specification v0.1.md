@@ -1,3 +1,13 @@
+> ⚠️ **ARCHIVED（已归档）— 2026-09-08**
+>
+> 本文档已整体归档，仅作历史参考，**不再作为规范来源或引用依据**。
+> 本仓库现以论文原文为唯一规范来源：`docs/论文.pdf`
+> （A Programming Paradigm for Spatiotemporal Composability）。
+> 当前路线图与论文↔代码对照见 `docs/ROADMAP.md`。
+>
+> This document is archived for historical reference only and is no longer cited
+> as authority. The paper is the sole normative source; see `docs/ROADMAP.md`.
+
 # GOCORDIS — PAPER-LEVEL THEOREM VERIFICATION SPECIFICATION v0.1
 
 ## 0. Status

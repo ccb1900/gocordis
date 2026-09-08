@@ -153,7 +153,7 @@ func (c *ordCons) Name() string          { return "ord-c" }
 func (c *ordCons) Inject() []Dependency  { return []Dependency{{Key: c.key}} }
 func (c *ordCons) Provide() []Capability { return nil }
 func (c *ordCons) Apply(ctx *Context) (Cleanup, error) {
-	_, ok := ctx.realm.lookup(c.key)
+	_, ok := ctx.realm.lookupOwn(c.key)
 	if !ok {
 		return nil, ErrDependencyMissing
 	}
@@ -195,7 +195,7 @@ func TestPOrdConcurrentMountOrdering(t *testing.T) {
 				activeProv++
 			}
 			if f.State() == StateActive && len(f.inject) > 0 {
-				if _, ok := o.resolveDependency(f.realm, key); !ok {
+				if _, ok := o.resolveDependency(f, key); !ok {
 					t.Fatalf("Active consumer %d unresolvable", f.id)
 				}
 			}

@@ -9,8 +9,8 @@ import (
 )
 
 // FuzzInterleaving — random legal operation interleavings under deterministic
-// seeds. Each generated case checks T59 (preservation), T63 (a consumer only
-// applies with its provider active) and T66 (bounded deterministic quiescence).
+// seeds. Each generated case checks Thm64 (preservation), Thm70 (a consumer only
+// applies with its provider active) and Thm73 (bounded deterministic quiescence).
 // No sleeps, no global rand; failures reproduce from the decoded seed.
 func FuzzInterleaving(f *testing.F) {
 	for _, seed := range []uint64{1, 2, 3, 4, 5, 42, 99} {
@@ -25,7 +25,7 @@ func FuzzInterleaving(f *testing.F) {
 			seed = seed*31 + uint64(b)
 		}
 		if err := runFuzzScenario(seed); err != nil {
-			t.Fatalf("T59/T63/T66 failure seed=%d: %v", seed, err)
+			t.Fatalf("Thm64/Thm70/Thm73 failure seed=%d: %v", seed, err)
 		}
 	})
 }
@@ -46,13 +46,13 @@ func runFuzzScenario(seed uint64) error {
 		}
 		return f, nil
 	}
-	pf, err := mount(&t66Comp{name: "P", key: key, provide: true})
+	pf, err := mount(&thm73Comp{name: "P", key: key, provide: true})
 	if err != nil {
 		return err
 	}
 	var cons []*Fiber
 	for i := 0; i < 2; i++ {
-		c, err := mount(&t66Comp{name: fmt.Sprintf("C%d", i), key: key, consumer: true})
+		c, err := mount(&thm73Comp{name: fmt.Sprintf("C%d", i), key: key, consumer: true})
 		if err != nil {
 			return err
 		}
@@ -67,7 +67,7 @@ func runFuzzScenario(seed uint64) error {
 				return err
 			}
 		}
-		return t59CheckOnOrchestrator(rt)
+		return thm64CheckOnOrchestrator(rt)
 	}
 	if err := readyAll(); err != nil {
 		return err
@@ -89,7 +89,7 @@ func runFuzzScenario(seed uint64) error {
 					return fmt.Errorf("consumer %s not Pending after provider dispose", c.Name())
 				}
 			}
-			if err := t59CheckOnOrchestrator(rt); err != nil {
+			if err := thm64CheckOnOrchestrator(rt); err != nil {
 				return err
 			}
 		} else {

@@ -268,15 +268,15 @@ func TestObserveCanonicalStable(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := NewKey[string]("obs.stable").Capability()
-	pf, err := rt.Load(&t66Comp{name: "P", key: key, provide: true})
+	pf, err := rt.Load(&thm73Comp{name: "P", key: key, provide: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cf, err := rt.Load(&t66Comp{name: "C", key: key, consumer: true})
+	cf, err := rt.Load(&thm73Comp{name: "C", key: key, consumer: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := t66Drain(rt); err != nil {
+	if _, err := thm73Drain(rt); err != nil {
 		t.Fatal(err)
 	}
 	if err := semanticQuiescent(rt); err != nil {
@@ -295,7 +295,7 @@ func TestObserveCanonicalStable(t *testing.T) {
 	}
 	_ = pf.Dispose()
 	_ = cf.Dispose()
-	if _, err := t66Drain(rt); err != nil {
+	if _, err := thm73Drain(rt); err != nil {
 		t.Fatal(err)
 	}
 	o3 := observe(rt)

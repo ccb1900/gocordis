@@ -31,15 +31,30 @@ func (o *orchestrator) removeGraphEdge(id ProviderIdentity, f *Fiber) {
 	}
 }
 
+// effectiveRealm returns the single namespace in which f resolves and provides
+// key: the per-key isolation override (paper Definition 24, the realm table ρ)
+// when present, else the fiber's scope realm. Resolution never walks realms —
+// a declared key resolves against exactly one realm (paper §4.4 Isolation).
+func effectiveRealm(f *Fiber, key CapabilityKey) *realm {
+	if f == nil {
+		return nil
+	}
+	if r, ok := f.keyRealms[key]; ok && r != nil {
+		return r
+	}
+	return f.realm
+}
+
 // resolveDependency reports whether key currently has a valid, satisfiable
-// provider in the consumer realm r's path, and returns that provider identity.
-// A provider is valid only while its owner Fiber is Active on the same
-// activation that registered it and the record is not retiring.
-func (o *orchestrator) resolveDependency(r *realm, key CapabilityKey) (ProviderIdentity, bool) {
-	if r == nil {
+// provider in the consumer fiber's effective realm for that key, and returns
+// that provider identity. A provider is valid only while its owner Fiber is
+// Active on the same activation that registered it and the record is not
+// retiring.
+func (o *orchestrator) resolveDependency(f *Fiber, key CapabilityKey) (ProviderIdentity, bool) {
+	if f == nil {
 		return ProviderIdentity{}, false
 	}
-	rec, ok := r.lookup(key)
+	rec, ok := effectiveRealm(f, key).lookupOwn(key)
 	if !ok || rec.retiring {
 		return ProviderIdentity{}, false
 	}
@@ -62,7 +77,7 @@ func (o *orchestrator) resolveDependency(r *realm, key CapabilityKey) (ProviderI
 // a valid provider on f's realm path.
 func (o *orchestrator) dependenciesSatisfied(f *Fiber) bool {
 	for _, dep := range f.inject {
-		if _, ok := o.resolveDependency(f.realm, dep.Key); !ok {
+		if _, ok := o.resolveDependency(f, dep.Key); !ok {
 			return false
 		}
 	}
@@ -75,7 +90,7 @@ func (o *orchestrator) dependenciesSatisfied(f *Fiber) bool {
 func (o *orchestrator) captureDependencies(f *Fiber) []DependencySnapshot {
 	var snaps []DependencySnapshot
 	for _, dep := range f.inject {
-		id, ok := o.resolveDependency(f.realm, dep.Key)
+		id, ok := o.resolveDependency(f, dep.Key)
 		if !ok {
 			// reconcile() only starts Loading when all deps are satisfied, so
 			// this is unreachable in a consistent runtime.
@@ -94,7 +109,7 @@ func (o *orchestrator) dependenciesStillValid(f *Fiber, act *activation) bool {
 		return false
 	}
 	for _, snap := range act.deps {
-		id, ok := o.resolveDependency(f.realm, snap.Key)
+		id, ok := o.resolveDependency(f, snap.Key)
 		if !ok || id != snap.Provider {
 			return false
 		}

@@ -226,17 +226,22 @@ func TestF01ScopeChainNearestWinsAndParentFallback(t *testing.T) {
 	}
 	empty := <-sc
 	pg, xg := <-host, <-host
-	f01WaitActive(t, empty)
 	f01WaitActive(t, pg)
 	f01WaitActive(t, xg)
 
-	// Empty scope: parent chain resolves the root provider.
-	if v := f01MustValue(t, "empty-scope consumer", outSC); v != "root" {
-		t.Fatalf("empty-scope consumer resolved %q, want root (parent scope)", v)
+	// Empty scope: its namespace has no provider for the key. Paper §4.4
+	// Isolation — no ancestor walk, so the consumer NEVER activates on the
+	// root binding; it stays Pending.
+	f01WaitState(t, empty, runtime.StatePending)
+	select {
+	case v := <-outSC:
+		t.Fatalf("empty-scope consumer unexpectedly resolved %q (ancestor fallback must not happen)", v)
+	default:
 	}
-	// Scope with its own provider: nearest wins over the root binding.
+
+	// Scope with its own provider: that namespace's binding, not the root's.
 	if v := f01MustValue(t, "scope-G consumer", outG); v != "G" {
-		t.Fatalf("scope-G consumer resolved %q, want G (nearest wins)", v)
+		t.Fatalf("scope-G consumer resolved %q, want G (own namespace)", v)
 	}
 
 	_ = af.Dispose()

@@ -133,16 +133,16 @@ func deterministicRand(seed uint64) *rand.Rand {
 // ---------------------------------------------------------------------------
 
 const (
-	failT59Preservation = "T59_PRESERVATION"
-	failT61Recovery     = "T61_RECOVERY"
-	failT61LIFO         = "T61_LIFO"
-	failT61ExactlyOnce  = "T61_EXACTLY_ONCE"
-	failT63Ordering     = "T63_ORDERING"
-	failT66Progress     = "T66_PROGRESS"
-	failT66Deadlock     = "T66_DEADLOCK"
-	failT66Livelock     = "T66_LIVELOCK"
-	failT73Confluence   = "T73_CONFLUENCE"
-	failT73Precond      = "T73_PRECONDITION"
+	failThm64Preservation = "THM64_PRESERVATION"
+	failThm68Recovery     = "THM68_RECOVERY"
+	failThm68LIFO         = "THM68_LIFO"
+	failThm68ExactlyOnce  = "THM68_EXACTLY_ONCE"
+	failThm70Ordering     = "THM70_ORDERING"
+	failThm73Progress     = "THM73_PROGRESS"
+	failThm73Deadlock     = "THM73_DEADLOCK"
+	failThm73Livelock     = "THM73_LIVELOCK"
+	failThm80Confluence   = "THM80_CONFLUENCE"
+	failThm80Precond      = "THM80_PRECONDITION"
 )
 
 func theoremFailure(tb testing.TB, theorem, seed string, detail ...string) {
@@ -154,7 +154,7 @@ func theoremFailure(tb testing.TB, theorem, seed string, detail ...string) {
 // Phase 2 skeleton self-checks: the harness itself must pass fixed cases.
 // ---------------------------------------------------------------------------
 
-// Model well-formedness used by the T59 checker skeleton.
+// Model well-formedness used by the Thm64 checker skeleton.
 func checkModelWellFormed(m *Model) error {
 	for id, f := range m.Fibers {
 		if f.Parent != "" {
@@ -236,7 +236,7 @@ func TestTheoremModelWellFormed(t *testing.T) {
 
 	// Provider owned by a non-active fiber must be detected.
 	m3 := newModel()
-	key := runtime.NewKey[string]("t59.provider").Capability()
+	key := runtime.NewKey[string]("thm64.provider").Capability()
 	p := m3.fiber("P")
 	p.State = ModelPending
 	m3.Providers[key] = "P"

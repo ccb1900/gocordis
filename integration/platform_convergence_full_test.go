@@ -323,9 +323,14 @@ func TestPC18FullApplicationComposition(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	for _, f := range []*runtime.Fiber{consF, scoA, scoB} {
-		if err := f.WaitInactive(ctx); err != nil {
-			t.Fatalf("dependent %s did not lose its binding: %v", f.Name(), err)
+	if err := consF.WaitInactive(ctx); err != nil {
+		t.Fatalf("dependent %s did not lose its binding: %v", consF.Name(), err)
+	}
+	// Paper isolation (ADR-0001): the scoped consumers bind their OWN namespace
+	// provider ("v1"), so the root service withdrawal does not touch them.
+	for _, f := range []*runtime.Fiber{scoA, scoB} {
+		if f.State() != runtime.StateActive {
+			t.Fatalf("scoped consumer %s disturbed by root withdrawal: %v", f.Name(), f.State())
 		}
 	}
 	if regF.State() != runtime.StateActive || regCF.State() != runtime.StateActive {
@@ -346,17 +351,10 @@ func TestPC18FullApplicationComposition(t *testing.T) {
 	if got := pcRecv(t, consKit.seen, "consumer v2"); got != "v2" {
 		t.Fatalf("consumer resolved %q, want v2", got)
 	}
-	if err := scoA.Ready(pcTimeout(t)); err != nil {
-		t.Fatal(err)
-	}
-	if err := scoB.Ready(pcTimeout(t)); err != nil {
-		t.Fatal(err)
-	}
-	if got := pcRecv(t, outA, "scoped A v2"); got != "v2" {
-		t.Fatalf("scoped A resolved %q", got)
-	}
-	if got := pcRecv(t, outB, "scoped B v2"); got != "v2" {
-		t.Fatalf("scoped B resolved %q", got)
+	// Scoped consumers keep their scope-local v1 binding through the root v2
+	// recovery (namespace isolation, never cross-bound).
+	if scoA.State() != runtime.StateActive || scoB.State() != runtime.StateActive {
+		t.Fatalf("scoped consumers disturbed by root recovery: %v/%v", scoA.State(), scoB.State())
 	}
 
 	// (6) HMR on the shared runtime.

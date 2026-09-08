@@ -392,18 +392,31 @@ func TestPC08RealmScopeComposition(t *testing.T) {
 	pcDisposeGone(t, root)
 	pcQuiesced(t, rt, "PC-08 isolation")
 
-	// (2) Parent fallback: a child-scope consumer without a local provider
-	// resolves the root provider through the parent chain.
+	// (2) No ancestor fallback (paper §4.4 Isolation, ADR-0001): a child-scope
+	// consumer without a scope-local provider stays Pending even though the
+	// root realm provides the same key — one namespace per binding.
 	rt2 := pcNewRT(t)
-	_ = pcLoadActive(t, rt2, pcProv("ROOT"))
+	rootP2 := pcLoadActive(t, rt2, pcProv("ROOT"))
 	chS := make(chan *runtime.Fiber, 2)
 	outS := make(chan string, 2)
-	_ = pcLoadActive(t, rt2, pcScopedConsActivator(chS, outS))
+	actS := pcLoadActive(t, rt2, pcEmptyScopeConsActivator(chS, outS))
 	xfS := pcRecv(t, chS, "scoped consumer")
-	waitActive(t, xfS)
-	if got := pcRecv(t, outS, "scoped consumer value"); got != "ROOT" {
-		t.Fatalf("scoped consumer resolved %q, want ROOT (parent fallback)", got)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	if err := xfS.Ready(ctx2); err == nil {
+		t.Fatal("scoped consumer activated on the root provider — ancestor fallback must not happen")
 	}
+	if st := xfS.State(); st != runtime.StatePending {
+		t.Fatalf("scoped consumer state = %v, want Pending (no fallback)", st)
+	}
+	select {
+	case v := <-outS:
+		t.Fatalf("scoped consumer unexpectedly resolved %q", v)
+	default:
+	}
+	pcDisposeGone(t, actS)
+	pcDisposeGone(t, rootP2)
+	pcQuiesced(t, rt2, "PC-08 no-fallback")
 }
 
 // PC-09 — Child ownership: disposing the parent disposes the child; no orphan

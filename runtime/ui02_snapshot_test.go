@@ -536,13 +536,16 @@ func TestUI02ScopeHierarchyIsolation(t *testing.T) {
 	pb, cb := <-chB, <-chB
 	cc := <-chC
 	u2Wait(t, "scope fibers active", func() bool {
-		for _, f := range []*Fiber{pa, ca, pb, cb, cc} {
+		for _, f := range []*Fiber{pa, ca, pb, cb} {
 			if f.State() != StateActive {
 				return false
 			}
 		}
 		return true
 	})
+	// Empty-scope consumer C: its namespace has no provider and resolution
+	// never falls back to the root — it stays Pending (paper Definition 24).
+	u2Wait(t, "scope C consumer Pending", func() bool { return cc.State() == StatePending })
 
 	s := u2Snap(t, rt)
 	// Scope rows: root + three child scopes; A/B own the key independently.
@@ -625,7 +628,8 @@ func TestUI02ScopeHierarchyIsolation(t *testing.T) {
 		t.Fatalf("provider scope coverage = %v", seenScope)
 	}
 
-	// Bindings: A->A, B->B (nearest wins), C->root (parent chain).
+	// Bindings: A->A, B->B (own namespace); C has NO binding (empty namespace,
+	// no fallback).
 	binding := func(fid FiberID) (FiberID, ActivationID) {
 		for _, row := range s.Fibers {
 			if row.ID == fid {
@@ -654,8 +658,15 @@ func TestUI02ScopeHierarchyIsolation(t *testing.T) {
 	if pf, _ := binding(cb.ID()); pf != provFiberOf(pb.ID()) {
 		t.Fatalf("consumer B bound to %d, want its scope provider %d", pf, pb.ID())
 	}
-	if pf, pact := binding(cc.ID()); pf != rp.ID() || pact != ActivationID(actIDOf(rp)) {
-		t.Fatalf("consumer C bound to %d/%d, want root %d/%d", pf, pact, rp.ID(), actIDOf(rp))
+	for _, row := range s.Fibers {
+		if row.ID != cc.ID() {
+			continue
+		}
+		for _, d := range row.Dependencies {
+			if d.Status == DependencySatisfied {
+				t.Fatalf("consumer C unexpectedly bound to %d — empty scope must not fall back to root", d.ProviderFiberID)
+			}
+		}
 	}
 
 	// Dispose scope A's provider: A's consumer goes Pending; B stays Active
@@ -1235,8 +1246,9 @@ func testCtx(t *testing.T) context.Context {
 }
 
 // u2ScopeActivator mounts two sibling explicit scopes (provider + consumer
-// each, provider-first for deterministic nearest-wins) plus one empty scope
-// consumer that must resolve through the parent chain.
+// each, provider-first for deterministic own-namespace binding) plus one empty
+// scope consumer whose namespace has no provider — under the paper model
+// (ADR-0001) it stays Pending: no ancestor fallback.
 type u2ScopeActivator struct {
 	key      Key[string]
 	chA, chB chan *Fiber

@@ -188,14 +188,14 @@ func TestProviderRemovalIdentityGuard(t *testing.T) {
 	}
 	// A stale removal (old identity that does not match) must be a no-op.
 	reg.removeOwn(key, ProviderIdentity{FiberID: 1, ActivationID: 999})
-	rec, ok := reg.lookup(key)
+	rec, ok := reg.lookupOwn(key)
 	if !ok || rec.identity != id1 || rec.value != 111 {
 		t.Fatalf("stale removal deleted the provider: %+v", rec)
 	}
 
 	// Removing with the matching identity removes the record.
 	reg.removeOwn(key, id1)
-	if _, ok := reg.lookup(key); ok {
+	if _, ok := reg.lookupOwn(key); ok {
 		t.Fatal("provider still present after matching removal")
 	}
 
@@ -203,7 +203,7 @@ func TestProviderRemovalIdentityGuard(t *testing.T) {
 	// arrives; the late inverse must not delete activation 2's provider.
 	_ = reg.registerOwn(key, id2, 222)
 	reg.removeOwn(key, id1) // late inverse from act1
-	rec, ok = reg.lookup(key)
+	rec, ok = reg.lookupOwn(key)
 	if !ok || rec.identity != id2 {
 		t.Fatal("late inverse from an old activation deleted the new provider")
 	}
@@ -285,7 +285,7 @@ func (c *churnProvider) Name() string          { return "churn-provider" }
 func (c *churnProvider) Inject() []Dependency  { return nil }
 func (c *churnProvider) Provide() []Capability { return []Capability{c.key} }
 func (c *churnProvider) Apply(ctx *Context) (Cleanup, error) {
-	rec, _ := ctx.realm.lookup(c.key)
+	rec, _ := ctx.realm.lookupOwn(c.key)
 	_ = rec
 	if err := ctx.provideCap(c.key, "v"); err != nil {
 		return nil, err
@@ -303,7 +303,7 @@ func (c *churnConsumer) Provide() []Capability {
 	return nil
 }
 func (c *churnConsumer) Apply(ctx *Context) (Cleanup, error) {
-	_, err := ctx.realm.lookup(c.key)
+	_, err := ctx.realm.lookupOwn(c.key)
 	_ = err
 	return nil, nil
 }

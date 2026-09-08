@@ -7,28 +7,24 @@ import "fmt"
 // create a strong dependency cycle among already-mounted Fibers, with an
 // actionable diagnostic naming the keys along the cycle.
 //
-// Realm awareness: a consumer x may be satisfied by provider y only when
-// y.realm is reachable from x.realm (same realm or an ancestor). Two scoped
-// siblings in separate realms therefore never form an edge, so they cannot
-// produce a false-positive cycle. Self loops (x provides a key it also
-// requires) are ignored: they are satisfiable only by a provider in the same
-// realm and never by a second independent Fiber.
+// Realm awareness (ADR-0001, paper §4.4 Isolation): a consumer x may be
+// satisfied by provider y only when y's effective realm for the key is exactly
+// x's effective realm for that key — one namespace per (key, ρ) binding, no
+// ancestor walk. Two scoped siblings in separate realms therefore never form
+// an edge, so they cannot produce a false-positive cycle. Self loops (x
+// provides a key it also requires) are ignored: they are satisfiable within
+// the same fiber's activation and never by a second independent Fiber.
 //
 // Policy: reject on Load/Child (ErrDependencyCycle), so a cyclic composition
 // fails deterministically at the mount boundary instead of hanging Pending.
 
-// declaredCycleEdge reports whether candidate's realm can resolve a provider
-// from y (same realm or ancestor).
-func realmCanResolve(candidate *realm, y *Fiber) bool {
-	if y == nil || y.realm == nil {
+// realmCanResolve reports whether x (the consumer candidate) resolves key in
+// exactly the namespace y provides it in.
+func realmCanResolve(x *Fiber, y *Fiber, key CapabilityKey) bool {
+	if y == nil || y.realm == nil || x == nil {
 		return false
 	}
-	for r := candidate; r != nil; r = r.parent {
-		if r == y.realm {
-			return true
-		}
-	}
-	return false
+	return effectiveRealm(x, key) == effectiveRealm(y, key)
 }
 
 // findDeclaredCycle returns an error describing a declared dependency cycle if
@@ -70,7 +66,7 @@ func findDeclaredCycle(candidate *Fiber, fibers []*Fiber) error {
 				if !yDeclaresProvide(y, dep.Key) {
 					continue
 				}
-				if !realmCanResolve(x.realm, y) {
+				if !realmCanResolve(x, y, dep.Key) {
 					continue
 				}
 				adj[x.id] = append(adj[x.id], y.id)

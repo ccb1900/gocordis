@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// T61 — Recovery Exactness.
+// Thm68 — Recovery Exactness.
 //
 // (a) Effect recovery: each inverse executes exactly once and in strict LIFO
 //     order (e3^-1, e2^-1, e1^-1); no late-effect leak.
@@ -16,43 +16,43 @@ import (
 //     equivalent to a Runtime that never loaded F (same active set, no provider
 //     residue, no effect residue).
 
-// t61Rec is an ordered, user-level recorder for effect open/close events.
-type t61Rec struct {
+// thm68Rec is an ordered, user-level recorder for effect open/close events.
+type thm68Rec struct {
 	mu sync.Mutex
 	ev []string
 }
 
-func (r *t61Rec) add(e string) {
+func (r *thm68Rec) add(e string) {
 	r.mu.Lock()
 	r.ev = append(r.ev, e)
 	r.mu.Unlock()
 }
 
-func (r *t61Rec) snapshot() []string {
+func (r *thm68Rec) snapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.ev...)
 }
 
-// t61Comp: kind "provider" provides key (optionally) and runs an apply that
+// thm68Comp: kind "provider" provides key (optionally) and runs an apply that
 // opens n effects in order, each recording open:<id> and close:<id>.
-type t61Comp struct {
+type thm68Comp struct {
 	name    string
 	key     CapabilityKey
 	provide bool
 	n       int
-	rec     *t61Rec
+	rec     *thm68Rec
 }
 
-func (c *t61Comp) Name() string         { return c.name }
-func (c *t61Comp) Inject() []Dependency { return nil }
-func (c *t61Comp) Provide() []Capability {
+func (c *thm68Comp) Name() string         { return c.name }
+func (c *thm68Comp) Inject() []Dependency { return nil }
+func (c *thm68Comp) Provide() []Capability {
 	if c.provide {
 		return []Capability{c.key}
 	}
 	return nil
 }
-func (c *t61Comp) Apply(ctx *Context) (Cleanup, error) {
+func (c *thm68Comp) Apply(ctx *Context) (Cleanup, error) {
 	if c.provide {
 		if err := ctx.provideCap(c.key, c.name); err != nil {
 			return nil, err
@@ -73,27 +73,27 @@ func (c *t61Comp) Apply(ctx *Context) (Cleanup, error) {
 	return nil, nil
 }
 
-func t61Ctx(t *testing.T) context.Context {
+func thm68Ctx(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
 	return ctx
 }
 
-// TestT61LIFOExactlyOnceRecovery — three effects open in order; after Dispose
+// TestThm68LIFOExactlyOnceRecovery — three effects open in order; after Dispose
 // they close in strict LIFO and exactly once; no residue.
-func TestT61LIFOExactlyOnceRecovery(t *testing.T) {
+func TestThm68LIFOExactlyOnceRecovery(t *testing.T) {
 	rt, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := &t61Rec{}
-	comp := &t61Comp{name: "F", n: 3, rec: rec}
+	rec := &thm68Rec{}
+	comp := &thm68Comp{name: "F", n: 3, rec: rec}
 	f, err := rt.Load(comp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Ready(t61Ctx(t)); err != nil {
+	if err := f.Ready(thm68Ctx(t)); err != nil {
 		t.Fatal(err)
 	}
 	opens := rec.snapshot()
@@ -103,7 +103,7 @@ func TestT61LIFOExactlyOnceRecovery(t *testing.T) {
 	if err := f.Dispose(); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Gone(t61Ctx(t)); err != nil {
+	if err := f.Gone(thm68Ctx(t)); err != nil {
 		t.Fatal(err)
 	}
 	all := rec.snapshot()
@@ -114,28 +114,28 @@ func TestT61LIFOExactlyOnceRecovery(t *testing.T) {
 	}
 	for i := range want {
 		if all[i] != want[i] {
-			t.Fatalf("T61_LIFO/T61_EXACTLY_ONCE: event %d = %q, want %q (full %v)", i, all[i], want[i], all)
+			t.Fatalf("THM68_LIFO/THM68_EXACTLY_ONCE: event %d = %q, want %q (full %v)", i, all[i], want[i], all)
 		}
 	}
 }
 
-// TestT61BaselineEquivalence — R1 loads a transient provider+effects and
+// TestThm68BaselineEquivalence — R1 loads a transient provider+effects and
 // disposes it; afterwards it is observationally equivalent to R0 which never
 // loaded F (both have only the stable provider G active, no residue).
-func TestT61BaselineEquivalence(t *testing.T) {
-	key := NewKey[string]("t61.baseline").Capability()
-	run := func(withTransient bool) (*Runtime, *t61Rec, error) {
+func TestThm68BaselineEquivalence(t *testing.T) {
+	key := NewKey[string]("thm68.baseline").Capability()
+	run := func(withTransient bool) (*Runtime, *thm68Rec, error) {
 		rt, err := New()
 		if err != nil {
 			return nil, nil, err
 		}
 		// Stable provider G (present in both).
-		g := &t61Comp{name: "G", key: key, provide: true, n: 1, rec: &t61Rec{}}
+		g := &thm68Comp{name: "G", key: key, provide: true, n: 1, rec: &thm68Rec{}}
 		gf, err := rt.Load(g)
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := gf.Ready(t61Ctx(t)); err != nil {
+		if err := gf.Ready(thm68Ctx(t)); err != nil {
 			return nil, nil, err
 		}
 		if !withTransient {
@@ -143,19 +143,19 @@ func TestT61BaselineEquivalence(t *testing.T) {
 		}
 		// Transient F: provides the SAME key would conflict, so F provides a
 		// different key and only carries effects.
-		frec := &t61Rec{}
-		f := &t61Comp{name: "F", n: 2, rec: frec}
+		frec := &thm68Rec{}
+		f := &thm68Comp{name: "F", n: 2, rec: frec}
 		ff, err := rt.Load(f)
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := ff.Ready(t61Ctx(t)); err != nil {
+		if err := ff.Ready(thm68Ctx(t)); err != nil {
 			return nil, nil, err
 		}
 		if err := ff.Dispose(); err != nil {
 			return nil, nil, err
 		}
-		if err := ff.Gone(t61Ctx(t)); err != nil {
+		if err := ff.Gone(thm68Ctx(t)); err != nil {
 			return nil, nil, err
 		}
 		return rt, frec, nil
@@ -174,13 +174,13 @@ func TestT61BaselineEquivalence(t *testing.T) {
 	active0 := activeFiberNames(t, rt0)
 	active1 := activeFiberNames(t, rt1)
 	if len(active0) != 1 || len(active1) != 1 || active0[0] != "G" || active1[0] != "G" {
-		t.Fatalf("T61_RECOVERY active sets diverged: R0=%v R1=%v", active0, active1)
+		t.Fatalf("THM68_RECOVERY active sets diverged: R0=%v R1=%v", active0, active1)
 	}
 
 	// No effect residue from F (opens == closes, LIFO exact).
 	ev := frec.snapshot()
 	if len(ev) != 4 || ev[0] != "open:1" || ev[1] != "open:2" || ev[2] != "close:2" || ev[3] != "close:1" {
-		t.Fatalf("T61_RECOVERY F effect residue/wrong order: %v", ev)
+		t.Fatalf("THM68_RECOVERY F effect residue/wrong order: %v", ev)
 	}
 
 	// Provider registry must contain only G (F provided nothing, but its fiber
@@ -193,7 +193,7 @@ func TestT61BaselineEquivalence(t *testing.T) {
 	extra := len(rt1.rootRealm.own)
 	rt1.rootRealm.mu.RUnlock()
 	if !okG0 || !okG1 || rec1.identity.FiberID == 0 || extra != 1 {
-		t.Fatalf("T61_RECOVERY provider residue: R0 ok=%v, R1 ok=%v extra=%d", okG0, okG1, extra)
+		t.Fatalf("THM68_RECOVERY provider residue: R0 ok=%v, R1 ok=%v extra=%d", okG0, okG1, extra)
 	}
 
 	_ = rt0.Close(context.Background())

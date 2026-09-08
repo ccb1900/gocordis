@@ -7,17 +7,17 @@ import (
 	"time"
 )
 
-// C-2 (T59 every-step): registry well-formedness at every deterministic
+// C-2 (Thm64 every-step): registry well-formedness at every deterministic
 // lifecycle step of a single independent fiber P.
 //
 //	Load(P) -> [ApplyDone parked] -> Execute(ApplyDone) -> Active ->
 //	Dispose() -> [UnwindDone parked] -> Execute(UnwindDone) -> Gone -> Close
 //
-// checkT59 is the preservation oracle: it must hold after EVERY driver step,
+// checkThm64 is the preservation oracle: it must hold after EVERY driver step,
 // including the transitional Loading/Unloading states where semanticQuiescent
 // reports non-quiescence. It never waits, sleeps, or requires quiescence.
 //
-// T59 is grounded in the recorded definitions, not in implementation habits:
+// Thm64 is grounded in the recorded definitions, not in implementation habits:
 //   - docs/review/GOCORDIS — Paper-Level Theorem Verification Specification
 //     v0.1 §9.1: P1 parent validity, P2 provider uniqueness (identity includes
 //     the activation generation), P3 dependency validity (Active fiber),
@@ -46,12 +46,12 @@ import (
 //	                      | resolved), v0.2 dependency validity (snapshot ->
 //	                      | existing record, same generation, no dangling
 //	                      | edges): Yes.
-//	F Other              | effect stack = T61, withdrawal ordering = T63,
-//	                      | quiescence/progress = T66: explicitly excluded.
+//	F Other              | effect stack = Thm68, withdrawal ordering = Thm70,
+//	                      | quiescence/progress = Thm73: explicitly excluded.
 //
-// Explicitly NOT in T59 (boundary discipline): provider-ready-before-Loading
-// and consumer-before-provider withdrawal ordering (T63), runtime idleness
-// (T66), effect LIFO/exactness (T61).
+// Explicitly NOT in Thm64 (boundary discipline): provider-ready-before-Loading
+// and consumer-before-provider withdrawal ordering (Thm70), runtime idleness
+// (Thm73), effect LIFO/exactness (Thm68).
 
 type c2FiberSnap struct {
 	f        *Fiber
@@ -75,16 +75,16 @@ type c2RealmSnap struct {
 	byKey map[CapabilityKey]c2RecordSnap
 }
 
-// checkT59 reports the first registry well-formedness violation, or nil.
+// checkThm64 reports the first registry well-formedness violation, or nil.
 //
 // It snapshots semantic state under the established lock order (rt.mu -> f.mu;
-// realm.mu taken alone afterwards), mirroring observe/t59CheckP, and must be
+// realm.mu taken alone afterwards), mirroring observe/thm64CheckP, and must be
 // invoked at driver step boundaries where the orchestrator is idle (the C-2
 // protocol: wait for the target state after Execute). The provider->consumer
 // edge index (o.graph) is orchestrator-owned and read only at such boundaries;
-// a concurrent multi-fiber harness (C-3) should run checkT59 on the
+// a concurrent multi-fiber harness (C-3) should run checkThm64 on the
 // orchestrator via a probe instead.
-func checkT59(rt *Runtime) error {
+func checkThm64(rt *Runtime) error {
 	// --- fiber registry snapshot (rt.mu -> f.mu) ---
 	type regEntry struct {
 		key FiberID
@@ -105,13 +105,13 @@ func checkT59(rt *Runtime) error {
 	fsnapByFiber := make(map[*Fiber]*c2FiberSnap, len(entries))
 	for _, e := range entries {
 		if e.f == nil {
-			return fmt.Errorf("T59 registry: nil fiber under id %v", e.key)
+			return fmt.Errorf("Thm64 registry: nil fiber under id %v", e.key)
 		}
 		if e.f.id != e.key {
-			return fmt.Errorf("T59 registry: fiber %v registered under key %v", e.f.id, e.key)
+			return fmt.Errorf("Thm64 registry: fiber %v registered under key %v", e.f.id, e.key)
 		}
 		if e.f.id == 0 {
-			return fmt.Errorf("T59 registry: fiber with invalid id 0")
+			return fmt.Errorf("Thm64 registry: fiber with invalid id 0")
 		}
 		f := e.f
 		s := &c2FiberSnap{f: f, id: f.id}
@@ -175,7 +175,7 @@ func checkT59(rt *Runtime) error {
 	// A registry integrity (precondition).
 	for _, s := range fsnaps {
 		if s.realm == nil {
-			return fmt.Errorf("T59 fiber %d (%s): nil realm", s.id, s.f.Name())
+			return fmt.Errorf("Thm64 fiber %d (%s): nil realm", s.id, s.f.Name())
 		}
 	}
 
@@ -184,15 +184,15 @@ func checkT59(rt *Runtime) error {
 		f := s.f
 		if s.parent != nil {
 			if byID[s.parent.id] == nil {
-				return fmt.Errorf("T59 P1 parent validity: fiber %d (%s) parent %d not registered", f.id, f.Name(), s.parent.id)
+				return fmt.Errorf("Thm64 P1 parent validity: fiber %d (%s) parent %d not registered", f.id, f.Name(), s.parent.id)
 			}
 			if s.parent.id == f.id {
-				return fmt.Errorf("T59 P1 parent validity: fiber %d (%s) is its own parent", f.id, f.Name())
+				return fmt.Errorf("Thm64 P1 parent validity: fiber %d (%s) is its own parent", f.id, f.Name())
 			}
 		}
 		for _, cid := range s.childIDs {
 			if byID[cid] == nil {
-				return fmt.Errorf("T59 ownership validity: fiber %d (%s) child %d not registered", f.id, f.Name(), cid)
+				return fmt.Errorf("Thm64 ownership validity: fiber %d (%s) child %d not registered", f.id, f.Name(), cid)
 			}
 		}
 	}
@@ -203,19 +203,19 @@ func checkT59(rt *Runtime) error {
 		switch {
 		case s.act != nil:
 			if s.state != StateLoading && s.state != StateActive && s.state != StateUnloading {
-				return fmt.Errorf("T59 activation coherence: fiber %d (%s) live activation in state %v", f.id, f.Name(), s.state)
+				return fmt.Errorf("Thm64 activation coherence: fiber %d (%s) live activation in state %v", f.id, f.Name(), s.state)
 			}
 			if s.actID == 0 {
-				return fmt.Errorf("T59 activation coherence: fiber %d (%s) activation id 0", f.id, f.Name())
+				return fmt.Errorf("Thm64 activation coherence: fiber %d (%s) activation id 0", f.id, f.Name())
 			}
 			if s.act.fiber != f {
-				return fmt.Errorf("T59 activation coherence: fiber %d (%s) activation owner mismatch", f.id, f.Name())
+				return fmt.Errorf("Thm64 activation coherence: fiber %d (%s) activation owner mismatch", f.id, f.Name())
 			}
 			if s.act.ctx == nil {
-				return fmt.Errorf("T59 activation coherence: fiber %d (%s) activation has nil context", f.id, f.Name())
+				return fmt.Errorf("Thm64 activation coherence: fiber %d (%s) activation has nil context", f.id, f.Name())
 			}
 		case s.state == StateLoading || s.state == StateActive:
-			return fmt.Errorf("T59 activation coherence: fiber %d (%s) state %v without live activation", f.id, f.Name(), s.state)
+			return fmt.Errorf("Thm64 activation coherence: fiber %d (%s) state %v without live activation", f.id, f.Name(), s.state)
 		}
 	}
 
@@ -227,15 +227,15 @@ func checkT59(rt *Runtime) error {
 		for key, rec := range rsnap.byKey {
 			id := rec.identity
 			if id.FiberID == 0 || id.ActivationID == 0 {
-				return fmt.Errorf("T59 P2 provider registry: record %s has invalid identity %d/%d", key, id.FiberID, id.ActivationID)
+				return fmt.Errorf("Thm64 P2 provider registry: record %s has invalid identity %d/%d", key, id.FiberID, id.ActivationID)
 			}
 			owner := byID[id.FiberID]
 			if owner == nil {
-				return fmt.Errorf("T59 P2/P4 provider registry: record %s owner fiber %d not registered", key, id.FiberID)
+				return fmt.Errorf("Thm64 P2/P4 provider registry: record %s owner fiber %d not registered", key, id.FiberID)
 			}
 			osnap := fsnapByFiber[owner]
 			if osnap == nil || osnap.act == nil || osnap.actID != id.ActivationID {
-				return fmt.Errorf("T59 P2/P4 provider registry: record %s generation %d/%d no longer matches owner %d activation %v",
+				return fmt.Errorf("Thm64 P2/P4 provider registry: record %s generation %d/%d no longer matches owner %d activation %v",
 					key, id.FiberID, id.ActivationID, id.FiberID, actOrNone(osnap))
 			}
 		}
@@ -247,7 +247,7 @@ func checkT59(rt *Runtime) error {
 	// activation corresponds to an existing provider record in the owner
 	// fiber's realm, same key and same generation. Retiring is allowed: a
 	// consumer may legitimately hold a snapshot of a provider that is
-	// withdrawing (consumer-first unload, T63) while the record still exists.
+	// withdrawing (consumer-first unload, Thm70) while the record still exists.
 	for _, s := range fsnaps {
 		if s.act == nil {
 			continue
@@ -255,26 +255,26 @@ func checkT59(rt *Runtime) error {
 		for _, dep := range s.deps {
 			owner := byID[dep.Provider.FiberID]
 			if owner == nil {
-				return fmt.Errorf("T59 dependency validity: fiber %d (%s) dep %s references unregistered provider fiber %d",
+				return fmt.Errorf("Thm64 dependency validity: fiber %d (%s) dep %s references unregistered provider fiber %d",
 					s.id, s.f.Name(), dep.Key, dep.Provider.FiberID)
 			}
 			osnap := fsnapByFiber[owner]
 			if osnap == nil {
-				return fmt.Errorf("T59 dependency validity: fiber %d (%s) dep %s provider fiber %d missing snapshot",
+				return fmt.Errorf("Thm64 dependency validity: fiber %d (%s) dep %s provider fiber %d missing snapshot",
 					s.id, s.f.Name(), dep.Key, dep.Provider.FiberID)
 			}
 			orealm := realmSnaps[osnap.realm]
 			if orealm == nil {
-				return fmt.Errorf("T59 dependency validity: fiber %d (%s) dep %s provider realm missing",
+				return fmt.Errorf("Thm64 dependency validity: fiber %d (%s) dep %s provider realm missing",
 					s.id, s.f.Name(), dep.Key)
 			}
 			rec, ok := orealm.byKey[dep.Key]
 			if !ok {
-				return fmt.Errorf("T59 dependency validity: fiber %d (%s) dep %s snapshot %d/%d has no registry record (dangling)",
+				return fmt.Errorf("Thm64 dependency validity: fiber %d (%s) dep %s snapshot %d/%d has no registry record (dangling)",
 					s.id, s.f.Name(), dep.Key, dep.Provider.FiberID, dep.Provider.ActivationID)
 			}
 			if rec.identity != dep.Provider {
-				return fmt.Errorf("T59 dependency validity: fiber %d (%s) dep %s snapshot generation %d/%d != registry generation %d/%d",
+				return fmt.Errorf("Thm64 dependency validity: fiber %d (%s) dep %s snapshot generation %d/%d != registry generation %d/%d",
 					s.id, s.f.Name(), dep.Key, dep.Provider.FiberID, dep.Provider.ActivationID,
 					rec.identity.FiberID, rec.identity.ActivationID)
 			}
@@ -287,23 +287,23 @@ func checkT59(rt *Runtime) error {
 	for id, consumers := range edgesByID {
 		owner := byID[id.FiberID]
 		if owner == nil {
-			return fmt.Errorf("T59 graph validity: edge for unregistered provider %d/%d", id.FiberID, id.ActivationID)
+			return fmt.Errorf("Thm64 graph validity: edge for unregistered provider %d/%d", id.FiberID, id.ActivationID)
 		}
 		osnap := fsnapByFiber[owner]
 		if osnap == nil || osnap.act == nil || osnap.actID != id.ActivationID {
-			return fmt.Errorf("T59 graph validity: edge for ended provider generation %d/%d", id.FiberID, id.ActivationID)
+			return fmt.Errorf("Thm64 graph validity: edge for ended provider generation %d/%d", id.FiberID, id.ActivationID)
 		}
 		for c := range consumers {
 			csnap := fsnapByFiber[c]
 			if csnap == nil {
-				return fmt.Errorf("T59 graph validity: edge %d/%d -> consumer not registered", id.FiberID, id.ActivationID)
+				return fmt.Errorf("Thm64 graph validity: edge %d/%d -> consumer not registered", id.FiberID, id.ActivationID)
 			}
 			if csnap.act == nil {
-				return fmt.Errorf("T59 graph validity: edge %d/%d -> fiber %d (%s) has no live activation",
+				return fmt.Errorf("Thm64 graph validity: edge %d/%d -> fiber %d (%s) has no live activation",
 					id.FiberID, id.ActivationID, csnap.id, csnap.f.Name())
 			}
 			if !c2SnapRefs(csnap.deps, id) {
-				return fmt.Errorf("T59 graph validity: edge %d/%d -> fiber %d (%s) has no matching dependency snapshot",
+				return fmt.Errorf("Thm64 graph validity: edge %d/%d -> fiber %d (%s) has no matching dependency snapshot",
 					id.FiberID, id.ActivationID, csnap.id, csnap.f.Name())
 			}
 		}
@@ -314,11 +314,11 @@ func checkT59(rt *Runtime) error {
 		}
 		for _, dep := range s.deps {
 			if _, ok := edgesByID[dep.Provider]; !ok {
-				return fmt.Errorf("T59 graph validity: fiber %d (%s) dep %s missing provider->consumer edge %d/%d",
+				return fmt.Errorf("Thm64 graph validity: fiber %d (%s) dep %s missing provider->consumer edge %d/%d",
 					s.id, s.f.Name(), dep.Key, dep.Provider.FiberID, dep.Provider.ActivationID)
 			}
 			if _, ok := edgesByID[dep.Provider][s.f]; !ok {
-				return fmt.Errorf("T59 graph validity: fiber %d (%s) dep %s missing edge from provider %d/%d",
+				return fmt.Errorf("Thm64 graph validity: fiber %d (%s) dep %s missing edge from provider %d/%d",
 					s.id, s.f.Name(), dep.Key, dep.Provider.FiberID, dep.Provider.ActivationID)
 			}
 		}
@@ -326,8 +326,8 @@ func checkT59(rt *Runtime) error {
 
 	// E1 (P3) + E2 (P5): an Active fiber's declared dependencies resolve to an
 	// Active provider on its realm path, and the resolved identity equals the
-	// captured snapshot. Loading/Unloading dependency progress is T63
-	// ordering, not T59, so the check is state-conditional on Active only.
+	// captured snapshot. Loading/Unloading dependency progress is Thm70
+	// ordering, not Thm64, so the check is state-conditional on Active only.
 	resolve := func(s *c2FiberSnap, key CapabilityKey) (ProviderIdentity, bool) {
 		for r := s.realm; r != nil; r = r.parent {
 			rs := realmSnaps[r]
@@ -362,11 +362,11 @@ func checkT59(rt *Runtime) error {
 		for _, dep := range s.inject {
 			resolved, ok := resolve(s, dep.Key)
 			if !ok {
-				return fmt.Errorf("T59 P3 dependency validity: Active fiber %d (%s) dep %s unsatisfied",
+				return fmt.Errorf("Thm64 P3 dependency validity: Active fiber %d (%s) dep %s unsatisfied",
 					s.id, s.f.Name(), dep.Key)
 			}
 			if snap, has := snapByKey[dep.Key]; !has || snap != resolved {
-				return fmt.Errorf("T59 P5 snapshot consistency: Active fiber %d (%s) dep %s resolved %d/%d != snapshot %+v",
+				return fmt.Errorf("Thm64 P5 snapshot consistency: Active fiber %d (%s) dep %s resolved %d/%d != snapshot %+v",
 					s.id, s.f.Name(), dep.Key, resolved.FiberID, resolved.ActivationID, snapByKey[dep.Key])
 			}
 		}
@@ -410,22 +410,22 @@ func c2Step(t *testing.T, step int, action string, f *Fiber, rt *Runtime) {
 		step, action, f.Name(), f.State(), actIDOf(f), rt.detPending())
 }
 
-func c2T59Check(t *testing.T, rt *Runtime, when string) {
+func c2Thm64Check(t *testing.T, rt *Runtime, when string) {
 	t.Helper()
-	if err := checkT59(rt); err != nil {
-		t.Fatalf("T59 every-step violated at %s: %v", when, err)
+	if err := checkThm64(rt); err != nil {
+		t.Fatalf("Thm64 every-step violated at %s: %v", when, err)
 	}
 }
 
-// TestC2T59EveryStepSingleFiber drives the full single-fiber lifecycle under
-// the deterministic driver and runs checkT59 after every step, covering both
+// TestC2Thm64EveryStepSingleFiber drives the full single-fiber lifecycle under
+// the deterministic driver and runs checkThm64 after every step, covering both
 // StepApplyDone and StepUnwindDone.
-func TestC2T59EveryStepSingleFiber(t *testing.T) {
+func TestC2Thm64EveryStepSingleFiber(t *testing.T) {
 	rt := detNew(t)
-	c2T59Check(t, rt, "initial(empty registry)")
+	c2Thm64Check(t, rt, "initial(empty registry)")
 
 	step := 0
-	f, err := rt.Load(&t66Comp{name: "P"}) // independent single fiber
+	f, err := rt.Load(&thm73Comp{name: "P"}) // independent single fiber
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,10 +440,10 @@ func TestC2T59EveryStepSingleFiber(t *testing.T) {
 	actID := en[0].ActivationID
 	step++
 
-	// Transitional Loading: checkT59 holds while quiescence does not.
-	c2T59Check(t, rt, "Loading(ApplyDone parked)")
+	// Transitional Loading: checkThm64 holds while quiescence does not.
+	c2Thm64Check(t, rt, "Loading(ApplyDone parked)")
 	if err := semanticQuiescent(rt); err == nil {
-		t.Fatal("semanticQuiescent should report transitional Loading (checkT59 is not a quiescence oracle)")
+		t.Fatal("semanticQuiescent should report transitional Loading (checkThm64 is not a quiescence oracle)")
 	}
 
 	if err := rt.detExecute(en[0]); err != nil {
@@ -454,7 +454,7 @@ func TestC2T59EveryStepSingleFiber(t *testing.T) {
 	}
 	c2Step(t, step, "Execute(ApplyDone)", f, rt)
 	step++
-	c2T59Check(t, rt, "Active")
+	c2Thm64Check(t, rt, "Active")
 	if err := semanticQuiescent(rt); err != nil {
 		t.Fatalf("not quiescent while Active: %v", err)
 	}
@@ -477,10 +477,10 @@ func TestC2T59EveryStepSingleFiber(t *testing.T) {
 	}
 	step++
 
-	// Transitional Unloading: checkT59 holds while quiescence does not.
-	c2T59Check(t, rt, "Unloading(UnwindDone parked)")
+	// Transitional Unloading: checkThm64 holds while quiescence does not.
+	c2Thm64Check(t, rt, "Unloading(UnwindDone parked)")
 	if err := semanticQuiescent(rt); err == nil {
-		t.Fatal("semanticQuiescent should report transitional Unloading (checkT59 is not a quiescence oracle)")
+		t.Fatal("semanticQuiescent should report transitional Unloading (checkThm64 is not a quiescence oracle)")
 	}
 
 	if err := rt.detExecute(en2[0]); err != nil {
@@ -491,7 +491,7 @@ func TestC2T59EveryStepSingleFiber(t *testing.T) {
 	}
 	c2Step(t, step, "Execute(UnwindDone)", f, rt)
 	step++
-	c2T59Check(t, rt, "Gone")
+	c2Thm64Check(t, rt, "Gone")
 	if err := semanticQuiescent(rt); err != nil {
 		t.Fatalf("not quiescent after Gone: %v", err)
 	}
@@ -508,6 +508,6 @@ func TestC2T59EveryStepSingleFiber(t *testing.T) {
 		t.Fatalf("orchestrator not done after Close; state=%v pending=%d", f.State(), rt.detPending())
 	}
 	c2Step(t, step, "Close", f, rt)
-	c2T59Check(t, rt, "after Close")
-	t.Logf("C-2 PASS: checkT59 held at every driver step (ApplyDone + UnwindDone; steps=%d)", step)
+	c2Thm64Check(t, rt, "after Close")
+	t.Logf("C-2 PASS: checkThm64 held at every driver step (ApplyDone + UnwindDone; steps=%d)", step)
 }

@@ -89,6 +89,11 @@ type Context struct {
 	fiberID      FiberID
 	activationID ActivationID
 
+	// fiber is the owning fiber (its keyRealms table participates in per-key
+	// isolation resolution, paper Definition 24). Orchestrator-published and
+	// read-only for the context's lifetime.
+	fiber *Fiber
+
 	cancel context.CancelFunc
 	base   context.Context
 
@@ -280,14 +285,39 @@ func (c *Context) emitEffectEvent(t EventType, s *effectSlot) {
 type ScopeOption func(*scopeOptions)
 
 type scopeOptions struct {
-	newRealm bool
+	newRealm  bool
+	keyRealms map[CapabilityKey]*realm
 }
 
-// WithScope makes Child create an explicit child realm (parent = this fiber's
-// realm) instead of inheriting this fiber's realm. Only explicit scoping
-// introduces sibling isolation; child realms may shadow ancestor bindings.
+// WithScope makes Child create an explicit child realm (its own provider
+// namespace) instead of inheriting this fiber's realm. Keys the child declares
+// resolve and provide against that namespace — sibling scopes are invisible to
+// each other and resolution never falls back to ancestors (ADR-0001, paper
+// Definition 24: isolation is a per-key realm table fixed at insertion). The
+// child realm still chains to its parent realm for context inheritance
+// (interception metadata, extension event scoping) — never for resolution.
 func WithScope() ScopeOption {
 	return func(o *scopeOptions) { o.newRealm = true }
+}
+
+// scopeRealms carries a per-key isolation table built by IsolateIn.
+func (o *scopeOptions) isolateIn(fiberRealm *realm, parentTable map[CapabilityKey]*realm, declared []Dependency, provide []Capability) {
+	if o.keyRealms == nil {
+		o.keyRealms = make(map[CapabilityKey]*realm)
+	}
+	for k, r := range parentTable {
+		o.keyRealms[k] = r
+	}
+	for _, d := range declared {
+		if _, ok := o.keyRealms[d.Key]; !ok {
+			o.keyRealms[d.Key] = fiberRealm
+		}
+	}
+	for _, k := range provide {
+		if _, ok := o.keyRealms[k]; !ok {
+			o.keyRealms[k] = fiberRealm
+		}
+	}
 }
 
 func (c *Context) Child(component Component, opts ...ScopeOption) (*Fiber, error) {
@@ -305,6 +335,14 @@ func (c *Context) Child(component Component, opts ...ScopeOption) (*Fiber, error
 	inject := component.Inject()
 	provide := component.Provide()
 
+	// Per-key isolation table (paper Definition 24): inherit overrides already
+	// present on this context's fiber, then default every declared key to this
+	// fiber's effective namespaces. WithScope re-homes all keys to the fresh
+	// child realm (built on the orchestrator at spawn).
+	if len(c.fiber.keyRealms) > 0 || o.newRealm {
+		o.isolateIn(c.realm, c.fiber.keyRealms, inject, provide)
+	}
+
 	reply := make(chan spawnChildReply, 1)
 	if !c.rt.submit(&cmdSpawnChild{
 		ctx:       c,
@@ -312,6 +350,7 @@ func (c *Context) Child(component Component, opts ...ScopeOption) (*Fiber, error
 		inject:    inject,
 		provide:   provide,
 		newScope:  o.newRealm,
+		keyRealms: o.keyRealms,
 		reply:     reply,
 	}) {
 		return nil, ErrRuntimeClosed
@@ -364,11 +403,14 @@ func Require[T any](c *Context, key Key[T]) (T, error) {
 	if _, ok := c.declaredInject[key.Capability()]; !ok {
 		return zero, fmt.Errorf("%w: %s is not declared in this activation's Inject set", ErrUndeclaredRequire, key.Capability())
 	}
-	rec, ok := c.realm.lookup(key.Capability())
+	rec, ok := effectiveRealm(c.fiber, key.Capability()).lookupOwn(key.Capability())
 	if !ok || rec.value == nil {
 		return zero, ErrDependencyMissing
 	}
-	// Apply the read-time interception chain (ancestor -> this realm).
+	// Apply the read-time interception chain (ancestor -> this realm). The
+	// chain inherits along the scope-realm path (ADR-0002 predecessor: this is
+	// the context-carried metadata of paper Definition 26; P3 replaces the
+	// value-transform chain with the metadata monoid).
 	val := rec.value
 	for _, e := range c.realm.interceptsForKey(key.Capability()) {
 		if e == nil || e.apply == nil {

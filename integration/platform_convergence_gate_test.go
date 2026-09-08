@@ -17,7 +17,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // Platform Convergence E2E Gate — PC-19..PC-30 + Theorem integration
-// (T59/T61/T63/T66/T73) over the Platform composition.
+// (Thm64/Thm68/Thm70/Thm73/Thm80) over the Platform composition.
 // ---------------------------------------------------------------------------
 
 // PC-19 — Reconcile idempotence: Reconcile(Reconcile(D)) == Reconcile(D) on
@@ -655,9 +655,9 @@ func TestPC30FinalQuiescence(t *testing.T) {
 	}
 }
 
-// pcT59Check validates the T59 well-formedness invariants over one linearized
+// pcThm64Check validates the Thm64 well-formedness invariants over one linearized
 // public Snapshot. Returns "" when well-formed, else the first violation.
-func pcT59Check(snap runtime.RuntimeSnapshot) string {
+func pcThm64Check(snap runtime.RuntimeSnapshot) string {
 	byID := make(map[runtime.FiberID]runtime.FiberSnapshot)
 	for _, f := range snap.Fibers {
 		if f.State == runtime.StateGone {
@@ -724,25 +724,25 @@ func pcT59Check(snap runtime.RuntimeSnapshot) string {
 	return ""
 }
 
-// TestPC_T59_Preservation — every legal step of the platform composition keeps
+// TestPC_Thm64_Preservation — every legal step of the platform composition keeps
 // the Runtime well-formed.
-func TestPC_T59_Preservation(t *testing.T) {
+func TestPC_Thm64_Preservation(t *testing.T) {
 	rt := pcNewRT(t)
 	var prov1, prov2, cf, evR, evE, eff *runtime.Fiber
 	step := func(name string, fn func()) {
 		t.Helper()
 		fn()
-		if msg := pcT59Check(pcSnap(t, rt)); msg != "" {
-			t.Fatalf("T59 violation after %s: %s", name, msg)
+		if msg := pcThm64Check(pcSnap(t, rt)); msg != "" {
+			t.Fatalf("Thm64 violation after %s: %s", name, msg)
 		}
 	}
 	step("load provider", func() { prov1 = pcLoadActive(t, rt, pcProv("v1")) })
 	step("load consumer", func() { cf = pcLoadActive(t, rt, pcCons(nil, nil)) })
 	rec := &pcRec{}
 	var emitCtx *runtime.Context
-	step("register event", func() { evR = pcLoadActive(t, rt, pcEvRegistrar("t59", rec)) })
+	step("register event", func() { evR = pcLoadActive(t, rt, pcEvRegistrar("thm64", rec)) })
 	step("mount emitter", func() { evE = pcLoadActive(t, rt, pcEvEmitter(&emitCtx)) })
-	step("install effects", func() { eff = pcLoadActive(t, rt, pcEffectHost("t59-eff", rec, "A", "B")) })
+	step("install effects", func() { eff = pcLoadActive(t, rt, pcEffectHost("thm64-eff", rec, "A", "B")) })
 	step("emit", func() {
 		if err := runtime.Emit(emitCtx, pcEvKey, "x"); err != nil {
 			t.Fatal(err)
@@ -766,9 +766,9 @@ func TestPC_T59_Preservation(t *testing.T) {
 	})
 }
 
-// TestPC_T61_Recovery — apply failure, dependency withdrawal, config failure
+// TestPC_Thm68_Recovery — apply failure, dependency withdrawal, config failure
 // and HMR failure all recover or converge to a legal terminal state.
-func TestPC_T61_Recovery(t *testing.T) {
+func TestPC_Thm68_Recovery(t *testing.T) {
 	// Apply failure -> replacement recovers.
 	rt := pcNewRT(t)
 	fBad := pcLoadActive2(t, rt, pcFailApply("bad"))
@@ -784,7 +784,7 @@ func TestPC_T61_Recovery(t *testing.T) {
 		t.Fatal("recovery did not activate")
 	}
 	pcDisposeGone(t, good)
-	pcQuiesced(t, rt, "T61 apply recovery")
+	pcQuiesced(t, rt, "Thm68 apply recovery")
 	_ = rt.Close(pcTimeout(t))
 
 	// Dependency withdrawal -> recovery on a new generation.
@@ -810,12 +810,12 @@ func TestPC_T61_Recovery(t *testing.T) {
 	}
 	pcDisposeGone(t, c1)
 	pcDisposeGone(t, r2f)
-	pcQuiesced(t, rt2, "T61 dependency recovery")
+	pcQuiesced(t, rt2, "Thm68 dependency recovery")
 }
 
-// TestPC_T63_Ordering — dependency withdrawal precedes dependent invalidation;
+// TestPC_Thm70_Ordering — dependency withdrawal precedes dependent invalidation;
 // effect inverses run LIFO; module release follows fiber Gone.
-func TestPC_T63_Ordering(t *testing.T) {
+func TestPC_Thm70_Ordering(t *testing.T) {
 	rt := pcNewRT(t)
 	rec := &pcRec{}
 	eff := pcLoadActive(t, rt, pcEffectHost("order-eff", rec, "A", "B", "C"))
@@ -839,12 +839,12 @@ func TestPC_T63_Ordering(t *testing.T) {
 		t.Fatalf("provider did not reach Gone after dependent invalidation: %v", err)
 	}
 	pcDisposeGone(t, c)
-	pcQuiesced(t, rt, "T63 ordering")
+	pcQuiesced(t, rt, "Thm70 ordering")
 }
 
-// TestPC_T66_Progress — no combination of Dependency/Effect/Event/HMR/WASM can
+// TestPC_Thm73_Progress — no combination of Dependency/Effect/Event/HMR/WASM can
 // wedge the runtime; every operation converges under bounded waits.
-func TestPC_T66_Progress(t *testing.T) {
+func TestPC_Thm73_Progress(t *testing.T) {
 	rt := pcNewRT(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -853,15 +853,15 @@ func TestPC_T66_Progress(t *testing.T) {
 	c1 := pcLoadActive(t, rt, pcCons(nil, nil))
 	pcDisposeGone(t, p1)
 	if err := c1.WaitInactive(ctx); err != nil {
-		t.Fatal("T66: dependency withdrawal stalled")
+		t.Fatal("Thm73: dependency withdrawal stalled")
 	}
 	p2 := pcLoadActive(t, rt, pcProv("p2"))
 	if err := c1.Ready(ctx); err != nil {
-		t.Fatal("T66: dependency recovery stalled")
+		t.Fatal("Thm73: dependency recovery stalled")
 	}
 	// Event axis.
 	var emitCtx *runtime.Context
-	evR := pcLoadActive(t, rt, pcEvRegistrar("t66", &pcRec{}))
+	evR := pcLoadActive(t, rt, pcEvRegistrar("thm73", &pcRec{}))
 	evE := pcLoadActive(t, rt, pcEvEmitter(&emitCtx))
 	if err := runtime.Emit(emitCtx, pcEvKey, "go"); err != nil {
 		t.Fatal(err)
@@ -870,21 +870,21 @@ func TestPC_T66_Progress(t *testing.T) {
 	pcDisposeGone(t, evE)
 	// Effect + child axis.
 	var child *runtime.Fiber
-	host := pcLoadActive(t, rt, pcChildHost("t66-host", pcLeaf("t66-child", nil), &child))
+	host := pcLoadActive(t, rt, pcChildHost("thm73-host", pcLeaf("thm73-child", nil), &child))
 	waitActive(t, child)
 	pcDisposeGone(t, host)
 	if err := child.Gone(ctx); err != nil {
-		t.Fatal("T66: child disposal stalled")
+		t.Fatal("Thm73: child disposal stalled")
 	}
 	pcDisposeGone(t, c1)
 	pcDisposeGone(t, p2)
 	// Quiescence is a legal terminal for the whole axis set.
-	pcQuiesced(t, rt, "T66")
+	pcQuiesced(t, rt, "Thm73")
 }
 
-// TestPC_T73_Confluence — order-independent convergence of mutually
+// TestPC_Thm80_Confluence — order-independent convergence of mutually
 // independent platform transitions across permuted schedules.
-func TestPC_T73_Confluence(t *testing.T) {
+func TestPC_Thm80_Confluence(t *testing.T) {
 	opA := func(rt *runtime.Runtime) *runtime.Fiber { return pcLoadActive(t, rt, pcLeaf("L1", nil)) }
 	opB := func(rt *runtime.Runtime) *runtime.Fiber { return pcLoadActive(t, rt, pcLeaf("L2", nil)) }
 	opC := func(rt *runtime.Runtime) []*runtime.Fiber {
@@ -910,11 +910,11 @@ func TestPC_T73_Confluence(t *testing.T) {
 			op(rt)
 		}
 		canons = append(canons, pcCanonical(pcSnap(t, rt)))
-		if msg := pcT59Check(pcSnap(t, rt)); msg != "" {
-			t.Fatalf("T73: T59 violation on permuted run: %s", msg)
+		if msg := pcThm64Check(pcSnap(t, rt)); msg != "" {
+			t.Fatalf("Thm80: Thm64 violation on permuted run: %s", msg)
 		}
 	}
 	if canons[0] != canons[1] || canons[0] != canons[2] {
-		t.Fatalf("T73 confluence violated:\n%s\n%s\n%s", canons[0], canons[1], canons[2])
+		t.Fatalf("Thm80 confluence violated:\n%s\n%s\n%s", canons[0], canons[1], canons[2])
 	}
 }

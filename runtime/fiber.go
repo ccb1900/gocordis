@@ -26,6 +26,15 @@ type Fiber struct {
 	// explicit scope derives a child realm (Phase 3).
 	realm *realm
 
+	// keyRealms is the fiber's per-key isolation table (paper Definition 24,
+	// the realm table ρ): a key present here resolves and provides against the
+	// named namespace instead of the fiber's scope realm. Entries are fixed at
+	// insertion (Child/Load); runtime reassignment of a key's realm is a
+	// revision (retire -> reinsert), never an in-place resolve change.
+	// Written only on the orchestrator goroutine before publication; read-only
+	// afterwards, so no lock.
+	keyRealms map[CapabilityKey]*realm
+
 	parent   *Fiber
 	children map[FiberID]*Fiber
 

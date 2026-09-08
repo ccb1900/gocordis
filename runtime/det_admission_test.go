@@ -11,13 +11,13 @@ import (
 // parked completion to a failed admission: enqueue-before-delete guarantees a
 // rejected admission leaves the completion parked for a later retry.
 
-func bExecWaitParked(t *testing.T, rt *Runtime, f *Fiber) Step {
+func bExecWaitParked(t *testing.T, rt *Runtime, f *Fiber) detStep {
 	t.Helper()
 	if !waitB(t, rt, 3000, func() bool { return rt.detPending() == 1 && f.State() == StateLoading }) {
 		t.Fatalf("ApplyDone never parked; state=%v pending=%d", f.State(), rt.detPending())
 	}
 	en := rt.detEnabledSteps()
-	if len(en) != 1 || en[0].Kind != StepApplyDone || en[0].FiberID != f.ID() {
+	if len(en) != 1 || en[0].Kind != detStepApplyDone || en[0].FiberID != f.ID() {
 		t.Fatalf("enabled=%v, want [ApplyDone(%d)]", en, f.ID())
 	}
 	return en[0]
@@ -222,7 +222,7 @@ func testBExecCloseOwnership(t *testing.T) {
 	}
 	admit := func(f *Fiber) {
 		for _, s := range rt.detEnabledSteps() {
-			if s.FiberID == f.ID() && s.Kind == StepApplyDone {
+			if s.FiberID == f.ID() && s.Kind == detStepApplyDone {
 				if err := rt.detExecute(s); err != nil {
 					t.Fatalf("detExecute(%v): %v", s, err)
 				}

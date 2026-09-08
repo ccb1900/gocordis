@@ -20,7 +20,7 @@ func waitB(t *testing.T, rt *Runtime, ms int, cond func() bool) bool {
 
 func detNew(t *testing.T) *Runtime {
 	t.Helper()
-	rt, err := New(WithRuntimeMode(RuntimeDeterministic))
+	rt, err := New(withRuntimeMode(runtimeDeterministic))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func admitOneApply(t *testing.T, rt *Runtime, f *Fiber) {
 	}
 	en := rt.detEnabledSteps()
 	for _, s := range en {
-		if s.FiberID == f.ID() && s.Kind == StepApplyDone {
+		if s.FiberID == f.ID() && s.Kind == detStepApplyDone {
 			if err := rt.detExecute(s); err != nil {
 				t.Fatal(err)
 			}
@@ -148,7 +148,7 @@ func TestC04OwnershipClose(t *testing.T) {
 	admit := func(f *Fiber) {
 		en := rt.detEnabledSteps()
 		for _, s := range en {
-			if s.FiberID == f.ID() && s.Kind == StepApplyDone {
+			if s.FiberID == f.ID() && s.Kind == detStepApplyDone {
 				_ = rt.detExecute(s)
 			}
 		}

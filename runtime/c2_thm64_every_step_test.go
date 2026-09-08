@@ -419,7 +419,7 @@ func c2Thm64Check(t *testing.T, rt *Runtime, when string) {
 
 // TestC2Thm64EveryStepSingleFiber drives the full single-fiber lifecycle under
 // the deterministic driver and runs checkThm64 after every step, covering both
-// StepApplyDone and StepUnwindDone.
+// detStepApplyDone and detStepUnwindDone.
 func TestC2Thm64EveryStepSingleFiber(t *testing.T) {
 	rt := detNew(t)
 	c2Thm64Check(t, rt, "initial(empty registry)")
@@ -434,7 +434,7 @@ func TestC2Thm64EveryStepSingleFiber(t *testing.T) {
 	}
 	c2Step(t, step, "Load", f, rt)
 	en := rt.detEnabledSteps()
-	if len(en) != 1 || en[0].Kind != StepApplyDone || en[0].FiberID != f.ID() {
+	if len(en) != 1 || en[0].Kind != detStepApplyDone || en[0].FiberID != f.ID() {
 		t.Fatalf("enabled=%v, want [ApplyDone(P)]", en)
 	}
 	actID := en[0].ActivationID
@@ -469,7 +469,7 @@ func TestC2Thm64EveryStepSingleFiber(t *testing.T) {
 	}
 	c2Step(t, step, "Dispose", f, rt)
 	en2 := rt.detEnabledSteps()
-	if len(en2) != 1 || en2[0].Kind != StepUnwindDone || en2[0].FiberID != f.ID() {
+	if len(en2) != 1 || en2[0].Kind != detStepUnwindDone || en2[0].FiberID != f.ID() {
 		t.Fatalf("enabled=%v, want [UnwindDone(P)]", en2)
 	}
 	if en2[0].ActivationID != actID {

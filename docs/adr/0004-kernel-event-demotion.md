@@ -57,3 +57,19 @@ Kernel 公开面含非论文语义,违反 ROADMAP P6 的"kernel 公开 API 逐�
 - **消费方更新**:p2.1 边界套件与 integration 套件的 runtime.Emit/Serial/Parallel/
   Waterfall 全部改为 event.*;kernel 内不再有任何派发模式代码。
 - 门禁:`go test -count=1 ./...`、`go test -race -count=1 ./...`、vet、gofmt 全绿。
+
+### R3 附录 (2026-09-09):Bus 移除
+
+评审 R3 发现 `extensions/event` 存在两套事件机制并存:kernel-registry 派发
+(dispatch.go)与旧 P1-10 独立总线(Bus,Publish/Subscribe)。Bus 无任何生产消费方
+(仅 4 处测试引用),属"仅靠测试续命的生产 API 面",已整体移除:
+
+- 删除 `event.go`/`event_test.go`/`event_internal_test.go`/`runtime_event_test.go`
+  (E12–E14 的真实意图是"稳定性能力语义",已由 registry/scheduler 套件覆盖,Bus
+  只是载体);
+- 三个集成消费点迁移:`E2E15` 改经 `event.Emit`(语义不变);`E2E24`/`E2E30` 中
+  Bus 仅作"并发扩展活动/关停参与者",直接摘除(注册表变更 + scheduler 仍是压力源)。
+- 同批内部化:确定性驱动面(Step/StepKind/StepApplyDone/StepUnwindDone/
+  RuntimeMode/WithRuntimeMode 等)原为导出但消费方全部是 `package runtime` 内部
+  测试——全部改为非导出(detStep/runtimeMode/...),kernel 公开面进一步收缩,
+  定理驱动器(定理基础设施)功能不变。

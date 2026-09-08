@@ -157,7 +157,7 @@ func gap01AdmitApply(t *testing.T, rt *Runtime, f *Fiber) {
 	t.Helper()
 	if !waitB(t, rt, 5000, func() bool {
 		for _, s := range rt.detEnabledSteps() {
-			if s.Kind == StepApplyDone && s.FiberID == f.ID() {
+			if s.Kind == detStepApplyDone && s.FiberID == f.ID() {
 				err := rt.detExecute(s)
 				if err == nil {
 					return true
@@ -178,7 +178,7 @@ func gap01AdmitUnwind(t *testing.T, rt *Runtime, f *Fiber) {
 	t.Helper()
 	if !waitB(t, rt, 5000, func() bool {
 		for _, s := range rt.detEnabledSteps() {
-			if s.Kind == StepUnwindDone && s.FiberID == f.ID() {
+			if s.Kind == detStepUnwindDone && s.FiberID == f.ID() {
 				err := rt.detExecute(s)
 				if err == nil {
 					return true
@@ -210,7 +210,7 @@ func gap01DriveActive(t *testing.T, rt *Runtime, targets ...*Fiber) {
 	t.Helper()
 	if !waitB(t, rt, 8000, func() bool {
 		for _, s := range rt.detEnabledSteps() {
-			if s.Kind == StepApplyDone {
+			if s.Kind == detStepApplyDone {
 				if err := rt.detExecute(s); err != nil && !errors.Is(err, errDetAdmission) && !errors.Is(err, errDetStale) {
 					return false
 				}

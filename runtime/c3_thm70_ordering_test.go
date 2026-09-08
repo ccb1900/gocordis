@@ -538,7 +538,7 @@ func c3WaitParked(t *testing.T, rt *Runtime, why string) {
 	}
 }
 
-func c3EnabledStep(t *testing.T, rt *Runtime, fid FiberID, kind StepKind) Step {
+func c3EnabledStep(t *testing.T, rt *Runtime, fid FiberID, kind detStepKind) detStep {
 	t.Helper()
 	for _, s := range rt.detEnabledSteps() {
 		if s.FiberID == fid && s.Kind == kind {
@@ -546,10 +546,10 @@ func c3EnabledStep(t *testing.T, rt *Runtime, fid FiberID, kind StepKind) Step {
 		}
 	}
 	t.Fatalf("c3: no enabled step %v for fiber %d; enabled=%v pending=%d", kind, fid, rt.detEnabledSteps(), rt.detPending())
-	return Step{}
+	return detStep{}
 }
 
-func c3ExecAndSettle(t *testing.T, rt *Runtime, rec *c3Recorder, step Step) {
+func c3ExecAndSettle(t *testing.T, rt *Runtime, rec *c3Recorder, step detStep) {
 	t.Helper()
 	if err := rt.detExecute(step); err != nil {
 		t.Fatalf("c3 detExecute(%v): %v (enabled=%v pending=%d)", step, err, rt.detEnabledSteps(), rt.detPending())
@@ -658,7 +658,7 @@ func c3AssertRecord(t *testing.T, p *Fiber, key CapabilityKey, want ProviderIden
 func c3ActivateProvider(t *testing.T, rt *Runtime, rec *c3Recorder, p *Fiber) ActivationID {
 	t.Helper()
 	c3WaitParked(t, rt, "provider ApplyDone park")
-	step := c3EnabledStep(t, rt, p.ID(), StepApplyDone)
+	step := c3EnabledStep(t, rt, p.ID(), detStepApplyDone)
 	act := step.ActivationID
 	c3ExecAndSettle(t, rt, rec, step)
 	if p.State() != StateActive {
@@ -672,7 +672,7 @@ func c3ActivateProvider(t *testing.T, rt *Runtime, rec *c3Recorder, p *Fiber) Ac
 func c3ActivateConsumer(t *testing.T, rt *Runtime, rec *c3Recorder, c *Fiber) ActivationID {
 	t.Helper()
 	c3WaitParked(t, rt, "consumer ApplyDone park")
-	step := c3EnabledStep(t, rt, c.ID(), StepApplyDone)
+	step := c3EnabledStep(t, rt, c.ID(), detStepApplyDone)
 	act := step.ActivationID
 	c3ExecAndSettle(t, rt, rec, step)
 	if c.State() != StateActive {
@@ -1043,7 +1043,7 @@ func TestC3Thm70StaleApplyDoneInjection(t *testing.T) {
 	}
 	c3Settle(t, rt, rec, "Load(P/A2)")
 	c3WaitParked(t, rt, "P/A2 ApplyDone park")
-	pA2step := c3EnabledStep(t, rt, p.ID(), StepApplyDone)
+	pA2step := c3EnabledStep(t, rt, p.ID(), detStepApplyDone)
 	pAct2 := pA2step.ActivationID
 	eventsBeforeInject := len(rec.Events)
 
@@ -1074,7 +1074,7 @@ func TestC3Thm70StaleApplyDoneInjection(t *testing.T) {
 	// Injection point 1b: stale ApplyDone(C/Ac1) while C is Loading(Ac2): the
 	// old consumer completion must not fast-forward the new activation.
 	c3WaitParked(t, rt, "C/Ac2 ApplyDone park")
-	cA2step := c3EnabledStep(t, rt, c.ID(), StepApplyDone)
+	cA2step := c3EnabledStep(t, rt, c.ID(), detStepApplyDone)
 	cAct2 := cA2step.ActivationID
 	before1b := len(rec.Events)
 	if !rt.submit(&cmdApplyDone{fiberID: c.ID(), activationID: cAct1}) {
@@ -1164,7 +1164,7 @@ func TestC3Thm70StaleUnwindDoneInjection(t *testing.T) {
 	}
 	c3Settle(t, rt, rec, "Load(P/A2)")
 	c3WaitParked(t, rt, "P/A2 ApplyDone park")
-	pA2step := c3EnabledStep(t, rt, p.ID(), StepApplyDone)
+	pA2step := c3EnabledStep(t, rt, p.ID(), detStepApplyDone)
 	pAct2 := pA2step.ActivationID
 	prov2 := ProviderIdentity{FiberID: p.ID(), ActivationID: pAct2}
 
@@ -1184,7 +1184,7 @@ func TestC3Thm70StaleUnwindDoneInjection(t *testing.T) {
 	// Complete generation 2 activation (P/A2 Active, C/Ac2 Active binding A2).
 	c3ExecAndSettle(t, rt, rec, pA2step)
 	c3WaitParked(t, rt, "C/Ac2 ApplyDone park")
-	cA2step := c3EnabledStep(t, rt, c.ID(), StepApplyDone)
+	cA2step := c3EnabledStep(t, rt, c.ID(), detStepApplyDone)
 	c3ExecAndSettle(t, rt, rec, cA2step)
 	if c.State() != StateActive {
 		t.Fatalf("C not Active: %v", c.State())
@@ -1200,10 +1200,10 @@ func TestC3Thm70StaleUnwindDoneInjection(t *testing.T) {
 	}
 	c3Settle(t, rt, rec, "Dispose(P/A2)")
 	c3WaitParked(t, rt, "C/Ac2 UnwindDone park")
-	cUw := c3EnabledStep(t, rt, c.ID(), StepUnwindDone)
+	cUw := c3EnabledStep(t, rt, c.ID(), detStepUnwindDone)
 	c3ExecAndSettle(t, rt, rec, cUw)
 	c3WaitParked(t, rt, "P/A2 UnwindDone park")
-	pUw := c3EnabledStep(t, rt, p.ID(), StepUnwindDone)
+	pUw := c3EnabledStep(t, rt, p.ID(), detStepUnwindDone)
 	if pUw.ActivationID != pAct2 {
 		t.Fatalf("enabled P UnwindDone act=%d, want %d", pUw.ActivationID, pAct2)
 	}

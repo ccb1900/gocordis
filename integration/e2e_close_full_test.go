@@ -13,7 +13,6 @@ import (
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/extensions/configwatch"
-	"dynamic-runtime/extensions/event"
 	"dynamic-runtime/extensions/hmr"
 	"dynamic-runtime/extensions/loader"
 	"dynamic-runtime/extensions/registry"
@@ -404,14 +403,10 @@ func TestE2E30FullShutdown(t *testing.T) {
 	waitActive(t, fiberOf(t, &env{ctrl: ctrl}, "p"))
 
 	// Independent extension instances.
-	bus := event.New()
-	sub, _ := bus.Subscribe("t")
 	sch := scheduler.New()
 	_ = sch.Add(scheduler.Job{ID: "j", Schedule: scheduler.Interval{Every: 5 * time.Millisecond}, Task: func(context.Context) error { return nil }})
 
 	// Shutdown everything in a sane order.
-	_ = sub.Close()
-	_ = bus.Close()
 	_ = sch.Close()
 	runCancel()
 	_ = adapter.CloseContext(ctxT(t))
@@ -419,15 +414,6 @@ func TestE2E30FullShutdown(t *testing.T) {
 	_ = ctrl.CloseContext(ctxT(t))
 	if err := rt.Close(context.Background()); err != nil {
 		t.Fatal(err)
-	}
-	// Subscription/event/scheduler terminal checks.
-	select {
-	case _, open := <-sub.Events():
-		if open {
-			t.Fatal("event subscription not closed")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("event subscription did not close")
 	}
 	if len(ctrl.Owned()) != 0 {
 		t.Fatal("controller still owns fibers after shutdown")

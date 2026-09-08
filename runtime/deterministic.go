@@ -14,20 +14,20 @@ import (
 // orchestrator command stream; the Driver controls admission order. All
 // parking/admission paths are non-blocking.
 
-type RuntimeMode int
+type runtimeMode int
 
 const (
-	RuntimeNormal RuntimeMode = iota
-	RuntimeDeterministic
+	runtimeNormal runtimeMode = iota
+	runtimeDeterministic
 )
 
-func WithRuntimeMode(mode RuntimeMode) Option {
+func withRuntimeMode(mode runtimeMode) Option {
 	return func(o *options) { o.mode = mode }
 }
 
 type deterministicState struct {
 	mu      sync.Mutex
-	pending map[Step]command
+	pending map[detStep]command
 
 	// admitOverride, when non-nil, replaces enqueueNonBlocking for detExecute.
 	// It exists so deterministic-driver tests can stage transient admission
@@ -41,7 +41,7 @@ type deterministicState struct {
 }
 
 func newDeterministicState() *deterministicState {
-	return &deterministicState{pending: make(map[Step]command), parked: make(chan struct{}, 1)}
+	return &deterministicState{pending: make(map[detStep]command), parked: make(chan struct{}, 1)}
 }
 
 var (
@@ -57,41 +57,41 @@ var (
 	errDetAdmission = errors.New("runtime: deterministic completion admission rejected")
 )
 
-type StepKind uint8
+type detStepKind uint8
 
 const (
-	StepApplyDone StepKind = iota
-	StepUnwindDone
+	detStepApplyDone detStepKind = iota
+	detStepUnwindDone
 )
 
-type Step struct {
-	Kind         StepKind
+type detStep struct {
+	Kind         detStepKind
 	FiberID      FiberID
 	ActivationID ActivationID
 }
 
-func (s Step) String() string {
+func (s detStep) String() string {
 	k := "ApplyDone"
-	if s.Kind == StepUnwindDone {
+	if s.Kind == detStepUnwindDone {
 		k = "UnwindDone"
 	}
 	return fmt.Sprintf("%s(%d/%d)", k, s.FiberID, s.ActivationID)
 }
 
-func stepOf(cmd command) (Step, bool) {
+func stepOf(cmd command) (detStep, bool) {
 	switch c := cmd.(type) {
 	case *cmdApplyDone:
-		return Step{Kind: StepApplyDone, FiberID: c.fiberID, ActivationID: c.activationID}, true
+		return detStep{Kind: detStepApplyDone, FiberID: c.fiberID, ActivationID: c.activationID}, true
 	case *cmdUnwindDone:
-		return Step{Kind: StepUnwindDone, FiberID: c.fiberID, ActivationID: c.activationID}, true
+		return detStep{Kind: detStepUnwindDone, FiberID: c.fiberID, ActivationID: c.activationID}, true
 	default:
-		return Step{}, false
+		return detStep{}, false
 	}
 }
 
 func (r *Runtime) admitCommand(cmd command) {
 	step, isCompletion := stepOf(cmd)
-	if r.mode != RuntimeDeterministic || !isCompletion {
+	if r.mode != runtimeDeterministic || !isCompletion {
 		r.submit(cmd)
 		return
 	}
@@ -123,7 +123,7 @@ func (r *Runtime) enqueueNonBlocking(cmd command) bool {
 	}
 }
 
-func stepStillValid(rt *Runtime, step Step) bool {
+func stepStillValid(rt *Runtime, step detStep) bool {
 	rt.mu.RLock()
 	f := rt.fibers[step.FiberID]
 	rt.mu.RUnlock()
@@ -137,25 +137,25 @@ func stepStillValid(rt *Runtime, step Step) bool {
 		return false
 	}
 	switch step.Kind {
-	case StepApplyDone:
+	case detStepApplyDone:
 		return f.state == StateLoading
-	case StepUnwindDone:
+	case detStepUnwindDone:
 		return f.state == StateUnloading
 	}
 	return false
 }
 
-func (r *Runtime) detEnabledSteps() []Step {
-	if r.mode != RuntimeDeterministic {
+func (r *Runtime) detEnabledSteps() []detStep {
+	if r.mode != runtimeDeterministic {
 		return nil
 	}
 	r.det.mu.Lock()
-	steps := make([]Step, 0, len(r.det.pending))
+	steps := make([]detStep, 0, len(r.det.pending))
 	for s := range r.det.pending {
 		steps = append(steps, s)
 	}
 	r.det.mu.Unlock()
-	var out []Step
+	var out []detStep
 	for _, s := range steps {
 		if stepStillValid(r, s) {
 			out = append(out, s)
@@ -173,9 +173,9 @@ func (r *Runtime) detEnabledSteps() []Step {
 	return out
 }
 
-func (r *Runtime) detExecute(step Step) error {
-	if r.mode != RuntimeDeterministic {
-		return fmt.Errorf("runtime: detExecute requires RuntimeDeterministic")
+func (r *Runtime) detExecute(step detStep) error {
+	if r.mode != runtimeDeterministic {
+		return fmt.Errorf("runtime: detExecute requires runtimeDeterministic")
 	}
 	if !stepStillValid(r, step) {
 		return fmt.Errorf("%w: %v", errDetStale, step)

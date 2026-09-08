@@ -35,7 +35,7 @@ func TestP21PB06StaleCompletionDoesNotTouchNewActivation(t *testing.T) {
 	}
 	c3Settle(t, rt, rec, "Load(P/A2)")
 	c3WaitParked(t, rt, "P/A2 ApplyDone park")
-	a2 := c3EnabledStep(t, rt, p.ID(), StepApplyDone)
+	a2 := c3EnabledStep(t, rt, p.ID(), detStepApplyDone)
 	pAct2 := a2.ActivationID
 	before := len(rec.Events)
 

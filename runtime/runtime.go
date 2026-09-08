@@ -47,7 +47,7 @@ type Runtime struct {
 	nextFiberID      atomic.Uint64
 	nextActivationID atomic.Uint64
 
-	mode RuntimeMode
+	mode runtimeMode
 	det  *deterministicState
 }
 
@@ -56,7 +56,7 @@ type Runtime struct {
 type Option func(*options)
 
 type options struct {
-	mode      RuntimeMode
+	mode      runtimeMode
 	runtimeID RuntimeID
 }
 
@@ -76,7 +76,7 @@ var defaultRuntimeSeq atomic.Uint64
 
 // New creates and starts a Runtime.
 func New(opts ...Option) (*Runtime, error) {
-	cfg := options{mode: RuntimeNormal}
+	cfg := options{mode: runtimeNormal}
 	for _, o := range opts {
 		if o != nil {
 			o(&cfg)
@@ -213,7 +213,7 @@ func (r *Runtime) Close(ctx context.Context) error {
 		}
 	}
 
-	if r.mode == RuntimeDeterministic {
+	if r.mode == runtimeDeterministic {
 		// Shutdown admission drain: release exactly the completions Close needs
 		// to reach Closed (never arbitrary scheduling). See
 		// drainShutdownCompletions.

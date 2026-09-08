@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -117,7 +118,9 @@ func TestE2E07RegistryProviderReplacement(t *testing.T) {
 	_ = reg1
 }
 
-// E2E-15 / P-06 Event Independence: publishing events never changes fibers.
+// E2E-15 / P-06 Event Independence: dispatching events never changes fibers.
+// (Migrated off the removed event.Bus: the dispatch path is the extension's
+// event surface since ADR-0004.)
 func TestE2E15EventIndependence(t *testing.T) {
 	rt, err := runtime.New()
 	if err != nil {
@@ -132,27 +135,27 @@ func TestE2E15EventIndependence(t *testing.T) {
 	}
 	waitActive(t, f)
 
-	bus := event.New()
-	sub, err := bus.Subscribe("topic")
+	rec := &pcRec{}
+	regF, err := rt.Load(pcEvRegistrar("e2e15", rec))
 	if err != nil {
 		t.Fatal(err)
 	}
+	var emitCtx *runtime.Context
+	emF, err := rt.Load(pcEvEmitter(&emitCtx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitActive(t, regF)
+	waitActive(t, emF)
+
 	for i := 0; i < 10; i++ {
-		if err := bus.Publish(event.Event{Type: "topic", Payload: i}); err != nil {
+		if err := event.Emit(emitCtx, pcEvKey, fmt.Sprintf("%d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	count := 0
-	for count < 10 {
-		select {
-		case <-sub.Events():
-			count++
-		case <-time.After(3 * time.Second):
-			t.Fatal("event not delivered")
-		}
+	if got := len(rec.got()); got != 10 {
+		t.Fatalf("delivered events = %d, want 10", got)
 	}
-	_ = sub.Close()
-	_ = bus.Close()
 
 	if f.State() != runtime.StateActive {
 		t.Fatal("fiber state changed by events")
@@ -241,10 +244,6 @@ func TestE2E24CrossExtensionIsolation(t *testing.T) {
 	waitActive(t, regF)
 	_ = regComp.reg.Add("x", "1")
 	_ = regComp.reg.Remove("x")
-
-	bus := event.New()
-	_ = bus.Publish(event.Event{Type: "x"})
-	_ = bus.Close()
 
 	sch := scheduler.New()
 	_ = sch.Add(scheduler.Job{ID: "j", Schedule: scheduler.Interval{Every: 5 * time.Millisecond},

@@ -63,7 +63,7 @@ func TestC1Thm68MinimalBaseline(t *testing.T) {
 	step++
 
 	en := rt.detEnabledSteps()
-	if len(en) != 1 || en[0].Kind != StepApplyDone || en[0].FiberID != f.ID() {
+	if len(en) != 1 || en[0].Kind != detStepApplyDone || en[0].FiberID != f.ID() {
 		t.Fatalf("enabled=%v, want [ApplyDone(P)]", en)
 	}
 	if err := rt.detExecute(en[0]); err != nil {

@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"dynamic-runtime/extensions/event"
 	"errors"
 	"fmt"
 	"strings"
@@ -80,7 +81,7 @@ func TestPC20RepeatedConvergence(t *testing.T) {
 		var emitCtx *runtime.Context
 		evR := pcLoadActive(t, rt, pcEvRegistrar("cyc", evRec))
 		evE := pcLoadActive(t, rt, pcEvEmitter(&emitCtx))
-		if err := runtime.Emit(emitCtx, pcEvKey, "tick"); err != nil {
+		if err := event.Emit(emitCtx, pcEvKey, "tick"); err != nil {
 			t.Fatal(err)
 		}
 		pcDisposeGone(t, evR)
@@ -270,7 +271,7 @@ func TestPC23PanicBoundary(t *testing.T) {
 	var emitCtx *runtime.Context
 	evP := pcLoadActive(t, rt, pcPanicEventRegistrar("panic-ev"))
 	em := pcLoadActive(t, rt, pcEvEmitter(&emitCtx))
-	if err := runtime.Emit(emitCtx, pcEvKey, "boom"); err == nil {
+	if err := event.Emit(emitCtx, pcEvKey, "boom"); err == nil {
 		t.Fatal("handler panic should surface as an error, not crash")
 	}
 
@@ -376,7 +377,7 @@ func TestPC25ReentrancyNestedComposition(t *testing.T) {
 			return nil, runtime.On(ctx, pcEvKey, func(c context.Context, payload string) error {
 				rec.add("outer:" + payload)
 				if innerCtx != nil {
-					return runtime.Emit(innerCtx, innerKey, payload)
+					return event.Emit(innerCtx, innerKey, payload)
 				}
 				return nil
 			})
@@ -413,7 +414,7 @@ func TestPC25ReentrancyNestedComposition(t *testing.T) {
 	waitActive(t, childF)
 	waitActive(t, nestedLeafF)
 
-	if err := runtime.Emit(outerCtx, pcEvKey, "outer1"); err != nil {
+	if err := event.Emit(outerCtx, pcEvKey, "outer1"); err != nil {
 		t.Fatal(err)
 	}
 	if !rec.has("outer:outer1") || !innerRec.has("inner-hit") {
@@ -447,7 +448,7 @@ func TestPC26PublicAPIOnly(t *testing.T) {
 	if got := pcRecv(t, k.seen, "public binding"); got != "pub" {
 		t.Fatalf("consumer resolved %q", got)
 	}
-	if err := runtime.Emit(emitCtx, pcEvKey, "pub-event"); err != nil {
+	if err := event.Emit(emitCtx, pcEvKey, "pub-event"); err != nil {
 		t.Fatal(err)
 	}
 	if !rec.has("pub:pub-event") {
@@ -744,7 +745,7 @@ func TestPC_Thm64_Preservation(t *testing.T) {
 	step("mount emitter", func() { evE = pcLoadActive(t, rt, pcEvEmitter(&emitCtx)) })
 	step("install effects", func() { eff = pcLoadActive(t, rt, pcEffectHost("thm64-eff", rec, "A", "B")) })
 	step("emit", func() {
-		if err := runtime.Emit(emitCtx, pcEvKey, "x"); err != nil {
+		if err := event.Emit(emitCtx, pcEvKey, "x"); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -863,7 +864,7 @@ func TestPC_Thm73_Progress(t *testing.T) {
 	var emitCtx *runtime.Context
 	evR := pcLoadActive(t, rt, pcEvRegistrar("thm73", &pcRec{}))
 	evE := pcLoadActive(t, rt, pcEvEmitter(&emitCtx))
-	if err := runtime.Emit(emitCtx, pcEvKey, "go"); err != nil {
+	if err := event.Emit(emitCtx, pcEvKey, "go"); err != nil {
 		t.Fatal(err)
 	}
 	pcDisposeGone(t, evR)

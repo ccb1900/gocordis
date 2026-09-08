@@ -196,7 +196,7 @@ func pcEvRegistrar(name string, rec *pcRec) *pcComp {
 }
 
 // pcEvEmitter captures its activation Context so the test can dispatch through
-// a live, owned emitter (public runtime.Emit API only).
+// a live, owned emitter (public event.Emit API only).
 func pcEvEmitter(dst **runtime.Context) *pcComp {
 	return &pcComp{
 		name: "pc-ev-emitter",

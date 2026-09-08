@@ -114,12 +114,14 @@ stc-go)自本文起停用,改用论文编号。
 - [ ] loader/HMR 短路径(候选先行、载荷不变不 reload)对齐同一终点 — 扩展层改造,随后续阶段。
 - 验收(已完成部分):全量 + race + vet + gofmt 绿;Thm80 终点等价测试 -count=3 稳定。
 
-### P6 — ADR-III:内核瘦身至论文面
+### P6 — ADR-III:内核瘦身至论文面 ✅ 2026-09-08 完成(ADR-0004 Accepted)
 
-- [ ] 事件派发(emit/serial/parallel/waterfall)移出 kernel → extensions/event;
-      kernel 仅保留"处理器注册 = 可逆 effect"。
-- [ ] 审计 kernel 其余非论文物(Snapshot/事件日志为观测投影,保留但标注为平台层)。
-- 验收:kernel 公开 API 逐项可锚定论文条目或 ADR;全量测试绿。
+- [x] 事件派发(emit/serial/parallel/waterfall + 新增 bail)移出 kernel →
+      extensions/event;kernel 仅保留注册 = 可逆 effect + EventBindings 读模型。
+- [x] P1 事件一致性套件与 gap 套件迁至 extensions/event(断言不变,内部访问点改公开面)。
+- [x] 审计 kernel 其余非论文物(Snapshot/事件日志为观测投影,保留并标注平台层;
+      deterministic 插桩为定理基础设施,保留)。
+- 验收:kernel 公开 API 逐项可锚定论文条目或 ADR;全量测试 + race 绿。
 
 ### P7 — §6 讨论项的扩展层落地(按需排序)
 

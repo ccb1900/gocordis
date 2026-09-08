@@ -1,7 +1,8 @@
-package runtime
+package event_test
 
 import (
 	"context"
+	. "dynamic-runtime/extensions/event"
 	"errors"
 	"fmt"
 	"sort"
@@ -328,22 +329,24 @@ func TestP1SerialSnapshotUnregistration(t *testing.T) {
 	if err := f2.Gone(p1Timeout(t)); err != nil {
 		t.Fatalf("killer not gone: %v", err)
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("registry residue = %d, want 0", n)
-	}
+	p1AssertNoBindings(t, p1ProbeCtx(t, rt, "serial-residue-1"), p1IntKey.ID(), p1SerialKey2.ID())
 }
 
 // p1Killer registers a handler that disposes the victim fiber mid-dispatch and
 // waits for it to reach Gone.
 type p1Killer struct {
-	rec    *p1Rec
-	victim *Fiber
+	rec     *p1Rec
+	victim  *Fiber
+	selfCtx *Context
 }
+
+func (c *p1Killer) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1Killer) Name() string          { return "killer" }
 func (c *p1Killer) Inject() []Dependency  { return nil }
 func (c *p1Killer) Provide() []Capability { return nil }
 func (c *p1Killer) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	return nil, On(ctx, p1IntKey, func(dctx context.Context, p int) error {
 		c.rec.add("kill")
 		if err := c.victim.Dispose(); err != nil {
@@ -428,14 +431,18 @@ func TestP1SerialScopeVisibilityAndSiblingIsolation(t *testing.T) {
 // p1SerialX is an explicit scope fiber that registers its own handler and
 // mounts two unscoped member children (which inherit realm X).
 type p1SerialX struct {
-	rec *p1Rec
-	hs  chan *Fiber
+	rec     *p1Rec
+	hs      chan *Fiber
+	selfCtx *Context
 }
+
+func (c *p1SerialX) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1SerialX) Name() string          { return "serial-x" }
 func (c *p1SerialX) Inject() []Dependency  { return nil }
 func (c *p1SerialX) Provide() []Capability { return nil }
 func (c *p1SerialX) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	if err := On(ctx, p1IntKey, func(_ context.Context, p int) error { c.rec.add("x"); return nil }); err != nil {
 		return nil, err
 	}
@@ -455,14 +462,18 @@ func (c *p1SerialX) Apply(ctx *Context) (Cleanup, error) {
 // p1SerialHost registers the root-realm handler and mounts sibling explicit
 // scopes A and X.
 type p1SerialHost struct {
-	rec *p1Rec
-	hs  chan *Fiber
+	rec     *p1Rec
+	hs      chan *Fiber
+	selfCtx *Context
 }
+
+func (c *p1SerialHost) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1SerialHost) Name() string          { return "serial-host" }
 func (c *p1SerialHost) Inject() []Dependency  { return nil }
 func (c *p1SerialHost) Provide() []Capability { return nil }
 func (c *p1SerialHost) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	if err := On(ctx, p1IntKey, func(_ context.Context, p int) error { c.rec.add("root"); return nil }); err != nil {
 		return nil, err
 	}
@@ -502,9 +513,7 @@ func TestP1SerialEffectDisposalRemovesHandler(t *testing.T) {
 	if got := p1Join(rec.got()); got != "h" {
 		t.Fatalf("pre-unwind calls = %q, want h", got)
 	}
-	if n := rt.eventReg.count(); n != 1 {
-		t.Fatalf("registry size = %d, want 1", n)
-	}
+	p1AssertBindings(t, ctxX, p1IntKey.ID(), 1)
 	rec.calls = nil
 
 	// Repeated dispatches do not grow the registry.
@@ -513,9 +522,7 @@ func TestP1SerialEffectDisposalRemovesHandler(t *testing.T) {
 			t.Fatalf("Serial: %v", err)
 		}
 	}
-	if n := rt.eventReg.count(); n != 1 {
-		t.Fatalf("registry size after dispatches = %d, want 1", n)
-	}
+	p1AssertBindings(t, ctxX, p1IntKey.ID(), 1)
 	rec.calls = nil
 
 	if err := r.Dispose(); err != nil {
@@ -530,9 +537,7 @@ func TestP1SerialEffectDisposalRemovesHandler(t *testing.T) {
 	if got := p1Join(rec.got()); got != "" {
 		t.Fatalf("post-unwind calls = %q, want none", got)
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("registry residue = %d, want 0", n)
-	}
+	p1AssertNoBindings(t, p1ProbeCtx(t, rt, "serial-residue-2"), p1IntKey.ID())
 }
 
 // S-13: concurrent registration is safe (no data race, no duplicate
@@ -558,8 +563,8 @@ func TestP1SerialConcurrentRegistrationSafe(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := rt.eventReg.count(); got != n {
-		t.Fatalf("registry size = %d, want %d", got, n)
+	if got := len(c.EventBindings(p1IntKey.ID())); got != n {
+		t.Fatalf("visible bindings = %d, want %d", got, n)
 	}
 	if err := Serial(context.Background(), c, p1IntKey, 1); err != nil {
 		t.Fatalf("Serial: %v", err)
@@ -634,9 +639,7 @@ func TestP1SerialConcurrentDisposalSafe(t *testing.T) {
 		t.Fatalf("unexpected dispatch error during disposal: %v", err)
 	default:
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("registry residue = %d, want 0", n)
-	}
+	p1AssertNoBindings(t, p1ProbeCtx(t, rt, "serial-residue-3"), p1IntKey.ID(), p1SerialKey2.ID())
 }
 
 // S-15: a handler may trigger another dispatch (reentrancy); the nested
@@ -711,7 +714,5 @@ func TestP1SerialPanicContained(t *testing.T) {
 	if st := r.State(); st != StateActive {
 		t.Fatalf("fiber state after panics = %v, want Active", st)
 	}
-	if n := rt.eventReg.count(); n != 2 {
-		t.Fatalf("registry size after panics = %d, want 2", n)
-	}
+	p1AssertBindings(t, p1ProbeCtx(t, rt, "serial-panic-probe"), p1IntKey.ID(), 2)
 }

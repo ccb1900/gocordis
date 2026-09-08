@@ -1,7 +1,9 @@
-package runtime
+package event_test
 
 import (
 	"context"
+	. "dynamic-runtime/extensions/event"
+	"dynamic-runtime/runtime"
 	"errors"
 	"fmt"
 	"sort"
@@ -550,9 +552,7 @@ func TestP1WaterfallSnapshotUnregistration(t *testing.T) {
 	if err := f2.Gone(p1Timeout(t)); err != nil {
 		t.Fatalf("killer not gone: %v", err)
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("registry residue = %d, want 0", n)
-	}
+	p1AssertNoBindings(t, p1ProbeCtx(t, rt, "wf-residue"), p1IntKey.ID(), p1WFKey2.ID(), p1WFKey3.ID())
 }
 
 // W-13/T-03: Waterfall inherits the Realm scope model — ancestor + current
@@ -637,9 +637,7 @@ func TestP1WaterfallEffectDisposal(t *testing.T) {
 	if got := p1Join(rec.got()); got != "h" {
 		t.Fatalf("pre-unwind calls = %q, want h", got)
 	}
-	if n := rt.eventReg.count(); n != 1 {
-		t.Fatalf("registry size = %d, want 1", n)
-	}
+	p1AssertBindings(t, ctxX, p1IntKey.ID(), 1)
 	rec.calls = nil
 
 	if err := r.Dispose(); err != nil {
@@ -654,9 +652,7 @@ func TestP1WaterfallEffectDisposal(t *testing.T) {
 	if got := p1Join(rec.got()); got != "" {
 		t.Fatalf("post-unwind calls = %q, want none", got)
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("registry residue = %d, want 0", n)
-	}
+	p1AssertNoBindings(t, p1ProbeCtx(t, rt, "wf-residue"), p1IntKey.ID(), p1WFKey2.ID(), p1WFKey3.ID())
 }
 
 // W-15/T-09: reentrant Waterfall. A handler dispatches a second event; the
@@ -786,9 +782,7 @@ func TestP1WaterfallPanicContained(t *testing.T) {
 	if st := r.State(); st != StateActive {
 		t.Fatalf("fiber state after panics = %v, want Active", st)
 	}
-	if n := rt.eventReg.count(); n != 3 {
-		t.Fatalf("registry size after panics = %d, want 3", n)
-	}
+	p1AssertBindings(t, p1ProbeCtx(t, rt, "wf-panic-probe"), p1IntKey.ID(), 3)
 }
 
 // W-18/T-05: 1000 dispatches over the same snapshot produce the identical
@@ -849,9 +843,7 @@ func TestP1WaterfallNoHandlerLeak(t *testing.T) {
 		if err := r.Gone(p1Timeout(t)); err != nil {
 			t.Fatalf("R%02d not gone: %v", i, err)
 		}
-		if n := rt.eventReg.count(); n != 0 {
-			t.Fatalf("iteration #%d registry residue = %d, want 0", i, n)
-		}
+		p1AssertNoBindings(t, p1ProbeCtx(t, rt, "wf-cycle-probe"), p1IntKey.ID())
 	}
 }
 
@@ -923,7 +915,7 @@ func TestP1WaterfallGuardRails(t *testing.T) {
 	rec := &p1Rec{}
 	r := p1Ready(t, rt, &p1Registrar{name: "R", rec: rec})
 	c := p1Ctx(r)
-	var zeroKey EventKey[int]
+	var zeroKey runtime.EventKey[int]
 
 	if err := OnWaterfall[int](nil, p1IntKey, wfRec("x", rec)); err == nil {
 		t.Fatal("OnWaterfall(nil ctx) returned nil")
@@ -940,9 +932,7 @@ func TestP1WaterfallGuardRails(t *testing.T) {
 	if err := Waterfall[int](context.Background(), c, zeroKey, 1); err == nil {
 		t.Fatal("Waterfall(zero key) returned nil")
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("guard-rail rejections left %d registry entries, want 0", n)
-	}
+	p1AssertNoBindings(t, c, p1IntKey.ID())
 }
 
 // W-20 (local component): concurrent chain-aware registration while Waterfall
@@ -993,8 +983,8 @@ func TestP1WaterfallConcurrentRegistrationSafe(t *testing.T) {
 	close(stop)
 	dispWG.Wait()
 
-	if got := rt.eventReg.count(); got != n+1 {
-		t.Fatalf("registry size = %d, want %d", got, n+1)
+	if got := len(c.EventBindings(p1IntKey.ID())); got != n+1 {
+		t.Fatalf("visible bindings = %d, want %d", got, n+1)
 	}
 	rec.calls = nil
 	if err := Waterfall(context.Background(), c, p1IntKey, 1); err != nil {
@@ -1062,22 +1052,24 @@ func TestP1WaterfallConcurrentDisposalSafe(t *testing.T) {
 		t.Fatalf("unexpected dispatch error during disposal: %v", err)
 	default:
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("registry residue = %d, want 0", n)
-	}
+	p1AssertNoBindings(t, p1ProbeCtx(t, rt, "wf-residue"), p1IntKey.ID(), p1WFKey2.ID(), p1WFKey3.ID())
 }
 
 // p1WFKiller is the Waterfall analog of p1Killer: a chain-aware node that
 // disposes its victim mid-chain and waits for Gone before continuing.
 type p1WFKiller struct {
-	rec    *p1Rec
-	victim *Fiber
+	rec     *p1Rec
+	victim  *Fiber
+	selfCtx *Context
 }
+
+func (c *p1WFKiller) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1WFKiller) Name() string          { return "wf-killer" }
 func (c *p1WFKiller) Inject() []Dependency  { return nil }
 func (c *p1WFKiller) Provide() []Capability { return nil }
 func (c *p1WFKiller) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	err := OnWaterfall(ctx, p1IntKey, func(dctx context.Context, p int, next Next) error {
 		c.rec.add("kill")
 		if err := c.victim.Dispose(); err != nil {
@@ -1093,28 +1085,36 @@ func (c *p1WFKiller) Apply(ctx *Context) (Cleanup, error) {
 
 // p1WFLeaf is a chain-aware leaf: it registers tag and continues the chain.
 type p1WFLeaf struct {
-	tag string
-	rec *p1Rec
+	tag     string
+	rec     *p1Rec
+	selfCtx *Context
 }
+
+func (c *p1WFLeaf) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1WFLeaf) Name() string          { return "wf-leaf:" + c.tag }
 func (c *p1WFLeaf) Inject() []Dependency  { return nil }
 func (c *p1WFLeaf) Provide() []Capability { return nil }
 func (c *p1WFLeaf) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	return nil, OnWaterfall(ctx, p1IntKey, wfRec(c.tag, c.rec))
 }
 
 // p1WFX is an explicit scope fiber that registers a chain-aware handler and
 // mounts two unscoped member children (which inherit realm X).
 type p1WFX struct {
-	rec *p1Rec
-	hs  chan *Fiber
+	rec     *p1Rec
+	hs      chan *Fiber
+	selfCtx *Context
 }
+
+func (c *p1WFX) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1WFX) Name() string          { return "wf-x" }
 func (c *p1WFX) Inject() []Dependency  { return nil }
 func (c *p1WFX) Provide() []Capability { return nil }
 func (c *p1WFX) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	if err := OnWaterfall(ctx, p1IntKey, wfRec("x", c.rec)); err != nil {
 		return nil, err
 	}
@@ -1134,14 +1134,18 @@ func (c *p1WFX) Apply(ctx *Context) (Cleanup, error) {
 // p1WFHost registers the root-realm chain-aware handler and mounts sibling
 // explicit scopes A and X.
 type p1WFHost struct {
-	rec *p1Rec
-	hs  chan *Fiber
+	rec     *p1Rec
+	hs      chan *Fiber
+	selfCtx *Context
 }
+
+func (c *p1WFHost) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1WFHost) Name() string          { return "wf-host" }
 func (c *p1WFHost) Inject() []Dependency  { return nil }
 func (c *p1WFHost) Provide() []Capability { return nil }
 func (c *p1WFHost) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	if err := OnWaterfall(ctx, p1IntKey, wfRec("root", c.rec)); err != nil {
 		return nil, err
 	}

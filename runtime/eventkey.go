@@ -28,6 +28,12 @@ type eventKeyID struct {
 	name   string
 }
 
+// EventKeyID is the comparable, untyped identity of one Event. The kernel
+// keeps registration (a reversible effect) and the registry read model; the
+// dispatch MODES are extension policy (ADR-0004) and address handlers through
+// this identity.
+type EventKeyID = eventKeyID
+
 // NewEventKey builds a typed Event key. Keys with the same payload type T and
 // name are the same Event regardless of where they are constructed.
 func NewEventKey[T any](name string) EventKey[T] {
@@ -97,3 +103,9 @@ type Next func() error
 // through the caller-supplied payload/state the handlers share, never through
 // a second channel invented by the Kernel.
 type WaterfallHandler[T any] func(context.Context, T, Next) error
+
+// Valid reports whether this EventKey was built by NewEventKey.
+func (k EventKey[T]) Valid() bool { return k.valid() }
+
+// ID returns the untyped Event identity for extension-level dispatch queries.
+func (k EventKey[T]) ID() EventKeyID { return k.key }

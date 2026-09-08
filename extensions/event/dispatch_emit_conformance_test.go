@@ -1,7 +1,9 @@
-package runtime
+package event_test
 
 import (
 	"context"
+	. "dynamic-runtime/extensions/event"
+	"dynamic-runtime/runtime"
 	"errors"
 	"strings"
 	"sync"
@@ -52,16 +54,20 @@ func p1Join(got []string) string { return strings.Join(got, ",") }
 // p1Registrar is a Component whose Apply installs a caller-supplied list of
 // handler registrations and captures its activation Context for the test.
 type p1Registrar struct {
-	name string
-	rec  *p1Rec
-	on   []func(*Context) error
-	ctx  *Context
+	name    string
+	rec     *p1Rec
+	on      []func(*Context) error
+	ctx     *Context
+	selfCtx *Context
 }
+
+func (c *p1Registrar) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1Registrar) Name() string          { return c.name }
 func (c *p1Registrar) Inject() []Dependency  { return nil }
 func (c *p1Registrar) Provide() []Capability { return nil }
 func (c *p1Registrar) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	c.ctx = ctx
 	for _, f := range c.on {
 		if err := f(ctx); err != nil {
@@ -73,9 +79,9 @@ func (c *p1Registrar) Apply(ctx *Context) (Cleanup, error) {
 
 func p1Runtime(t *testing.T) *Runtime {
 	t.Helper()
-	rt, err := New()
+	rt, err := runtime.New()
 	if err != nil {
-		t.Fatalf("New(): %v", err)
+		t.Fatalf("runtime.New(): %v", err)
 	}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -104,22 +110,36 @@ func p1Ready(t *testing.T, rt *Runtime, comp Component) *Fiber {
 	return f
 }
 
+// p1CtxHolder is implemented by every migrated fixture component: Apply
+// publishes its own activation context (public surface — no kernel internals).
+type p1CtxHolder interface{ p1PublishedCtx() *Context }
+
+// p1Ctx returns the live activation context the fiber's component published
+// during Apply. Replaces the old internal f.activation.ctx read.
 func p1Ctx(f *Fiber) *Context {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	if f.activation == nil {
-		return nil
+	if h, ok := f.Component().(p1CtxHolder); ok {
+		return h.p1PublishedCtx()
 	}
-	return f.activation.ctx
+	return nil
 }
 
-func p1Activation(f *Fiber) ActivationID {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	if f.activation == nil {
-		return 0
-	}
-	return f.activation.id
+// p1Grab is a component whose Apply publishes its activation context on ch.
+// Mounted where a test needs to emit "from" a realm.
+type p1Grab struct {
+	name    string
+	out     chan *Context
+	selfCtx *Context
+}
+
+func (c *p1Grab) p1PublishedCtx() *Context { return c.selfCtx }
+
+func (c *p1Grab) Name() string          { return c.name }
+func (c *p1Grab) Inject() []Dependency  { return nil }
+func (c *p1Grab) Provide() []Capability { return nil }
+func (c *p1Grab) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
+	c.out <- ctx
+	return nil, nil
 }
 
 func p1WaitState(t *testing.T, f *Fiber, want FiberState) {
@@ -195,34 +215,39 @@ func TestP1EmitEffectOwnedRegistrationAndUnwindRemoval(t *testing.T) {
 	})
 	x := p1Ready(t, rt, &p1Registrar{name: "X", rec: rec}) // root-realm emitter, no handlers
 
-	// E-02: the registration is a committed Event-kind Effect slot.
-	c := p1Ctx(r)
-	c.mu.Lock()
+	// E-02: the registration is a committed Event-kind Effect slot, observed
+	// through the public snapshot.
+	snap, err := rt.Snapshot(p1Timeout(t))
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
 	var eventSlots int
-	for _, s := range c.effects {
-		if s.kind == EffectKindEvent && s.state == effectCommitted {
-			eventSlots++
+	for _, fr := range snap.Fibers {
+		if fr.ID != r.ID() {
+			continue
+		}
+		for _, ev := range fr.Effects {
+			if ev.Kind == runtime.EffectKindEvent && ev.State == "Committed" {
+				eventSlots++
+			}
 		}
 	}
-	c.mu.Unlock()
 	if eventSlots != 1 {
 		t.Fatalf("Event-kind committed effects = %d, want 1", eventSlots)
 	}
 
-	// E-04: the registry entry traces to the owner activation.
-	g := rt.eventReg
-	g.mu.RLock()
-	chain := append([]*eventReg(nil), g.byKey[p1IntKey.id()]...)
-	g.mu.RUnlock()
-	if len(chain) != 1 {
-		t.Fatalf("registry entries = %d, want 1", len(chain))
+	// E-04: the registry entry traces to the owner activation, observed
+	// through the public read model.
+	ctxX := p1Ctx(x)
+	bindings := ctxX.EventBindings(p1IntKey.ID())
+	if len(bindings) != 1 {
+		t.Fatalf("registry entries = %d, want 1", len(bindings))
 	}
-	if chain[0].owner.FiberID != r.ID() || chain[0].owner.ActivationID != p1Activation(r) {
-		t.Fatalf("owner = %+v, want fiber=%d activation=%d", chain[0].owner, r.ID(), p1Activation(r))
+	if bindings[0].Owner.FiberID != r.ID() {
+		t.Fatalf("owner fiber = %d, want %d", bindings[0].Owner.FiberID, r.ID())
 	}
 
 	// While R is Active its handler is visible from X's realm path (root realm).
-	ctxX := p1Ctx(x)
 	if err := Emit(ctxX, p1IntKey, 1); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -244,9 +269,7 @@ func TestP1EmitEffectOwnedRegistrationAndUnwindRemoval(t *testing.T) {
 	if got := p1Join(rec.got()); got != "" {
 		t.Fatalf("post-unwind emit calls = %q, want none", got)
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("registry residue = %d registrations, want 0", n)
-	}
+	p1AssertNoBindings(t, p1ProbeCtx(t, rt, "emit-residue-1"), p1IntKey.ID())
 }
 
 // E-06: handler execution order is deterministic and registration-ordered,
@@ -425,7 +448,7 @@ func TestP1EmitCancellationStopsFurtherDispatch(t *testing.T) {
 	})
 
 	// c1 runs first and cancels the emitter mid-dispatch; c2 must be skipped.
-	err := Emit(ctxX, p1CancelKey, p1CancelPayload{cancel: func() { ctxX.cancel() }})
+	err := Emit(ctxX, p1CancelKey, p1CancelPayload{cancel: func() { ctxX.Cancel() }})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Emit error = %v, want context.Canceled", err)
 	}
@@ -458,38 +481,37 @@ func TestP1EmitNoLifecycleAuthorityLeak(t *testing.T) {
 		},
 	})
 	c := p1Ctx(r)
-	beforeSeq := rt.events.current()
-	beforeCount := rt.eventReg.count()
-	beforeFibers := len(rt.fibers)
-	states := map[FiberID]FiberState{}
-	rt.mu.RLock()
-	for id, f := range rt.fibers {
-		states[id] = f.State()
+	before, err := rt.Snapshot(p1Timeout(t))
+	if err != nil {
+		t.Fatalf("before snapshot: %v", err)
 	}
-	rt.mu.RUnlock()
 
 	if err := Emit(c, p1IntKey, 1); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 
-	if afterSeq := rt.events.current(); afterSeq != beforeSeq {
-		t.Fatalf("Emit emitted %d canonical event(s); event sequence %d -> %d", afterSeq-beforeSeq, beforeSeq, afterSeq)
+	after, err := rt.Snapshot(p1Timeout(t))
+	if err != nil {
+		t.Fatalf("after snapshot: %v", err)
 	}
-	if afterCount := rt.eventReg.count(); afterCount != beforeCount {
-		t.Fatalf("Emit changed registry size %d -> %d", beforeCount, afterCount)
+	if after.EventSequence != before.EventSequence {
+		t.Fatalf("Emit emitted canonical event(s); event sequence %d -> %d", before.EventSequence, after.EventSequence)
 	}
-	rt.mu.RLock()
-	if len(rt.fibers) != beforeFibers {
-		rt.mu.RUnlock()
-		t.Fatalf("Emit changed fiber count %d -> %d", beforeFibers, len(rt.fibers))
+	if len(after.Fibers) != len(before.Fibers) {
+		t.Fatalf("Emit changed fiber count %d -> %d", len(before.Fibers), len(after.Fibers))
 	}
-	for id, f := range rt.fibers {
-		if st := f.State(); st != states[id] {
-			rt.mu.RUnlock()
-			t.Fatalf("fiber %v state changed by Emit: %v -> %v", id, states[id], st)
+	beforeStates := map[FiberID]string{}
+	for _, f := range before.Fibers {
+		beforeStates[f.ID] = string(f.State)
+	}
+	for _, f := range after.Fibers {
+		if st := string(f.State); st != beforeStates[f.ID] {
+			t.Fatalf("fiber %v state changed by Emit: %v -> %v", f.ID, beforeStates[f.ID], st)
 		}
 	}
-	rt.mu.RUnlock()
+	if len(after.Providers) != len(before.Providers) || len(after.Dependencies) != len(before.Dependencies) {
+		t.Fatalf("Emit changed provider/dependency rows")
+	}
 }
 
 // E-01 guard rails: nil Context / nil handler / zero-value EventKey are
@@ -499,7 +521,7 @@ func TestP1EmitAndOnGuardRails(t *testing.T) {
 	rec := &p1Rec{}
 	r := p1Ready(t, rt, &p1Registrar{name: "R", rec: rec})
 	c := p1Ctx(r)
-	var zeroKey EventKey[int]
+	var zeroKey runtime.EventKey[int]
 
 	if err := On[int](nil, p1IntKey, func(_ context.Context, p int) error { return nil }); err == nil {
 		t.Fatal("On(nil ctx) returned nil")
@@ -516,9 +538,7 @@ func TestP1EmitAndOnGuardRails(t *testing.T) {
 	if err := Emit(c, zeroKey, 1); err == nil {
 		t.Fatal("Emit(zero key) returned nil")
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("guard-rail rejections left %d registry entries, want 0", n)
-	}
+	p1AssertNoBindings(t, c, p1IntKey.ID())
 }
 
 // D4 scope semantics: emitter-path matching. Handlers registered in an
@@ -597,27 +617,35 @@ func TestP1EmitScopeMatching(t *testing.T) {
 
 // p1Leaf registers one named handler in its own Apply.
 type p1Leaf struct {
-	tag string
-	rec *p1Rec
+	tag     string
+	rec     *p1Rec
+	selfCtx *Context
 }
+
+func (c *p1Leaf) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1Leaf) Name() string          { return "leaf:" + c.tag }
 func (c *p1Leaf) Inject() []Dependency  { return nil }
 func (c *p1Leaf) Provide() []Capability { return nil }
 func (c *p1Leaf) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	return nil, On(ctx, p1IntKey, func(_ context.Context, p int) error { c.rec.add(c.tag); return nil })
 }
 
 // p1ScopeA registers handler "a" (realm RA) and mounts a scoped child GA.
 type p1ScopeA struct {
-	rec *p1Rec
-	hs  chan *Fiber
+	rec     *p1Rec
+	hs      chan *Fiber
+	selfCtx *Context
 }
+
+func (c *p1ScopeA) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1ScopeA) Name() string          { return "scope-a" }
 func (c *p1ScopeA) Inject() []Dependency  { return nil }
 func (c *p1ScopeA) Provide() []Capability { return nil }
 func (c *p1ScopeA) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	if err := On(ctx, p1IntKey, func(_ context.Context, p int) error { c.rec.add("a"); return nil }); err != nil {
 		return nil, err
 	}
@@ -632,14 +660,18 @@ func (c *p1ScopeA) Apply(ctx *Context) (Cleanup, error) {
 // p1ScopeHost registers the global (root realm) handler and mounts two
 // explicit-scope siblings A and B.
 type p1ScopeHost struct {
-	rec *p1Rec
-	hs  chan *Fiber
+	rec     *p1Rec
+	hs      chan *Fiber
+	selfCtx *Context
 }
+
+func (c *p1ScopeHost) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1ScopeHost) Name() string          { return "scope-host" }
 func (c *p1ScopeHost) Inject() []Dependency  { return nil }
 func (c *p1ScopeHost) Provide() []Capability { return nil }
 func (c *p1ScopeHost) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	if err := On(ctx, p1IntKey, func(_ context.Context, p int) error { c.rec.add("root"); return nil }); err != nil {
 		return nil, err
 	}

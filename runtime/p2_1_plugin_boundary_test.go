@@ -26,6 +26,7 @@ package runtime_test
 
 import (
 	"context"
+	"dynamic-runtime/extensions/event"
 	"errors"
 	"testing"
 
@@ -316,7 +317,7 @@ func TestP21PB04EffectOwnership(t *testing.T) {
 	}
 
 	// Positive control: while Active the handler fires and the provider exists.
-	if err := runtime.Emit(hostCtx, p21EvKey, "a"); err != nil {
+	if err := event.Emit(hostCtx, p21EvKey, "a"); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	if got := evRec.all(); !equalStrings(got, []string{"evt:a"}) {
@@ -339,7 +340,7 @@ func TestP21PB04EffectOwnership(t *testing.T) {
 		t.Fatalf("inverse order = %v, want %v", got, wantUndo)
 	}
 	// Handler MUST NOT remain registered after activation unwind.
-	if err := runtime.Emit(hostCtx, p21EvKey, "b"); err != nil {
+	if err := event.Emit(hostCtx, p21EvKey, "b"); err != nil {
 		t.Fatalf("Emit after dispose: %v", err)
 	}
 	if got := evRec.all(); !equalStrings(got, []string{"evt:a"}) {
@@ -655,13 +656,13 @@ func TestP21PB08PublicApiBoundary(t *testing.T) {
 	}
 
 	// All four dispatch strategies reach the plugin's registrations.
-	if err := runtime.Emit(hostCtx, p21EvKey, "e"); err != nil {
+	if err := event.Emit(hostCtx, p21EvKey, "e"); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	if err := runtime.Serial(context.Background(), hostCtx, p21EvKey, "s"); err != nil {
+	if err := event.Serial(context.Background(), hostCtx, p21EvKey, "s"); err != nil {
 		t.Fatalf("Serial: %v", err)
 	}
-	if err := runtime.Waterfall(context.Background(), hostCtx, p21WFKey, "w"); err != nil {
+	if err := event.Waterfall(context.Background(), hostCtx, p21WFKey, "w"); err != nil {
 		t.Fatalf("Waterfall: %v", err)
 	}
 	wantEv := []string{"evt:e", "evt:s", "wf:w"}
@@ -682,7 +683,7 @@ func TestP21PB08PublicApiBoundary(t *testing.T) {
 		t.Fatalf("child not Gone: %v", err)
 	}
 	waitState(t, consF, runtime.StatePending)
-	if err := runtime.Emit(hostCtx, p21EvKey, "x"); err != nil {
+	if err := event.Emit(hostCtx, p21EvKey, "x"); err != nil {
 		t.Fatalf("Emit after dispose: %v", err)
 	}
 	if got := evRec.all(); !equalStrings(got, wantEv) {
@@ -796,7 +797,7 @@ func TestP21PB10FailureUnwind(t *testing.T) {
 		if err := cf.Gone(testTimeout(t)); err != nil {
 			t.Fatalf("child not Gone after failed parent: %v", err)
 		}
-		if err := runtime.Emit(hostCtx, p21EvKey, "x"); err != nil {
+		if err := event.Emit(hostCtx, p21EvKey, "x"); err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
 		if got := evRec.all(); len(got) != 0 {
@@ -847,7 +848,7 @@ func TestP21PB10FailureUnwind(t *testing.T) {
 		if got := undoRec.all(); !equalStrings(got, []string{"undo:P"}) {
 			t.Fatalf("inverse events = %v, want [undo:P]", got)
 		}
-		if err := runtime.Emit(hostCtx, p21EvKey, "x"); err != nil {
+		if err := event.Emit(hostCtx, p21EvKey, "x"); err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
 		snap := p21Snapshot(t, rt)

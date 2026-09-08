@@ -1,7 +1,8 @@
-package runtime
+package event_test
 
 import (
 	"context"
+	. "dynamic-runtime/extensions/event"
 	"errors"
 	"fmt"
 	"sort"
@@ -237,9 +238,7 @@ func TestP1ParallelPanicIsolation(t *testing.T) {
 	if st := r.State(); st != StateActive {
 		t.Fatalf("fiber state after panics = %v, want Active", st)
 	}
-	if n := rt.eventReg.count(); n != 3 {
-		t.Fatalf("registry size after panics = %d, want 3", n)
-	}
+	p1AssertBindings(t, p1ProbeCtx(t, rt, "parallel-panic-probe"), p1IntKey.ID(), 3)
 }
 
 // P-08: cancellation before dispatch starts prevents every handler from
@@ -408,9 +407,7 @@ func TestP1ParallelSnapshotUnregistration(t *testing.T) {
 	if err := f2.Gone(p1Timeout(t)); err != nil {
 		t.Fatalf("killer not gone: %v", err)
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("registry residue = %d, want 0", n)
-	}
+	p1AssertNoBindings(t, p1ProbeCtx(t, rt, "parallel-residue-1"), p1IntKey.ID(), p1ParallelKey3.ID())
 }
 
 // P-12: scope visibility — ancestor/current visible, sibling invisible.
@@ -491,9 +488,7 @@ func TestP1ParallelEffectDisposalNoHandlerLeak(t *testing.T) {
 		if err := r.Gone(p1Timeout(t)); err != nil {
 			t.Fatalf("cycle %d fiber not gone: %v", cycle, err)
 		}
-		if n := rt.eventReg.count(); n != 0 {
-			t.Fatalf("cycle %d registry residue = %d, want 0", cycle, n)
-		}
+		p1AssertNoBindings(t, p1ProbeCtx(t, rt, "parallel-cycle-probe"), p1IntKey.ID())
 	}
 }
 
@@ -550,8 +545,8 @@ func TestP1ParallelConcurrentRegistrationSafe(t *testing.T) {
 	close(stop)
 	dispWG.Wait()
 
-	if got := rt.eventReg.count(); got != n+1 {
-		t.Fatalf("registry size = %d, want %d", got, n+1)
+	if got := len(c.EventBindings(p1IntKey.ID())); got != n+1 {
+		t.Fatalf("visible bindings = %d, want %d", got, n+1)
 	}
 	rec.calls = nil
 	if err := Parallel(context.Background(), c, p1IntKey, 1); err != nil {
@@ -621,9 +616,7 @@ func TestP1ParallelConcurrentDisposalSafe(t *testing.T) {
 		t.Fatalf("unexpected dispatch error during disposal: %v", err)
 	default:
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("registry residue = %d, want 0", n)
-	}
+	p1AssertNoBindings(t, p1ProbeCtx(t, rt, "parallel-residue-2"), p1IntKey.ID())
 }
 
 // P-16/P-17: a handler may trigger nested Parallel dispatches (reentrancy);

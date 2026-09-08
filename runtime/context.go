@@ -156,6 +156,17 @@ func newContext(rt *Runtime, fiberID FiberID, activationID ActivationID, inject 
 	return c
 }
 
+// Cancel cancels the activation's cooperative-cancellation context (Done /
+// Err observers). It is a host-side cooperative signal, not a lifecycle
+// decision: the Fiber's state is still owned by the orchestrator. Cancellation
+// of an emitter's context is how an activation stops participating in
+// extension-level dispatch mid-flight.
+func (c *Context) Cancel() {
+	if c.cancel != nil {
+		c.cancel()
+	}
+}
+
 // markDiverted records the divert observed by this activation's iterator.
 func (c *Context) markDiverted() {
 	c.mu.Lock()

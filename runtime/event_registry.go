@@ -277,275 +277,48 @@ func OnWaterfall[T any](c *Context, key EventKey[T], handler WaterfallHandler[T]
 //   - Emitter cancellation is cooperative: it is checked before each handler.
 //     A canceled emitter stops further dispatch and Emit returns ctx.Err()
 //     joined with the errors already collected. A running handler is never
-//     force-terminated.
-func Emit[T any](c *Context, key EventKey[T], payload T) error {
-	if c == nil {
-		return errors.New("runtime: nil context")
-	}
-	if !key.valid() {
-		return errors.New("runtime: zero-value EventKey (use NewEventKey)")
-	}
-	if c.rt == nil || c.rt.eventReg == nil {
-		return errors.New("runtime: event registry unavailable")
-	}
-	if c.base != nil && c.base.Err() != nil {
-		return c.base.Err()
-	}
-	emitCtx := c.base
-	if emitCtx == nil {
-		emitCtx = context.Background()
-	}
-	snap := c.rt.eventSnapshot(key.id(), c.realm)
-	var errs []error
-	for _, reg := range snap {
-		if c.base != nil && c.base.Err() != nil {
-			return errors.Join(append(errs, c.base.Err())...)
-		}
-		if err := guardedEventHandler(reg.handler, emitCtx, payload); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+// ---------------------------------------------------------------------------
+// Extension dispatch surface (ADR-0004)
+// ---------------------------------------------------------------------------
+
+// EventBinding is one registered Event handler as the kernel's registry read
+// model exposes it: owner identity, deterministic global registration order,
+// the guarded handler, and the waterfall chain (nil for a plain On
+// registration). Bindings are a snapshot: dispatch modes are EXTENSION policy
+// (ADR-0004), and the kernel guarantees only registration-as-reversible-effect
+// plus this read model. Visibility (emitter realm path) is already resolved.
+type EventBinding struct {
+	Owner   ProviderIdentity
+	Order   uint64
+	Handler func(context.Context, any) error
+	Chain   func(context.Context, any, Next) error
 }
 
-// Serial performs an ordered, awaited dispatch (Decision Record D9 framework;
-// P1.2 semantics).
-//
-// The caller-supplied ctx is the dispatch context: cancellation prevents
-// further handlers from starting, and every invoked handler receives ctx so it
-// can observe cancellation cooperatively (a running handler is never
-// force-terminated). A nil ctx behaves like context.Background(). The emitter
-// activation context (c) also governs the dispatch: once the emitting
-// activation is canceled, remaining handlers do not start.
-//
-// Execution is strictly sequential (A → B → C: the previous handler completes
-// before the next starts) in deterministic registration order over the same
-// dispatch snapshot as Emit (scope matching, snapshot immutability,
-// reentrancy, and owner-validity semantics are identical). Serial is NOT
-// fail-fast: one handler's error (or contained panic) never stops later
-// handlers; handler errors are aggregated with errors.Join and preserved (no
-// error overwrites an earlier one).
-func Serial[T any](ctx context.Context, c *Context, key EventKey[T], payload T) error {
-	if c == nil {
-		return errors.New("runtime: nil context")
-	}
-	if !key.valid() {
-		return errors.New("runtime: zero-value EventKey (use NewEventKey)")
-	}
-	if c.rt == nil || c.rt.eventReg == nil {
-		return errors.New("runtime: event registry unavailable")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := c.eventCancelErr(ctx); err != nil {
-		return err
-	}
-	snap := c.rt.eventSnapshot(key.id(), c.realm)
-	var errs []error
-	for _, reg := range snap {
-		if err := c.eventCancelErr(ctx); err != nil {
-			return errors.Join(append(errs, err)...)
-		}
-		if err := guardedEventHandler(reg.handler, ctx, payload); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// Parallel concurrently dispatches the same snapshot to every matching
-// handler (Decision Record D10 framework; P1.3 semantics).
-//
-// Parallel is a synchronous-waiting concurrent dispatch — NOT fire-and-forget:
-// every handler the dispatch starts runs in its own goroutine and Parallel
-// returns only after ALL started handlers have completed. Handler start order
-// and completion order are intentionally out of contract; only the snapshot
-// membership is deterministic (the same registration-sequence-ordered snapshot
-// as Emit/Serial, captured before any handler starts, under the registry lock,
-// with handler execution strictly outside the lock).
-//
-// Cancellation (dispatch ctx and emitter activation ctx) is checked before
-// each handler starts: a canceled dispatch stops starting further handlers but
-// never force-terminates an already-started handler (no goroutine killing).
-// Cancellation that skipped handlers is reported as ctx.Err() joined with the
-// collected handler errors.
-//
-// Handler errors and contained panics (P1.1 panic containment policy) are
-// aggregated in snapshot registration order, so the aggregated error is
-// deterministic across runs regardless of completion order (P1.3 error
-// ordering). Each handler receives the same dispatch ctx; the payload is
-// passed through without copying (payload thread-safety is the caller's
-// contract).
-func Parallel[T any](ctx context.Context, c *Context, key EventKey[T], payload T) error {
-	if c == nil {
-		return errors.New("runtime: nil context")
-	}
-	if !key.valid() {
-		return errors.New("runtime: zero-value EventKey (use NewEventKey)")
-	}
-	if c.rt == nil || c.rt.eventReg == nil {
-		return errors.New("runtime: event registry unavailable")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := c.eventCancelErr(ctx); err != nil {
-		return err
-	}
-	snap := c.rt.eventSnapshot(key.id(), c.realm)
-	errs := make([]error, len(snap))
-	var wg sync.WaitGroup
-	started := 0
-	for i, reg := range snap {
-		if err := c.eventCancelErr(ctx); err != nil {
-			break
-		}
-		wg.Add(1)
-		go func(i int, h func(context.Context, any) error) {
-			defer wg.Done()
-			errs[i] = guardedEventHandler(h, ctx, payload)
-		}(i, reg.handler)
-		started++
-	}
-	wg.Wait()
-
-	// Aggregate non-nil handler errors in snapshot (registration) order.
-	var joined []error
-	for _, e := range errs {
-		if e != nil {
-			joined = append(joined, e)
-		}
-	}
-	if started < len(snap) {
-		if err := c.eventCancelErr(ctx); err != nil {
-			joined = append(joined, err)
-		}
-	}
-	return errors.Join(joined...)
-}
-
-// Waterfall dispatches payload through an ordered, synchronous middleware
-// chain (P1.4 semantics). Execution is driven by the handlers themselves:
-//
-//	snapshot [A, B, C]
-//	A.before → A.next() → B.before → B.next() → C → B.after → A.after
-//
-// The caller-supplied ctx is the dispatch context and the payload is passed
-// through the chain unchanged. next() returns only once the downstream chain
-// has completed; not calling next() short-circuits the chain (a node that
-// handled the event), which is a nil result — never conflated with
-// cancellation. A node's next() may advance the chain at most once; a second
-// call returns ErrWaterfallNextTwice and the violation is surfaced in the
-// dispatch result.
-//
-// Error semantics follow the chain, not Serial/Parallel aggregation: a
-// downstream handler error propagates back through every upstream next() so
-// each handler can observe/transform/handle it, and the dispatch returns the
-// error the chain produced. There is no automatic error aggregation (a single
-// error propagation path). A handler that returns an error without calling
-// next() fails the dispatch and the downstream chain never starts.
-//
-// Cancellation (dispatch ctx and emitter activation ctx) is checked before the
-// snapshot and before every handler starts — including every next() boundary:
-// a canceled dispatch stops the chain from advancing and reports ctx.Err(),
-// but a running handler is never force-terminated. Panics are contained by the
-// unified Event panic policy (ErrEventHandlerPanic) and then follow chain
-// error propagation. Snapshot, scope, registration order, Effect ownership,
-// reentrancy, and nested dispatch semantics are identical to Emit/Serial/
-// Parallel: one registry, one dispatch snapshot per Waterfall call, chain
-// state is pure call-stack state (no global waterfall stack/scheduler).
-func Waterfall[T any](ctx context.Context, c *Context, key EventKey[T], payload T) error {
-	if c == nil {
-		return errors.New("runtime: nil context")
-	}
-	if !key.valid() {
-		return errors.New("runtime: zero-value EventKey (use NewEventKey)")
-	}
-	if c.rt == nil || c.rt.eventReg == nil {
-		return errors.New("runtime: event registry unavailable")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := c.eventCancelErr(ctx); err != nil {
-		return err
-	}
-	snap := c.rt.eventSnapshot(key.id(), c.realm)
-	return runWaterfallChain(ctx, c, snap, 0, payload)
-}
-
-// runWaterfallChain drives the Waterfall snapshot starting at index i. All
-// chain state lives on this call stack: nested/reentrant Waterfall dispatches
-// capture their own snapshots and never touch an outer chain's next or index.
-func runWaterfallChain(ctx context.Context, c *Context, snap []*eventReg, i int, payload any) error {
-	if i >= len(snap) {
+// EventBindings returns the handlers visible from this activation's context
+// chain for the Event identified by id, in deterministic registration order.
+// It is the single kernel touchpoint extension dispatch modes need.
+func (c *Context) EventBindings(id EventKeyID) []EventBinding {
+	if c == nil || c.rt == nil || c.rt.eventReg == nil {
 		return nil
 	}
-	if err := c.eventCancelErr(ctx); err != nil {
-		return err
+	snap := c.rt.eventSnapshot(id, c.realm)
+	out := make([]EventBinding, 0, len(snap))
+	for _, reg := range snap {
+		out = append(out, EventBinding{
+			Owner:   reg.owner,
+			Order:   reg.seq,
+			Handler: reg.handler,
+			Chain:   reg.chain,
+		})
 	}
-	reg := snap[i]
-	if reg.chain == nil {
-		// Plain On registration: it holds no chain authority, so it runs as a
-		// transparent node and the chain continues automatically. An error
-		// still fails the dispatch (downstream never starts), matching the
-		// §10 chain error rule.
-		if err := guardedEventHandler(reg.handler, ctx, payload); err != nil {
-			return err
-		}
-		return runWaterfallChain(ctx, c, snap, i+1, payload)
-	}
-
-	// Chain-aware node: hand the handler a Next bound to the remaining
-	// snapshot. Handler execution is guarded per node, outside the registry
-	// lock (T-08), and runs on the caller goroutine.
-	calls := 0
-	next := func() error {
-		calls++
-		if calls > 1 {
-			return ErrWaterfallNextTwice
-		}
-		return runWaterfallChain(ctx, c, snap, i+1, payload)
-	}
-	err := guardedEventHandler(func(hctx context.Context, p any) error {
-		return reg.chain(hctx, p, next)
-	}, ctx, payload)
-
-	// A duplicated next() is a Handler contract violation: it must surface
-	// even if the handler ignores the returned error (the downstream chain
-	// already ran exactly once).
-	if calls > 1 && !errors.Is(err, ErrWaterfallNextTwice) {
-		if err == nil {
-			err = ErrWaterfallNextTwice
-		} else {
-			err = errors.Join(ErrWaterfallNextTwice, err)
-		}
-	}
-	return err
+	return out
 }
 
-// eventCancelErr returns the first cancellation error in effect: the dispatch
-// context or the emitter activation context. It is the checkpoint Serial uses
-// between handlers (Emit uses the emitter context alone, P1.1 semantics).
-func (c *Context) eventCancelErr(ctx context.Context) error {
-	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-	}
-	if c.base != nil {
-		if err := c.base.Err(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// guardedEventHandler invokes one Event handler on the caller goroutine and
-// converts a panic into an ErrEventHandlerPanic-wrapped handler error, so one
-// panicking handler can never stop the remaining handlers of a dispatch.
-func guardedEventHandler(h func(context.Context, any) error, ctx context.Context, payload any) (err error) {
+// GuardEventHandler invokes one Event handler on the caller goroutine and
+// converts a panic into an ErrEventHandlerPanic-wrapped error, so one
+// panicking handler can never take down a dispatch. Extension dispatch modes
+// apply it to every invocation (the kernel-side unified panic policy).
+func GuardEventHandler(h func(context.Context, any) error, ctx context.Context, payload any) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("%w: %v", ErrEventHandlerPanic, r)

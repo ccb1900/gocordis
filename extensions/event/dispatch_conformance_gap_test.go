@@ -1,4 +1,11 @@
-package runtime
+package event_test
+
+import (
+	"context"
+	. "dynamic-runtime/extensions/event"
+	"sync/atomic"
+	"testing"
+)
 
 // G-1 / G-2: the two test gaps identified in the P1 Event Runtime
 // Conformance Review v0.1 (docs/review, commit f630c26).
@@ -13,12 +20,6 @@ package runtime
 // withdraws (consumer unload -> Effect unwind -> event unregister). A stale
 // handler after provider loss would violate §21 of the P1 contract.
 
-import (
-	"context"
-	"sync/atomic"
-	"testing"
-)
-
 var (
 	p1GapEvKey = NewEventKey[string]("p1.gap.evt")
 	p1GapWFKey = NewEventKey[string]("p1.gap.wf")
@@ -29,15 +30,19 @@ var (
 // (waterfall) on every activation; the recorded tag distinguishes activation
 // A (1st) from activation B (2nd).
 type p1GapGen struct {
-	name string
-	rec  *p1Rec
-	n    atomic.Int32
+	name    string
+	rec     *p1Rec
+	n       atomic.Int32
+	selfCtx *Context
 }
+
+func (c *p1GapGen) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1GapGen) Name() string          { return c.name }
 func (c *p1GapGen) Inject() []Dependency  { return nil }
 func (c *p1GapGen) Provide() []Capability { return nil }
 func (c *p1GapGen) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	tag := "A"
 	if c.n.Add(1) >= 2 {
 		tag = "B"
@@ -84,9 +89,8 @@ func TestP1ReviewGap1GenerationEventRegistration(t *testing.T) {
 	if got := p1Join(rec.got()); got != "A-wf" {
 		t.Fatalf("gen A Waterfall calls = %q, want A-wf", got)
 	}
-	if n := rt.eventReg.count(); n != 2 {
-		t.Fatalf("gen A registry size = %d, want 2", n)
-	}
+	p1AssertBindings(t, hostCtx, p1GapEvKey.ID(), 1)
+	p1AssertBindings(t, hostCtx, p1GapWFKey.ID(), 1)
 
 	// End generation A: every registration must be physically unwound.
 	if err := gen.Dispose(); err != nil {
@@ -95,9 +99,7 @@ func TestP1ReviewGap1GenerationEventRegistration(t *testing.T) {
 	if err := gen.Gone(p1Timeout(t)); err != nil {
 		t.Fatalf("gen A not gone: %v", err)
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("registry residue after gen A = %d, want 0", n)
-	}
+	p1AssertNoBindings(t, p1ProbeCtx(t, rt, "gap-probe-x"), p1GapEvKey.ID(), p1GapWFKey.ID())
 
 	// Generation B: the SAME Component instance activates again with fresh
 	// registrations; stale A handlers must not be visible in any dispatch.
@@ -121,9 +123,8 @@ func TestP1ReviewGap1GenerationEventRegistration(t *testing.T) {
 	if got := p1Join(rec.got()); got != "B-wf" {
 		t.Fatalf("gen B Waterfall calls = %q, want B-wf only (no A-wf)", got)
 	}
-	if n := rt.eventReg.count(); n != 2 {
-		t.Fatalf("gen B registry size = %d, want 2", n)
-	}
+	p1AssertBindings(t, hostCtx, p1GapEvKey.ID(), 1)
+	p1AssertBindings(t, hostCtx, p1GapWFKey.ID(), 1)
 
 	// End generation B: zero residue again.
 	if err := gen.Dispose(); err != nil {
@@ -132,20 +133,22 @@ func TestP1ReviewGap1GenerationEventRegistration(t *testing.T) {
 	if err := gen.Gone(p1Timeout(t)); err != nil {
 		t.Fatalf("gen B not gone: %v", err)
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("registry residue after gen B = %d, want 0", n)
-	}
+	p1AssertNoBindings(t, p1ProbeCtx(t, rt, "gap-probe-x"), p1GapEvKey.ID(), p1GapWFKey.ID())
 }
 
 // p1GapProvider provides the capability the gap consumer depends on.
 type p1GapProvider struct {
-	name string
+	name    string
+	selfCtx *Context
 }
+
+func (c *p1GapProvider) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1GapProvider) Name() string          { return c.name }
 func (c *p1GapProvider) Inject() []Dependency  { return nil }
 func (c *p1GapProvider) Provide() []Capability { return []Capability{p1GapSvc.Capability()} }
 func (c *p1GapProvider) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	if err := Provide(ctx, p1GapSvc, "svc"); err != nil {
 		return nil, err
 	}
@@ -155,14 +158,18 @@ func (c *p1GapProvider) Apply(ctx *Context) (Cleanup, error) {
 // p1GapConsumer declares a dependency on the provider and registers an event
 // handler once its dependency is satisfied.
 type p1GapConsumer struct {
-	name string
-	rec  *p1Rec
+	name    string
+	rec     *p1Rec
+	selfCtx *Context
 }
+
+func (c *p1GapConsumer) p1PublishedCtx() *Context { return c.selfCtx }
 
 func (c *p1GapConsumer) Name() string          { return c.name }
 func (c *p1GapConsumer) Inject() []Dependency  { return []Dependency{{Key: p1GapSvc.Capability()}} }
 func (c *p1GapConsumer) Provide() []Capability { return nil }
 func (c *p1GapConsumer) Apply(ctx *Context) (Cleanup, error) {
+	c.selfCtx = ctx
 	if _, err := Require(ctx, p1GapSvc); err != nil {
 		return nil, err
 	}
@@ -205,9 +212,7 @@ func TestP1ReviewGap2DependencyLossUnregistersHandler(t *testing.T) {
 	if got := p1Join(rec.got()); got != "consumer-ev" {
 		t.Fatalf("handler calls while satisfied = %q, want consumer-ev", got)
 	}
-	if n := rt.eventReg.count(); n != 1 {
-		t.Fatalf("registry size while satisfied = %d, want 1", n)
-	}
+	p1AssertBindings(t, hostCtx, p1GapEvKey.ID(), 1)
 	rec.calls = nil
 
 	// Provider withdraws: consumer unloads (Pending, not Failed) and its
@@ -233,7 +238,5 @@ func TestP1ReviewGap2DependencyLossUnregistersHandler(t *testing.T) {
 	if got := p1Join(rec.got()); got != "" {
 		t.Fatalf("stale handler fired after dependency loss: %q", got)
 	}
-	if n := rt.eventReg.count(); n != 0 {
-		t.Fatalf("stale registry residue after dependency loss = %d, want 0", n)
-	}
+	p1AssertNoBindings(t, hostCtx, p1GapEvKey.ID(), p1GapWFKey.ID())
 }

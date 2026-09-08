@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"dynamic-runtime/extensions/event"
 	"fmt"
 	"testing"
 	"time"
@@ -288,7 +289,7 @@ func TestPC06EventOwnership(t *testing.T) {
 	if emitCtx == nil {
 		t.Fatal("emitter did not capture its context")
 	}
-	if err := runtime.Emit(emitCtx, pcEvKey, "x"); err != nil {
+	if err := event.Emit(emitCtx, pcEvKey, "x"); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 	if got := rec.join(); got != "A:x" {
@@ -297,7 +298,7 @@ func TestPC06EventOwnership(t *testing.T) {
 
 	// Dispose the owner: the registration must die with the activation.
 	pcDisposeGone(t, regA)
-	if err := runtime.Emit(emitCtx, pcEvKey, "y"); err != nil {
+	if err := event.Emit(emitCtx, pcEvKey, "y"); err != nil {
 		t.Fatalf("emit after owner gone: %v", err)
 	}
 	if got := rec.join(); got != "A:x" {
@@ -323,7 +324,7 @@ func TestPC07EventDependencyComposition(t *testing.T) {
 	evC := pcLoadActive(t, rt, pcEvRegistrar("evC", rec))
 	em := pcLoadActive(t, rt, pcEvEmitter(&emitCtx))
 
-	if err := runtime.Emit(emitCtx, pcEvKey, "e1"); err != nil {
+	if err := event.Emit(emitCtx, pcEvKey, "e1"); err != nil {
 		t.Fatal(err)
 	}
 	if !rec.has("evC:e1") {
@@ -338,7 +339,7 @@ func TestPC07EventDependencyComposition(t *testing.T) {
 	if err := cf.WaitInactive(ctx); err != nil {
 		t.Fatalf("consumer did not lose dependency: %v", err)
 	}
-	if err := runtime.Emit(emitCtx, pcEvKey, "e2"); err != nil {
+	if err := event.Emit(emitCtx, pcEvKey, "e2"); err != nil {
 		t.Fatal(err)
 	}
 	if !rec.has("evC:e2") {
@@ -347,7 +348,7 @@ func TestPC07EventDependencyComposition(t *testing.T) {
 
 	// Unregister via owner disposal; then the producer is disposed last.
 	pcDisposeGone(t, evC)
-	if err := runtime.Emit(emitCtx, pcEvKey, "e3"); err != nil {
+	if err := event.Emit(emitCtx, pcEvKey, "e3"); err != nil {
 		t.Fatal(err)
 	}
 	if rec.has("evC:e3") {

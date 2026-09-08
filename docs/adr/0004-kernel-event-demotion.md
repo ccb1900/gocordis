@@ -1,6 +1,6 @@
 # ADR-0004: 内核瘦身 — 事件派发移出 Kernel
 
-Status: **Proposed** → 实施 = P6
+Status: **Accepted**(2026-09-08)
 Date: 2026-09-08
 Authority: 论文 §2.1(effect 的实例包括 event registration)、§4.2.2("no rule mentions
 a scheduler; the steps are any sequence of rule applications");ROADMAP §1.3
@@ -36,3 +36,24 @@ Kernel 公开面含非论文语义,违反 ROADMAP P6 的"kernel 公开 API 逐�
 - + Kernel 公开 API 全部可锚定;单一生命周期权威的边界审计更简单。
 - − 一轮 import 路径迁移与测试包移动(机械性);依赖 kernel 事件分发 API 的
   扩展(若有)需改经 extension 事件总线。
+
+---
+
+## 实施记录 (2026-09-08, Status → Accepted)
+
+- **Kernel 保留**(论文可锚定面):EventKey/EventHandler/WaterfallHandler/Next 类型、
+  On/OnWaterfall 注册(= 可逆 effect,EffectKindEvent)、registry 数据结构
+  (owner + context 链 + 确定性注册序)、公开读模型 `Context.EventBindings(id)` +
+  `EventBinding{Owner, Order, Handler, Chain}`、统一 panic 政策
+  `GuardEventHandler`、`Context.Cancel()`(协作式自取消,非生命周期决策)。
+- **迁往 `extensions/event/dispatch.go`**:Emit / Serial / Parallel / **Bail(新增,
+  Cordis 五模式补齐)** / Waterfall——全部经 EventBindings 读模型实现;派发快照、
+  scope 可见性、注册序、owner 有效性、取消检查、panic 受控语义逐条保持。
+- **一致性证据迁移**:P1.1–P1.4 conformance 套件(emit/serial/parallel/waterfall)
+  与 review gap 套件整体迁至 `extensions/event/*_test.go`(package event_test),
+  断言不变;原经由内核内部的访问点(f.activation.ctx、eventReg.count、effect 槽位
+  直读)改写为公开面等价物(ctx 自捕获 + Snapshot EffectView + EventBindings 读模型)。
+  registry 残留/规模断言改经 EventBindings 探针。
+- **消费方更新**:p2.1 边界套件与 integration 套件的 runtime.Emit/Serial/Parallel/
+  Waterfall 全部改为 event.*;kernel 内不再有任何派发模式代码。
+- 门禁:`go test -count=1 ./...`、`go test -race -count=1 ./...`、vet、gofmt 全绿。

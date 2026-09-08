@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"dynamic-runtime/extensions/event"
 	"errors"
 	"os"
 	"path/filepath"
@@ -297,7 +298,7 @@ func TestPC18FullApplicationComposition(t *testing.T) {
 	}
 
 	// (3) Use: kernel event dispatch + registry member churn + live effects.
-	if err := runtime.Emit(emitCtx, pcEvKey, "use1"); err != nil {
+	if err := event.Emit(emitCtx, pcEvKey, "use1"); err != nil {
 		t.Fatal(err)
 	}
 	if !evRec.has("evApp:use1") {
@@ -371,7 +372,7 @@ func TestPC18FullApplicationComposition(t *testing.T) {
 	}
 
 	// (7) Event still live under the new service generation.
-	if err := runtime.Emit(emitCtx, pcEvKey, "use2"); err != nil {
+	if err := event.Emit(emitCtx, pcEvKey, "use2"); err != nil {
 		t.Fatal(err)
 	}
 	if !evRec.has("evApp:use2") {
@@ -401,7 +402,7 @@ func TestPC18FullApplicationComposition(t *testing.T) {
 	}
 	// Event registration dies with its (direct-loaded) owner.
 	pcDisposeGone(t, evR)
-	if err := runtime.Emit(emitCtx, pcEvKey, "after"); err != nil {
+	if err := event.Emit(emitCtx, pcEvKey, "after"); err != nil {
 		t.Fatal(err)
 	}
 	if evRec.has("evApp:after") {

@@ -84,6 +84,19 @@ type Factory interface {
 	Create(ComponentConfig) (runtime.Component, error)
 }
 
+// FactoryFunc adapts a plain function to Factory — the form most applications
+// use when registering component types:
+//
+//	reg.Register("greeter", config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
+//	    return &Greeter{Name: cc.ID}, nil
+//	}))
+type FactoryFunc func(ComponentConfig) (runtime.Component, error)
+
+// Create implements Factory.
+func (f FactoryFunc) Create(cc ComponentConfig) (runtime.Component, error) {
+	return f(cc)
+}
+
 // FactoryRegistry maps Type -> Factory. It is concurrency-safe and never runs
 // user Factory code under its lock.
 type FactoryRegistry interface {

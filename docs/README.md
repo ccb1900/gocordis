@@ -1,5 +1,11 @@
 # docs — Authority Model (2026-09-08)
 
+## 应用开发指南(用户入口)
+
+**[docs/guide/developing-applications.md](./guide/developing-applications.md)**
+——面向插件/应用开发者的实操文档:组件模型、生命周期语义、外部资源绑定、
+声明式配置与插件开关、事件、观测与测试。
+
 ## 唯一规范来源 (Sole Normative Source)
 
 **论文原文**: [`论文.pdf`](./论文.pdf)

@@ -225,3 +225,22 @@ func waitActiveT(t *testing.T, f *runtime.Fiber) {
 	}
 	t.Fatalf("timeout waiting %s Active (state %v err %v)", f.Name(), f.State(), f.Err())
 }
+
+// TestFactoryFuncAdapter — the function form of Factory registers and creates
+// like any Factory.
+func TestFactoryFuncAdapter(t *testing.T) {
+	e := newEnv(t)
+	if err := e.reg.Register("fnsvc", config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
+		return simpleComp(cc.ID, nil), nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.ctrl.Reconcile(ctxT(t), cfg(cc("p1", "fnsvc"))); err != nil {
+		t.Fatal(err)
+	}
+	own, ok := ownedByID(t, e.ctrl, "p1")
+	if !ok || own.Fiber == nil {
+		t.Fatal("FactoryFunc-registered component did not reconcile")
+	}
+	waitActiveT(t, own.Fiber)
+}

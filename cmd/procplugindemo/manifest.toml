@@ -1,0 +1,8 @@
+[[components]]
+id = "echo"
+type = "echo"
+enabled = true
+
+[[components]]
+id = "consumer"
+type = "consumer"

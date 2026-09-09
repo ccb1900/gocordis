@@ -224,3 +224,23 @@ journal(backfill 模式);runtime 派生态 → 永不持久化**(registry 是从
 
 **R6 判定:平台功能性完备(按本矩阵口径);欠账集中在流式观测、短路径终点
 对齐、入口文档与工程环境项,均已记录归属。**
+
+## 11. R7 (2026-09-09):进程外插件后端落地(§6.2)
+
+R6 判定的第 10 行(跨进程调用,显式出界)按用户裁决升级落地:
+`extensions/loader/proc` — loader 第四后端("proc")。
+
+- **形态**:插件 = 独立 OS 进程;stdio 行分隔 JSON-RPC 2.0;`proc.Serve` 让 Go
+  插件 3 行成型;宿主侧 `NewBackend[T](key, bind)` 把 RPC Caller 绑定为契约
+  接口(契约在应用 contracts 包,依赖倒置不变)。
+- **生命周期同 WASM 后端**:每激活一进程;Apply = spawn + 握手 + effect
+  (逆 = shutdown → 有界等待 → kill → wait)+ Provide 契约能力;Active ⇔
+  握手完成;插件崩溃 → 调用路径 `ErrPluginUnavailable`(错误链经 markDead
+  保持 `errors.Is` 可链),fiber 不自动重启(§4.4 无自动重试)。
+- **边界声明**:进程边界非沙箱(§6.3);v1 顺序调用、不支持插件→宿主方法。
+- 一致性(P-01..P-05,helper-process 模式,测试二进制自重为插件):回环+卸载、
+  崩溃错误链、坏制品 Load 拒绝、替换复合(每激活新进程)、config 开关集成;
+  `-count=3` + `-race` 绿。
+- 教训入档:本轮修的三个 bug 全在**自己写的测试**里(-test.v 污染 stdout 协议
+  通道、测试通道容量 1 死锁、断言错把 echo("explode") 当 explode 方法)——
+  实现本体一次通过握手/调用/卸载语义。

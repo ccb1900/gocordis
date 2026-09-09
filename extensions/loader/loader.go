@@ -66,6 +66,7 @@ type BackendType string
 const (
 	BackendBuiltin BackendType = "builtin"
 	BackendWASM    BackendType = "wasm"
+	BackendProc    BackendType = "proc"
 )
 
 // Artifact is the description of an implementation to load.
@@ -98,6 +99,7 @@ type Artifact struct {
 var knownBackendTypes = map[BackendType]struct{}{
 	BackendBuiltin: {},
 	BackendWASM:    {},
+	BackendProc:    {},
 }
 
 // Module is a loaded implementation: an immutable descriptor binding an

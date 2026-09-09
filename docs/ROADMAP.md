@@ -137,7 +137,9 @@ R4 评审(2026-09-09)按"是否服务论文实现"将扩展定类:
 - [x] Service broker / 多路复用(§6.2):`extensions/broker` — 可逆 effect 注册、
       RoundRobin/First 策略、滚动升级消费者无感(broker_test.go 两项一致性)。
       与 registry extension(独占绑定)互补,覆盖 §6.2 的两种形态。
-- [ ] 跨进程调用(§6.2):异步契约 + RPC 适配(现有 http extension 为基)。
+- [x] 跨进程调用(§6.2):`extensions/loader/proc` — 进程外插件后端
+      (stdio JSON-RPC 2.0;每激活一进程;握手即就绪;卸载先于终态;崩溃不自动重启;
+      进程边界非沙箱的边界声明)。2026-09-09。
 - [ ] WASM 沙箱一致性(§6.3):guest 能力面 = 声明集的形式化。
 - [ ] 依赖类型/版本(§6.6):Key 元数据演进的自然延伸。
 

@@ -24,11 +24,26 @@ import (
 // Observation event name is fixed and shared with the Wails bridge.
 const ObservationEvent = "observation"
 
+// RemovedPlugin is one uninstalled component offering an install-back action.
+type RemovedPlugin struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// PluginLifecycle is the desired-state editing boundary: the application owns
+// how uninstall decisions persist; the transport only serves them.
+type PluginLifecycle interface {
+	Uninstall(ctx context.Context, id string) error
+	Install(ctx context.Context, id string) error
+	Removed(ctx context.Context) ([]RemovedPlugin, error)
+}
+
 // Server is the Web UI host: static assets + JSON Query/Command API + SSE.
 type Server struct {
-	adapter  *host.Host
-	assets   fs.FS
-	explorer *explorer.ExplorerTransport
+	adapter   *host.Host
+	assets    fs.FS
+	explorer  *explorer.ExplorerTransport
+	lifecycle PluginLifecycle
 
 	hostID          string
 	startedAt       time.Time
@@ -53,6 +68,12 @@ func New(adapter *host.Host, assets fs.FS) *Server {
 // SetExplorer installs the optional Plugin Explorer transport adapter. The
 // Console is still Contribution-driven: the endpoint exists only when the
 // plugin-explorer component is active.
+// SetPluginLifecycle installs the desired-state editing boundary for the
+// console's uninstall/install actions.
+func (s *Server) SetPluginLifecycle(l PluginLifecycle) {
+	s.lifecycle = l
+}
+
 func (s *Server) SetExplorer(exp *explorer.ExplorerTransport) {
 	s.explorer = exp
 }
@@ -140,6 +161,47 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		data, ue := s.explorer.ControlPluginContext(r.Context(), req)
 		s.writeResult(w, data, explorerErr(ue))
+	case r.Method == http.MethodPost && r.URL.Path == "/api/plugins/uninstall":
+		if s.lifecycle == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin lifecycle not configured")
+			return
+		}
+		var req explorer.ExplorerControlRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if err := s.lifecycle.Uninstall(r.Context(), req.PluginID); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		writeData(w, http.StatusAccepted, nil)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/plugins/install":
+		if s.lifecycle == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin lifecycle not configured")
+			return
+		}
+		var req2 explorer.ExplorerControlRequest
+		if err := json.NewDecoder(r.Body).Decode(&req2); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if err := s.lifecycle.Install(r.Context(), req2.PluginID); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		writeData(w, http.StatusAccepted, nil)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/plugins/removed":
+		if s.lifecycle == nil {
+			writeData(w, http.StatusOK, []any{})
+			return
+		}
+		removed, lerr := s.lifecycle.Removed(r.Context())
+		if lerr != nil {
+			writeAPIError(w, http.StatusInternalServerError, "error", lerr.Error())
+			return
+		}
+		writeData(w, http.StatusOK, removed)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/query/"):
 		name := strings.TrimPrefix(r.URL.Path, "/api/query/")
 		data, ue := s.adapter.Query(name, r.URL.Query())

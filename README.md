@@ -5,6 +5,7 @@
 统一 context,以及其上的声明式装载、配置调和与热替换。
 
 - **应用开发指南(从这里开始)**:[docs/guide/developing-applications.md](docs/guide/developing-applications.md)
+- **LLM/代理开发规范**:[AGENTS.md](AGENTS.md)(十二铁律 + 两部分项目结构 + 禁止清单)
 - 语义对照与路线图:[docs/ROADMAP.md](docs/ROADMAP.md)
 - 设计裁决:[docs/adr/](docs/adr/) · 评审记录:[docs/review/](docs/review/)
 - 可运行示例:[cmd/](cmd/)(collector / backfill / httpd / wasmhmr / host / example)

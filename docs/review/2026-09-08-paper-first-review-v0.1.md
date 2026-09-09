@@ -244,3 +244,68 @@ R6 判定的第 10 行(跨进程调用,显式出界)按用户裁决升级落地:
 - 教训入档:本轮修的三个 bug 全在**自己写的测试**里(-test.v 污染 stdout 协议
   通道、测试通道容量 1 死锁、断言错把 echo("explode") 当 explode 方法)——
   实现本体一次通过握手/调用/卸载语义。
+
+## 12. R8 (2026-09-09):论文全面复审 + JS Cordis 逐特性对照
+
+方法:论文 §2–§6 逐章核对当前实现;Cordis(cordiverse/cordis)按公开特性面
+逐项对照。先声明:**Cordis 只是行为参照,不是规范**——分歧不自动是缺陷,
+只有"论文承诺了而我们没做"或"机制形似而语义走样"才算。
+
+### 12.1 论文逐章状态(经本轮重核)
+
+| 章节 | 状态 | 备注 |
+|---|---|---|
+| §3.1 可逆 effect(functions + **iterators**) | ✅ | 槽位形态 + IterComponent;**默认形态反转**(论文默认迭代器,我们默认 Apply-once)——inertial 宿主许可,ADR-0003;driver per-step 停靠未做(已记录) |
+| §3.2 coeffects(spec/notification) | ✅ | 注入驱动激活;target view 调和 |
+| §3.2.3 isolation(Def 24/25) | ✅ | 逐 key ρ(R1 补全)+ WithScope/Isolate 糖;插入时固定;重指派=revision |
+| §3.2.3 interception(Def 26/27) | ✅ | MetaKey monoid;右偏 context 优先,与论文方向一致 |
+| §3.3 context paradigm / ≃_K | ✅(证据为近似) | 合流用 canonical observable(名字+观察序)近似 ≃_K——≈-不变性未逐条编码,记录为生成器近似 |
+| §4 演算六规则 + confinement | ✅ | API 结构性执行 confinement(所有写经 context);proof invariants P1–P5 |
+| Thm 64/68/70/73/80 | ✅ | 定理编号套件 + 迭代/revision/isolation 维度扩展;**合流前置"total on provision"(Def 76)在生成器中隐式满足(提供者恒提供),未显式断言**——小改进项 |
+| §4.4 四扩展 | ✅ | Asynchrony(inertial)/Failure/Isolation(K×R)/Configuration(revise+Enabled 开关) |
+| §5.1 core library | ✅ | kernel 面 |
+| §5.2 loader/config/HMR | ⚠️ 两处不完备 | 见 12.3 G-1/G-2 |
+| §6 讨论项 | 见 12.3 | broker/跨进程/沙箱已落地;§6.6 未做 |
+
+### 12.2 Cordis ↔ gocordis 逐特性对照
+
+| Cordis 特性 | gocordis 对应 | 判定 |
+|---|---|---|
+| Context Proxy 魔法(`ctx.foo` 取服务) | `Require(ctx, Key[T])` 显式取用 | ✅ 语言差异等价(更强:声明权威) |
+| 服务引用反应式更新(替换不 reload 消费者) | 提供者替换 → 消费者按 target-view **reload**(与论文一致);**broker 吸收扰动** = 论文 §6.2 同款解法 | ✅ 语义分歧有据(论文优先),UX 经 broker 补齐 |
+| `ctx.isolate(key, value)` | `Isolate(keys...)` 逐 key ρ(Def 24/25) | ✅ 同源(论文) |
+| 事件 emit/parallel/serial/bail/waterfall | extensions/event 五模式 | ✅;bail 为 fail-fast 语义(独立定义,Cordis 值短路不适用——见 R3) |
+| 服务生命周期 `start()/stop()` 钩子 | Apply/Cleanup + Active 门 | ✅ |
+| `ctx.scope` / `scope.dispose()` | `WithScope`/`Isolate` + ownership 撤销 | ✅ |
+| loader + 声明配置 + schemastery 校验 | loader/config/Enabled;**无 schema 校验助手**(map[string]any + 工厂自校验) | ⚠️ G-4 |
+| HMR(文件变更 → 模块替换) | extensions/hmr | ✅(短路径终点对齐待测,见 G-1) |
+| fiber 树/注册表内省 | UI-02 Snapshot(+RuntimeEvent 序号) | ✅;流式订阅 UI-03 未做(G-3) |
+| `ctx.mixin` | 根命名空间 Provide | ✅ 等价 |
+| 插件进程外运行 | —(Cordis 无此) | ➕ gocordis 多出 proc 后端(§6.2) |
+
+### 12.3 未实现 / 不完备清单(R8 定稿)
+
+| # | 级别 | 项 | 论文/来源锚点 | 处置 |
+|---|---|---|---|---|
+| G-1 | **不完备(论文 §5.2.1)** | HMR/loader **短路径终点对齐**:候选先行替换须回答与从头装载相同的 quiescent 终点——内核 Revise 已测,扩展 warm 路径未测 | §5.2.1 + Thm 80 | 已记录(P5 遗留),**建议下一优先** |
+| G-2 | **不完备(论文 §5.2.1)** | **realm 迁移短路径**("a realm moved without reloading its provider"):现仅实现严格复合(WithFreshIsolation 必然重载提供者);论文许可的"迁移不重载"优化未做 | §4.4 Configuration/§5.2.1 | 记录;需先有公开命名空间句柄,与短路径语义一起做 |
+| G-3 | 平台缺失(观测) | UI-03 `Subscribe()` 事件流(EventSequence 续传);控制台今天只能轮询 Snapshot | UI-03 阶梯 | 记录 |
+| G-4 | DX 缺口 | 插件配置 **schema 校验助手**(Cordis 生态有 schemastery;本仓库 map[string]any 裸配 + 工厂自校验) | §5.2.1 邻接 | 记录为 DX 项,等真实作者反馈 |
+| G-5 | 论文 §6.6 未实现 | 依赖**类型/版本**维度(Key 无版本;Module 有 Version 但不进能力解析) | §6.6 讨论 | 记录;§6.6 本为讨论章 |
+| G-6 | 测试缺口(小) | **HMR × proc 后端**替换未测(proc 经 hmr.Controller.Replace 的组合路径) | §5.2.2 | 小;建议随 G-1 一并补 |
+| G-7 | 证据近似 | 合流前置 Def 76"total on provision"在生成器中隐式而非显式断言 | Def 76 | 小;随下次生成器扩展补 |
+| G-8 | 形态反转(有据) | 激活默认形态 = Apply-once(论文默认迭代器);driver per-step 停靠未做 | §3.1.3/§4.4 | 维持:inertial 宿主许可 + Go 惯用;文档已声明 |
+
+**明确不做(非缺口)**:Bail 值短路语义(Cordis 特有,见 R3);Cordis Proxy 魔法;
+runtime 状态持久化(§9.3 立场);跨语言宏/装饰器。
+
+### 12.4 R8 判定
+
+论文 **§2–§5 规范性内容:实现完成且持续被测试约束**——本轮未发现新的语义级
+缺口;G-1/G-2 是 §5.2.1 的**优化路径**未落地(严格复合已实现并有终点等价证据,
+故不构成语义不完备)。§6 讨论项:broker/proc/沙箱已落地,§6.6 与流式观测按
+平台路线记录。对照 Cordis:除 bail 语义(有意分歧)与 DX 校验助手(G-4)外,
+特性面覆盖或超越;**gocordis 独有**:进程外插件、逐 key 隔离的 ρ 表、
+Enabled 声明开关、确定性定理驱动。
+
+**下一步优先级建议:G-1(+G-6 顺带)> G-3 > G-4 > G-2/G-5/G-7。**

@@ -10,12 +10,15 @@ package host
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
+	"dynamic-runtime/console/configutil"
 	"dynamic-runtime/console/hub"
 	appui "dynamic-runtime/console/registry"
 )
@@ -56,6 +59,10 @@ type UIComponent struct {
 	hostAdapter   *Host
 	baseCtx       context.Context
 	invalidations int
+
+	// identity + fleet (fleet self-description; see /api/meta and /api/fleet)
+	hostID     string
+	fleetPeers []string
 }
 
 func (c *UIComponent) Name() string                 { return "console:host" }
@@ -94,7 +101,35 @@ func (c *UIComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	}); err != nil {
 		return nil, err
 	}
+	// Fleet self-contribution: with peers configured, the console contributes
+	// its own Fleet page — contribution-driven like every other page, no
+	// hard-coded navigation anywhere.
+	if len(c.fleetPeers) > 0 {
+		owner := appui.ContributionOwner{
+			PluginID:     "console",
+			ComponentID:  "console:host",
+			ActivationID: activationLabel(),
+		}
+		page := appui.PageDefinition{
+			ID: "fleet", Title: "Fleet", Route: "/fleet", Renderer: "fleet", Order: 90,
+		}
+		unregister, err := c.registry.RegisterPage(owner, page)
+		if err != nil {
+			return nil, err
+		}
+		if err := ctx.Effect(func() (func() error, error) { return unregister, nil }); err != nil {
+			return nil, err
+		}
+	}
 	return nil, nil
+}
+
+var activationCounter atomic.Int64
+
+// activationLabel is a process-unique generation label for self-contributions
+// (no Kernel identity is invented; ownership stays with this activation).
+func activationLabel() string {
+	return fmt.Sprintf("console:%d", activationCounter.Add(1))
 }
 
 func (c *UIComponent) emitUIObservation(ev UIObservation) {
@@ -172,7 +207,24 @@ func (c *UIComponent) Pages() []PageDefinition { return c.registry.Snapshot().Pa
 // Panels returns the registered UI panels from the isolated Composition Snapshot.
 func (c *UIComponent) Panels() []PanelDefinition { return c.registry.Snapshot().Panels }
 
-// NewConsole creates the console host component. It has no required config.
+// NewConsole creates the console host component.
+//
+// Recognized config keys:
+//
+//	host_id     — stable identity reported by /api/meta (default: hostname)
+//	fleet_peers — base URLs of peer consoles; when non-empty the host
+//	              self-registers a Fleet page (renderer "fleet") whose view
+//	              aggregates the peers' /api/meta.
 func NewConsole(cc config.ComponentConfig) (*UIComponent, error) {
-	return &UIComponent{}, nil
+	c := &UIComponent{
+		hostID:     configutil.OptionalString(cc, "host_id", ""),
+		fleetPeers: configutil.OptionalStringSlice(cc, "fleet_peers", nil),
+	}
+	return c, nil
 }
+
+// HostID returns the configured identity ("" = caller falls back to hostname).
+func (c *UIComponent) HostID() string { return c.hostID }
+
+// FleetPeers returns the configured peer console base URLs.
+func (c *UIComponent) FleetPeers() []string { return append([]string(nil), c.fleetPeers...) }

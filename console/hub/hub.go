@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"sort"
 	"sync"
 )
 
@@ -126,6 +127,31 @@ func (r *Registry) Command(name string) (CommandHandler, bool) {
 	defer r.mu.RUnlock()
 	e, ok := r.commands[name]
 	return e.handler, ok
+}
+
+// QueryNames returns the registered query names, sorted. Fleet/inspection
+// surfaces use it to describe what a host's console serves.
+func (r *Registry) QueryNames() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]string, 0, len(r.queries))
+	for name := range r.queries {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// CommandNames returns the registered command names, sorted.
+func (r *Registry) CommandNames() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]string, 0, len(r.commands))
+	for name := range r.commands {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // OnObservation subscribes to the observation stream. The returned

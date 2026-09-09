@@ -63,3 +63,32 @@ func OptionalBool(cc config.ComponentConfig, key string, def bool) bool {
 	}
 	return def
 }
+
+// OptionalStringSlice reads a string-array config key, tolerating scalar
+// entries promoted via Sprint. Missing keys return def.
+func OptionalStringSlice(cc config.ComponentConfig, key string, def []string) []string {
+	v, ok := cc.Config[key]
+	if !ok || v == nil {
+		return def
+	}
+	switch t := v.(type) {
+	case []string:
+		return append([]string(nil), t...)
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			if item == nil {
+				continue
+			}
+			out = append(out, fmt.Sprint(item))
+		}
+		return out
+	case string:
+		if t == "" {
+			return def
+		}
+		return []string{t}
+	default:
+		return def
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"dynamic-runtime/console/explorer"
 	host "dynamic-runtime/console/host"
@@ -29,13 +30,24 @@ type Server struct {
 	assets   fs.FS
 	explorer *explorer.ExplorerTransport
 
+	hostID          string
+	startedAt       time.Time
+	fleetPeers      []string
+	fleetCache      map[string]any
+	fleetCacheUntil time.Time
+
 	mu   sync.Mutex
 	subs map[chan host.UIObservation]struct{}
 }
 
 // New builds the web UI server over the given plugins/ui Host adapter.
 func New(adapter *host.Host, assets fs.FS) *Server {
-	return &Server{adapter: adapter, assets: assets, subs: map[chan host.UIObservation]struct{}{}}
+	return &Server{
+		adapter:   adapter,
+		assets:    assets,
+		startedAt: time.Now(),
+		subs:      map[chan host.UIObservation]struct{}{},
+	}
 }
 
 // SetExplorer installs the optional Plugin Explorer transport adapter. The
@@ -150,6 +162,10 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeData(w, http.StatusAccepted, nil)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/meta":
+		s.serveMeta(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/fleet":
+		s.serveFleet(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/stream":
 		s.serveStream(w, r)
 	default:

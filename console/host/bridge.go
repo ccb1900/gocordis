@@ -69,6 +69,14 @@ func (h *Host) Command(name string, body json.RawMessage) *UIError {
 	return nil
 }
 
+// Names returns the registered query and command names served by the hub.
+func (h *Host) Names() (queries, commands []string) {
+	if h.hub == nil {
+		return nil, nil
+	}
+	return h.hub.QueryNames(), h.hub.CommandNames()
+}
+
 // Composition Bridge -----------------------------------------------------------
 
 // ListPages returns the current UI Composition as UI DTOs. It reads one shared

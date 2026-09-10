@@ -30,9 +30,13 @@ type PageDefinition struct {
 	Title    string
 	Route    string
 	Renderer string
-	// View is an optional declarative view schema (e.g. a generic table over
-	// a hub query). It is opaque to the console: the host transports it, the
-	// client renderer interprets it.
+	// Views is an optional declarative view schema: an ordered list of view
+	// blocks (kind + per-kind fields) the client's generic renderers
+	// interpret. Opaque to the console: the host transports it, the client
+	// renderer interprets it. Extensible — new kinds are new renderer
+	// registrations, no console change.
+	Views json.RawMessage `json:"views,omitempty"`
+	// View is the single-view form of Views (one block). Prefer Views.
 	View json.RawMessage `json:"view,omitempty"`
 	// Order is Contribution metadata controlling stable Composition order.
 	// Entries with the same Order keep registration sequence for

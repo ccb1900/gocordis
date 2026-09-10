@@ -5,6 +5,7 @@
 package registry
 
 import (
+	"encoding/json"
 	"errors"
 	"sort"
 	"sync"
@@ -29,6 +30,10 @@ type PageDefinition struct {
 	Title    string
 	Route    string
 	Renderer string
+	// View is an optional declarative view schema (e.g. a generic table over
+	// a hub query). It is opaque to the console: the host transports it, the
+	// client renderer interprets it.
+	View json.RawMessage `json:"view,omitempty"`
 	// Order is Contribution metadata controlling stable Composition order.
 	// Entries with the same Order keep registration sequence for
 	// deterministic Registry tests and plugin-authored contributions.

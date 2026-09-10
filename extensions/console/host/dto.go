@@ -3,14 +3,21 @@
 // queries and commands as opaque JSON. No Go internal type ever crosses.
 package host
 
-import "dynamic-runtime/extensions/console/registry"
+import (
+	"encoding/json"
 
-// UIPage is one contributed console page.
+	"dynamic-runtime/extensions/console/registry"
+)
+
+// UIPage is one contributed console page. View carries the optional
+// declarative view schema (opaque to the console; the client renderer
+// interprets it).
 type UIPage struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Route    string `json:"route"`
-	Renderer string `json:"renderer"`
+	ID       string          `json:"id"`
+	Title    string          `json:"title"`
+	Route    string          `json:"route"`
+	Renderer string          `json:"renderer"`
+	View     json.RawMessage `json:"view,omitempty"`
 }
 
 // UIPanel is one contributed console panel. Pages lists the page IDs the
@@ -47,7 +54,7 @@ type UIPanelList struct {
 }
 
 func toUIPage(def registry.PageDefinition) UIPage {
-	return UIPage{ID: def.ID, Title: def.Title, Route: def.Route, Renderer: def.Renderer}
+	return UIPage{ID: def.ID, Title: def.Title, Route: def.Route, Renderer: def.Renderer, View: def.View}
 }
 
 func toUIPanel(def registry.PanelDefinition) UIPanel {

@@ -36,6 +36,12 @@ type PluginLifecycle interface {
 	Uninstall(ctx context.Context, id string) error
 	Install(ctx context.Context, id string) error
 	Removed(ctx context.Context) ([]RemovedPlugin, error)
+	// Config returns the current configuration of one desired component as a
+	// JSON-encodable object; SetConfig replaces it (validate + reconcile,
+	// rolling back on failure). Optional: servers without it report
+	// unavailable on the config routes.
+	Config(ctx context.Context, id string) (map[string]any, error)
+	SetConfig(ctx context.Context, id string, cfg map[string]any) error
 }
 
 // Server is the Web UI host: static assets + JSON Query/Command API + SSE.
@@ -202,6 +208,36 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeData(w, http.StatusOK, removed)
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/config") && strings.HasPrefix(r.URL.Path, "/api/plugins/"):
+		if s.lifecycle == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin lifecycle not configured")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/plugins/"), "/config")
+		cfg, cerr := s.lifecycle.Config(r.Context(), id)
+		if cerr != nil {
+			writeAPIError(w, http.StatusNotFound, "not_found", cerr.Error())
+			return
+		}
+		writeData(w, http.StatusOK, cfg)
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/config") && strings.HasPrefix(r.URL.Path, "/api/plugins/"):
+		if s.lifecycle == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin lifecycle not configured")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/plugins/"), "/config")
+		var body struct {
+			Config map[string]any `json:"config"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if err := s.lifecycle.SetConfig(r.Context(), id, body.Config); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		writeData(w, http.StatusAccepted, nil)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/query/"):
 		name := strings.TrimPrefix(r.URL.Path, "/api/query/")
 		data, ue := s.adapter.Query(name, r.URL.Query())

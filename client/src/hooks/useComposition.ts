@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { platform } from "../api";
-import { UIPanel, UIPage } from "../types";
+import { UIPanel, UIPage } from "../api";
 
 export interface UIComposition {
   loading: boolean;

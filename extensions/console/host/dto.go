@@ -18,6 +18,7 @@ type UIPage struct {
 	Route    string          `json:"route"`
 	Renderer string          `json:"renderer"`
 	View     json.RawMessage `json:"view,omitempty"`
+	Views    json.RawMessage `json:"views,omitempty"`
 }
 
 // UIPanel is one contributed console panel. Pages lists the page IDs the
@@ -54,7 +55,7 @@ type UIPanelList struct {
 }
 
 func toUIPage(def registry.PageDefinition) UIPage {
-	return UIPage{ID: def.ID, Title: def.Title, Route: def.Route, Renderer: def.Renderer, View: def.View}
+	return UIPage{ID: def.ID, Title: def.Title, Route: def.Route, Renderer: def.Renderer, View: def.View, Views: def.Views}
 }
 
 func toUIPanel(def registry.PanelDefinition) UIPanel {

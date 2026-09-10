@@ -206,6 +206,9 @@ func (r *Runtime) Close(ctx context.Context) error {
 		r.mu.Unlock()
 	case RuntimeRunning:
 		r.state = RuntimeClosing
+		// UI-03: every live event subscription terminates with the Runtime
+		// (terminal cause ErrRuntimeClosed); consumers re-Snapshot if needed.
+		r.events.closeAll(ErrRuntimeClosed)
 		r.mu.Unlock()
 		if !r.submit(&cmdClose{}) {
 			// The orchestrator already stopped (runtime became Closed between

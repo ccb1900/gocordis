@@ -5,8 +5,7 @@ import (
 	"time"
 )
 
-// Canonical Runtime event stream (UI-02 foundation; subscription arrives in
-// UI-03).
+// Canonical Runtime event stream (UI-02/UI-03: ring + subscription).
 //
 // Events are NOT a logging system. Every event is produced at a canonical
 // lifecycle decision/registration point and represents one Runtime state
@@ -18,7 +17,8 @@ import (
 // Sequence is monotonically increasing and is the ordering authority
 // (Timestamps are informational). A Snapshot carries EventSequence so a
 // reconnecting consumer can resume from the exact point the Snapshot was
-// linearized.
+// linearized: Snapshot(seq S) -> Subscribe(from S) replays (S, ...] exactly
+// once and then streams live events. See Runtime.Subscribe.
 
 // EventType is the canonical runtime event kind.
 type EventType string
@@ -112,10 +112,11 @@ type eventLog struct {
 	nextSeq uint64
 	start   uint64 // Sequence of ring[0]; 0 when empty
 	ring    []RuntimeEvent
+	subs    map[*EventSubscription]struct{}
 }
 
 func newEventLog() *eventLog {
-	return &eventLog{ring: make([]RuntimeEvent, 0, eventRingSize)}
+	return &eventLog{ring: make([]RuntimeEvent, 0, eventRingSize), subs: make(map[*EventSubscription]struct{})}
 }
 
 func (l *eventLog) emit(ev RuntimeEvent) uint64 {
@@ -131,10 +132,77 @@ func (l *eventLog) emit(ev RuntimeEvent) uint64 {
 		copy(l.ring, l.ring[1:])
 		l.ring[len(l.ring)-1] = ev
 		l.start++
-		return ev.Sequence
+	} else {
+		l.ring = append(l.ring, ev)
 	}
-	l.ring = append(l.ring, ev)
+	// UI-03 fan-out: delivery is best-effort and NEVER blocks the emitter.
+	// A subscriber that falls behind enters the overflow state and is closed
+	// (its consumer re-Snapshots and re-subscribes — the documented resume
+	// protocol). Overflowed subscribers are unregistered after the fan-out
+	// (deliver must not take the log lock — emit already holds it).
+	var overflowed []*EventSubscription
+	for sub := range l.subs {
+		if sub.deliver(ev) {
+			overflowed = append(overflowed, sub)
+		}
+	}
+	l.mu.Unlock()
+	l.removeSubs(overflowed)
+	l.mu.Lock()
 	return ev.Sequence
+}
+
+// removeSubs unregisters subscribers (lock helper; call WITHOUT holding l.mu).
+func (l *eventLog) removeSubs(subs []*EventSubscription) {
+	if len(subs) == 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, sub := range subs {
+		delete(l.subs, sub)
+	}
+}
+
+// replayAfter returns the retained events with Sequence > from (empty when
+// from >= nextSeq or from predates nothing retained).
+func (l *eventLog) replayAfter(from uint64) []RuntimeEvent {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []RuntimeEvent
+	for _, ev := range l.ring {
+		if ev.Sequence > from {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// retainedFrom returns the lowest Sequence still retained (0 when empty).
+func (l *eventLog) retainedFrom() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.ring) == 0 {
+		return 0
+	}
+	return l.ring[0].Sequence
+}
+
+// removeSubscriber unregisters sub (idempotent; call WITHOUT holding l.mu).
+func (l *eventLog) removeSubscriber(sub *EventSubscription) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.subs, sub)
+}
+
+// closeAll unsubscribes every subscriber with cause (Runtime.Close).
+func (l *eventLog) closeAll(cause error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for sub := range l.subs {
+		sub.finish(cause)
+	}
+	l.subs = make(map[*EventSubscription]struct{})
 }
 
 // current returns the sequence of the last emitted event (0 when none).

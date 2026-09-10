@@ -289,7 +289,7 @@ R6 判定的第 10 行(跨进程调用,显式出界)按用户裁决升级落地:
 |---|---|---|---|---|
 | G-1 | **不完备(论文 §5.2.1)** | HMR/loader **短路径终点对齐**:候选先行替换须回答与从头装载相同的 quiescent 终点——内核 Revise 已测,扩展 warm 路径未测 | §5.2.1 + Thm 80 | 已记录(P5 遗留),**建议下一优先** |
 | G-2 | **不完备(论文 §5.2.1)** | **realm 迁移短路径**("a realm moved without reloading its provider"):现仅实现严格复合(WithFreshIsolation 必然重载提供者);论文许可的"迁移不重载"优化未做 | §4.4 Configuration/§5.2.1 | 记录;需先有公开命名空间句柄,与短路径语义一起做 |
-| G-3 | 平台缺失(观测) | UI-03 `Subscribe()` 事件流(EventSequence 续传);控制台今天只能轮询 Snapshot | UI-03 阶梯 | 记录 |
+| G-3 | ~~平台缺失(观测)~~ **已闭环 (R9, 2026-09-09)** | `Runtime.Subscribe(ctx, from)` 落地:Snapshot(EventSequence S)→Subscribe(S) 无缝续传;慢消费者溢出→订阅关闭(emit 永不阻塞);Runtime.Close 以 ErrRuntimeClosed 终结全部订阅;锚点早于环形缓冲报 ErrSequenceTooOld。一致性 S-01..S-07(`ui03_subscribe_test.go`),`-count=3`+`-race` 绿 | UI-03 阶梯 | **CLOSED** |
 | G-4 | DX 缺口 | 插件配置 **schema 校验助手**(Cordis 生态有 schemastery;本仓库 map[string]any 裸配 + 工厂自校验) | §5.2.1 邻接 | 记录为 DX 项,等真实作者反馈 |
 | G-5 | 论文 §6.6 未实现 | 依赖**类型/版本**维度(Key 无版本;Module 有 Version 但不进能力解析) | §6.6 讨论 | 记录;§6.6 本为讨论章 |
 | G-6 | 测试缺口(小) | **HMR × proc 后端**替换未测(proc 经 hmr.Controller.Replace 的组合路径) | §5.2.2 | 小;建议随 G-1 一并补 |

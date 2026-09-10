@@ -42,6 +42,10 @@ type PanelDefinition struct {
 	Position Position
 	Renderer string
 	Order    int
+	// Pages lists the page IDs this panel appears on. Empty means every
+	// page. The binding is composition data — the host and transports only
+	// carry it; clients decide rendering per active page.
+	Pages []string
 }
 
 // CompositionSnapshot is one atomic, read-only view of the current Page and

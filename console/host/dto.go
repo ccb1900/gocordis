@@ -13,12 +13,14 @@ type UIPage struct {
 	Renderer string `json:"renderer"`
 }
 
-// UIPanel is one contributed console panel.
+// UIPanel is one contributed console panel. Pages lists the page IDs the
+// panel appears on; empty means every page.
 type UIPanel struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Position string `json:"position"`
-	Renderer string `json:"renderer"`
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Position string   `json:"position"`
+	Renderer string   `json:"renderer"`
+	Pages    []string `json:"pages,omitempty"`
 }
 
 // UIObservation is the minimal invalidation message: it only says "something
@@ -49,5 +51,8 @@ func toUIPage(def registry.PageDefinition) UIPage {
 }
 
 func toUIPanel(def registry.PanelDefinition) UIPanel {
-	return UIPanel{ID: def.ID, Title: def.Title, Position: string(def.Position), Renderer: def.Renderer}
+	return UIPanel{
+		ID: def.ID, Title: def.Title, Position: string(def.Position),
+		Renderer: def.Renderer, Pages: append([]string(nil), def.Pages...),
+	}
 }

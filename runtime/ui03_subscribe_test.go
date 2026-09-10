@@ -9,7 +9,16 @@ import (
 	"time"
 )
 
-// UI-03 conformance: event stream subscription over the canonical event log.
+// UI-03 subscription conformance (S-01..S-07 — THIS REPO's suite numbering
+// for the subscription suite, following the C/L/H/S/E/V convention; the paper
+// has no subscription concept).
+//
+// Classification: PAPER-NEUTRAL platform infrastructure (UI-03 observation
+// ladder, pre-dating the paper-first pivot). It adds a read model over the
+// canonical event log and touches none of the calculus semantics — theorems
+// 64/68/70/73/80 surfaces are unchanged.
+//
+// Conformance: event stream subscription over the canonical event log.
 //
 //	Resume protocol: Snapshot(EventSequence S) -> Subscribe(S) replays (S, ...]
 //	exactly once, then streams live events, no gaps, in Sequence order.

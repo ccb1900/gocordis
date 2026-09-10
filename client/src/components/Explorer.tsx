@@ -272,8 +272,8 @@ export function PluginExplorer() {
                         disabled={busyId === r.id}
                         onClick={() => {
                           setBusyId(r.id);
-                          queries
-                            .installPlugin(r.id)
+                          platform
+                            .install(r.id)
                             .then(refresh)
                             .catch((e) =>
                               setError(e instanceof Error ? e.message : String(e))

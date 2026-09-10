@@ -52,3 +52,36 @@ export interface ExplorerControlResult {
   state: string;
   error: string;
 }
+
+// ---- 插件清单（Plugin Explorer 的平台 DTO）----
+
+export interface ExplorerPlugin {
+  id: string;
+  name: string;
+  type: string;
+  state: string;
+  components: string[];
+  capabilities: string[];
+  controllable: boolean;
+  config?: Record<string, string>;
+}
+
+export interface ExplorerControlRequest {
+  pluginId: string;
+  enable: boolean;
+}
+
+export interface ExplorerControlResult {
+  pluginId: string;
+  accepted: boolean;
+  rejected: boolean;
+  failed: boolean;
+  state: string;
+  error: string;
+}
+
+export interface LogEntry {
+  level: string;
+  msg: string;
+  time: string;
+}

@@ -10,6 +10,7 @@
 // The client is transport-agnostic: Wails bindings when present, HTTP
 // otherwise. It never knows domain query names — applications pass them in.
 
+import type { ExplorerPlugin } from "./types";
 export type StreamStatus = "live" | "connecting" | "offline";
 
 export type Unsubscribe = () => void;
@@ -196,10 +197,11 @@ export interface RemovedPlugin {
 export const platform = {
   listPages,
   listPanels,
-  listPlugins: (): Promise<{ plugins: unknown[] }> => get("/api/plugins"),
+  listPlugins: (): Promise<{ plugins: ExplorerPlugin[] }> => get("/api/plugins"),
   controlPlugin: (req: { pluginId: string; enable: boolean }) =>
     post<ExplorerControlResult>("/api/plugins/control", req),
-  uninstallPlugin: (pluginId: string) => post<void>("/api/plugins/uninstall", { pluginId }),
-  installPlugin: (pluginId: string) => post<void>("/api/plugins/install", { pluginId }),
-  listRemoved: () => get<{ id: string; name: string }[]>("/api/plugins/removed"),
+  uninstall: (pluginId: string) => post<void>("/api/plugins/uninstall", { pluginId }),
+  install: (pluginId: string) => post<void>("/api/plugins/install", { pluginId }),
+  listRemoved: (): Promise<{ id: string; name: string }[]> =>
+    get<{ id: string; name: string }[]>("/api/plugins/removed"),
 };

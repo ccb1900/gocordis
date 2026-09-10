@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"dynamic-runtime/console/explorer"
-	host "dynamic-runtime/console/host"
+	"dynamic-runtime/extensions/console/explorer"
+	host "dynamic-runtime/extensions/console/host"
 )
 
 // Observation event name is fixed and shared with the Wails bridge.

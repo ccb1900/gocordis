@@ -8,9 +8,9 @@ import (
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
-	"dynamic-runtime/console/configutil"
-	host "dynamic-runtime/console/host"
-	"dynamic-runtime/console/registry"
+	"dynamic-runtime/extensions/console/configutil"
+	host "dynamic-runtime/extensions/console/host"
+	"dynamic-runtime/extensions/console/registry"
 )
 
 // ExplorerComponent is the GOCORDIS Plugin Explorer component. It is not a

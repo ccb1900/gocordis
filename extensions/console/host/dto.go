@@ -3,7 +3,7 @@
 // queries and commands as opaque JSON. No Go internal type ever crosses.
 package host
 
-import "dynamic-runtime/console/registry"
+import "dynamic-runtime/extensions/console/registry"
 
 // UIPage is one contributed console page.
 type UIPage struct {

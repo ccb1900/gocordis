@@ -10,7 +10,7 @@
 package host
 
 import (
-	"dynamic-runtime/console/registry"
+	"dynamic-runtime/extensions/console/registry"
 )
 
 // Re-exported composition contract aliases keep the public UI Host surface

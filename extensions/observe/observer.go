@@ -1,4 +1,4 @@
-// Package events implements the console-side canonical event stream:
+// Package events implements the canonical runtime event stream for observation consumers (console, fleet, tooling):
 // ring retention (1024), sequence-anchored resume, and subscription fan-out.
 //
 // It is the consumer layer of the runtime's paper-neutral observation hook:

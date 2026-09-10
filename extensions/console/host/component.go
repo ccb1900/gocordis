@@ -18,9 +18,9 @@ import (
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
-	"dynamic-runtime/console/configutil"
-	"dynamic-runtime/console/hub"
-	appui "dynamic-runtime/console/registry"
+	"dynamic-runtime/extensions/console/configutil"
+	"dynamic-runtime/extensions/console/hub"
+	appui "dynamic-runtime/extensions/console/registry"
 )
 
 // UIHostKey is the UI Composition Registry capability exposed by the console

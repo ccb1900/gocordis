@@ -11,10 +11,10 @@ import (
 	"testing"
 	"testing/fstest"
 
-	host "dynamic-runtime/console/host"
-	"dynamic-runtime/console/hub"
-	"dynamic-runtime/console/registry"
 	"dynamic-runtime/extensions/config"
+	host "dynamic-runtime/extensions/console/host"
+	"dynamic-runtime/extensions/console/hub"
+	"dynamic-runtime/extensions/console/registry"
 )
 
 // buildTestConsole wires a console host adapter directly over a registry and

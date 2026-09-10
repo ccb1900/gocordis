@@ -7,8 +7,8 @@ import (
 	"net/url"
 	"sync"
 
-	"dynamic-runtime/console/hub"
-	appui "dynamic-runtime/console/registry"
+	"dynamic-runtime/extensions/console/hub"
+	appui "dynamic-runtime/extensions/console/registry"
 )
 
 // Host is the console transport adapter. Wails and HTTP both call it; it

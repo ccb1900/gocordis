@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"dynamic-runtime/console/events"
+	"dynamic-runtime/extensions/observe"
 	"dynamic-runtime/runtime"
 )
 
@@ -20,7 +20,7 @@ import (
 // layer; the kernel only assigns sequences and hands events to the sink).
 //
 // Conformance: ring retention, sequence-anchored resume, overflow protocol,
-// observer close — over the console/events Observer.
+// observer close — over the extensions/observe Observer.
 
 func newObs(t *testing.T) *events.Observer {
 	t.Helper()

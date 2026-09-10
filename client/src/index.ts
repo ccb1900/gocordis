@@ -6,6 +6,7 @@
 // console, shared presentation primitives and the design system.
 
 export * from "./api";
+export { hubQuery } from "./api";
 export * as Icons from "./components/Icons";
 export { useComposition } from "./hooks/useComposition";
 export { Sidebar } from "./components/Sidebar";

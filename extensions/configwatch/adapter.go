@@ -95,6 +95,15 @@ func WithReader(r Reader) Option { return func(a *Adapter) { a.reader = r } }
 // WithParser overrides the default TOML Parser.
 func WithParser(p Parser) Option { return func(a *Adapter) { a.parser = p } }
 
+// WithPostReconcile registers a hook invoked after every successful
+// controller reconciliation (initial sync and file changes alike) with the
+// final configuration. It is the application's loader hook: app-level steps
+// that must follow each reconcile — projections, registries, caches — live
+// here instead of bypassing the watch adapter.
+func WithPostReconcile(fn func(ctx context.Context, cfg config.Config) error) Option {
+	return func(a *Adapter) { a.postReconcile = fn }
+}
+
 // Stats is a minimal, non-authoritative observability counter set.
 type Stats struct {
 	ChangesReceived    uint64
@@ -136,7 +145,8 @@ type Adapter struct {
 	listenerDone chan struct{}
 	listenerOn   bool
 
-	stats Stats
+	stats         Stats
+	postReconcile func(ctx context.Context, cfg config.Config) error
 }
 
 type syncRequest struct {
@@ -392,6 +402,13 @@ func (a *Adapter) reconcile(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	a.bump(func(s *Stats) { s.ReconcileSucceeded++ })
+	if a.postReconcile != nil {
+		if err := a.postReconcile(ctx, cfg); err != nil {
+			a.bump(func(s *Stats) { s.ReconcileFailed++ })
+			a.setLastError(fmt.Errorf("post-reconcile hook: %w", err))
+			return err
+		}
+	}
 	return nil
 }
 

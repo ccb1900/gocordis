@@ -18,6 +18,42 @@ import (
 
 var u2Key = NewKey[string]("ui02.db")
 
+// eventCollector is a test EventSink: it records canonical events so tests
+// can inspect history without the kernel retaining it (UI-03: retention moved
+// to the consumer layer).
+type eventCollector struct {
+	mu  sync.Mutex
+	evs []RuntimeEvent
+}
+
+func (c *eventCollector) Emit(ev RuntimeEvent) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.evs = append(c.evs, ev)
+}
+
+func (c *eventCollector) all() []RuntimeEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]RuntimeEvent(nil), c.evs...)
+}
+
+// u2NewRecording returns a Runtime with an event collector attached.
+func u2NewRecording(t *testing.T) (*Runtime, *eventCollector) {
+	t.Helper()
+	col := &eventCollector{}
+	rt, err := New(WithEventSink(col))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = rt.Close(ctx)
+	})
+	return rt, col
+}
+
 func u2New(t *testing.T) *Runtime {
 	t.Helper()
 	rt, err := New()
@@ -211,7 +247,7 @@ func TestUI02EmptyRuntimeSnapshot(t *testing.T) {
 
 // 2 + 3. Single fiber; lifecycle states observable through Snapshot.
 func TestUI02FiberLifecycleSnapshot(t *testing.T) {
-	rt := u2New(t)
+	rt, col := u2NewRecording(t)
 	staged := &u2Staged{
 		name:           "staged",
 		applyEntered:   make(chan struct{}, 1),
@@ -282,7 +318,7 @@ func TestUI02FiberLifecycleSnapshot(t *testing.T) {
 	}
 
 	// Canonical event history for the fiber (monotonic sequence).
-	evs := rt.events.all()
+	evs := col.all()
 	if len(evs) == 0 {
 		t.Fatal("no events recorded")
 	}
@@ -702,7 +738,7 @@ func TestUI02ScopeHierarchyIsolation(t *testing.T) {
 // Cleanup kind; unwind transitions observable in the event sequence; a
 // failed-Apply provider record is withdrawn without prior retirement.
 func TestUI02EffectMetadataAndEvents(t *testing.T) {
-	rt := u2New(t)
+	rt, col := u2NewRecording(t)
 	f, err := rt.Load(&u2EffectComp{name: "fx", key: u2Key})
 	if err != nil {
 		t.Fatal(err)
@@ -736,7 +772,7 @@ func TestUI02EffectMetadataAndEvents(t *testing.T) {
 	if err := f.Gone(testCtx(t)); err != nil {
 		t.Fatal(err)
 	}
-	evs := rt.events.all()
+	evs := col.all()
 	var undoSeq []string
 	for _, ev := range evs {
 		if ev.FiberID == f.ID() && (ev.Type == EventEffectUndoing || ev.Type == EventEffectUndone) {
@@ -764,7 +800,7 @@ func TestUI02EffectMetadataAndEvents(t *testing.T) {
 
 	// Failed-Apply provider record: removed without retirement -> withdraw
 	// event, Failure event, terminal Failed row.
-	rt2 := u2New(t)
+	rt2, col2 := u2NewRecording(t)
 	g, err := rt2.Load(&u2FailAfterProvide{key: u2Key})
 	if err != nil {
 		t.Fatal(err)
@@ -781,7 +817,7 @@ func TestUI02EffectMetadataAndEvents(t *testing.T) {
 		t.Fatalf("failed row = %+v", s2.Fibers[0])
 	}
 	var sawFailure, sawWithdraw bool
-	for _, ev := range rt2.events.all() {
+	for _, ev := range col2.all() {
 		if ev.Type == EventFailure && ev.FiberID == g.ID() {
 			sawFailure = true
 		}

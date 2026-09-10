@@ -54,7 +54,7 @@ R4 评审(2026-09-09)按"是否服务论文实现"将扩展定类:
 |---|---|---|
 | **A — 论文 §5.2 实现章** | 直接实现 declarative loader / config reconciliation / HMR(含 §5.2.1 disable/re-enable:ComponentConfig.Enabled 开关,R5 落地) | loader、config、configwatch、watch、hmr |
 | **B — 论文 §6 讨论项落地** | P7 逐项实现 | broker(§6.2)、loader/wasm(§6.3 沙箱) |
-| **C — 平台能力(非论文语义,有消费方与测试约束)** | runtime 的通用补充 | event(派发模式之家,P6 起)、registry(稳定成员,broker 底座)、scheduler(周期任务)、UI-03 事件流订阅(2026-09-09:Runtime.Subscribe,序号锚点续传 + 溢出关闭协议) |
+| **C — 平台能力(非论文语义,有消费方与测试约束)** | runtime 的通用补充 | event(派发模式之家,P6 起)、registry(稳定成员,broker 底座)、scheduler(周期任务)、UI-03 事件流(console/events,2026-09-09:Observer 环形保留 + 序号锚点续传订阅;内核只留单调序号计数器 + WithEventSink 汇点钩子,paper-neutral 观测面进一步收缩) |
 | **D — 实例/演示(转移)** | 某绑定模式的可运行样例,非语义、非通用能力 | ~~extensions/http~~ → **cmd/httpd**(2026-09-09:外部资源绑定模式参考——Active ⇔ serving、撤销先于终态、同地址重绑;零生产消费方,聚焦测试随迁) |
 
 - `RuntimeDeterministic` 调度插桩:定理验证基础设施(已内部化,R3),保留。

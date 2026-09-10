@@ -289,7 +289,11 @@ R6 判定的第 10 行(跨进程调用,显式出界)按用户裁决升级落地:
 |---|---|---|---|---|
 | G-1 | **不完备(论文 §5.2.1)** | HMR/loader **短路径终点对齐**:候选先行替换须回答与从头装载相同的 quiescent 终点——内核 Revise 已测,扩展 warm 路径未测 | §5.2.1 + Thm 80 | 已记录(P5 遗留),**建议下一优先** |
 | G-2 | **不完备(论文 §5.2.1)** | **realm 迁移短路径**("a realm moved without reloading its provider"):现仅实现严格复合(WithFreshIsolation 必然重载提供者);论文许可的"迁移不重载"优化未做 | §4.4 Configuration/§5.2.1 | 记录;需先有公开命名空间句柄,与短路径语义一起做 |
-| G-3 | ~~平台缺失(观测)~~ **已闭环 (R9, 2026-09-09;PAPER-NEUTRAL 平台层,非论文语义)** | `Runtime.Subscribe(ctx, from)` 落地:Snapshot(EventSequence S)→Subscribe(S) 无缝续传;慢消费者溢出→订阅关闭(emit 永不阻塞);Runtime.Close 以 ErrRuntimeClosed 终结全部订阅;锚点早于环形缓冲报 ErrSequenceTooOld。一致性 S-01..S-07(`ui03_subscribe_test.go`),`-count=3`+`-race` 绿 | UI-03 阶梯 | **CLOSED** |
+| G-3 | ~~平台缺失(观测)~~ **已闭环 (R9, 2026-09-09;PAPER-NEUTRAL 平台层,非论文语义)** | `Runtime.Subscribe(ctx, from)` 落地:Snapshot(EventSequence S)→Subscribe(S) 无缝续传;慢消费者溢出→订阅关闭(emit 永不阻塞);Runtime.Close 以 ErrRuntimeClosed 终结全部订阅;锚点早于环形缓冲报 ErrSequenceTooOld。一致性 S-01..S-07(`console/events/observer_test.go`),`-count=3`+`-race` 绿。
+**边界修正 (R9b, 用户裁决)**:订阅/扇出不放 runtime——内核收缩为"单调序号
+计数器 + WithEventSink 汇点钩子"(≈80 行,paper-neutral 观测面),环形保留/
+重放/订阅/溢出协议整体迁至 `console/events`(控制台消费层);emitEvent 取号
++投递原子化(sink 按 Sequence 序收到事件)。 | UI-03 阶梯 | **CLOSED** |
 | G-4 | DX 缺口 | 插件配置 **schema 校验助手**(Cordis 生态有 schemastery;本仓库 map[string]any 裸配 + 工厂自校验) | §5.2.1 邻接 | 记录为 DX 项,等真实作者反馈 |
 | G-5 | 论文 §6.6 未实现 | 依赖**类型/版本**维度(Key 无版本;Module 有 Version 但不进能力解析) | §6.6 讨论 | 记录;§6.6 本为讨论章 |
 | G-6 | 测试缺口(小) | **HMR × proc 后端**替换未测(proc 经 hmr.Controller.Replace 的组合路径) | §5.2.2 | 小;建议随 G-1 一并补 |
@@ -326,3 +330,17 @@ R9 落地 UI-03 后用户质问"为什么突然改内核、遵循论文了吗"�
 **paper-anchored**(锚定论文条目)/ **paper-neutral**(平台层,论文不涉)/
 **paper-divergent**(有意分歧,须 ADR)。paper-neutral 与 paper-divergent 的
 内核变更实施前 MUST 先提案。
+
+### 13.1 R9b 边界修正(2026-09-09):订阅层移出 runtime
+
+用户裁决:"订阅机制不适合放到 runtime"。执行迁移:
+
+- **runtime 侧仅存**:`RuntimeEvent`/`EventType` 词汇表(编排器产出的规范事实)、
+  单调序号计数器(取号+投递原子,sink 按序收到)、`EventSink` 接口 +
+  `WithEventSink` 选项(≈80 行,paper-neutral 观测钩子;Snapshot.EventSequence
+  语义不变);
+- **console/events 侧**:环形保留(1024)+ 重放 + `Subscribe(ctx, from)` +
+  溢出关闭协议 + `Observer.Close` 终结(S-01..S-07 随迁,`-race` 绿);
+- 收益:kernel 公开面进一步收缩(Subscribe/EventSubscription/溢出协议全部
+  离开 runtime);事件词汇表留在内核的理由:它们是编排器在规范决策点产出的
+  事实词汇(§4.2 生命周期的观察投影),与演算共生产生,不可外置。

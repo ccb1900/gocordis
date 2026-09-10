@@ -208,7 +208,7 @@ func (o *orchestrator) buildSnapshot() RuntimeSnapshot {
 	}
 	r.mu.RUnlock()
 
-	seq := r.events.current()
+	seq := r.evSeq.current()
 
 	// Pass 1: per-fiber facts (one f.mu read per fiber).
 	infos := make([]fiberInfo, 0, len(fibers))

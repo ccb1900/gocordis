@@ -30,8 +30,10 @@ type Runtime struct {
 
 	orch *orchestrator
 
-	// events is the canonical Runtime state-transition event store (UI-02).
-	events *eventLog
+	// evSeq is the monotonic event sequence authority; eventSink (optional)
+	// receives every event (paper-neutral observation hook, UI-02).
+	evSeq     *eventSeq
+	eventSink EventSink
 
 	// eventReg is the Kernel Event registry (P1.1): handler registrations with
 	// owner + registration realm + deterministic registration order. It is a
@@ -58,6 +60,7 @@ type Option func(*options)
 type options struct {
 	mode      runtimeMode
 	runtimeID RuntimeID
+	eventSink EventSink
 }
 
 // WithRuntimeID sets a stable, explicit identity for the Runtime instance
@@ -91,7 +94,8 @@ func New(opts ...Option) (*Runtime, error) {
 		runtimeID: runtimeID,
 		fibers:    make(map[FiberID]*Fiber),
 		rootRealm: newRealm(nil), // ScopeID 0
-		events:    newEventLog(),
+		evSeq:     &eventSeq{},
+		eventSink: cfg.eventSink,
 		eventReg:  newEventRegistry(),
 		mode:      cfg.mode,
 		det:       newDeterministicState(),
@@ -208,7 +212,6 @@ func (r *Runtime) Close(ctx context.Context) error {
 		r.state = RuntimeClosing
 		// UI-03: every live event subscription terminates with the Runtime
 		// (terminal cause ErrRuntimeClosed); consumers re-Snapshot if needed.
-		r.events.closeAll(ErrRuntimeClosed)
 		r.mu.Unlock()
 		if !r.submit(&cmdClose{}) {
 			// The orchestrator already stopped (runtime became Closed between

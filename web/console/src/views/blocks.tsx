@@ -296,6 +296,7 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
   });
   const [options, setOptions] = useState<Record<string, Array<{ value: string; label: string }>>>({});
   const [rows, setRows] = useState<Row[]>([]);
+  const [total, setTotal] = useState<number | null>(null);
   const [columns, setColumns] = useState<TableColumnsType<Row>>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -333,19 +334,23 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
       .then((data) => {
         let out: Row[] = [];
         let names: string[] = [];
+        let matched: number | null = null;
         if (Array.isArray(data)) {
           out = rowsOf(data);
           names = Object.keys(out[0] ?? {});
+          matched = out.length;
         } else {
-          const page = data as { columns?: string[]; rows?: unknown[][] };
+          const page = data as { columns?: string[]; rows?: unknown[][]; total?: number };
           names = page.columns ?? [];
           out = (page.rows ?? []).map((r) => {
             const obj: Row = {};
             names.forEach((name, j) => (obj[name] = r[j]));
             return obj;
           });
+          matched = typeof page.total === "number" ? page.total : out.length;
         }
         setRows(out);
+        setTotal(matched);
         // Declared columns win; without them the response's own column
         // names become the header (typed sinks answer columnar pages).
         const declared = block.columns ?? [];
@@ -397,7 +402,7 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
               value={filters[f.key] ? dayjs(filters[f.key]) : null}
               onChange={(d) => setFilters((m) => ({ ...m, [f.key]: d ? d.format("YYYY-MM-DD") : "" }))}
               placeholder={f.label}
-              allowClear={false}
+              allowClear={!f.required}
             />
           ) : (
             <Input
@@ -413,6 +418,11 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
         <Button onClick={load} loading={loading} disabled={!ready}>
           查询
         </Button>
+        {total !== null && (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            共 {total} 行{rows.length < total ? `（当前页 ${rows.length}）` : ""}
+          </Typography.Text>
+        )}
       </Space>
       {error && <p style={{ color: "#f0655a" }}>{error}</p>}
       <Table<Row>

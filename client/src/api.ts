@@ -1,207 +1,70 @@
-// Console client API: the single integration surface between a gocordis
-// application and the console shell.
-//
-// Three groups:
-//   platform  — composition (pages/panels), plugin inventory and lifecycle
-//   hub       — generic passthrough to application-registered named
-//               queries/commands (/api/query/<name>, /api/command/<name>)
-//   stream    — the observation/boundary SSE channel
-//
-// The client is transport-agnostic: Wails bindings when present, HTTP
-// otherwise. It never knows domain query names — applications pass them in.
+// Console API client: the single integration surface between the console
+// UI and the backend. Transport-agnostic (Wails bindings or HTTP fetch).
 
-import type { ExplorerPlugin } from "./types";
 export type StreamStatus = "live" | "connecting" | "offline";
 
-export type Unsubscribe = () => void;
-
-export interface UIObservation {
-  type: string;
-  sourceId?: string;
-  timestamp: string;
-}
-
-// ---- Observation stream + boundary status ---------------------------------
-
-type Observer = {
-  onEvent?: (ev: UIObservation) => void;
-  onStatus?: (s: StreamStatus) => void;
-};
-
-const observers = new Set<Observer>();
-let sharedSource: EventSource | null = null;
-
-export const OBSERVATION_EVENT = "observation";
-
-function ensureSource(): void {
-  if (sharedSource) return;
-  const source = new EventSource("/api/stream");
-  sharedSource = source;
-  source.addEventListener(OBSERVATION_EVENT, (e: MessageEvent) => {
-    let ev: UIObservation;
-    try {
-      ev = JSON.parse(String(e.data)) as UIObservation;
-    } catch {
-      return;
-    }
-    for (const o of observers) o.onEvent?.(ev);
-  });
-  const report = () => {
-    const status: StreamStatus =
-      source.readyState === EventSource.OPEN
-        ? "live"
-        : source.readyState === EventSource.CLOSED
-        ? "offline"
-        : "connecting";
-    for (const o of observers) o.onStatus?.(status);
-  };
-  source.onopen = report;
-  source.onerror = report;
-}
-
-export function onObservation(handler: (ev: UIObservation) => void): Unsubscribe {
-  if (window.runtime) {
-    const rt = window.runtime;
-    rt.EventsOn(OBSERVATION_EVENT, (payload: unknown) => handler(payload as UIObservation));
-    return () => rt.EventsOff(OBSERVATION_EVENT);
-  }
-  const o: Observer = { onEvent: handler };
-  observers.add(o);
-  ensureSource();
-  return () => observers.delete(o);
-}
-
-export function onStreamStatus(handler: (status: StreamStatus) => void): Unsubscribe {
-  if (window.runtime) {
-    handler("live");
-    return () => undefined;
-  }
-  const o: Observer = { onStatus: handler };
-  observers.add(o);
-  ensureSource();
-  return () => observers.delete(o);
-}
-
-// ---- Platform operations ---------------------------------------------------
-
-export interface UIPage {
-  id: string;
-  title: string;
-  route: string;
-  renderer: string;
-}
-
-export interface UIPanel {
-  id: string;
-  title: string;
-  position: string;
-  renderer: string;
-}
-
-export interface UIPageList {
-  pages: UIPage[];
-}
-
-export interface UIPanelList {
-  panels: UIPanel[];
-}
-
-export interface RemovedPlugin {
-  id: string;
-  name: string;
-}
-
-export interface ExplorerControlRequest {
-  pluginId: string;
-  enable: boolean;
-}
-
-export interface ExplorerControlResult {
-  pluginId: string;
-  accepted: boolean;
-  rejected: boolean;
-  failed: boolean;
-  state: string;
-  error: string;
-}
-
-export function listPages(): Promise<UIPage[]> {
-  return get<UIPageList>("/api/ui/pages").then((r) => r.pages);
-}
-
-export function listPanels(): Promise<UIPanel[]> {
-  return get<UIPanelList>("/api/ui/panels").then((r) => r.panels);
-}
-
-// ---- Generic hub passthrough -----------------------------------------------
-
-export function hubQuery<T>(name: string, params: Record<string, string | number> = {}): Promise<T> {
-  const qs = Object.entries(params)
-    .filter(([, v]) => v !== undefined && v !== "")
-    .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
-    .join("&");
-  return get<T>(`/api/query/${name}${qs ? `?${qs}` : ""}`);
-}
-
-export function hubCommand<T = void>(name: string, body: unknown): Promise<T> {
-  return post<T>(`/api/command/${name}`, body ?? {});
-}
-
-// ---- Internal helpers -------------------------------------------------------
+export interface UIPage { id: string; title: string; route: string; renderer: string; views?: unknown }
+export interface UIPanel { id: string; title: string; position: string; renderer: string; pages?: string[] }
+export interface UIObservation { type: string; sourceId?: string; timestamp: string }
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path);
   const body = await res.json().catch(() => null);
-  if (!res.ok) {
-    const e = (body as { code?: string; message?: string }) ?? {};
-    throw new Error(`${e.code ?? "error"}: ${e.message ?? res.statusText}`);
-  }
+  if (!res.ok) throw new Error(`${body?.code ?? "error"}: ${body?.message ?? res.statusText}`);
   return (body as { data: T }).data;
 }
-
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body ?? {}),
-  });
-  const payload = (await res.json().catch(() => null)) as { data?: T; code?: string; message?: string } | null;
-  if (!res.ok) {
-    const e = (payload as { code?: string; message?: string }) ?? {};
-    throw new Error(`${e.code ?? "error"}: ${e.message ?? res.statusText}`);
-  }
-  return (payload as { data: T })?.data ?? (null as T);
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) });
+  const j = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(`${j?.code ?? "error"}: ${j?.message ?? res.statusText}`);
+  return (j as { data: T }).data;
 }
 
-// ---- Platform wrappers -------------------------------------------------------
-
-export interface ExplorerControlRequest {
-  pluginId: string;
-  enable: boolean;
-}
-
-export interface ExplorerControlResult {
-  pluginId: string;
-  accepted: boolean;
-  rejected: boolean;
-  failed: boolean;
-  state: string;
-  error: string;
-}
-
-export interface RemovedPlugin {
-  id: string;
-  name: string;
-}
-
-export const platform = {
-  listPages,
-  listPanels,
-  listPlugins: (): Promise<{ plugins: ExplorerPlugin[] }> => get("/api/plugins"),
-  controlPlugin: (req: { pluginId: string; enable: boolean }) =>
-    post<ExplorerControlResult>("/api/plugins/control", req),
-  uninstall: (pluginId: string) => post<void>("/api/plugins/uninstall", { pluginId }),
-  install: (pluginId: string) => post<void>("/api/plugins/install", { pluginId }),
-  listRemoved: (): Promise<{ id: string; name: string }[]> =>
-    get<{ id: string; name: string }[]>("/api/plugins/removed"),
+export const api = {
+  pages: () => get<{ pages: { id: string; title: string; route: string; renderer: string }[] }>("/api/ui/pages").then(r => r.pages),
+  panels: () => get<{ panels: { id: string; title: string; position: string; renderer: string; pages?: string[] }[] }>("/api/ui/panels").then(r => r.panels),
+  plugins: () => get<{ plugins: Array<{ id: string; name: string; type: string; state: string; controllable: boolean }> }>("/api/plugins").then(r => r.plugins),
+  uninstall: (id: string) => post("/api/plugins/uninstall", { pluginId: id }),
+  install: (id: string) => post("/api/plugins/install", { pluginId: id }),
+  pluginConfig: (id: string) => get<Record<string, unknown>>(`/api/plugins/${encodeURIComponent(id)}/config`),
+  setPluginConfig: (id: string, cfg: Record<string, unknown>) => post(`/api/plugins/${encodeURIComponent(id)}/config`, { config: cfg }),
+  hubQuery: <T = unknown>(name: string, params?: Record<string, string>) => {
+    const qs = params ? "?" + Object.entries(params).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&") : "";
+    return get<T>(`/api/query/${name}${qs}`);
+  },
+  hubCommand: (name: string, body?: unknown) => post(`/api/command/${name}`, body),
+  trigger: (date?: string) => post("/api/command/trigger", { date }),
 };
+
+// SSE observation stream — one shared EventSource for the whole console.
+type ObsHandler = (ev: { type: string; sourceId?: string; timestamp: string }) => void;
+let source: EventSource | null = null;
+const handlers = new Set<ObsHandler>();
+let streamStatus: StreamStatus = "connecting";
+const statusHandlers = new Set<(s: StreamStatus) => void>();
+
+function reportStatus() {
+  const s = source && source.readyState === 1 ? "live" : source && source.readyState === 2 ? "offline" : "connecting";
+  statusHandlers.forEach(fn => fn(s));
+}
+
+export function ensureStream(): void {
+  if (source) return;
+  source = new EventSource("/api/stream");
+  source.onopen = () => reportStatus();
+  source.onerror = () => reportStatus();
+}
+
+export function onObservation(fn: (ev: { type: string; sourceId?: string; timestamp: string }) => void): void {
+  handlers.add(fn);
+  ensureStream();
+}
+
+export function onStreamStatus(fn: (s: StreamStatus) => void): void {
+  statusHandlers.add(fn);
+  ensureStream();
+}
+
+function publish(ev: { type: string; sourceId?: string; timestamp: string }) {
+  handlers.forEach(fn => fn(ev));
+}

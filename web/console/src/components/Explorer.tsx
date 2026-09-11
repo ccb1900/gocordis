@@ -407,6 +407,13 @@ export function PluginExplorer() {
                   ) : null}
                 </Space>
               </div>
+              {selected.state === "Failed" && selected.error && (
+                <Alert
+                  type="error" showIcon style={{ marginBottom: 12 }}
+                  message="组件激活失败"
+                  description={selected.error}
+                />
+              )}
               {outcome && outcome.accepted && !error && (
                 <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 8 }}>
                   运行时已接受请求 — 以下状态重新读取自 fibers。

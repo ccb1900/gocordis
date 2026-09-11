@@ -158,7 +158,12 @@ func (c *UIComponent) onObservation(ev hub.Observation) {
 	c.mu.Lock()
 	c.invalidations++
 	c.mu.Unlock()
-	c.emitUIObservation(UIObservation(ev))
+	c.emitUIObservation(UIObservation{
+		Type:      ev.Type,
+		SourceID:  ev.SourceID,
+		Timestamp: ev.Timestamp,
+		Message:   ev.Message,
+	})
 }
 
 // Invalidations returns how many Observation-driven refreshes ran.
@@ -194,6 +199,24 @@ func (c *UIComponent) SetObservationSink(sink ObservationSink) {
 
 // Observations returns the observation events seen since activation (feed
 // history, newest last).
+// PublishObservation injects an application-side observation into the hub:
+// boundary events (composition apply failures, recovery notes) that do not
+// originate from the query provider's invalidation stream.
+func (c *UIComponent) PublishObservation(typ, sourceID, message string) {
+	c.mu.Lock()
+	hubRegistry := c.hub
+	c.mu.Unlock()
+	if hubRegistry == nil {
+		return
+	}
+	hubRegistry.Publish(hub.Observation{
+		Type:      typ,
+		SourceID:  sourceID,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Message:   message,
+	})
+}
+
 func (c *UIComponent) Observations() []UIObservation {
 	if c.bridge == nil {
 		return nil

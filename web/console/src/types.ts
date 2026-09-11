@@ -91,6 +91,8 @@ export interface UIObservation {
   type: string;
   sourceId?: string;
   timestamp: string;
+  /** Optional human-readable detail (e.g. why a composition apply failed). */
+  message?: string;
 }
 
 export interface ExplorerPlugin {
@@ -98,6 +100,8 @@ export interface ExplorerPlugin {
   name: string;
   type: string;
   state: string;
+  /** Fiber failure reason when state is Failed. */
+  error?: string;
   components: string[];
   capabilities: string[];
   controllable: boolean;

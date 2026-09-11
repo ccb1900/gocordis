@@ -39,6 +39,9 @@ type Observation struct {
 	Type      string `json:"type"`
 	SourceID  string `json:"sourceId,omitempty"`
 	Timestamp string `json:"timestamp"`
+	// Message carries optional human-readable detail (e.g. why a
+	// composition apply failed). It never replaces re-querying.
+	Message string `json:"message,omitempty"`
 }
 
 type queryEntry struct {

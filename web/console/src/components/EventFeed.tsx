@@ -44,6 +44,7 @@ export function EventFeed({ generation }: { generation: number }) {
               <span>
                 <Tag color={view.tone === "ok" ? "success" : view.tone === "danger" ? "error" : view.tone === "warn" ? "warning" : view.tone === "accent" ? "processing" : "default"}>{view.label}</Tag>
                 {ev.sourceId && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{ev.sourceId}</Typography.Text>}
+                {ev.message && <Typography.Text type="danger" style={{ fontSize: 12 }}> {ev.message}</Typography.Text>}
               </span>
               <Typography.Text type="secondary" style={{ fontSize: 11 }}>{relativeTime(ev.timestamp)}</Typography.Text>
             </Space>

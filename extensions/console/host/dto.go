@@ -40,6 +40,7 @@ type UIObservation struct {
 	Type      string `json:"type"`
 	SourceID  string `json:"sourceId,omitempty"`
 	Timestamp string `json:"timestamp"`
+	Message   string `json:"message,omitempty"`
 }
 
 // UIError is the front-end error contract. Concrete Go error types are never

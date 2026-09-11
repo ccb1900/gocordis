@@ -12,6 +12,7 @@ type ExplorerPlugin struct {
 	Name         string            `json:"name"`
 	Type         string            `json:"type"`
 	State        string            `json:"state"`
+	Error        string            `json:"error,omitempty"`
 	Components   []string          `json:"components"`
 	Capabilities []string          `json:"capabilities"`
 	Controllable bool              `json:"controllable"`
@@ -113,6 +114,7 @@ func toExplorerPlugin(p Plugin) ExplorerPlugin {
 		Name:         p.Name,
 		Type:         p.Type,
 		State:        p.State,
+		Error:        p.Error,
 		Components:   cloneStrings(p.Components),
 		Capabilities: cloneStrings(p.Capabilities),
 		Controllable: p.Controllable,

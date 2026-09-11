@@ -95,6 +95,9 @@ func (s *Service) Plugins() []Plugin {
 		}
 		if o, ok := owned[cc.ID]; ok && o.Fiber != nil {
 			p.State = o.Fiber.State().String()
+			if p.State == "Failed" {
+				p.Error = errText(o.Fiber.Err())
+			}
 			p.Components = []string{o.Fiber.Name()}
 			caps := make([]string, 0, len(o.Fiber.Component().Provide()))
 			for _, c := range o.Fiber.Component().Provide() {

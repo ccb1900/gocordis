@@ -44,19 +44,12 @@ type PluginLifecycle interface {
 	SetConfig(ctx context.Context, id string, cfg map[string]any) error
 }
 
-// AuthFunc is the authentication seam: return false to reject a request with
-// 401. The console ships NO auth by default (development posture); wire an
-// implementation (token check, reverse-proxy header validation, …) before
-// exposing the transport beyond loopback.
-type AuthFunc func(r *http.Request) bool
-
 // Server is the Web UI host: static assets + JSON Query/Command API + SSE.
 type Server struct {
 	adapter   *host.Host
 	assets    fs.FS
 	explorer  *explorer.ExplorerTransport
 	lifecycle PluginLifecycle
-	auth      AuthFunc
 
 	hostID          string
 	startedAt       time.Time
@@ -83,13 +76,6 @@ func New(adapter *host.Host, assets fs.FS) *Server {
 // plugin-explorer component is active.
 // SetPluginLifecycle installs the desired-state editing boundary for the
 // console's uninstall/install actions.
-// SetAuth wires the authentication seam (see AuthFunc). Default: no auth.
-func (s *Server) SetAuth(fn AuthFunc) {
-	s.mu.Lock()
-	s.auth = fn
-	s.mu.Unlock()
-}
-
 func (s *Server) SetPluginLifecycle(l PluginLifecycle) {
 	s.lifecycle = l
 }
@@ -115,13 +101,6 @@ func (s *Server) Publish(ev host.UIObservation) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	auth := s.auth
-	s.mu.Unlock()
-	if auth != nil && !auth(r) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		s.serveAPI(w, r)
 		return

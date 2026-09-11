@@ -86,6 +86,17 @@ export function onStreamStatus(fn: (s: StreamStatus) => void): void {
   ensureStream();
 }
 
+// onReconnect fires fn whenever the stream transitions back to "live" after
+// an interruption — the re-query hook: cached console state may be stale
+// after a dropped connection.
+export function onReconnect(fn: () => void): void {
+  let previous: StreamStatus | null = null;
+  onStreamStatus(s => {
+    if (previous !== null && previous !== "live" && s === "live") fn();
+    previous = s;
+  });
+}
+
 function publish(ev: { type: string; sourceId?: string; timestamp: string }) {
   handlers.forEach(fn => fn(ev));
 }

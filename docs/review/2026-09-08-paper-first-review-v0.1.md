@@ -368,3 +368,19 @@ API 的控制操作),无第二生命周期权威;hub 的"命名查询/命令直�
 
 **顺带修复**:内核 emitEvent 的"取号+投递"原子化(并发发射器下 sink 按
 Sequence 序收到事件)。
+
+### 14.1 R10 补充 (2026-09-09):鉴权撤下 + 剩余项修复
+
+用户裁决:鉴权**暂时不做**——已移除上一轮加的 `SetAuth`/`AuthFunc` 缝与测试
+(需要时 15 行即可重加);F-3 记为 **用户裁决延期**。
+
+其余修复(当轮完成):
+- **F-4 闭环**:`extensions/console/lifecycle.go` — `ControllerLifecycle`,
+  声明存储(`DesiredStore`)+ 控制器调和驱动的 `webui.PluginLifecycle` 参考实现:
+  Uninstall/Install = 声明 `Enabled` 翻转 + 调和;SetConfig = 声明配置替换 + 调和;
+  **调和失败回滚声明(store 与 runtime 都不撒谎)**;八项测试。
+- **F-7 部分**:configutil 五助手测试落地。
+- **F-6 闭环**:client API 增加 `onReconnect(fn)`(connecting→live 转换即触发,
+  控制台缓存的 re-query 钩子);tsc 绿。
+
+仍开放:G-1(+G-6)> G-2;explorer/configutil 之外 host 包测试仍薄。

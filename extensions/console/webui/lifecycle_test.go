@@ -159,15 +159,3 @@ func TestLifecycleConfigRoundTrip(t *testing.T) {
 		t.Fatalf("set-config failure = %d %s", rec.Code, rec.Body.String())
 	}
 }
-
-// TestAuthSeam — SetAuth guards every route (static + API) with 401.
-func TestAuthSeam(t *testing.T) {
-	s := New(nil, nil)
-	s.SetAuth(func(r *http.Request) bool { return false })
-	for _, path := range []string{"/", "/api/plugins", "/api/stream"} {
-		rec := lcGet(t, s, path)
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("path %s status = %d, want 401", path, rec.Code)
-		}
-	}
-}

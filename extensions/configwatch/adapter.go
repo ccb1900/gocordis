@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/extensions/watch"
@@ -104,6 +105,17 @@ func WithPostReconcile(fn func(ctx context.Context, cfg config.Config) error) Op
 	return func(a *Adapter) { a.postReconcile = fn }
 }
 
+// WithReconcileTimeout bounds each reconcile attempt (controller reconcile
+// plus the post-reconcile hook) to d. A stuck attempt — say, an application
+// readiness check that never resolves — fails with a context deadline error
+// instead of blocking the processing loop forever; Stats, LastError and the
+// Sync/watch outcomes all reflect the failure, and whether the partial state
+// stays applied remains the Config Controller's decision. Zero (the default)
+// means unbounded.
+func WithReconcileTimeout(d time.Duration) Option {
+	return func(a *Adapter) { a.reconcileTimeout = d }
+}
+
 // Stats is a minimal, non-authoritative observability counter set.
 type Stats struct {
 	ChangesReceived    uint64
@@ -145,8 +157,9 @@ type Adapter struct {
 	listenerDone chan struct{}
 	listenerOn   bool
 
-	stats         Stats
-	postReconcile func(ctx context.Context, cfg config.Config) error
+	stats            Stats
+	postReconcile    func(ctx context.Context, cfg config.Config) error
+	reconcileTimeout time.Duration
 }
 
 type syncRequest struct {
@@ -396,20 +409,41 @@ func (a *Adapter) applyEmpty(ctx context.Context, fromChange bool) error {
 }
 
 func (a *Adapter) reconcile(ctx context.Context, cfg config.Config) error {
+	if a.reconcileTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, a.reconcileTimeout)
+		defer cancel()
+	}
 	if err := a.controller.Reconcile(ctx, cfg); err != nil {
 		a.bump(func(s *Stats) { s.ReconcileFailed++ })
-		a.setLastError(fmt.Errorf("reconcile config source %q: %w", a.source.ID, err))
+		err = a.reconcileErr(ctx, err)
+		a.setLastError(err)
 		return err
 	}
 	a.bump(func(s *Stats) { s.ReconcileSucceeded++ })
 	if a.postReconcile != nil {
 		if err := a.postReconcile(ctx, cfg); err != nil {
 			a.bump(func(s *Stats) { s.ReconcileFailed++ })
-			a.setLastError(fmt.Errorf("post-reconcile hook: %w", err))
+			if errors.Is(err, context.DeadlineExceeded) && a.reconcileTimeout > 0 {
+				err = fmt.Errorf("post-reconcile hook: timed out after %s: %w", a.reconcileTimeout, err)
+			} else {
+				err = fmt.Errorf("post-reconcile hook: %w", err)
+			}
+			a.setLastError(err)
 			return err
 		}
 	}
 	return nil
+}
+
+// reconcileErr decorates a reconcile failure, naming the source and — for a
+// bounded attempt that ran out of time — the configured limit.
+func (a *Adapter) reconcileErr(ctx context.Context, err error) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) && a.reconcileTimeout > 0 {
+		return fmt.Errorf("reconcile config source %q: timed out after %s: %w",
+			a.source.ID, a.reconcileTimeout, err)
+	}
+	return fmt.Errorf("reconcile config source %q: %w", a.source.ID, err)
 }
 
 // Close stops the Adapter: no new work is accepted, the current processing may

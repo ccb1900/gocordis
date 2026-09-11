@@ -1,19 +1,25 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  Alert, Button, Descriptions, Divider, Empty, Form, Input, InputNumber,
-  Popconfirm, Skeleton, Space, Switch, Table, Tabs, Tag, Tooltip, Typography,
+  Alert, Button, Descriptions, Empty, Popconfirm, Skeleton, Space,
+  Table, Tag, Tooltip, Typography,
 } from "antd";
 import { UndoOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import { onObservation } from "../stream";
+import { ConfigEditor } from "./ConfigEditor";
 import type { ExplorerControlResult, ExplorerPlugin } from "../types";
 
-// 插件页：运行时真相，从不乐观更新。行来自 Controller 持有的 fibers；
-// 控制动作返回 Accepted/Rejected/Failed 后重新读取运行时，而不是翻转布尔。
-// 配置编辑：表单按值类型生成控件（布尔→开关、数字→数字输入、长文本→多行、
-// 嵌套→每键 JSON），JSON 页保留整段编辑后门；保存即校验 + reconcile。
-
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+// Type labels are generic (one label per type); when the desired config
+// carries an identity field, prefer it so rows are tellable apart.
+function displayName(p: ExplorerPlugin): string {
+  if (p.config?.title) return p.config.title;
+  if (p.config?.page_id) return String(p.config.page_id);
+  if (p.config?.panel_id) return String(p.config.panel_id);
+  if (p.config?.source_id) return String(p.config.source_id);
+  return p.name;
+}
 
 function stateTag(state: string) {
   const label =
@@ -21,212 +27,6 @@ function stateTag(state: string) {
   const color =
     state === "Active" ? "success" : state === "Gone" ? "default" : state === "Failed" ? "error" : "processing";
   return <Tag color={color}>{label}</Tag>;
-}
-
-// 嵌套值的每键 JSON 编辑：本地暂存文本，失焦时解析回报。
-function JsonField({ value, onChange }: { value: unknown; onChange: (v: unknown) => void }) {
-  const [text, setText] = useState(() => JSON.stringify(value, null, 2));
-  const [bad, setBad] = useState(false);
-  return (
-    <>
-      <Input.TextArea
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value);
-          setBad(false);
-        }}
-        onBlur={() => {
-          try {
-            onChange(JSON.parse(text));
-          } catch {
-            setBad(true);
-          }
-        }}
-        autoSize={{ minRows: 2, maxRows: 10 }}
-        style={{ fontFamily: "monospace", fontSize: 12 }}
-        status={bad ? "error" : undefined}
-      />
-      {bad && <Typography.Text type="danger" style={{ fontSize: 12 }}>JSON 解析失败，未应用</Typography.Text>}
-    </>
-  );
-}
-
-function ConfigEditor({ pluginId }: { pluginId: string }) {
-  const [draft, setDraft] = useState<Record<string, unknown> | null>(null);
-  const [raw, setRaw] = useState("");
-  const [tab, setTab] = useState("form");
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [savedAt, setSavedAt] = useState<string | null>(null);
-
-  useEffect(() => {
-    setDraft(null);
-    setRaw("");
-    setTab("form");
-    setSavedAt(null);
-    setSaveError(null);
-    setLoadError(null);
-    api
-      .pluginConfig(pluginId)
-      .then((cfg) => {
-        const obj = cfg ?? {};
-        setDraft(obj);
-        setRaw(JSON.stringify(obj, null, 2));
-      })
-      .catch((e) => setLoadError(errText(e)));
-  }, [pluginId]);
-
-  const setField = (k: string, v: unknown) => setDraft((d) => ({ ...d!, [k]: v }));
-
-  const switchTab = (next: string) => {
-    if (next === "json") {
-      setRaw(JSON.stringify(draft ?? {}, null, 2));
-      setSaveError(null);
-      setTab(next);
-      return;
-    }
-    // 回到表单：JSON 文本必须能解析回对象，否则留在 JSON 页。
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("配置必须是 JSON 对象");
-      }
-      setDraft(parsed);
-      setSaveError(null);
-      setTab(next);
-    } catch (e) {
-      setSaveError(errText(e));
-    }
-  };
-
-  const save = async () => {
-    setSaving(true);
-    setSaveError(null);
-    try {
-      let cfg = draft;
-      if (tab === "json") {
-        const parsed = JSON.parse(raw);
-        if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
-          throw new Error("配置必须是 JSON 对象");
-        }
-        cfg = parsed;
-        setDraft(parsed);
-      }
-      await api.setPluginConfig(pluginId, cfg as Record<string, unknown>);
-      setSavedAt(new Date().toLocaleTimeString());
-    } catch (e) {
-      setSaveError(errText(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (loadError) {
-    return (
-      <>
-        <Divider plain titlePlacement="left" style={{ fontSize: 12 }}>配置编辑</Divider>
-        <Alert type="error" showIcon message={loadError} />
-      </>
-    );
-  }
-  if (!draft) {
-    return (
-      <>
-        <Divider plain titlePlacement="left" style={{ fontSize: 12 }}>配置编辑</Divider>
-        <Skeleton active title={false} paragraph={{ rows: 3 }} />
-      </>
-    );
-  }
-
-  const keys = Object.keys(draft).sort();
-  const wide = new Set(keys.filter((k) => {
-    const v = draft[k];
-    return typeof v === "string" && (v.length > 60 || v.includes("\n"));
-  }));
-
-  return (
-    <>
-      <Divider plain titlePlacement="left" style={{ fontSize: 12 }}>配置编辑 · 保存即校验并 reconcile，失败自动回滚</Divider>
-      <Tabs
-        size="small"
-        activeKey={tab}
-        onChange={switchTab}
-        items={[
-          {
-            key: "form",
-            label: "表单",
-            children:
-              keys.length === 0 ? (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该组件暂无配置项" />
-              ) : (
-                <Form layout="vertical" size="small" component={false}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "0 16px" }}>
-                    {keys.map((k) => {
-                      const v = draft[k];
-                      const span = wide.has(k) ? { gridColumn: "1 / -1" } : undefined;
-                      if (typeof v === "boolean") {
-                        return (
-                          <Form.Item key={k} label={k} style={span}>
-                            <Switch checked={v} onChange={(c) => setField(k, c)} />
-                          </Form.Item>
-                        );
-                      }
-                      if (typeof v === "number") {
-                        return (
-                          <Form.Item key={k} label={k} style={span}>
-                            <InputNumber style={{ width: "100%" }} value={v} onChange={(n) => setField(k, n ?? 0)} />
-                          </Form.Item>
-                        );
-                      }
-                      if (typeof v === "string") {
-                        return (
-                          <Form.Item key={k} label={k} style={span}>
-                            {wide.has(k) ? (
-                              <Input.TextArea
-                                value={v}
-                                autoSize={{ minRows: 2, maxRows: 8 }}
-                                onChange={(e) => setField(k, e.target.value)}
-                              />
-                            ) : (
-                              <Input value={v} onChange={(e) => setField(k, e.target.value)} />
-                            )}
-                          </Form.Item>
-                        );
-                      }
-                      return (
-                        <Form.Item key={k} label={`${k}（JSON）`} style={span}>
-                          <JsonField value={v} onChange={(n) => setField(k, n)} />
-                        </Form.Item>
-                      );
-                    })}
-                  </div>
-                </Form>
-              ),
-          },
-          {
-            key: "json",
-            label: "JSON",
-            children: (
-              <Input.TextArea
-                value={raw}
-                onChange={(e) => setRaw(e.target.value)}
-                rows={Math.min(18, Math.max(6, raw.split("\n").length + 1))}
-                style={{ fontFamily: "monospace", fontSize: 12 }}
-              />
-            ),
-          },
-        ]}
-      />
-      <Space align="center" style={{ marginTop: 8 }}>
-        <Button size="small" type="primary" loading={saving} onClick={() => void save()}>
-          保存配置
-        </Button>
-        {savedAt && <Typography.Text type="secondary" style={{ fontSize: 12 }}>已保存 {savedAt}</Typography.Text>}
-      </Space>
-      {saveError && <Alert style={{ marginTop: 8 }} type="error" showIcon message={saveError} />}
-    </>
-  );
 }
 
 // 控制台基础设施组件：卸载会导致控制台自身失效，服务端同样拒绝。
@@ -357,7 +157,8 @@ export function PluginExplorer() {
             rowClassName={(p) => (selected?.id === p.id ? "ant-table-row-selected" : "")}
             onRow={(p) => ({ onClick: () => setSelectedId(p.id), style: { cursor: "pointer" } })}
             columns={[
-              { title: "名称", dataIndex: "name", key: "name", ellipsis: true },
+              { title: "名称", dataIndex: "name", key: "name", ellipsis: true,
+                render: (_: unknown, p: ExplorerPlugin) => displayName(p) },
               { title: "类型", dataIndex: "type", key: "type", ellipsis: true, width: 140,
                 render: (t: string) => <Typography.Text code style={{ fontSize: 12 }}>{t}</Typography.Text> },
               { title: "状态", dataIndex: "state", key: "state", width: 84,
@@ -453,7 +254,7 @@ export function PluginExplorer() {
               <ConfigEditor key={selected.id} pluginId={selected.id} />
               {removed.length > 0 && (
                 <>
-                  <Divider plain titlePlacement="left" style={{ fontSize: 12 }}>已卸载 — 安装可恢复</Divider>
+                  <Typography.Text type="secondary">已卸载 — 安装可恢复</Typography.Text>
                   <Space size={8} wrap>
                     {removed.map((r) => (
                       <Button key={r.id} size="small" icon={<UndoOutlined />}

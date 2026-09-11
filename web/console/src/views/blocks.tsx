@@ -2,6 +2,7 @@
 // comes from hub named queries, actions go through hub commands; renderers
 // never make domain judgments.
 import { Button, DatePicker, Descriptions, Empty, Input, Select, Space, Statistic, Table, Typography } from "antd";
+import dayjs from "dayjs";
 import type { TableColumnsType } from "antd";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
@@ -331,11 +332,13 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
       })
       .then((data) => {
         let out: Row[] = [];
+        let names: string[] = [];
         if (Array.isArray(data)) {
           out = rowsOf(data);
+          names = Object.keys(out[0] ?? {});
         } else {
           const page = data as { columns?: string[]; rows?: unknown[][] };
-          const names = page.columns ?? [];
+          names = page.columns ?? [];
           out = (page.rows ?? []).map((r) => {
             const obj: Row = {};
             names.forEach((name, j) => (obj[name] = r[j]));
@@ -343,14 +346,23 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
           });
         }
         setRows(out);
-        setColumns(
-          (block.columns ?? []).map((c) => ({
-            title: c.title,
-            dataIndex: c.key,
-            key: c.key,
-            render: (v: unknown) => (v === null || v === undefined ? "—" : String(v)),
-          })) as TableColumnsType<Row>
-        );
+        // Declared columns win; without them the response's own column
+        // names become the header (typed sinks answer columnar pages).
+        const declared = block.columns ?? [];
+        const cols: TableColumnsType<Row> = declared.length
+          ? declared.map((c) => ({
+              title: c.title,
+              dataIndex: c.key,
+              key: c.key,
+              render: (v: unknown) => (v === null || v === undefined ? "—" : String(v)),
+            }))
+          : names.map((n) => ({
+              title: n,
+              dataIndex: n,
+              key: n,
+              render: (v: unknown) => (v === null || v === undefined ? "—" : String(v)),
+            }));
+        setColumns(cols);
         setError(null);
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
@@ -377,6 +389,16 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
               options={options[f.key] ?? []}
               placeholder={f.label}
             />
+          ) : f.type === "date" ? (
+            <DatePicker
+              key={f.key}
+              aria-label={f.label}
+              style={{ width: 140 }}
+              value={filters[f.key] ? dayjs(filters[f.key]) : null}
+              onChange={(d) => setFilters((m) => ({ ...m, [f.key]: d ? d.format("YYYY-MM-DD") : "" }))}
+              placeholder={f.label}
+              allowClear={false}
+            />
           ) : (
             <Input
               key={f.key}
@@ -384,7 +406,7 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
               style={{ width: 140 }}
               value={filters[f.key]}
               onChange={(e) => setFilters((m) => ({ ...m, [f.key]: e.target.value }))}
-              placeholder={f.type === "date" ? "YYYY-MM-DD" : f.label}
+              placeholder={f.label}
             />
           )
         )}

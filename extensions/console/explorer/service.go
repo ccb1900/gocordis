@@ -19,6 +19,13 @@ const waitTimeout = 10 * time.Second
 // service reads it for every inspection; it never caches lifecycle truth.
 type OwnedProvider func() []config.OwnedComponent
 
+// DeclarationSwitch enables or disables one declared component through the
+// DECLARATION layer (paper §4.4 Configuration: disable = O-Retire on the
+// entry; the entry/declaration is the surviving truth). The application wires
+// it to its declaration store + controller.Reconcile — flipping the runtime
+// fiber directly would be overridden by the next reconcile.
+type DeclarationSwitch func(ctx context.Context, id string, enable bool) error
+
 // Service implements the Application Plugin Explorer inspection/control
 // boundary. Desired components come from the configuration already handed to
 // the Config Controller. Runtime state comes from each Controller-owned Fiber.
@@ -28,6 +35,7 @@ type Service struct {
 	desired    []config.ComponentConfig
 	protected  map[string]string
 	nameOfType func(string) string
+	switchFn   DeclarationSwitch
 }
 
 // New returns an empty explorer Service. SetOwned must be called before the
@@ -45,6 +53,16 @@ func New(nameOfType func(string) string) *Service {
 func (s *Service) SetOwned(owned OwnedProvider) {
 	s.mu.Lock()
 	s.owned = owned
+	s.mu.Unlock()
+}
+
+// SetDeclarationSwitch routes enable/disable through the declaration layer
+// (the paper-correct switch path). Without it, Control falls back to direct
+// Fiber.Load/Dispose — a TRANSIENT override that the next controller
+// reconcile will override.
+func (s *Service) SetDeclarationSwitch(fn DeclarationSwitch) {
+	s.mu.Lock()
+	s.switchFn = fn
 	s.mu.Unlock()
 }
 
@@ -149,23 +167,18 @@ func capabilityLabel(s string) string {
 	return s
 }
 
-// Control enables or disables one discovered component through Runtime
-// Fiber.Load/Dispose. It waits for the Runtime-visible terminal state so the
-// returned result never lets a UI assume Active after a failed Load.
+// Control enables or disables one discovered component. With a
+// DeclarationSwitch wired, the operation edits the DECLARATION first (the
+// switch's truth) and then reflects the Runtime-visible terminal state; the
+// direct Fiber.Load/Dispose path remains only as the transient fallback for
+// applications that have not wired a declaration store.
 func (s *Service) Control(ctx context.Context, id string, enable bool) ControlResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if reason := s.protected[id]; reason != "" {
-		state, err := s.currentState(id)
-		if err != nil {
-			return ControlResult{PluginID: id, Rejected: true, State: state, Error: fmt.Sprintf("%s: %s", reason, errText(err))}
-		}
-		return ControlResult{PluginID: id, Rejected: true, State: state, Error: reason}
-	}
+	switchFn := s.switchFn
+	protected := s.protected[id]
 	var cc config.ComponentConfig
 	found := false
 	for _, c := range s.desired {
@@ -175,10 +188,37 @@ func (s *Service) Control(ctx context.Context, id string, enable bool) ControlRe
 			break
 		}
 	}
+	s.mu.Unlock()
+
+	if reason := protected; reason != "" {
+		state, err := s.currentState(id)
+		if err != nil {
+			return ControlResult{PluginID: id, Rejected: true, State: state, Error: fmt.Sprintf("%s: %s", reason, errText(err))}
+		}
+		return ControlResult{PluginID: id, Rejected: true, State: state, Error: reason}
+	}
 	if !found {
 		return ControlResult{PluginID: id, Rejected: true, State: "Gone", Error: "plugin is not part of the current runtime composition"}
 	}
 
+	if switchFn != nil {
+		if err := switchFn(ctx, id, enable); err != nil {
+			state, stateErr := s.currentState(id)
+			if stateErr != nil {
+				state = "Unknown"
+			}
+			return ControlResult{PluginID: id, Rejected: true, State: state, Error: errText(err)}
+		}
+		state, stateErr := s.currentState(id)
+		if stateErr != nil {
+			state = "Unknown"
+		}
+		return ControlResult{PluginID: id, Accepted: true, State: state}
+	}
+
+	// Transient fallback: direct Fiber.Load/Dispose. The next controller
+	// reconcile re-derives from the declaration and overrides this.
+	s.mu.Lock()
 	var fiber *runtime.Fiber
 	if s.owned != nil {
 		for _, o := range s.owned() {
@@ -188,6 +228,7 @@ func (s *Service) Control(ctx context.Context, id string, enable bool) ControlRe
 			}
 		}
 	}
+	s.mu.Unlock()
 	if fiber == nil {
 		return ControlResult{PluginID: id, Rejected: true, State: "Gone", Error: fmt.Sprintf("component %q is declared but not owned by the runtime", cc.ID)}
 	}

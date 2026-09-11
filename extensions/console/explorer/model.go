@@ -8,14 +8,14 @@ package explorer
 // Runtime FiberState (including Gone for a disposed component); it is never a
 // UI-owned enabled flag.
 type Plugin struct {
-	ID           string
-	Name         string
-	Type         string
-	State        string
+	ID    string
+	Name  string
+	Type  string
+	State string
 	// Error is the fiber's own failure reason when State is Failed; empty
 	// otherwise. Apply/dependency errors surface here instead of being
 	// swallowed by the runtime.
-	Error string
+	Error        string
 	Components   []string
 	Capabilities []string
 	Controllable bool

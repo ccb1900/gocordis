@@ -344,3 +344,27 @@ R9 落地 UI-03 后用户质问"为什么突然改内核、遵循论文了吗"�
 - 收益:kernel 公开面进一步收缩(Subscribe/EventSubscription/溢出协议全部
   离开 runtime);事件词汇表留在内核的理由:它们是编排器在规范决策点产出的
   事实词汇(§4.2 生命周期的观察投影),与演算共生产生,不可外置。
+
+## 14. UI 层评审 (R10, 2026-09-09)
+
+范围:client/(前端 SDK)+ extensions/console/(控制台平台后端七包)。
+
+**总评**:架构与论文一致——控制台是消费者(观察面 Snapshot/事件流 + 经公开
+API 的控制操作),无第二生命周期权威;hub 的"命名查询/命令直通 + 失效通知"
+设计使领域词汇留在应用侧(§5.3 通用性论证的应用);PluginLifecycle 由应用
+实现,卸载持久化归应用(与 §9.3 持久化立场一致)。
+
+**发现与处置(当轮已修)**:
+
+| # | 发现 | 处置 |
+|---|---|---|
+| F-1 | 前端类型双源(api.ts 内联重声明 vs types.ts,且 `views?` 字段已分歧) | api.ts 改为从 ./types re-export(types 为正典);tsc 全绿 |
+| F-2 | Go↔TS DTO 手工镜像无守护 | host DTO 线格式守护测试落地(webui lifecycle/control 断言形状);代码生成留待需要 |
+| F-3 | webui 零鉴权 | `SetAuth(AuthFunc)` 鉴权缝落地(默认开放=开发姿态;上线前必须接线);TestAuthSeam 固化 |
+| F-5 | **控制台开关直操 fiber,与声明层打架**(下次 Reconcile 会翻回) | explorer 增加 `SetDeclarationSwitch`:开关**先走声明层**(应用接线到声明存储 + Reconcile,paper §4.4 entry/τ 模型);直操 Fiber.Load/Dispose 降级为无声明存储时的瞬态回退并文档化;四项测试固化 |
+| F-4(部分) | PluginLifecycle 无测试 | webui lifecycle 路由测试落地(uninstall/install/removed/config 往返 + 错误映射 400/202);**应用侧参考实现仍缺** |
+| F-6 | SSE 重连不触发 re-query | hooks 层已随重构移除,重查询责任在消费方;`onStreamStatus` 已可用于接线 |
+| F-7 | explorer/configutil/host 零测试 | explorer 四项落地;configutil/host 记录待补 |
+
+**顺带修复**:内核 emitEvent 的"取号+投递"原子化(并发发射器下 sink 按
+Sequence 序收到事件)。

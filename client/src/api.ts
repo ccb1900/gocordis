@@ -1,11 +1,23 @@
 // Console API client: the single integration surface between the console
 // UI and the backend. Transport-agnostic (Wails bindings or HTTP fetch).
+//
+// DTO types live in ./types (single source of truth, mirrors the Go shapes
+// in extensions/console/host/dto.go); this module re-exports them so
+// existing `import { UIPage } from "./api"` call sites keep working.
 
-export type StreamStatus = "live" | "connecting" | "offline";
+import type {
+  StreamStatus,
+  UIObservation,
+  UIPanel,
+  UIPage,
+} from "./types";
 
-export interface UIPage { id: string; title: string; route: string; renderer: string; views?: unknown }
-export interface UIPanel { id: string; title: string; position: string; renderer: string; pages?: string[] }
-export interface UIObservation { type: string; sourceId?: string; timestamp: string }
+export type {
+  StreamStatus,
+  UIObservation,
+  UIPanel,
+  UIPage,
+} from "./types";
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path);
@@ -37,7 +49,7 @@ export const api = {
 };
 
 // SSE observation stream — one shared EventSource for the whole console.
-type ObsHandler = (ev: { type: string; sourceId?: string; timestamp: string }) => void;
+type ObsHandler = (ev: UIObservation) => void;
 let source: EventSource | null = null;
 const handlers = new Set<ObsHandler>();
 let streamStatus: StreamStatus = "connecting";
@@ -51,11 +63,20 @@ function reportStatus() {
 export function ensureStream(): void {
   if (source) return;
   source = new EventSource("/api/stream");
+  source.addEventListener("observation", (e: MessageEvent) => {
+    let ev: { type: string; sourceId?: string; timestamp: string };
+    try {
+      ev = JSON.parse(String(e.data));
+    } catch {
+      return;
+    }
+    publish(ev);
+  });
   source.onopen = () => reportStatus();
   source.onerror = () => reportStatus();
 }
 
-export function onObservation(fn: (ev: { type: string; sourceId?: string; timestamp: string }) => void): void {
+export function onObservation(fn: (ev: UIObservation) => void): void {
   handlers.add(fn);
   ensureStream();
 }

@@ -57,13 +57,15 @@ export default function App() {
     return onObservation(() => undefined);
   }, [refresh]);
 
-  const active = useMemo(
-    () => pages.find((p) => p.route === path) ?? pages[0],
-    [pages, path]
-  );
+  const active = useMemo(() => pages.find((p) => p.route === path), [pages, path]);
   useEffect(() => {
-    if (active && window.location.pathname !== active.route) navigate(active.route);
-  }, [active]);
+    if (!pages.length) return;
+    if (!pages.some((p) => p.route === path)) {
+      // Unknown route: render the not-found state instead of forcing the
+      // first page on the user.
+      return;
+    }
+  }, [pages, path]);
 
   // Command dispatch: mark busy, accept, then let observations invalidate.
   const hubCommand = useCallback(async (name: string, body: unknown) => {
@@ -186,7 +188,7 @@ export default function App() {
             <Badge status={streamStatus} text={<span style={{ fontSize: 12, color: "#99a2b6" }}>{streamLabel}</span>} />
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 12, color: "#626b80" }}>暗色主题</span>
-              <Switch size="small" checked={isDark} onChange={toggle} />
+              <Switch size="small" aria-label="切换暗色主题" checked={isDark} onChange={toggle} />
             </div>
             <Typography.Text type="secondary" style={{ fontSize: 11 }}>
               {pages.length} 页 · {panels.length} 板
@@ -201,6 +203,8 @@ export default function App() {
           )}
           {active ? (
             renderPage(active)
+          ) : pages.length ? (
+            <NotFound route={path} />
           ) : (
             <Typography.Text type="secondary">尚未组合任何页面。</Typography.Text>
           )}
@@ -239,4 +243,19 @@ const EventFeedLazy = lazy(() => import("../components/EventFeed").then((m) => (
 
 function Lazy({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<div style={{ padding: 16, color: "#8a93a6" }}>加载中…</div>}>{children}</Suspense>;
+}
+
+
+function NotFound({ route }: { route: string }) {
+  return (
+    <section className="card" style={{ padding: "40px 24px", textAlign: "center" }}>
+      <Typography.Title level={3} style={{ marginTop: 0 }}>页面不存在</Typography.Title>
+      <Typography.Paragraph type="secondary">
+        路由 <Typography.Text code>{route}</Typography.Text> 未被当前组合声明。
+      </Typography.Paragraph>
+      <Button type="primary" onClick={() => { history.pushState({}, "", "/"); window.dispatchEvent(new PopStateEvent("popstate")); }}>
+        返回概览
+      </Button>
+    </section>
+  );
 }

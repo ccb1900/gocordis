@@ -40,12 +40,20 @@ export function onStreamStatus(fn: (s: StreamStatus) => void): () => void {
   return () => statusHandlers.delete(fn);
 }
 
+// Observation bursts (a collection touching many files) coalesce into one
+// generation bump per 250ms window so every view does not re-query per event.
+let bumpTimer: ReturnType<typeof setTimeout> | null = null;
+
 export function useObservationGeneration(): number {
   const [gen, setGen] = useState(0);
   useEffect(
     () =>
       onObservation(() => {
-        setGen((g) => g + 1);
+        if (bumpTimer) return;
+        bumpTimer = setTimeout(() => {
+          bumpTimer = null;
+          setGen((g) => g + 1);
+        }, 250);
       }),
     []
   );

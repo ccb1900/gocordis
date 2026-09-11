@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Alert, Button, Descriptions, Empty, Popconfirm, Skeleton, Space,
+  Alert, Button, Descriptions, Empty, Popconfirm, Select, Skeleton, Space,
   Table, Tag, Tooltip, Typography,
 } from "antd";
 import { UndoOutlined } from "@ant-design/icons";
@@ -118,6 +118,9 @@ export function PluginExplorer() {
   );
 
   const active = plugins.filter((p) => p.state === "Active").length;
+  const [typeFilter, setTypeFilter] = useState<string | undefined>(undefined);
+  const types = useMemo(() => Array.from(new Set(plugins.map((p) => p.type))).sort(), [plugins]);
+  const visible = typeFilter ? plugins.filter((p) => p.type === typeFilter) : plugins;
 
   // Explorer 页面可以由 ui-page 组合出来，而提供运行时数据的
   // plugin-explorer 组件并未激活——明说，而不是渲染空壳。
@@ -143,7 +146,18 @@ export function PluginExplorer() {
             控制台上的每个功能都是一次组件激活；停用即回滚其全部副作用，其余系统继续运行。
           </p>
         </div>
-        <Tag color="blue">{active}/{plugins.length} 活跃</Tag>
+        <Space wrap>
+          <Select
+            size="small"
+            style={{ minWidth: 150 }}
+            allowClear
+            placeholder="按类型筛选"
+            value={typeFilter}
+            onChange={(v) => setTypeFilter(v)}
+            options={types.map((ty) => ({ value: ty, label: ty }))}
+          />
+          <Tag color="blue">{typeFilter ? `${visible.length}/${plugins.length} 个组件` : `${active}/${plugins.length} 活跃`}</Tag>
+        </Space>
       </div>
       {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
       <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap" }}>
@@ -151,7 +165,7 @@ export function PluginExplorer() {
           <Table
             size="small"
             rowKey="id"
-            dataSource={plugins}
+            dataSource={visible}
             loading={loading && plugins.length === 0}
             pagination={{ pageSize: 12, hideOnSinglePage: true, size: "small" }}
             rowClassName={(p) => (selected?.id === p.id ? "ant-table-row-selected" : "")}

@@ -25,8 +25,16 @@ type Row = Record<string, unknown>;
 
 function statusNode(status: unknown) {
   const s = status == null ? "" : String(status);
-  const color = s === "Succeeded" ? "#3ecf8e" : s === "Failed" ? "#f0655a" : s === "Pending" ? "#f2b544" : "#8a93a6";
-  return <span style={{ color }}>{s || "—"}</span>;
+  const color =
+    s === "Succeeded" || s === "Active"
+      ? "#3ecf8e"
+      : s === "Failed"
+        ? "#f0655a"
+        : s === "Pending"
+          ? "#f2b544"
+          : "#8a93a6";
+  const label = s === "Active" ? "活跃" : s === "Succeeded" ? "成功" : s === "Failed" ? "失败" : s === "Pending" ? "等待数据" : s;
+  return <span style={{ color }}>{label || "—"}</span>;
 }
 
 function cellNode(key: string, format: string | undefined, v: unknown) {

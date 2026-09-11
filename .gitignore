@@ -1,1 +1,3 @@
 build/
+web/console/node_modules/
+web/console/dist/

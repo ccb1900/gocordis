@@ -13,22 +13,25 @@ import (
 // declarative view schema (opaque to the console; the client renderer
 // interprets it).
 type UIPage struct {
-	ID       string          `json:"id"`
-	Title    string          `json:"title"`
-	Route    string          `json:"route"`
-	Renderer string          `json:"renderer"`
-	View     json.RawMessage `json:"view,omitempty"`
-	Views    json.RawMessage `json:"views,omitempty"`
+	ID          string          `json:"id"`
+	Title       string          `json:"title"`
+	Route       string          `json:"route"`
+	Renderer    string          `json:"renderer"`
+	Description string          `json:"description,omitempty"`
+	View        json.RawMessage `json:"view,omitempty"`
+	Views       json.RawMessage `json:"views,omitempty"`
+	Actions     json.RawMessage `json:"actions,omitempty"`
 }
 
 // UIPanel is one contributed console panel. Pages lists the page IDs the
 // panel appears on; empty means every page.
 type UIPanel struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Position string   `json:"position"`
-	Renderer string   `json:"renderer"`
-	Pages    []string `json:"pages,omitempty"`
+	ID       string          `json:"id"`
+	Title    string          `json:"title"`
+	Position string          `json:"position"`
+	Renderer string          `json:"renderer"`
+	Pages    []string        `json:"pages,omitempty"`
+	Views    json.RawMessage `json:"views,omitempty"`
 }
 
 // UIObservation is the minimal invalidation message: it only says "something
@@ -55,12 +58,12 @@ type UIPanelList struct {
 }
 
 func toUIPage(def registry.PageDefinition) UIPage {
-	return UIPage{ID: def.ID, Title: def.Title, Route: def.Route, Renderer: def.Renderer, View: def.View, Views: def.Views}
+	return UIPage{ID: def.ID, Title: def.Title, Route: def.Route, Renderer: def.Renderer, Description: def.Description, View: def.View, Views: def.Views, Actions: def.Actions}
 }
 
 func toUIPanel(def registry.PanelDefinition) UIPanel {
 	return UIPanel{
 		ID: def.ID, Title: def.Title, Position: string(def.Position),
-		Renderer: def.Renderer, Pages: append([]string(nil), def.Pages...),
+		Renderer: def.Renderer, Pages: append([]string(nil), def.Pages...), Views: def.Views,
 	}
 }

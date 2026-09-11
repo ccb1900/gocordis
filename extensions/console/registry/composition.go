@@ -30,6 +30,8 @@ type PageDefinition struct {
 	Title    string
 	Route    string
 	Renderer string
+	// Description is optional page-level helper text rendered by the shell.
+	Description string
 	// Views is an optional declarative view schema: an ordered list of view
 	// blocks (kind + per-kind fields) the client's generic renderers
 	// interpret. Opaque to the console: the host transports it, the client
@@ -38,6 +40,9 @@ type PageDefinition struct {
 	Views json.RawMessage `json:"views,omitempty"`
 	// View is the single-view form of Views (one block). Prefer Views.
 	View json.RawMessage `json:"view,omitempty"`
+	// Actions are optional page-level hub commands (e.g. a trigger button),
+	// declared as [{label, command, datePicker}] JSON.
+	Actions json.RawMessage `json:"actions,omitempty"`
 	// Order is Contribution metadata controlling stable Composition order.
 	// Entries with the same Order keep registration sequence for
 	// deterministic Registry tests and plugin-authored contributions.
@@ -51,6 +56,9 @@ type PanelDefinition struct {
 	Position Position
 	Renderer string
 	Order    int
+	// Views is the optional declarative view schema for this panel: an
+	// ordered list of view blocks the client's generic renderers interpret.
+	Views json.RawMessage `json:"views,omitempty"`
 	// Pages lists the page IDs this panel appears on. Empty means every
 	// page. The binding is composition data — the host and transports only
 	// carry it; clients decide rendering per active page.

@@ -4,20 +4,33 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 )
 
-// DefaultPluginsDir is the conventional location for plugin deployments:
-// the backend artifact and its frontend module sit side by side
-// (plugins/alarm-server + plugins/alarm-server.ui.js). Convention over
-// configuration — no config row is needed for a module that follows it.
+// DefaultPluginsDir is the conventional location for plugin deployments.
+// The convention is one plugin, one directory: everything a plugin consists
+// of — its backend artifact and its frontend module — lives in the same
+// directory, and nothing needs to be registered anywhere:
+//
+//	plugins/
+//	└── alarm/                 ← the plugin: name = directory name
+//	    ├── alarm-server       ← backend artifact (executable / wasm / ...)
+//	    └── ui.js              ← frontend module, served as
+//	                              /client-modules/alarm and loaded by the
+//	                              console at boot
+//
+// Convention over configuration: an explicit client_modules row remains as
+// an override for layouts that cannot follow this.
 const DefaultPluginsDir = "plugins"
 
-// DiscoverClientModules scans dirs for the plugin frontend module
-// convention: files named <name>.ui.js (or .ui.mjs) live next to the
-// plugin backend they belong to. The module NAME is the filename minus
-// the .ui suffix. Missing directories are not an error — the convention
-// is optional. Results are sorted by name for deterministic manifests.
+// frontendModuleNames are the conventional filenames of a plugin's frontend
+// module inside its plugin directory.
+var frontendModuleNames = []string{"ui.js", "ui.mjs"}
+
+// DiscoverClientModules scans plugin deployment directories for the
+// convention above: plugins/<plugin>/ui.js (or ui.mjs). The module NAME is
+// the plugin directory name. Missing directories are not an error — the
+// convention is optional. Results are sorted by name for deterministic
+// manifests.
 func DiscoverClientModules(dirs ...string) []ClientModule {
 	var out []ClientModule
 	seen := map[string]bool{}
@@ -27,27 +40,22 @@ func DiscoverClientModules(dirs ...string) []ClientModule {
 			continue // no such dir: the convention simply has nothing to offer
 		}
 		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
+			if !entry.IsDir() {
+				continue // the convention is one directory per plugin
 			}
 			name := entry.Name()
-			var modName string
-			switch {
-			case strings.HasSuffix(name, ".ui.js"):
-				modName = strings.TrimSuffix(name, ".ui.js")
-			case strings.HasSuffix(name, ".ui.mjs"):
-				modName = strings.TrimSuffix(name, ".ui.mjs")
-			default:
+			if seen[name] {
 				continue
 			}
-			if modName == "" || seen[modName] {
-				continue
+			for _, candidate := range frontendModuleNames {
+				modPath := filepath.Join(dir, name, candidate)
+				if st, err := os.Stat(modPath); err != nil || st.IsDir() {
+					continue
+				}
+				seen[name] = true
+				out = append(out, ClientModule{Name: name, Path: modPath})
+				break
 			}
-			seen[modName] = true
-			out = append(out, ClientModule{
-				Name: modName,
-				Path: filepath.Join(dir, name),
-			})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

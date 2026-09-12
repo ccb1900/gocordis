@@ -13,6 +13,11 @@ import (
 	appui "dynamic-runtime/extensions/console/registry"
 )
 
+// DefaultPluginsDir is the conventional deployment directory for console
+// plugins: the backend artifact and its frontend module (ui.js) live side
+// by side in plugins/<plugin>/.
+const DefaultPluginsDir = "plugins"
+
 // ClientModuleComponent is the composition-governed form of a plugin
 // frontend module: one ui-client component declares one client module. As a
 // component it behaves like everything else in the declarative layer — it

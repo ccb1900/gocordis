@@ -3,9 +3,9 @@ package webui_test
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"dynamic-runtime/extensions/config"

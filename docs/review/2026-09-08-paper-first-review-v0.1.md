@@ -389,7 +389,7 @@ Sequence 序收到事件)。
 
 - **G-1**:`extensions/hmr/endpoint_test.go` — HMR 暖路径(候选先行 + withdraw-
   then-load 回退)的 canonical observable 与从头装载 v2 配置逐行相等;依赖者
-  无提示跟随。G-6(HMR×proc)保持记录。
+  无提示跟随。G-6 已闭环:TestHMRProcReplacement(extensions/hmr)——HMR Replace 驱动 proc 后端:新 fiber = 新进程,旧 fiber Gone = 旧进程停止,消费者跨替换持续解析能力;-count=3 + -race 绿。
 - **G-2**:`runtime/rehome.go` — `Fiber.Rehome(RehomeWithFreshIsolation())`。
   语义:provider 不下线(短路由核心性质,同 fiber 同激活);旧命名空间
   provisions 标记 retiring → 依赖者先撤(gates)→ 全部 detach 后原子迁移

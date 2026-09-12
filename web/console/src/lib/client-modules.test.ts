@@ -28,6 +28,8 @@ describe("loadClientModules", () => {
     expect(typeof facade.api.hubQuery).toBe("function");
     expect(typeof facade.React.createElement).toBe("function");
     expect(typeof facade.jsxRuntime.jsx).toBe("function");
+    expect(facade.reactDom).toBeTruthy();
+    expect(typeof facade.reactDomClient.createRoot).toBe("function");
     expect(facade.antd).toBeTruthy();
   });
 

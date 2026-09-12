@@ -1,0 +1,15 @@
+{
+  "name": "@gocordis/plugin-kit",
+  "version": "0.1.0",
+  "description": "Build kit for gocordis console plugins: self-bundle TSX/JSX + npm libraries into one ui.js, sharing the console's React/antd instances.",
+  "type": "module",
+  "bin": {
+    "gocordis-plugin-build": "bin/gocordis-plugin-build.mjs"
+  },
+  "peerDependencies": {
+    "esbuild": ">=0.17"
+  },
+  "devDependencies": {
+    "esbuild": "^0.23.0"
+  }
+}

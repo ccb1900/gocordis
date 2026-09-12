@@ -11,6 +11,8 @@
 // host privileges. What a module must NOT be treated as is sandboxed code.
 import * as React from "react";
 import * as reactJsxRuntime from "react/jsx-runtime";
+import * as ReactDOM from "react-dom";
+import * as ReactDOMClient from "react-dom/client";
 import * as antd from "antd";
 import { api } from "../api";
 import {
@@ -27,6 +29,10 @@ export interface ClientModuleAPI {
    * automatic JSX in a bundled plugin runs on the console's React instance
    * (one React per page — hooks require it). */
   jsxRuntime: typeof reactJsxRuntime;
+  /** The console's react-dom instances — antd's portals (Modal, message,
+   * notification...) must render through the same renderer as the page. */
+  reactDom: typeof ReactDOM;
+  reactDomClient: typeof ReactDOMClient;
   antd: typeof antd;
   /** Hub named queries/commands — the unified data channel. */
   api: typeof api;
@@ -43,7 +49,9 @@ declare global {
 
 export function clientModuleAPI(): ClientModuleAPI {
   return {
-    React, jsxRuntime: reactJsxRuntime, antd, api,
+    React, jsxRuntime: reactJsxRuntime,
+    reactDom: ReactDOM, reactDomClient: ReactDOMClient,
+    antd, api,
     registerBlockRenderer, registerPageRenderer, registerPanelRenderer,
     registeredBlockKinds,
   };

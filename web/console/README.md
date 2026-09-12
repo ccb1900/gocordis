@@ -94,9 +94,13 @@ name = "alarm-demo"
 path = "./configs/client-modules/alarm-demo.js"
 ```
 
-The server publishes the manifest at `GET /api/ui/client-modules` and
-serves each module same-origin at `GET /client-modules/<name>`. URLs
-carry the module NAME only, never a filesystem path. Trust = operator
-install, exactly like the plugin binary itself; an out-of-process
-plugin already runs with host privileges, so its client module adds no
-new risk.
+Loading is composition-governed: a module is declared by a `ui-client`
+component (default entry `plugins/<name>/ui.js`), shows up in the plugin
+explorer, honors the `enabled` switch, and uninstall/reconcile removes it
+from the manifest — a file on disk never loads by itself. The server
+publishes the manifest at `GET /api/ui/client-modules` and serves each
+plugin directory same-origin under `/client-modules/<name>/`; the entry
+URL is directory-shaped so vendored libraries load via plain relative
+imports. Trust = operator install, exactly like the plugin binary
+itself; an out-of-process plugin already runs with host privileges, so
+its client module adds no new risk.

@@ -298,12 +298,12 @@ func parseClientModules(raw any) ([]ClientModule, error) {
 		if !ok {
 			return nil, fmt.Errorf("client_modules #%d must be a table", i)
 		}
-	path, _ := m["path"].(string)
-	if path == "" {
-		return nil, fmt.Errorf("client_modules #%d: path is required", i)
-	}
-	name, _ := m["name"].(string)
-	if name == "" {
+		path, _ := m["path"].(string)
+		if path == "" {
+			return nil, fmt.Errorf("client_modules #%d: path is required", i)
+		}
+		name, _ := m["name"].(string)
+		if name == "" {
 			base := filepath.Base(filepath.ToSlash(path))
 			if ext := filepath.Ext(base); ext != "" {
 				base = strings.TrimSuffix(base, ext)

@@ -3,6 +3,7 @@ package webui_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,7 +34,7 @@ func TestClientModulesManifestAndServing(t *testing.T) {
 		t.Fatalf("manifest status %d: %s", rec.Code, rec.Body.String())
 	}
 	want := `{"data":{"modules":[{"name":"demo-ui","url":"/client-modules/demo-ui"}]}}`
-	if got := rec.Body.String(); got != want {
+	if got := strings.TrimSpace(rec.Body.String()); got != want {
 		t.Fatalf("manifest = %s, want %s", got, want)
 	}
 

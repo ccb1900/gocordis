@@ -29,6 +29,9 @@ export interface ViewBlock {
   pageSize?: number;
   selectFocus?: boolean;
   expand?: string;
+  /** Interest domain for invalidation: "collection" (default), "composition",
+   * "source:<id>", or "all". The block re-queries only when this moves. */
+  domain?: string;
 }
 
 export interface PageAction {

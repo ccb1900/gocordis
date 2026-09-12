@@ -1,16 +1,24 @@
 // Event feed panel: persisted observation journal first, then live events;
 // merged and deduplicated by timestamp. Observations are console
 // infrastructure — this is a built-in renderer, not application code.
+// The live tail is a projection: events fold into the read model in the
+// projection store, and this component only re-renders when it changed.
 import { useEffect, useState } from "react";
 import { List, Space, Tag, Typography } from "antd";
 import { api } from "../api";
+import { projectionState, registerProjection, useProjection } from "../lib/projections";
 import { observationView, relativeTime } from "../lib/observations";
-import { onObservation } from "../stream";
 import type { UIObservation } from "../types";
+
+registerProjection<UIObservation[]>({
+  id: "console.event-tail",
+  init: [],
+  apply: (prev, ev) => [...prev.slice(-49), ev],
+});
 
 export function EventFeed({ generation }: { generation: number }) {
   const [history, setHistory] = useState<UIObservation[]>([]);
-  const [live, setLive] = useState<UIObservation[]>([]);
+  const live = useProjection<UIObservation[]>("console.event-tail") ?? projectionState<UIObservation[]>("console.event-tail") ?? [];
 
   useEffect(() => {
     api
@@ -18,8 +26,7 @@ export function EventFeed({ generation }: { generation: number }) {
       .then((recs) => setHistory(recs ?? []))
       .catch(() => setHistory([]));
   }, [generation]);
-
-  useEffect(() => onObservation((ev) => setLive((prev) => [...prev.slice(-49), ev])), []);
+  // Live tail arrives through the projection store — no local event wiring.
 
   const seen = new Set<string>();
   const merged: UIObservation[] = [];

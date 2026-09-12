@@ -7,13 +7,24 @@ import {
 } from "@ant-design/icons";
 import { api } from "../api";
 import { useObservationGeneration, useStreamStatus, onObservation } from "../stream";
+import { useDomainVersion } from "../lib/projections";
 import { usePath, navigate } from "../router";
 import { useTheme } from "../theme";
 import { GenericPage } from "../views/GenericPage";
 import { ViewBlockRenderer, type ViewContext } from "../views/blocks";
+import { getPageRenderer, getPanelRenderer, registerPageRenderer, registerPanelRenderer } from "../views/registry";
 import type { UIPage, UIPanel } from "../types";
 
 const { Sider, Content } = Layout;
+
+// Console infrastructure renderers register exactly like third-party ones —
+// through the keyed registry, not a switch statement.
+registerPageRenderer("plugin-explorer", function PluginExplorerPage() {
+  return <Lazy><PluginExplorerLazy /></Lazy>;
+});
+registerPanelRenderer("event-feed", function EventFeedPanel({ generation }: { generation: number }) {
+  return <Lazy><EventFeedLazy generation={generation} /></Lazy>;
+});
 
 const MENU_ICONS: Record<string, React.ReactNode> = {
   "/overview": <DashboardOutlined />,
@@ -52,10 +63,14 @@ export default function App() {
     api.panels().then(setPanels).catch(() => setPanels([]));
   }, []);
 
+  // Composition projection interest: pages/panels re-fetch only when a
+  // composition.* observation moves the composition domain — not on every
+  // file event.
+  const compositionVersion = useDomainVersion("composition");
   useEffect(() => {
     refresh();
     return onObservation(() => undefined);
-  }, [refresh]);
+  }, [refresh, compositionVersion]);
 
   const active = useMemo(() => pages.find((p) => p.route === path), [pages, path]);
   useEffect(() => {
@@ -133,9 +148,9 @@ export default function App() {
       );
     }
     switch (page.renderer) {
-      case "plugin-explorer":
-        return <Lazy><PluginExplorerLazy /></Lazy>;
-      default:
+      default: {
+        const Renderer = getPageRenderer(page.renderer);
+        if (Renderer) return <Renderer page={page} ctx={ctx} />;
         return (
           <section className="card" style={{ padding: 16 }}>
             <Typography.Text type="secondary">
@@ -143,6 +158,7 @@ export default function App() {
             </Typography.Text>
           </section>
         );
+      }
     }
   };
 
@@ -158,9 +174,8 @@ export default function App() {
         </>
       );
     }
-    if (panel.renderer === "event-feed") {
-      return <Lazy><EventFeedLazy generation={generation} /></Lazy>;
-    }
+    const Renderer = getPanelRenderer(panel.renderer);
+    if (Renderer) return <Renderer panel={panel} ctx={ctx} generation={generation} />;
     return <Typography.Text type="secondary">渲染器 “{panel.renderer}” 未注册。</Typography.Text>;
   };
 

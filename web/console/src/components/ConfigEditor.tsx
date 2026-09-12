@@ -6,6 +6,7 @@ import { Alert, Button, Input, InputNumber, Select, Space, Switch, Typography } 
 import { DeleteOutlined, ArrowUpOutlined, ArrowDownOutlined, PlusOutlined } from "@ant-design/icons";
 import React, { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { registeredBlockKinds } from "../views/registry";
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -166,7 +167,12 @@ function JsonField({ label, value, onChange }: { label: string; value: unknown; 
 
 // ---------------------------------------------------------------- views
 
-const KINDS = ["table", "kv", "list", "stats", "trend", "query-table"];
+// Kind options come from the live renderer registry: built-ins plus any
+// custom renderers registered by plugin client modules.
+const kindOptions = (): string[] => {
+  const kinds = registeredBlockKinds();
+  return kinds.length ? kinds : ["table", "kv", "list", "stats", "trend", "query-table"];
+};
 
 const COLUMN_SPEC: FieldSpec[] = [
   { key: "key", label: "字段", width: 110 },
@@ -240,7 +246,7 @@ function BlockEditor({ block, patch }: { block: Row; patch: (p: Row) => void }) 
       <Space size={8} wrap>
         <Select size="small" style={{ width: 120 }} value={kind}
           onChange={(v) => patch({ kind: v })}
-          options={KINDS.map((k) => ({ value: k, label: k }))} />
+          options={Array.from(new Set([...kindOptions(), kind])).map((k) => ({ value: k, label: k }))} />
         <Input size="small" style={{ width: 140 }} value={String(block.title ?? "")} placeholder="标题（可选）"
           onChange={(e) => set("title", e.target.value)} allowClear />
         <Input size="small" style={{ width: 160 }} value={String(block.query ?? "")} placeholder="hub 查询名"

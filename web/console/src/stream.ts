@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import type { StreamStatus, UIObservation } from "./types";
+import { ingestObservation } from "./lib/projections";
 
 // One shared SSE connection per page. Observation only invalidates; state
-// always comes from re-running named queries.
+// comes from named queries and from projections folding the events.
 let source: EventSource | null = null;
 const handlers = new Set<(ev: UIObservation) => void>();
 const statusHandlers = new Set<(s: StreamStatus) => void>();
@@ -19,6 +20,7 @@ function ensure() {
   source.addEventListener("observation", (e: MessageEvent) => {
     try {
       const ev = JSON.parse(String(e.data)) as UIObservation;
+      ingestObservation(ev);
       for (const fn of handlers) fn(ev);
     } catch {
       /* ignore malformed frame */

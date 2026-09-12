@@ -2,64 +2,12 @@
 // opaque JSON; these shapes are what every console renders regardless of
 // application.
 
+// ViewBlock has one canonical definition (views/schema.ts) — re-exported
+// here so composition DTOs and renderers cannot drift.
+export type { ViewBlock } from "./views/schema";
+import type { ViewBlock } from "./views/schema";
+
 export type StreamStatus = "live" | "connecting" | "offline";
-
-export interface ViewColumn {
-  key: string;
-  title: string;
-  /** "{a}/{b}" templates interpolate row fields. */
-  format?: string;
-}
-
-export interface ViewAction {
-  label: string;
-  command: string;
-  args?: Record<string, string>;
-}
-
-export interface ViewStatItem {
-  label: string;
-  query?: string;
-  op?: "count" | "sum";
-  field?: string;
-  warn?: boolean;
-}
-
-export interface ViewSeries {
-  key: string;
-  label: string;
-}
-
-export interface ViewFilter {
-  key: string;
-  label: string;
-  default?: string;
-  /** Options come from a named query (dropdown); omit for free text. */
-  optionsQuery?: string;
-  optionKey?: string;
-  optionLabel?: string;
-  type?: "date";
-  required?: boolean;
-}
-
-export interface ViewBlock {
-  kind: string;
-  title?: string;
-  query?: string;
-  params?: Record<string, string>;
-  columns?: ViewColumn[];
-  rowActions?: ViewAction[];
-  items?: ViewStatItem[];
-  dateKey?: string;
-  series?: ViewSeries[];
-  fields?: Array<{ key: string; label: string }>;
-  filters?: ViewFilter[];
-  titleKey?: string;
-  pageSize?: number;
-  selectFocus?: boolean;
-  /** "metadata" expands rows showing the open key-value map of that field. */
-  expand?: string;
-}
 
 export interface PageAction {
   label: string;

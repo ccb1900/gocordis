@@ -1,25 +1,22 @@
 // Generic view renderers: domain-free block implementations. Data always
 // comes from hub named queries, actions go through hub commands; renderers
-// never make domain judgments.
+// never make domain judgments. Every built-in registers into the keyed
+// renderer registry — a plugin client module can add its own kinds the same
+// way (see views/registry.tsx).
 import { Button, DatePicker, Descriptions, Empty, Input, Select, Space, Statistic, Table, Typography } from "antd";
 import dayjs from "dayjs";
 import type { TableColumnsType } from "antd";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
+import { ALL, useDomainVersion } from "../lib/projections";
+import {
+  getBlockRenderer, registerBlockRenderer,
+  type BlockRenderer, type ViewContext,
+} from "./registry";
 import { formatRow, needsFocus, resolveParams, type Focus, type ViewBlock } from "./schema";
 import { TrendChart, type TrendPoint } from "./TrendChart";
 
-export type { ViewBlock };
-
-export interface ViewContext {
-  hubQuery: <T = unknown>(name: string, params?: Record<string, string>) => Promise<T>;
-  hubCommand: (name: string, body: unknown) => Promise<void>;
-  focus: Focus | null;
-  onFocus: (sourceId: string, date: string) => void;
-  busy: boolean;
-  /** Bumped on every observation; blocks re-query. */
-  generation: number;
-}
+export type { ViewBlock, ViewContext, BlockRenderer };
 
 type Row = Record<string, unknown>;
 
@@ -55,6 +52,9 @@ function useQueryData(block: ViewBlock, ctx: ViewContext) {
   const [loading, setLoading] = useState(true);
   const dormant = needsFocus(block.params) && !ctx.focus;
   const params = JSON.stringify(dormant ? {} : resolveParams(block.params, ctx.focus));
+  // Interest-scoped invalidation: the block re-queries when its declared
+  // domain moves, not on every raw observation.
+  const version = useDomainVersion(block.domain ?? ALL);
 
   useEffect(() => {
     if (dormant || !block.query) return;
@@ -68,7 +68,7 @@ function useQueryData(block: ViewBlock, ctx: ViewContext) {
     return () => {
       alive = false;
     };
-  }, [block.query, params, dormant, ctx.generation]);
+  }, [block.query, params, dormant, version, ctx.hubQuery]);
 
   return { data, error, loading: loading && !dormant, dormant };
 }
@@ -212,6 +212,7 @@ function ListBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
 function StatsBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
   const [values, setValues] = useState<Array<{ item: NonNullable<ViewBlock["items"]>[number]; value: number }>>([]);
   const [error, setError] = useState<string | null>(null);
+  const version = useDomainVersion(block.domain ?? ALL);
 
   useEffect(() => {
     if (!block.items?.length) return;
@@ -234,7 +235,7 @@ function StatsBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
     return () => {
       alive = false;
     };
-  }, [block.items, block.query, ctx.generation]);
+  }, [block.items, block.query, version, ctx.hubQuery]);
 
   if (error) return <p style={{ color: "#f0655a" }}>{error}</p>;
   return (
@@ -308,6 +309,7 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
   const [columns, setColumns] = useState<TableColumnsType<Row>>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const version = useDomainVersion(block.domain ?? ALL);
 
   useEffect(() => {
     for (const f of block.filters ?? []) {
@@ -380,7 +382,7 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [block.query, block.columns, filters, ctx.generation]);
+  }, [block.query, block.columns, filters, version, ctx.hubQuery]);
 
   useEffect(() => {
     load();
@@ -445,21 +447,36 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
   );
 }
 
-export function ViewBlockRenderer({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
-  switch (block.kind) {
-    case "table":
-      return <TableBlock block={block} ctx={ctx} />;
-    case "kv":
-      return <KVBlock block={block} ctx={ctx} />;
-    case "list":
-      return <ListBlock block={block} ctx={ctx} />;
-    case "stats":
-      return <StatsBlock block={block} ctx={ctx} />;
-    case "trend":
-      return <TrendBlock block={block} ctx={ctx} />;
-    case "query-table":
-      return <QueryTableBlock block={block} ctx={ctx} />;
-    default:
-      return <div style={{ color: "#8a93a6", padding: 8 }}>未知视图类型 “{block.kind}”。</div>;
-  }
+// Graceful fallback for kinds this console build does not render: dynamic
+// composition may declare a view authored against a newer renderer set. The
+// declaration is shown, never silently dropped, and the page keeps working.
+function UnknownBlock({ block }: { block: ViewBlock }) {
+  return (
+    <div style={{ color: "#8a93a6", padding: 8 }}>
+      <Typography.Text type="secondary">
+        视图类型 “{block.kind}” 未在此控制台注册。
+      </Typography.Text>
+      <details style={{ marginTop: 6 }}>
+        <summary style={{ cursor: "pointer", fontSize: 12, color: "#8a93a6" }}>原始声明</summary>
+        <pre style={{ fontSize: 11, whiteSpace: "pre-wrap", margin: "6px 0 0" }}>
+          {JSON.stringify(block, null, 2)}
+        </pre>
+      </details>
+    </div>
+  );
 }
+
+export function ViewBlockRenderer({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
+  const Renderer = getBlockRenderer(block.kind);
+  if (!Renderer) return <UnknownBlock block={block} />;
+  return <Renderer block={block} ctx={ctx} />;
+}
+
+// Built-in palette. Registration (not a switch statement) is what keeps the
+// palette open: kind → renderer is data, extensible at runtime.
+registerBlockRenderer("table", TableBlock);
+registerBlockRenderer("kv", KVBlock);
+registerBlockRenderer("list", ListBlock);
+registerBlockRenderer("stats", StatsBlock);
+registerBlockRenderer("trend", TrendBlock);
+registerBlockRenderer("query-table", QueryTableBlock);

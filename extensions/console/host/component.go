@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,6 +65,22 @@ type UIComponent struct {
 	// identity + fleet (fleet self-description; see /api/meta and /api/fleet)
 	hostID     string
 	fleetPeers []string
+
+	// plugin client modules: frontend renderer modules distributed with a
+	// plugin and served same-origin under /client-modules/<name> (see
+	// ClientModule). The console loads them at boot and hands them the
+	// renderer registry — the frontend is homogeneous; a module poses no
+	// risk beyond the plugin itself.
+	clientModules []ClientModule
+}
+
+// ClientModule is one plugin client module: a same-origin served ES module
+// whose default export registers renderers into the console.
+type ClientModule struct {
+	// Name is the URL slug (no separators — traversal-proof by shape).
+	Name string
+	// Path is the file location, resolved at serve time.
+	Path string
 }
 
 func (c *UIComponent) Name() string                 { return "console:host" }
@@ -234,16 +252,74 @@ func (c *UIComponent) Panels() []PanelDefinition { return c.registry.Snapshot().
 //
 // Recognized config keys:
 //
-//	host_id     — stable identity reported by /api/meta (default: hostname)
-//	fleet_peers — base URLs of peer consoles; when non-empty the host
-//	              self-registers a Fleet page (renderer "fleet") whose view
-//	              aggregates the peers' /api/meta.
+//	host_id        — stable identity reported by /api/meta (default: hostname)
+//	fleet_peers    — base URLs of peer consoles; when non-empty the host
+//	                 self-registers a Fleet page (renderer "fleet") whose view
+//	                 aggregates the peers' /api/meta
+//	client_modules — [[components.config.client_modules]] rows {name, path}:
+//	                 plugin frontend modules served same-origin under
+//	                 /client-modules/<name> and registered by the console at
+//	                 boot. name defaults to the file's basename without
+//	                 extension and must not contain separators.
 func NewConsole(cc config.ComponentConfig) (*UIComponent, error) {
 	c := &UIComponent{
 		hostID:     configutil.OptionalString(cc, "host_id", ""),
 		fleetPeers: configutil.OptionalStringSlice(cc, "fleet_peers", nil),
 	}
+	modules, err := parseClientModules(cc.Config["client_modules"])
+	if err != nil {
+		return nil, err
+	}
+	c.clientModules = modules
 	return c, nil
+}
+
+// ClientModules returns the configured plugin client modules.
+func (c *UIComponent) ClientModules() []ClientModule {
+	return append([]ClientModule(nil), c.clientModules...)
+}
+
+// parseClientModules validates the client_modules config rows. Names are
+// URL slugs: one default from the file basename, and never a separator —
+// the served URL is derived from the name alone, so traversal by shape is
+// impossible.
+func parseClientModules(raw any) ([]ClientModule, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	rows, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("client_modules must be an array of tables")
+	}
+	out := make([]ClientModule, 0, len(rows))
+	seen := map[string]bool{}
+	for i, r := range rows {
+		m, ok := r.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("client_modules #%d must be a table", i)
+		}
+	path, _ := m["path"].(string)
+	if path == "" {
+		return nil, fmt.Errorf("client_modules #%d: path is required", i)
+	}
+	name, _ := m["name"].(string)
+	if name == "" {
+			base := filepath.Base(filepath.ToSlash(path))
+			if ext := filepath.Ext(base); ext != "" {
+				base = strings.TrimSuffix(base, ext)
+			}
+			name = base
+		}
+		if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
+			return nil, fmt.Errorf("client_modules #%d: invalid module name %q", i, name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("client_modules: duplicate module name %q", name)
+		}
+		seen[name] = true
+		out = append(out, ClientModule{Name: name, Path: path})
+	}
+	return out, nil
 }
 
 // HostID returns the configured identity ("" = caller falls back to hostname).

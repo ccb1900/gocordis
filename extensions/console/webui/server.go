@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"os"
 	"net/http"
 	"strings"
 	"sync"
@@ -57,6 +58,9 @@ type Server struct {
 	fleetCache      map[string]any
 	fleetCacheUntil time.Time
 
+	// plugin client modules served same-origin (see SetClientModules)
+	clientModules []host.ClientModule
+
 	mu   sync.Mutex
 	subs map[chan host.UIObservation]struct{}
 }
@@ -84,6 +88,14 @@ func (s *Server) SetExplorer(exp *explorer.ExplorerTransport) {
 	s.explorer = exp
 }
 
+// SetClientModules installs the plugin client modules served same-origin.
+// The console fetches GET /api/ui/client-modules at boot and imports every
+// module URL, handing it the renderer registry facade. Modules are served
+// ONLY by their configured name — the URL never carries a filesystem path.
+func (s *Server) SetClientModules(mods []host.ClientModule) {
+	s.clientModules = append([]host.ClientModule(nil), mods...)
+}
+
 // Publish pushes one observation to every SSE subscriber (non-blocking).
 func (s *Server) Publish(ev host.UIObservation) {
 	s.mu.Lock()
@@ -105,7 +117,37 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveAPI(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/client-modules/") {
+		s.serveClientModule(w, r)
+		return
+	}
 	s.serveStatic(w, r)
+}
+
+// serveClientModule serves one configured plugin client module by name.
+// Same-origin only by deployment (the console host serves it); the URL
+// carries the module NAME, never a path — traversal by shape is impossible.
+func (s *Server) serveClientModule(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "invalid_request", "GET only")
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/client-modules/")
+	for _, m := range s.clientModules {
+		if m.Name != name {
+			continue
+		}
+		data, err := os.ReadFile(m.Path)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "error", "client module unreadable: "+err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		_, _ = w.Write(data)
+		return
+	}
+	http.NotFound(w, r)
 }
 
 // serveStatic serves the embedded SPA build with an index fallback.
@@ -148,6 +190,12 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/ui/panels":
 		data, ue := s.adapter.ListPanels()
 		s.writeResult(w, data, ue)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/ui/client-modules":
+		modules := make([]map[string]string, 0, len(s.clientModules))
+		for _, m := range s.clientModules {
+			modules = append(modules, map[string]string{"name": m.Name, "url": "/client-modules/" + m.Name})
+		}
+		s.writeResult(w, map[string]any{"modules": modules}, nil)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/plugins":
 		if s.explorer == nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin explorer is not active")

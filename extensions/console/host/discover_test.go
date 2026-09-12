@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	appui "dynamic-runtime/extensions/console/registry"
 )
 
 // One plugin, one directory: the backend artifact and its frontend module
@@ -49,11 +51,11 @@ func TestDiscoverClientModulesMissingDirIsEmpty(t *testing.T) {
 }
 
 func TestMergeClientModulesExplicitWins(t *testing.T) {
-	discovered := []ClientModule{
+	discovered := []appui.ClientModule{
 		{Name: "alarm", Path: "plugins/alarm/ui.js"},
 		{Name: "zulu", Path: "plugins/zulu/ui.js"},
 	}
-	explicit := []ClientModule{
+	explicit := []appui.ClientModule{
 		// Same name as a discovered module: the explicit row overrides it.
 		{Name: "alarm", Path: "/opt/alt/alarm/ui.js"},
 		{Name: "alpha", Path: "/opt/alpha/ui.js"},

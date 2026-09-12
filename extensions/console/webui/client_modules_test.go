@@ -10,10 +10,11 @@ import (
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/extensions/console/host"
+	appui "dynamic-runtime/extensions/console/registry"
 	"dynamic-runtime/extensions/console/webui"
 )
 
-func newModuleServer(t *testing.T) (*webui.Server, string) {
+func newModuleServer(t *testing.T) (*webui.Server, string, appui.Registry) {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "lib"), 0o755); err != nil {
@@ -30,13 +31,21 @@ func newModuleServer(t *testing.T) (*webui.Server, string) {
 	if err := os.WriteFile(filepath.Join(dir, "..", "secret.txt"), []byte("top secret"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := webui.New(host.NewHost(nil, nil, nil), nil)
-	s.SetClientModules([]host.ClientModule{{Name: "demo-ui", Path: mod}})
-	return s, dir
+	reg := appui.NewRegistry(func() {})
+	_, err := reg.RegisterClientModule(
+		appui.ContributionOwner{PluginID: "ui-client", ComponentID: "alarm", ActivationID: "a1"},
+		appui.ClientModule{Name: "demo-ui", Path: mod},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := host.NewHost(nil, reg, nil)
+	s := webui.New(adapter, nil)
+	return s, dir, reg
 }
 
 func TestClientModulesManifestAndServing(t *testing.T) {
-	s, _ := newModuleServer(t)
+	s, _, _ := newModuleServer(t)
 
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/ui/client-modules", nil))
@@ -68,7 +77,7 @@ func TestClientModulesManifestAndServing(t *testing.T) {
 }
 
 func TestClientModulesTraversalImpossible(t *testing.T) {
-	s, dir := newModuleServer(t)
+	s, dir, _ := newModuleServer(t)
 	for _, path := range []string{
 		"/client-modules/..%2f..%2fetc%2fpasswd",
 		"/client-modules/demo-ui/../secret.txt",
@@ -90,8 +99,19 @@ func TestClientModulesTraversalImpossible(t *testing.T) {
 }
 
 func TestClientModulesMissingFileIs404(t *testing.T) {
-	s, _ := newModuleServer(t)
-	s.SetClientModules([]host.ClientModule{{Name: "gone", Path: filepath.Join(t.TempDir(), "missing.js")}})
+	s, _, reg := newModuleServer(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ui.js"), []byte("export default 1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := reg.RegisterClientModule(
+		appui.ContributionOwner{PluginID: "ui-client", ComponentID: "gone", ActivationID: "a1"},
+		appui.ClientModule{Name: "gone", Path: filepath.Join(dir, "ui.js")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(filepath.Join(dir, "ui.js"))
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/client-modules/gone/ui.js", nil))
 	if rec.Code != http.StatusNotFound {
@@ -99,36 +119,65 @@ func TestClientModulesMissingFileIs404(t *testing.T) {
 	}
 }
 
-func TestNewConsoleParsesClientModules(t *testing.T) {
-	mk := func(rows any) config.ComponentConfig {
-		return config.ComponentConfig{ID: "ui", Type: "ui", Config: map[string]any{"client_modules": rows}}
+// The manifest comes from the composition registry: unregistering the
+// owning contribution (uninstall/disable of the ui-client component)
+// empties it — existence on disk is never enough.
+func TestClientModulesGovernedByComposition(t *testing.T) {
+	s, _, reg := newModuleServer(t)
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/ui/client-modules", nil))
+	if !strings.Contains(rec.Body.String(), `"demo-ui"`) {
+		t.Fatalf("registered module must be listed: %s", rec.Body.String())
 	}
-	c, err := host.NewConsole(mk([]any{
-		map[string]any{"name": "demo", "path": "./x/demo.js"},
-		map[string]any{"path": "./x/other.mjs"},
-	}))
+
+	// Duplicate module name is rejected.
+	if _, err := reg.RegisterClientModule(
+		appui.ContributionOwner{PluginID: "ui-client", ComponentID: "second", ActivationID: "a2"},
+		appui.ClientModule{Name: "demo-ui", Path: filepath.Join(t.TempDir(), "ui.js")},
+	); err == nil {
+		t.Fatal("duplicate module name must be rejected")
+	}
+
+	// A second module registers; its cleanup removes only its own row.
+	cleanup, err := reg.RegisterClientModule(
+		appui.ContributionOwner{PluginID: "ui-client", ComponentID: "second", ActivationID: "a2"},
+		appui.ClientModule{Name: "other", Path: filepath.Join(t.TempDir(), "ui.js")},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mods := c.ClientModules()
-	if len(mods) != 2 || mods[0].Name != "demo" || mods[1].Name != "other" {
-		t.Fatalf("modules = %+v", mods)
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
 	}
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/ui/client-modules", nil))
+	if !strings.Contains(rec.Body.String(), `"demo-ui"`) || strings.Contains(rec.Body.String(), `"other"`) {
+		t.Fatalf("cleanup must remove only its own module: %s", rec.Body.String())
+	}
+}
 
-	// Invalid shapes fail loudly.
-	if _, err := host.NewConsole(mk([]any{map[string]any{"name": "x"}})); err == nil {
-		t.Fatal("missing path must be rejected")
+func TestClientModuleComponentDefaults(t *testing.T) {
+	mk := func(cfg map[string]any) config.ComponentConfig {
+		return config.ComponentConfig{ID: "alarm-demo", Type: "ui-client", Config: cfg}
 	}
-	if _, err := host.NewConsole(mk([]any{map[string]any{"path": "./x.js", "name": "a/b"}})); err == nil {
-		t.Fatal("separator in name must be rejected")
+	// Convention: module name = component id, entry = plugins/<name>/ui.js.
+	c, err := host.NewClientModuleComponent(mk(nil))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := host.NewConsole(mk([]any{
-		map[string]any{"path": "./x.js", "name": "dup"},
-		map[string]any{"path": "./y.js", "name": "dup"},
-	})); err == nil {
-		t.Fatal("duplicate names must be rejected")
+	_ = c
+	// Explicit module name and path override the convention.
+	if _, err := host.NewClientModuleComponent(mk(map[string]any{
+		"module": "alt", "path": "/opt/alt/ui.js",
+	})); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := host.NewConsole(mk("not-an-array")); err == nil {
-		t.Fatal("non-array client_modules must be rejected")
+	// Invalid module names fail loudly.
+	if _, err := host.NewClientModuleComponent(mk(map[string]any{"module": "a/b"})); err == nil {
+		t.Fatal("separator in module name must be rejected")
+	}
+	if _, err := host.NewClientModuleComponent(mk(map[string]any{"module": ".."})); err == nil {
+		t.Fatal("traversal module name must be rejected")
 	}
 }

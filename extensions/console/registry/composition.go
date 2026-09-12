@@ -65,6 +65,20 @@ type PanelDefinition struct {
 	Pages []string
 }
 
+// ClientModule is one plugin frontend module contribution: an ES module the
+// console serves same-origin and loads at boot. Frontend plugins are
+// composition-governed like every contribution — declared as ui-client
+// components, they appear in the desired configuration, honor the enabled
+// switch, and vanish on uninstall. A module existing on disk is never
+// loaded by itself.
+type ClientModule struct {
+	// Name is the URL slug under /client-modules/ (no separators).
+	Name string
+	// Path is the plugin directory's entry file (convention:
+	// plugins/<name>/ui.js), resolved at serve time.
+	Path string
+}
+
 // CompositionSnapshot is one atomic, read-only view of the current Page and
 // Panel contributions. It never carries Owner/Activation identity; callers may
 // mutate the returned slices without affecting Registry state.
@@ -94,6 +108,9 @@ var (
 	ErrContributionOwner    = errors.New("UI contribution owner is empty")
 	ErrEmptyPageDefinition  = errors.New("UI page id is empty")
 	ErrEmptyPanelDefinition = errors.New("UI panel id is empty")
+
+	ErrDuplicateClientModule = errors.New("duplicate client module")
+	ErrEmptyClientModule     = errors.New("client module name is empty")
 )
 
 // Registry is the Application/UI Host composition registry. A UI Host owns
@@ -101,8 +118,10 @@ var (
 type Registry interface {
 	RegisterPage(owner ContributionOwner, def PageDefinition) (func() error, error)
 	RegisterPanel(owner ContributionOwner, def PanelDefinition) (func() error, error)
+	RegisterClientModule(owner ContributionOwner, def ClientModule) (func() error, error)
 	ListPages() []PageDefinition
 	ListPanels() []PanelDefinition
+	ListClientModules() []ClientModule
 	// Snapshot returns one atomic, isolated Composition view. React and
 	// transport layers consume this Snapshot/DTO boundary; they never receive
 	// the Registry or its Owners.
@@ -140,13 +159,20 @@ type panelEntry struct {
 	def   PanelDefinition
 }
 
+type clientModuleEntry struct {
+	owner ContributionOwner
+	def   ClientModule
+}
+
 type registry struct {
-	mu         sync.Mutex
-	pages      map[string]pageEntry
-	panels     map[string]panelEntry
-	pageOrder  []string
-	panelOrder []string
-	onChange   func()
+	mu              sync.Mutex
+	pages           map[string]pageEntry
+	panels          map[string]panelEntry
+	clientModules   map[string]clientModuleEntry
+	pageOrder       []string
+	panelOrder      []string
+	clientModOrder  []string
+	onChange        func()
 }
 
 // NewRegistry returns one UI Composition Registry owned by a UI Host
@@ -155,9 +181,10 @@ type registry struct {
 // invalidation event.
 func NewRegistry(onChange func()) Registry {
 	return &registry{
-		pages:    make(map[string]pageEntry),
-		panels:   make(map[string]panelEntry),
-		onChange: onChange,
+		pages:         make(map[string]pageEntry),
+		panels:        make(map[string]panelEntry),
+		clientModules: make(map[string]clientModuleEntry),
+		onChange:      onChange,
 	}
 }
 
@@ -197,6 +224,57 @@ func (r *registry) RegisterPanel(owner ContributionOwner, def PanelDefinition) (
 	r.mu.Unlock()
 	r.notify()
 	return r.unregisterPanelFunc(owner, def.ID), nil
+}
+
+func (r *registry) RegisterClientModule(owner ContributionOwner, def ClientModule) (func() error, error) {
+	if owner.ComponentID == "" || owner.ActivationID == "" {
+		return nil, ErrContributionOwner
+	}
+	if def.Name == "" {
+		return nil, ErrEmptyClientModule
+	}
+	r.mu.Lock()
+	if _, ok := r.clientModules[def.Name]; ok {
+		r.mu.Unlock()
+		return nil, ErrDuplicateClientModule
+	}
+	r.clientModules[def.Name] = clientModuleEntry{owner: owner, def: def}
+	r.clientModOrder = append(r.clientModOrder, def.Name)
+	r.mu.Unlock()
+	r.notify()
+	return r.unregisterClientModuleFunc(owner, def.Name), nil
+}
+
+func (r *registry) unregisterClientModuleFunc(owner ContributionOwner, id string) func() error {
+	return func() error {
+		r.mu.Lock()
+		entry, ok := r.clientModules[id]
+		if !ok {
+			r.mu.Unlock()
+			return nil // already removed; cleanup is idempotent
+		}
+		if entry.owner != owner {
+			r.mu.Unlock()
+			return nil // newer activation owns this ID; stale cleanup must not delete it
+		}
+		delete(r.clientModules, id)
+		r.clientModOrder = removeOrderID(r.clientModOrder, id)
+		r.mu.Unlock()
+		r.notify()
+		return nil
+	}
+}
+
+// ListClientModules returns the registered frontend modules in
+// registration order — the /api/ui/client-modules manifest source.
+func (r *registry) ListClientModules() []ClientModule {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]ClientModule, 0, len(r.clientModOrder))
+	for _, id := range r.clientModOrder {
+		out = append(out, r.clientModules[id].def)
+	}
+	return out
 }
 
 func (r *registry) unregisterPageFunc(owner ContributionOwner, id string) func() error {

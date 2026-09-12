@@ -171,3 +171,10 @@ func (b *observationBridge) clear() {
 	b.subs = map[int]func(UIObservation){}
 	b.history = nil
 }
+
+// ListClientModules returns the registered plugin frontend modules — the
+// /api/ui/client-modules manifest source. Composition-governed: only
+// active ui-client components are listed.
+func (h *Host) ListClientModules() []appui.ClientModule {
+	return h.registry.ListClientModules()
+}

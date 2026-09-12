@@ -60,9 +60,6 @@ type Server struct {
 	fleetCache      map[string]any
 	fleetCacheUntil time.Time
 
-	// plugin client modules served same-origin (see SetClientModules)
-	clientModules []host.ClientModule
-
 	mu   sync.Mutex
 	subs map[chan host.UIObservation]struct{}
 }
@@ -88,18 +85,6 @@ func (s *Server) SetPluginLifecycle(l PluginLifecycle) {
 
 func (s *Server) SetExplorer(exp *explorer.ExplorerTransport) {
 	s.explorer = exp
-}
-
-// SetClientModules installs the plugin client modules served same-origin.
-// The console fetches GET /api/ui/client-modules at boot and imports every
-// module URL, handing it the renderer registry facade. The entry URL is
-// directory-shaped (/client-modules/<name>/ui.js) so a module's RELATIVE
-// imports resolve inside its own plugin directory — a plugin vendors its
-// own frontend libraries (e.g. ECharts under lib/) and imports them with
-// plain relative specifiers. Traversal outside the plugin directory is
-// rejected.
-func (s *Server) SetClientModules(mods []host.ClientModule) {
-	s.clientModules = append([]host.ClientModule(nil), mods...)
 }
 
 // Publish pushes one observation to every SSE subscriber (non-blocking).
@@ -146,7 +131,7 @@ func (s *Server) serveClientModule(w http.ResponseWriter, r *http.Request) {
 	if i := strings.IndexByte(rest, '/'); i >= 0 {
 		seg, file = rest[:i], rest[i+1:]
 	}
-	for _, m := range s.clientModules {
+	for _, m := range s.adapter.ListClientModules() {
 		if m.Name != seg {
 			continue
 		}
@@ -223,8 +208,8 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		data, ue := s.adapter.ListPanels()
 		s.writeResult(w, data, ue)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/ui/client-modules":
-		modules := make([]map[string]string, 0, len(s.clientModules))
-		for _, m := range s.clientModules {
+		modules := make([]map[string]string, 0)
+		for _, m := range s.adapter.ListClientModules() {
 			modules = append(modules, map[string]string{
 				"name": m.Name,
 				// Directory-shaped entry URL: relative imports of vendored

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	appui "dynamic-runtime/extensions/console/registry"
 )
 
 // DefaultPluginsDir is the conventional location for plugin deployments.
@@ -31,8 +33,8 @@ var frontendModuleNames = []string{"ui.js", "ui.mjs"}
 // the plugin directory name. Missing directories are not an error — the
 // convention is optional. Results are sorted by name for deterministic
 // manifests.
-func DiscoverClientModules(dirs ...string) []ClientModule {
-	var out []ClientModule
+func DiscoverClientModules(dirs ...string) []appui.ClientModule {
+	var out []appui.ClientModule
 	seen := map[string]bool{}
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
@@ -53,7 +55,7 @@ func DiscoverClientModules(dirs ...string) []ClientModule {
 					continue
 				}
 				seen[name] = true
-				out = append(out, ClientModule{Name: name, Path: modPath})
+				out = append(out, appui.ClientModule{Name: name, Path: modPath})
 				break
 			}
 		}
@@ -65,8 +67,8 @@ func DiscoverClientModules(dirs ...string) []ClientModule {
 // MergeClientModules layers discovered (convention) modules under explicit
 // (config) ones: an explicit row with the same name wins. Explicit rows are
 // exceptions and overrides — the convention is the default.
-func MergeClientModules(explicit, discovered []ClientModule) []ClientModule {
-	out := append([]ClientModule(nil), discovered...)
+func MergeClientModules(explicit, discovered []appui.ClientModule) []appui.ClientModule {
+	out := append([]appui.ClientModule(nil), discovered...)
 	for _, m := range explicit {
 		replaced := false
 		for i := range out {

@@ -25,7 +25,8 @@ import (
 // Config:
 //
 //	module — the module name (URL slug). Default: the component id.
-//	path   — entry file. Default: the convention plugins/<module>/ui.js.
+//	path   — entry file. Default: the convention plugins/<module>/ui.js
+//	         (DefaultPluginsDir).
 type ClientModuleComponent struct {
 	id     string
 	module appui.ClientModule

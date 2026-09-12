@@ -32,7 +32,7 @@ order = 50
 `)
 	mk("frontend-only", `name = "frontend-only"
 client = "ui.js"`)
-	mk("mismatch", `name = "not-mismatch"` + "\n") // name != 目录名：报错
+	mk("mismatch", `name = "not-mismatch"`+"\n") // name != 目录名：报错
 	if err := os.WriteFile(filepath.Join(dir, "stray.toml"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}

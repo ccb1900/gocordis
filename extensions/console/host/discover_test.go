@@ -25,7 +25,7 @@ func TestDiscoverClientModules(t *testing.T) {
 	write("alarm", "alarm-server") // the backend artifact, same directory
 	mkdir("fleet-panel")
 	write("fleet-panel", "ui.mjs")
-	mkdir("empty-plugin") // a plugin dir without a frontend module: no module
+	mkdir("empty-plugin")    // a plugin dir without a frontend module: no module
 	write("stray.ui.js", "") // a flat file is not the convention: ignored
 	_ = os.WriteFile(filepath.Join(dir, "readme.md"), []byte("x"), 0o644)
 

@@ -16,8 +16,18 @@ import (
 func newModuleServer(t *testing.T) (*webui.Server, string) {
 	t.Helper()
 	dir := t.TempDir()
-	mod := filepath.Join(dir, "demo-ui.js")
-	if err := os.WriteFile(mod, []byte("export default function register(m) { void m; }"), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mod := filepath.Join(dir, "ui.js")
+	if err := os.WriteFile(mod, []byte("import * as echarts from './lib/echarts.esm.min.js';\nexport default function register(m) { void m; }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lib := filepath.Join(dir, "lib", "echarts.esm.min.js")
+	if err := os.WriteFile(lib, []byte("export const init = () => 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "..", "secret.txt"), []byte("top secret"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s := webui.New(host.NewHost(nil, nil, nil), nil)
@@ -33,30 +43,39 @@ func TestClientModulesManifestAndServing(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("manifest status %d: %s", rec.Code, rec.Body.String())
 	}
-	want := `{"data":{"modules":[{"name":"demo-ui","url":"/client-modules/demo-ui"}]}}`
+	want := `{"data":{"modules":[{"name":"demo-ui","url":"/client-modules/demo-ui/ui.js"}]}}`
 	if got := strings.TrimSpace(rec.Body.String()); got != want {
 		t.Fatalf("manifest = %s, want %s", got, want)
 	}
 
+	// The entry file at its directory-shaped URL: relative imports of
+	// vendored libraries resolve inside the plugin directory.
 	rec = httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/client-modules/demo-ui", nil))
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/client-modules/demo-ui/ui.js", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("module status %d", rec.Code)
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "text/javascript; charset=utf-8" {
 		t.Fatalf("content type = %q", ct)
 	}
-	if body := rec.Body.String(); body != "export default function register(m) { void m; }" {
-		t.Fatalf("module body = %q", body)
+
+	// Vendored library files under the plugin directory are served too.
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/client-modules/demo-ui/lib/echarts.esm.min.js", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "export const init = () => 1;" {
+		t.Fatalf("vendored lib status %d body %q", rec.Code, rec.Body.String())
 	}
 }
 
 func TestClientModulesTraversalImpossible(t *testing.T) {
-	s, _ := newModuleServer(t)
+	s, dir := newModuleServer(t)
 	for _, path := range []string{
 		"/client-modules/..%2f..%2fetc%2fpasswd",
-		"/client-modules/../server.go",
+		"/client-modules/demo-ui/../secret.txt",
+		"/client-modules/demo-ui/%2e%2e/secret.txt",
+		"/client-modules/demo-ui/lib/../../../secret.txt",
 		"/client-modules/nope",
+		"/client-modules/nope/lib/x.js",
 	} {
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
@@ -64,15 +83,19 @@ func TestClientModulesTraversalImpossible(t *testing.T) {
 			t.Fatalf("GET %s must not succeed", path)
 		}
 	}
+	// The secret really is next to the plugin dir — the guard held.
+	if _, err := os.Stat(filepath.Join(dir, "..", "secret.txt")); err != nil {
+		t.Fatal(err)
+	}
 }
 
-func TestClientModulesMissingFileIs500(t *testing.T) {
+func TestClientModulesMissingFileIs404(t *testing.T) {
 	s, _ := newModuleServer(t)
 	s.SetClientModules([]host.ClientModule{{Name: "gone", Path: filepath.Join(t.TempDir(), "missing.js")}})
 	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/client-modules/gone", nil))
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("missing module status = %d, want 500", rec.Code)
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/client-modules/gone/ui.js", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing module status = %d, want 404", rec.Code)
 	}
 }
 

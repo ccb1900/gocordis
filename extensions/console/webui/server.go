@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"mime"
+	"path/filepath"
 	"net/http"
 	"os"
 	"strings"
@@ -90,8 +92,12 @@ func (s *Server) SetExplorer(exp *explorer.ExplorerTransport) {
 
 // SetClientModules installs the plugin client modules served same-origin.
 // The console fetches GET /api/ui/client-modules at boot and imports every
-// module URL, handing it the renderer registry facade. Modules are served
-// ONLY by their configured name — the URL never carries a filesystem path.
+// module URL, handing it the renderer registry facade. The entry URL is
+// directory-shaped (/client-modules/<name>/ui.js) so a module's RELATIVE
+// imports resolve inside its own plugin directory — a plugin vendors its
+// own frontend libraries (e.g. ECharts under lib/) and imports them with
+// plain relative specifiers. Traversal outside the plugin directory is
+// rejected.
 func (s *Server) SetClientModules(mods []host.ClientModule) {
 	s.clientModules = append([]host.ClientModule(nil), mods...)
 }
@@ -124,25 +130,51 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.serveStatic(w, r)
 }
 
-// serveClientModule serves one configured plugin client module by name.
-// Same-origin only by deployment (the console host serves it); the URL
-// carries the module NAME, never a path — traversal by shape is impossible.
+// serveClientModule serves one plugin's frontend module and the static
+// assets of its plugin directory, mounted at /client-modules/<name>/.
+// The entry file (ui.js) is the module URL; everything under the plugin
+// directory resolves relatively — vendored libraries included. The URL is
+// split into <name>/<relative file>, the file side is cleaned, and any
+// escape from the plugin directory is a 404.
 func (s *Server) serveClientModule(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "invalid_request", "GET only")
 		return
 	}
-	name := strings.TrimPrefix(r.URL.Path, "/client-modules/")
+	rest := strings.TrimPrefix(r.URL.Path, "/client-modules/")
+	seg, file := rest, ""
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		seg, file = rest[:i], rest[i+1:]
+	}
 	for _, m := range s.clientModules {
-		if m.Name != name {
+		if m.Name != seg {
 			continue
 		}
-		data, err := os.ReadFile(m.Path)
+		target := m.Path
+		if file != "" {
+			rel := filepath.Clean(filepath.FromSlash(file))
+			if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				http.NotFound(w, r)
+				return
+			}
+			target = filepath.Join(filepath.Dir(m.Path), rel)
+		}
+		info, err := os.Stat(target)
+		if err != nil || info.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
+		data, err := os.ReadFile(target)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "error", "client module unreadable: "+err.Error())
 			return
 		}
-		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		ct := mime.TypeByExtension(filepath.Ext(target))
+		if ct == "" || target == m.Path {
+			// The module entry is always JavaScript, whatever it is named.
+			ct = "text/javascript; charset=utf-8"
+		}
+		w.Header().Set("Content-Type", ct)
 		w.Header().Set("Cache-Control", "no-cache")
 		_, _ = w.Write(data)
 		return
@@ -193,7 +225,12 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/ui/client-modules":
 		modules := make([]map[string]string, 0, len(s.clientModules))
 		for _, m := range s.clientModules {
-			modules = append(modules, map[string]string{"name": m.Name, "url": "/client-modules/" + m.Name})
+			modules = append(modules, map[string]string{
+				"name": m.Name,
+				// Directory-shaped entry URL: relative imports of vendored
+				// libraries resolve inside the plugin directory.
+				"url": "/client-modules/" + m.Name + "/" + filepath.Base(m.Path),
+			})
 		}
 		s.writeResult(w, map[string]any{"modules": modules}, nil)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/plugins":

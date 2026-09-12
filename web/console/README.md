@@ -62,6 +62,41 @@ Page-level and panel-level renderers work the same way via
 Unknown kinds never break a page: the console renders an explicit fallback
 showing the raw declaration.
 
-**Trust boundary.** Registered renderers execute inside the console with
-full page privileges. Only register code you would ship as a dependency —
-the same rule dsh applies to its keyed renderers.
+**Trust model.** Registered renderers execute inside the console with
+full page privileges — they are frontend code, never sandboxed. The
+same rule dsh applies to its keyed renderers.
+
+## Plugin client modules (runtime loading)
+
+The frontend is homogeneous: a plugin's renderer module is frontend
+code regardless of the plugin backend (in-process Go, out-of-process
+executable, WASM). Modules are distributed with the plugin, served
+same-origin by the console server, and loaded at boot — before first
+render — by `lib/client-modules.ts`. Each module's default export is a
+register function receiving a facade:
+
+```js
+// configs/client-modules/alarm-demo.js (no build step required)
+export default function register(m) {
+  const { React, antd, api, registerPageRenderer } = m;
+  registerPageRenderer("alarm-console", function AlarmConsole() {
+    // fully custom page: own layout, own state, data via the hub
+    ...
+  });
+}
+```
+
+Declare modules on the `ui` component:
+
+```toml
+[[components.config.client_modules]]
+name = "alarm-demo"
+path = "./configs/client-modules/alarm-demo.js"
+```
+
+The server publishes the manifest at `GET /api/ui/client-modules` and
+serves each module same-origin at `GET /client-modules/<name>`. URLs
+carry the module NAME only, never a filesystem path. Trust = operator
+install, exactly like the plugin binary itself; an out-of-process
+plugin already runs with host privileges, so its client module adds no
+new risk.

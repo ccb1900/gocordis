@@ -30,7 +30,18 @@ function statusNode(status: unknown) {
         : s === "Pending"
           ? "#f2b544"
           : "#8a93a6";
-  const label = s === "Active" ? "活跃" : s === "Succeeded" ? "成功" : s === "Failed" ? "失败" : s === "Pending" ? "等待数据" : s;
+  const label =
+    s === "Active"
+      ? "活跃"
+      : s === "Succeeded"
+        ? "成功"
+        : s === "Failed"
+          ? "失败"
+          : s === "Pending"
+            ? "等待数据"
+            : s === "Skipped"
+              ? "无数据"
+              : s;
   return <span style={{ color }}>{label || "—"}</span>;
 }
 

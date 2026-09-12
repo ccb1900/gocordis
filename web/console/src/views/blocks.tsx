@@ -41,9 +41,16 @@ function cellNode(key: string, format: string | undefined, v: unknown) {
 }
 
 // Blocked until the referenced focus exists: dependent views stay dormant
-// with an explicit hint instead of firing incomplete queries.
+// with an explicit hint instead of firing incomplete queries. The hint is
+// domain-neutral — the framework never names application pages; the app
+// carries the guidance in its own page descriptions.
 function FocusHint() {
-  return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择一行采集任务后展示。" />;
+  return (
+    <Empty
+      image={Empty.PRESENTED_IMAGE_SIMPLE}
+      description="尚未选择数据行 —— 先在列表视图中点选一行，这里将展示它对应的明细。"
+    />
+  );
 }
 
 function useQueryData(block: ViewBlock, ctx: ViewContext) {

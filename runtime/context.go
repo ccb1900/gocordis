@@ -421,8 +421,11 @@ func (c *Context) provideCap(key CapabilityKey, value any) error {
 		if err := eff.registerOwn(key, id, value); err != nil {
 			return nil, err
 		}
+		// The inverse searches the fiber's namespaces instead of capturing
+		// the install-time realm: a rehome may have moved the provision after
+		// install, and the unwind must still find it (no leak).
 		return func() error {
-			removed, wasRetiring := eff.removeOwn(key, id)
+			removed, wasRetiring := removeProvisionAround(c.fiber, key, id)
 			if removed && !wasRetiring {
 				// The record was never satisfiable (e.g. failed-Apply cleanup);
 				// a retiring record already announced its withdrawal to its

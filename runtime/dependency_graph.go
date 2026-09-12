@@ -176,6 +176,10 @@ func (o *orchestrator) notifyGateWaiters(f *Fiber) {
 		}
 		if w.finalizePending {
 			o.finalizePendingFiber(w)
+		} else if w.rehome != nil {
+			// Rehome phase 2: the last old-namespace consumer detached —
+			// re-home the provisions and re-publish in the fresh namespace.
+			o.executeRehomeStep2(w)
 		} else if w.withdrawing && w.state == StateActive {
 			o.maybeStartUnload(w)
 		}

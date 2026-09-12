@@ -101,7 +101,10 @@ func (o *orchestrator) cancelLoadingActivation(f *Fiber) {
 // (withdrawal gates). This guarantees the invariant that a provider is never
 // withdrawn while a consumer still depends on it.
 func (o *orchestrator) beginWithdrawal(f *Fiber) {
-	if f.withdrawing {
+	if f.withdrawing || f.rehome != nil {
+		// A rehome in progress owns the provision lifecycle; a concurrent
+		// withdrawal waits (the rehome completes and the recorded intent —
+		// if any — is honored by the following reconcile).
 		return
 	}
 	act := f.activation
@@ -169,7 +172,7 @@ func (o *orchestrator) beginWithdrawal(f *Fiber) {
 // maybeStartUnload begins the Unloading transition once the fiber's withdrawal
 // gates (consumers/children) are all clear.
 func (o *orchestrator) maybeStartUnload(f *Fiber) {
-	if f.state != StateActive {
+	if f.state != StateActive || f.rehome != nil {
 		return
 	}
 	if len(f.waitGates) > 0 {

@@ -252,3 +252,31 @@ type providerRecord struct {
 	// activation's inverse physically removes it (withdraw-then-load).
 	retiring bool
 }
+
+// fiberNamespaces returns the fiber's scope realm plus every per-key
+// isolation namespace, deduplicated.
+func fiberNamespaces(f *Fiber) []*realm {
+	seen := make(map[*realm]bool, len(f.keyRealms)+1)
+	realms := []*realm{f.realm}
+	seen[f.realm] = true
+	for _, r := range f.keyRealms {
+		if !seen[r] {
+			seen[r] = true
+			realms = append(realms, r)
+		}
+	}
+	return realms
+}
+
+// removeProvisionAround removes one activation's provision record for key
+// from WHICHEVER of the fiber's namespaces currently holds it (a rehome may
+// have moved it after install). Returns whether a record was removed and
+// whether it had been marked retiring.
+func removeProvisionAround(f *Fiber, key CapabilityKey, id ProviderIdentity) (removed, wasRetiring bool) {
+	for _, r := range fiberNamespaces(f) {
+		if removed, wasRetiring = r.removeOwn(key, id); removed {
+			return true, wasRetiring
+		}
+	}
+	return false, false
+}

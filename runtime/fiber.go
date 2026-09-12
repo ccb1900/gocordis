@@ -26,6 +26,10 @@ type Fiber struct {
 	// explicit scope derives a child realm (Phase 3).
 	realm *realm
 
+	// rehome is the in-flight realm-move state (orchestrator-only; nil when
+	// no rehome is pending). See rehome.go.
+	rehome *rehomePending
+
 	// keyRealms is the fiber's per-key isolation table (paper Definition 24,
 	// the realm table ρ): a key present here resolves and provides against the
 	// named namespace instead of the fiber's scope realm. Entries are fixed at

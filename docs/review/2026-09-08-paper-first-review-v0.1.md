@@ -288,7 +288,7 @@ R6 判定的第 10 行(跨进程调用,显式出界)按用户裁决升级落地:
 | # | 级别 | 项 | 论文/来源锚点 | 处置 |
 |---|---|---|---|---|
 | G-1 | **不完备(论文 §5.2.1)** | HMR/loader **短路径终点对齐**:候选先行替换须回答与从头装载相同的 quiescent 终点——内核 Revise 已测,扩展 warm 路径未测 | §5.2.1 + Thm 80 | 已记录(P5 遗留),**建议下一优先** |
-| G-2 | **不完备(论文 §5.2.1)** | **realm 迁移短路径**("a realm moved without reloading its provider"):现仅实现严格复合(WithFreshIsolation 必然重载提供者);论文许可的"迁移不重载"优化未做 | §4.4 Configuration/§5.2.1 | 记录;需先有公开命名空间句柄,与短路径语义一起做 |
+| G-2 | ~~不完备~~ **已闭环 (R11, 2026-09-09)** | `Fiber.Rehome(ctx, RehomeWithFreshIsolation())` — 短路由原语:provider **不下线**(同 fiber 同激活),旧命名空间 provisions 按 consumer-first 级联撤回(relied 守卫),.detach 后原子地迁移 keyRealms + 重发布到新命名空间;旧 ρ 消费者按论文语义去 Pending、声明恢复即跟随;provideCap 逆操作改为命名空间搜索(迁移后 unwind 不泄漏);G-1 终点测试 + Rehome 一致性(S-01..S-07 同族 R1-R5)全绿,-race 绿 | §4.4/§5.2.1 | **CLOSED** |
 | G-3 | ~~平台缺失(观测)~~ **已闭环 (R9, 2026-09-09;PAPER-NEUTRAL 平台层,非论文语义)** | `Runtime.Subscribe(ctx, from)` 落地:Snapshot(EventSequence S)→Subscribe(S) 无缝续传;慢消费者溢出→订阅关闭(emit 永不阻塞);Runtime.Close 以 ErrRuntimeClosed 终结全部订阅;锚点早于环形缓冲报 ErrSequenceTooOld。一致性 S-01..S-07(`console/events/observer_test.go`),`-count=3`+`-race` 绿。
 **边界修正 (R9b, 用户裁决)**:订阅/扇出不放 runtime——内核收缩为"单调序号
 计数器 + WithEventSink 汇点钩子"(≈80 行,paper-neutral 观测面),环形保留/
@@ -384,3 +384,21 @@ Sequence 序收到事件)。
   控制台缓存的 re-query 钩子);tsc 绿。
 
 仍开放:G-1(+G-6)> G-2;explorer/configutil 之外 host 包测试仍薄。
+
+## 15. R11 (2026-09-09):G-1 / G-2 闭环
+
+- **G-1**:`extensions/hmr/endpoint_test.go` — HMR 暖路径(候选先行 + withdraw-
+  then-load 回退)的 canonical observable 与从头装载 v2 配置逐行相等;依赖者
+  无提示跟随。G-6(HMR×proc)保持记录。
+- **G-2**:`runtime/rehome.go` — `Fiber.Rehome(RehomeWithFreshIsolation())`。
+  语义:provider 不下线(短路由核心性质,同 fiber 同激活);旧命名空间
+  provisions 标记 retiring → 依赖者先撤(gates)→ 全部 detach 后原子迁移
+  keyRealms + 重发布;`provideCap` 逆操作改为跨命名空间搜索(迁移后 unwind
+  找得到记录,不泄漏)。一致性 R1(短路由)/R2(旧 ρ 消费者 Pending)/
+  R3(新命名空间可解析、旧命名空间已空)/R4(旧命名空间恢复即跟随)/
+  R5(Dispose 无泄漏)+ 双次 rehome + 非 Active 守卫,-race 绿。
+- 分类:G-2 为 **paper-anchored**(§4.4 Configuration 的短路由,§5.2.1 明文
+  许可;Rehome 的声明层对应物仍是 Revise/Enabled 修订,Rehome 是 loader 短
+  路由形态——按论文 §5.2.1 "shorter routes answer to the same endpoint")。
+
+**R11 判定:R8 欠账清单全部闭环(G-1..G-8;G-6 保持记录)。**

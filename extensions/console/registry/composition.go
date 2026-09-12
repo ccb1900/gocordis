@@ -30,6 +30,10 @@ type PageDefinition struct {
 	Title    string
 	Route    string
 	Renderer string
+	// Icon is an optional menu icon hint from the console's curated icon
+	// set (e.g. "dashboard", "search"). The shell maps the name; unknown
+	// or empty values get the default icon.
+	Icon string
 	// Description is optional page-level helper text rendered by the shell.
 	Description string
 	// Views is an optional declarative view schema: an ordered list of view

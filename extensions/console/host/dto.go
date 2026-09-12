@@ -17,6 +17,7 @@ type UIPage struct {
 	Title       string          `json:"title"`
 	Route       string          `json:"route"`
 	Renderer    string          `json:"renderer"`
+	Icon        string          `json:"icon,omitempty"`
 	Description string          `json:"description,omitempty"`
 	View        json.RawMessage `json:"view,omitempty"`
 	Views       json.RawMessage `json:"views,omitempty"`
@@ -59,7 +60,7 @@ type UIPanelList struct {
 }
 
 func toUIPage(def registry.PageDefinition) UIPage {
-	return UIPage{ID: def.ID, Title: def.Title, Route: def.Route, Renderer: def.Renderer, Description: def.Description, View: def.View, Views: def.Views, Actions: def.Actions}
+	return UIPage{ID: def.ID, Title: def.Title, Route: def.Route, Renderer: def.Renderer, Icon: def.Icon, Description: def.Description, View: def.View, Views: def.Views, Actions: def.Actions}
 }
 
 func toUIPanel(def registry.PanelDefinition) UIPanel {

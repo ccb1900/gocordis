@@ -39,6 +39,7 @@ type PluginPage struct {
 	Route       string `toml:"route"`
 	Description string `toml:"description"`
 	Renderer    string `toml:"renderer"`
+	Icon        string `toml:"icon"`
 	Order       int    `toml:"order"`
 }
 
@@ -118,6 +119,7 @@ func (m *PluginManifest) componentRows(pluginDir string) []config.ComponentConfi
 			"route":       p.Route,
 			"description": p.Description,
 			"renderer":    p.Renderer,
+			"icon":        p.Icon,
 			"order":       p.Order,
 		}))
 	}

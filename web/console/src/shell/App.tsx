@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from
 import "../styles.css";
 import { Badge, Button, Layout, Menu, Space, Switch, Tabs, Typography } from "antd";
 import {
-  ApiOutlined, BlockOutlined, DashboardOutlined, DatabaseOutlined,
+  ApiOutlined, BellOutlined, BlockOutlined, DashboardOutlined, DatabaseOutlined,
   FileTextOutlined, FolderOutlined, ProfileOutlined, SearchOutlined,
 } from "@ant-design/icons";
 import { api } from "../api";
@@ -27,15 +27,23 @@ registerPanelRenderer("event-feed", function EventFeedPanel({ generation }: { ge
   return <Lazy><EventFeedLazy generation={generation} /></Lazy>;
 });
 
-const MENU_ICONS: Record<string, React.ReactNode> = {
-  "/overview": <DashboardOutlined />,
-  "/collections": <ProfileOutlined />,
-  "/files": <FolderOutlined />,
-  "/sources": <ApiOutlined />,
-  "/data": <SearchOutlined />,
-  "/plugins": <BlockOutlined />,
-  "/readings": <DatabaseOutlined />,
+// Pages declare their menu icon by name from this curated set; the shell
+// never keys icons off application routes.
+const PAGE_ICONS: Record<string, React.ReactNode> = {
+  dashboard: <DashboardOutlined />,
+  profile: <ProfileOutlined />,
+  folder: <FolderOutlined />,
+  api: <ApiOutlined />,
+  search: <SearchOutlined />,
+  block: <BlockOutlined />,
+  database: <DatabaseOutlined />,
+  bell: <BellOutlined />,
+  file: <FileTextOutlined />,
 };
+
+function pageIcon(name?: string): React.ReactNode {
+  return (name && PAGE_ICONS[name]) || <FileTextOutlined />;
+}
 
 // Console shell — the second Cordis application. It renders whatever the
 // composition declares: pages are declarative view stacks, panels bind to
@@ -200,7 +208,7 @@ export default function App() {
           <Menu
             theme="dark" mode="inline"
             selectedKeys={active ? [active.route] : []}
-            items={pages.map((p) => ({ key: p.route, icon: MENU_ICONS[p.route] ?? <FileTextOutlined />, label: p.title }))}
+            items={pages.map((p) => ({ key: p.route, icon: pageIcon(p.icon), label: p.title }))}
             onClick={({ key }) => navigate(key)}
           />
           <div style={{ marginTop: "auto", padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>

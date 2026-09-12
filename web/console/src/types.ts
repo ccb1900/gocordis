@@ -20,6 +20,8 @@ export interface UIPage {
   title: string;
   route: string;
   renderer: string;
+  /** Menu icon hint from the console's curated set. */
+  icon?: string;
   description?: string;
   view?: unknown;
   views?: ViewBlock[];

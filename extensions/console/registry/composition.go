@@ -165,14 +165,14 @@ type clientModuleEntry struct {
 }
 
 type registry struct {
-	mu              sync.Mutex
-	pages           map[string]pageEntry
-	panels          map[string]panelEntry
-	clientModules   map[string]clientModuleEntry
-	pageOrder       []string
-	panelOrder      []string
-	clientModOrder  []string
-	onChange        func()
+	mu             sync.Mutex
+	pages          map[string]pageEntry
+	panels         map[string]panelEntry
+	clientModules  map[string]clientModuleEntry
+	pageOrder      []string
+	panelOrder     []string
+	clientModOrder []string
+	onChange       func()
 }
 
 // NewRegistry returns one UI Composition Registry owned by a UI Host

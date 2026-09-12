@@ -250,8 +250,6 @@ func NewConsole(cc config.ComponentConfig) (*UIComponent, error) {
 	return c, nil
 }
 
-
-
 // HostID returns the configured identity ("" = caller falls back to hostname).
 func (c *UIComponent) HostID() string { return c.hostID }
 

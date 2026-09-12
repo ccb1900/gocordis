@@ -10,6 +10,7 @@
 // beyond the plugin itself — an out-of-process plugin already runs with
 // host privileges. What a module must NOT be treated as is sandboxed code.
 import * as React from "react";
+import * as reactJsxRuntime from "react/jsx-runtime";
 import * as antd from "antd";
 import { api } from "../api";
 import {
@@ -22,6 +23,10 @@ import {
 /** The facade handed to every client module's register function. */
 export interface ClientModuleAPI {
   React: typeof React;
+  /** The console's own react/jsx-runtime: JSX build shims re-export it, so
+   * automatic JSX in a bundled plugin runs on the console's React instance
+   * (one React per page — hooks require it). */
+  jsxRuntime: typeof reactJsxRuntime;
   antd: typeof antd;
   /** Hub named queries/commands — the unified data channel. */
   api: typeof api;
@@ -31,9 +36,14 @@ export interface ClientModuleAPI {
   registeredBlockKinds: typeof registeredBlockKinds;
 }
 
+declare global {
+  // eslint-disable-next-line no-var
+  var __CORDIS_CONSOLE: ClientModuleAPI | undefined;
+}
+
 export function clientModuleAPI(): ClientModuleAPI {
   return {
-    React, antd, api,
+    React, jsxRuntime: reactJsxRuntime, antd, api,
     registerBlockRenderer, registerPageRenderer, registerPanelRenderer,
     registeredBlockKinds,
   };
@@ -68,6 +78,10 @@ export async function loadClientModules(
     return []; // console infrastructure absent (or offline dev server): fine
   }
   const registered: string[] = [];
+  // The facade is also exposed on globalThis so a bundled plugin can alias
+  // bare specifiers (e.g. esbuild --alias:react=shim.js reading this global)
+  // and keep using the console's own React instance — required for hooks.
+  globalThis.__CORDIS_CONSOLE = apiFactory();
   for (const m of modules) {
     try {
       const mod = (await importer(m.url)) as {

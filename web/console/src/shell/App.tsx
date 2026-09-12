@@ -6,6 +6,7 @@ import {
   FileTextOutlined, FolderOutlined, ProfileOutlined, SearchOutlined,
 } from "@ant-design/icons";
 import { api } from "../api";
+import { loadClientModules } from "../lib/client-modules";
 import { useObservationGeneration, useStreamStatus, onObservation } from "../stream";
 import { useDomainVersion } from "../lib/projections";
 import { usePath, navigate } from "../router";
@@ -69,6 +70,9 @@ export default function App() {
   const compositionVersion = useDomainVersion("composition");
   useEffect(() => {
     refresh();
+    // A newly installed ui-client component must load without a manual
+    // reload; already-loaded modules are skipped by the loader.
+    void loadClientModules();
     return onObservation(() => undefined);
   }, [refresh, compositionVersion]);
 

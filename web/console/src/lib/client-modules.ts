@@ -54,6 +54,11 @@ export interface ClientModuleRef {
   url: string;
 }
 
+// Modules imported during this console session; loadClientModules is safe
+// to call again (composition.changed → newly installed modules load, known
+// ones are not re-imported).
+const loadedModules = new Set<string>();
+
 type ModuleImporter = (url: string) => Promise<unknown>;
 
 async function nativeImport(url: string): Promise<unknown> {
@@ -83,7 +88,12 @@ export async function loadClientModules(
   // and keep using the console's own React instance — required for hooks.
   globalThis.__CORDIS_CONSOLE = apiFactory();
   for (const m of modules) {
+    if (loadedModules.has(m.url)) {
+      registered.push(m.name); // already imported this session
+      continue;
+    }
     try {
+      loadedModules.add(m.url);
       const mod = (await importer(m.url)) as {
         default?: unknown;
         register?: unknown;

@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	toml "github.com/pelletier/go-toml/v2"
-
 	"dynamic-runtime/extensions/bundle"
 	"dynamic-runtime/extensions/config"
 )
@@ -41,47 +39,11 @@ func NewTOMLParser() Parser { return &tomlParser{} }
 type tomlParser struct{}
 
 func (p *tomlParser) Parse(ctx context.Context, source Source, data []byte) (config.Config, error) {
-	if err := ctx.Err(); err != nil {
-		return config.Config{}, err
-	}
-
-	var doc map[string]any
-	if err := toml.Unmarshal(data, &doc); err != nil {
-		return config.Config{}, fmt.Errorf("%w: source %q toml parse: %v", ErrInvalidSource, source.ID, err)
-	}
-
-	// Only the components array-of-tables and the bundles preset reference
-	// are mapped; any other top-level key or table is outside the
-	// config.Config contract.
-	for key := range doc {
-		if key != "components" && key != "bundles" {
-			return config.Config{}, fmt.Errorf("%w: source %q unsupported top-level key/table %q", ErrInvalidSource, source.ID, key)
-		}
-	}
-
-	presetRows, err := parseBundleReferences(source, doc["bundles"])
+	cfg, err := ComposeDocument(ctx, data, ComposeOptions{})
 	if err != nil {
-		return config.Config{}, err
+		return config.Config{}, fmt.Errorf("%w: source %q: %v", ErrInvalidSource, source.ID, err)
 	}
-
-	out := config.Config{}
-	rawComponents, ok := doc["components"]
-	if ok && rawComponents != nil {
-		components, perr := parseComponents(source, rawComponents)
-		if perr != nil {
-			return config.Config{}, perr
-		}
-		out.Components = bundle.MergeRows(presetRows, components)
-	} else {
-		out.Components = presetRows
-	}
-
-	for i := range out.Components {
-		if out.Components[i].ID == "" || out.Components[i].Type == "" {
-			return config.Config{}, fmt.Errorf("%w: source %q component #%d missing id/type", ErrInvalidSource, source.ID, i)
-		}
-	}
-	return out, nil
+	return cfg, nil
 }
 
 // parseBundleReferences reads the `bundles = ["name", ...]` preset

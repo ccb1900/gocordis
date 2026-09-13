@@ -154,15 +154,18 @@ func TestSubscribeSlowConsumerOverflow(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("emitter blocked on slow subscriber: %v", elapsed)
 	}
-	if !errors.Is(sub.Err(), events.ErrSubscriptionOverflow) {
-		t.Fatalf("Err() = %v, want ErrSubscriptionOverflow", sub.Err())
-	}
+	// The overflow close happens on the subscription's pump goroutine: drain
+	// the delivered events first (the channel closes on overflow), THEN
+	// assert the terminal error. Asserting before draining races the pump.
 	n := 0
 	for range sub.Events() {
 		n++
 		if n > 5000 {
 			t.Fatal("overflowed channel never closed")
 		}
+	}
+	if !errors.Is(sub.Err(), events.ErrSubscriptionOverflow) {
+		t.Fatalf("Err() = %v, want ErrSubscriptionOverflow", sub.Err())
 	}
 	emit(o, &seq, 9999) // must not touch the overflowed subscription
 }

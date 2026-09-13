@@ -109,11 +109,6 @@ func (s *Subscription) pump() {
 			s.mu.Unlock()
 			return
 		}
-		if len(s.queue) > queueLimit {
-			s.mu.Unlock()
-			s.terminate(ErrSubscriptionOverflow)
-			return
-		}
 		if len(s.queue) == 0 {
 			s.mu.Unlock()
 			select {
@@ -122,6 +117,14 @@ func (s *Subscription) pump() {
 			case <-s.wake:
 			}
 			continue
+		}
+		// Backlog check at POP time: a consumer that stops reading drives the
+		// queue past the limit here (the pump may otherwise be blocked in the
+		// send below and never revisit the loop top).
+		if len(s.queue) > queueLimit {
+			s.mu.Unlock()
+			s.terminate(ErrSubscriptionOverflow)
+			return
 		}
 		ev := s.queue[0]
 		s.queue = s.queue[1:]

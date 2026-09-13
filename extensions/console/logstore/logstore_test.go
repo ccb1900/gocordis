@@ -66,4 +66,3 @@ func TestRegisterLogsQuery(t *testing.T) {
 		t.Fatalf("query result = %s", data)
 	}
 }
-

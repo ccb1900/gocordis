@@ -52,8 +52,10 @@ const subscriptionBuffer = 256
 type Observer struct {
 	mu      sync.Mutex
 	nextSeq uint64
-	start   uint64 // Sequence of ring[0]; 0 when empty
-	ring    []runtime.RuntimeEvent
+	start   uint64                 // Sequence of the oldest retained event; 0 when empty
+	ring    []runtime.RuntimeEvent // fixed-capacity ring
+	head    int                    // next write position (valid when count == ringSize)
+	count   int
 	subs    map[*Subscription]struct{}
 	closed  error
 }
@@ -84,35 +86,33 @@ func (o *Observer) Emit(ev runtime.RuntimeEvent) {
 	if o.start == 0 {
 		o.start = ev.Sequence
 	}
-	if len(o.ring) == ringSize {
-		copy(o.ring, o.ring[1:])
-		o.ring[ringSize-1] = ev
-		if o.start != 0 {
-			o.start++
-		}
+	if o.count == ringSize {
+		// Full: overwrite the oldest slot and advance the cursor (O(1)).
+		o.ring[o.head] = ev
+		o.head = (o.head + 1) % ringSize
+		o.start = o.ring[o.head].Sequence
 	} else {
 		o.ring = append(o.ring, ev)
+		o.count++
+		if o.count == 1 {
+			o.start = ev.Sequence
+		}
 	}
-	var overflowed []*Subscription
+	// Fan-out enqueues into each subscription's spool (never blocks); the
+	// per-subscription pump applies the overflow policy.
 	for sub := range o.subs {
-		if sub.deliver(ev) {
-			overflowed = append(overflowed, sub)
+		if sub.enqueue(ev) {
+			sub.wakeSignal()
 		}
 	}
 	o.mu.Unlock()
-	o.removeSubs(overflowed)
 }
 
-// removeSubs unregisters subscribers (call WITHOUT holding o.mu).
-func (o *Observer) removeSubs(subs []*Subscription) {
-	if len(subs) == 0 {
-		return
-	}
+// removeSubscriber unregisters sub (idempotent; call WITHOUT holding o.mu).
+func (o *Observer) removeSubscriber(sub *Subscription) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	for _, sub := range subs {
-		delete(o.subs, sub)
-	}
+	delete(o.subs, sub)
 }
 
 // Close terminates every subscription with ErrObserverClosed and drops the
@@ -122,7 +122,7 @@ func (o *Observer) Close() {
 	defer o.mu.Unlock()
 	o.closed = ErrObserverClosed
 	for sub := range o.subs {
-		sub.finish(ErrObserverClosed)
+		sub.terminate(ErrObserverClosed)
 	}
 	o.subs = make(map[*Subscription]struct{})
 	o.ring = nil

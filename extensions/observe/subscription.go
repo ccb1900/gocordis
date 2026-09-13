@@ -1,8 +1,6 @@
 package events
 
 import (
-	"context"
-	"fmt"
 	"sync"
 
 	"dynamic-runtime/runtime"
@@ -11,13 +9,30 @@ import (
 // Subscription is one live event stream owned by its consumer. Events() is
 // closed exactly once when the subscription ends; Err reports the terminal
 // cause (nil for an explicit Close).
+//
+// Delivery model: the Observer (and the resume replay) APPEND to an internal
+// ordered queue; a per-subscription pump goroutine is the sole mover from the
+// queue into Events(). Consequences:
+//   - the replay phase never overflows (a reconnect gap <= ring is spooled in
+//     full -- no permanent loss, fixing R12 P1-1);
+//   - ordering is preserved (queue FIFO == Sequence order);
+//   - a consumer that stops reading accumulates queue backlog; past
+//     queueLimit the subscription CLOSES with ErrSubscriptionOverflow (the
+//     Observer's emitter never blocks) -- re-Snapshot and re-subscribe.
+
+// queueLimit bounds the internal spool backlog (16x the delivery buffer).
+const queueLimit = 4096
+
 type Subscription struct {
-	ch        chan runtime.RuntimeEvent
-	log       *Observer
-	done      chan struct{}
-	closeOnce sync.Once
+	ch       chan runtime.RuntimeEvent
+	log      *Observer
+	stop     chan struct{}
+	wake     chan struct{}
+	stopOnce sync.Once
+	chOnce   sync.Once
 
 	mu       sync.Mutex
+	queue    []runtime.RuntimeEvent
 	overflow error
 	closed   bool
 }
@@ -27,8 +42,7 @@ func (s *Subscription) Events() <-chan runtime.RuntimeEvent { return s.ch }
 
 // Err reports the terminal cause after Events() is closed: nil for an
 // explicit Close, ErrSubscriptionOverflow after a slow-consumer overflow,
-// ErrObserverClosed after the Observer closed. Before the channel is closed
-// it returns nil.
+// ErrObserverClosed after the Observer closed.
 func (s *Subscription) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -38,114 +52,85 @@ func (s *Subscription) Err() error {
 // Close unsubscribes and closes Events(). Idempotent; Err becomes nil.
 func (s *Subscription) Close() {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
 	s.closed = true
-	s.overflow = nil
 	s.mu.Unlock()
 	s.log.removeSubscriber(s)
-	s.end()
+	s.halt()
 }
 
-// end closes the channel exactly once.
-func (s *Subscription) end() {
-	s.closeOnce.Do(func() { close(s.ch) })
-}
-
-// finish marks a terminal cause and ends. The CALLER unregisters the
-// subscription from the log (this runs under the log lock in Observer.Close).
-func (s *Subscription) finish(cause error) {
+// terminate marks the terminal cause and closes the stream.
+func (s *Subscription) terminate(cause error) {
 	s.mu.Lock()
 	if s.overflow == nil && !s.closed {
 		s.overflow = cause
 	}
 	s.mu.Unlock()
-	s.end()
+	s.log.removeSubscriber(s)
+	s.halt()
 }
 
-// deliver enqueues one event without ever blocking the emitter. It reports
-// whether the subscriber overflowed (the CALLER unregisters it — deliver may
-// run while the observer lock is held and must not take it).
-func (s *Subscription) deliver(ev runtime.RuntimeEvent) bool {
+// halt signals the pump to stop and closes the delivery channel, each exactly
+// once.
+func (s *Subscription) halt() {
+	s.stopOnce.Do(func() { close(s.stop) })
+	s.chOnce.Do(func() { close(s.ch) })
+}
+
+// wakeSignal nudges the pump (non-blocking).
+func (s *Subscription) wakeSignal() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+// enqueue appends one event to the internal spool (never blocks the emitter).
+// Returns false when the subscription is closed.
+func (s *Subscription) enqueue(ev runtime.RuntimeEvent) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.overflow != nil || s.closed {
+	if s.closed {
 		return false
 	}
-	select {
-	case s.ch <- ev:
-		return false
-	default:
-		s.overflow = ErrSubscriptionOverflow
-		s.end()
-		return true
-	}
+	s.queue = append(s.queue, ev)
+	return true
 }
 
-// Subscribe returns a live stream of canonical runtime events.
-//
-// from anchors the stream: events with Sequence > from are replayed from the
-// retained ring (in order, before any live event), then live events stream.
-// from = 0 streams live events only. The intended pairing with the runtime
-// Snapshot:
-//
-//	snap := rt.Snapshot(ctx)          // snap.EventSequence = S
-//	sub  := obs.Subscribe(ctx, S)     // no-gap resume from S
-//
-// If from predates the retained ring, Subscribe fails with
-// ErrSequenceTooOld: re-Snapshot and anchor at the fresh EventSequence.
-// Subscribe after Observer.Close fails with ErrObserverClosed.
-func (o *Observer) Subscribe(ctx context.Context, from uint64) (*Subscription, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
+// pump is the sole mover from the internal spool into Events(): FIFO order,
+// Sequence order, terminating on Close / overflow / Observer close.
+func (s *Subscription) pump() {
+	for {
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return
+		}
+		if len(s.queue) > queueLimit {
+			s.mu.Unlock()
+			s.terminate(ErrSubscriptionOverflow)
+			return
+		}
+		if len(s.queue) == 0 {
+			s.mu.Unlock()
+			select {
+			case <-s.stop:
+				return
+			case <-s.wake:
+			}
+			continue
+		}
+		ev := s.queue[0]
+		s.queue = s.queue[1:]
+		s.mu.Unlock()
 
-	sub := &Subscription{
-		ch:   make(chan runtime.RuntimeEvent, subscriptionBuffer),
-		log:  o,
-		done: make(chan struct{}),
-	}
-
-	// Registration and replay-slice construction happen under the observer
-	// lock — the same lock Emit holds — so replay and live delivery cannot
-	// interleave, duplicate, or drop.
-	o.mu.Lock()
-	if o.closed != nil {
-		closed := o.closed
-		o.mu.Unlock()
-		return nil, closed
-	}
-	if from > 0 && len(o.ring) > 0 && from < o.start {
-		start := o.start
-		o.mu.Unlock()
-		return nil, fmt.Errorf("%w: requested from %d, retained from %d", ErrSequenceTooOld, from, start)
-	}
-	replay := make([]runtime.RuntimeEvent, 0, len(o.ring))
-	for _, ev := range o.ring {
-		if ev.Sequence > from {
-			replay = append(replay, ev)
+		select {
+		case s.ch <- ev:
+		case <-s.stop:
+			return
 		}
 	}
-	o.subs[sub] = struct{}{}
-	o.mu.Unlock()
-
-	// Replay through the delivery path so ordering and overflow policy are
-	// identical to live events. Replay alone can overflow when the ring
-	// exceeds the subscriber buffer — the episode closes and the consumer
-	// re-Snapshots.
-	for _, ev := range replay {
-		if sub.deliver(ev) {
-			o.removeSubscriber(sub)
-			return nil, sub.Err()
-		}
-	}
-	return sub, nil
-}
-
-// removeSubscriber unregisters sub (idempotent; call WITHOUT holding o.mu).
-func (o *Observer) removeSubscriber(sub *Subscription) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	delete(o.subs, sub)
 }

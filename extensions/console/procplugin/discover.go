@@ -2,6 +2,7 @@ package procplugin
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -74,13 +75,18 @@ func DiscoverPlugins(dir string) ([]config.ComponentConfig, error) {
 		}
 		var m PluginManifest
 		if err := toml.Unmarshal(data, &m); err != nil {
-			return nil, fmt.Errorf("plugin %s: %w", name, err)
+			// A broken declaration degrades to a warning so one bad plugin
+			// directory cannot block every hot reload; the rest of the
+			// deployment keeps applying.
+			slog.Warn("plugin manifest unparsable; skipped", "dir", name, "error", err)
+			continue
 		}
 		if m.Name == "" {
 			m.Name = name
 		}
 		if m.Name != name {
-			return nil, fmt.Errorf("plugin %s: manifest name %q must match the directory name", name, m.Name)
+			slog.Warn("plugin manifest name does not match directory; skipped", "dir", name, "declared", m.Name)
+			continue
 		}
 		pluginDir := filepath.Join(dir, name)
 		rows := m.componentRows(pluginDir)

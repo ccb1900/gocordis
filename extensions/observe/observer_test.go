@@ -148,7 +148,7 @@ func TestSubscribeSlowConsumerOverflow(t *testing.T) {
 	}
 	start := time.Now()
 	var seq uint64
-	for i := 0; i < 350; i++ {
+	for i := 0; i < 4500; i++ {
 		emit(o, &seq, i+1)
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
@@ -160,7 +160,7 @@ func TestSubscribeSlowConsumerOverflow(t *testing.T) {
 	n := 0
 	for range sub.Events() {
 		n++
-		if n > 400 {
+		if n > 5000 {
 			t.Fatal("overflowed channel never closed")
 		}
 	}

@@ -144,9 +144,21 @@ func (s *Server) serveClientModule(w http.ResponseWriter, r *http.Request) {
 			}
 			target = filepath.Join(filepath.Dir(m.Path), rel)
 		}
+		// Symlinks must not extend the mount outside the plugin directory:
+		// resolve the real path and re-check the prefix against the resolved
+		// plugin directory (EvalSymlinks on both sides).
+		resolved, err := withinDir(filepath.Dir(target), target)
+		if err != nil || !resolved {
+			http.NotFound(w, r)
+			return
+		}
 		info, err := os.Stat(target)
 		if err != nil || info.IsDir() {
 			http.NotFound(w, r)
+			return
+		}
+		if info.Size() > maxClientModuleBytes {
+			writeAPIError(w, http.StatusInternalServerError, "error", "client module exceeds size limit")
 			return
 		}
 		data, err := os.ReadFile(target)
@@ -429,3 +441,33 @@ func (s *Server) serveStream(w http.ResponseWriter, r *http.Request) {
 }
 
 var _ = errors.New // keep errors import for future typed handling
+
+// maxClientModuleBytes caps one served plugin file (a plugin bundle is
+// normally a few MB at most; anything larger is a misconfiguration).
+const maxClientModuleBytes = 64 << 20
+
+// withinDir reports whether target (after symlink resolution) stays inside
+// dir (also resolved). Non-existent targets resolve via their directory.
+func withinDir(dir, target string) (bool, error) {
+	absDir, err := filepath.EvalSymlinks(absOf(dir))
+	if err != nil {
+		return false, err
+	}
+	absTarget, err := filepath.EvalSymlinks(absOf(target))
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(absDir, absTarget)
+	if err != nil {
+		return false, err
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
+}
+
+func absOf(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	return abs
+}

@@ -98,6 +98,24 @@ func TestClientModulesTraversalImpossible(t *testing.T) {
 	}
 }
 
+// A symlink INSIDE the plugin directory pointing outside must not be served:
+// textual traversal guards do not cover symlink resolution.
+func TestClientModulesSymlinkEscape(t *testing.T) {
+	s, dir, _ := newModuleServer(t)
+	outside := filepath.Join(dir, "..", "outside.js")
+	if err := os.WriteFile(outside, []byte("top secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "link.js")); err != nil {
+		t.Skip("symlink unavailable:", err)
+	}
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/client-modules/demo-ui/link.js", nil))
+	if rec.Code == http.StatusOK || strings.Contains(rec.Body.String(), "top secret") {
+		t.Fatalf("symlink escape served: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestClientModulesMissingFileIs404(t *testing.T) {
 	s, _, reg := newModuleServer(t)
 	dir := t.TempDir()

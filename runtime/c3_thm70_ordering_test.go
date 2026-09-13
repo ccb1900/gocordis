@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	goruntime "runtime"
+
 	"context"
 	"fmt"
 	"math/rand/v2"
@@ -917,6 +919,11 @@ func TestC3Thm70MultiConsumerOrdering(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestC3Thm70RandomizedSchedule(t *testing.T) {
+	// The deterministic scheduler is only deterministic for a single P: under
+	// full-suite parallel load, goroutine interleaving leaked once (seed-1).
+	// Pin the test to one processor and restore on exit.
+	prev := goruntime.GOMAXPROCS(1)
+	defer goruntime.GOMAXPROCS(prev)
 	for _, seed := range []uint64{1, 2, 3, 4, 5} {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))

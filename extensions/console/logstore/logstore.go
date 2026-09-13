@@ -173,16 +173,16 @@ func levelRank(l string) int {
 	return 1
 }
 
-// NewHandler returns an slog.Handler that feeds the store and mirrors every
-// record to the provided writer (pass nil to only feed the ring).
+// NewHandler returns an slog.Handler that feeds the ring (and mirrors every
+// record to the provided writer — pass nil to only feed the ring). The JSON
+// encoding flows through one path only: a naive "Add in the handler, then
+// delegate" implementation would store every record twice.
 func (s *Store) NewHandler(mirror io.Writer) slog.Handler {
-	var inner slog.Handler
+	var out io.Writer = &ringWriter{s}
 	if mirror != nil {
-		inner = slog.NewJSONHandler(io.MultiWriter(mirror, &ringWriter{s}), &slog.HandlerOptions{Level: slog.LevelDebug})
-	} else {
-		inner = slog.NewJSONHandler(&ringWriter{s}, &slog.HandlerOptions{Level: slog.LevelDebug})
+		out = io.MultiWriter(mirror, out)
 	}
-	return &handler{inner: inner, store: s}
+	return slog.NewJSONHandler(out, &slog.HandlerOptions{Level: slog.LevelDebug})
 }
 
 type ringWriter struct{ s *Store }
@@ -208,52 +208,4 @@ func (w *ringWriter) Write(p []byte) (int, error) {
 	}
 	w.s.Add(e)
 	return len(p), nil
-}
-
-type handler struct {
-	inner slog.Handler
-	store *Store
-	attrs string
-	group string
-}
-
-func (h *handler) Enabled(_ context.Context, l slog.Level) bool { return true }
-
-func (h *handler) Handle(_ context.Context, r slog.Record) error {
-	e := Entry{
-		Time:  r.Time,
-		Level: r.Level.String(),
-		Msg:   r.Message,
-		Attrs: map[string]string{},
-	}
-	r.Attrs(func(a slog.Attr) bool {
-		key := a.Key
-		if h.group != "" {
-			key = h.group + "." + key
-		}
-		e.Attrs[key] = a.Value.String()
-		e.AttrStr += " " + key + "=" + a.Value.String()
-		return true
-	})
-	h.store.Add(e)
-	return h.inner.Handle(context.Background(), r)
-}
-
-func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	suffix := ""
-	for _, a := range attrs {
-		suffix += " " + a.Key + "=" + a.Value.String()
-	}
-	clone := *h
-	clone.attrs = h.attrs + suffix
-	clone.inner = h.inner.WithAttrs(attrs)
-	_ = clone.attrs
-	return &clone
-}
-
-func (h *handler) WithGroup(name string) slog.Handler {
-	clone := *h
-	clone.group = name
-	clone.inner = h.inner.WithGroup(name)
-	return &clone
 }

@@ -64,6 +64,10 @@ type Backend struct {
 	nextInstance atomic.Uint64
 }
 
+// maxModuleBytes bounds one compiled module (OOM guard for untrusted
+// artifacts). 64 MiB comfortably exceeds any practical guest.
+const maxModuleBytes = 64 << 20
+
 var _ loader.Backend = (*Backend)(nil)
 
 // NewBackend creates a running WASM Backend backed by a wazero interpreter
@@ -77,7 +81,12 @@ func NewBackend(opts ...Option) *Backend {
 	}
 	return &Backend{
 		observer: o.observer,
-		rt:       wazero.NewRuntime(context.Background()),
+		// CloseOnContextDone: an in-flight guest call is aborted when its
+		// context expires, so a misbehaving guest cannot monopolize the
+		// activation goroutine indefinitely (paper §6.3: the sandbox must
+		// contain untrusted code).
+		rt: wazero.NewRuntimeWithConfig(context.Background(),
+			wazero.NewRuntimeConfig().WithCloseOnContextDone(true)),
 	}
 }
 
@@ -111,6 +120,9 @@ func (b *Backend) Load(ctx context.Context, artifact loader.Artifact) (m loader.
 	data, err := readSource(artifact.Source)
 	if err != nil {
 		return loader.Module{}, err
+	}
+	if len(data) > maxModuleBytes {
+		return loader.Module{}, fmt.Errorf("%w: module %d bytes exceeds limit %d", loader.ErrInvalidArtifact, len(data), maxModuleBytes)
 	}
 	if err := ctx.Err(); err != nil {
 		return loader.Module{}, err

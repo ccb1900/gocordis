@@ -34,6 +34,9 @@ type ControlResult struct {
 	Accepted bool
 	Rejected bool
 	Failed   bool
-	State    string
-	Error    string
+	// Transient marks a fallback-path result: the fiber was switched directly
+	// without a declaration store, so the next reconcile overrides it.
+	Transient bool
+	State     string
+	Error     string
 }

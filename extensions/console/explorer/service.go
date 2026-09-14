@@ -132,6 +132,9 @@ func (s *Service) Plugins() []Plugin {
 // scalarConfig flattens the scalar entries of a component config for
 // display. Nested tables (metadata rules, structured CSV layouts) are
 // summarized by their key instead of being expanded.
+// scalarConfig flattens the scalar entries of a component config for
+// DISPLAY ONLY: non-scalar entries are collapsed to summaries. Never feed
+// the result back into SetConfig — nested values would be destroyed.
 func scalarConfig(cfg map[string]any) map[string]string {
 	out := map[string]string{}
 	for k, v := range cfg {
@@ -171,7 +174,8 @@ func capabilityLabel(s string) string {
 // DeclarationSwitch wired, the operation edits the DECLARATION first (the
 // switch's truth) and then reflects the Runtime-visible terminal state; the
 // direct Fiber.Load/Dispose path remains only as the transient fallback for
-// applications that have not wired a declaration store.
+// applications that have not wired a declaration store — such results carry
+// Transient=true so the UI can label them as non-durable.
 func (s *Service) Control(ctx context.Context, id string, enable bool) ControlResult {
 	if ctx == nil {
 		ctx = context.Background()
@@ -215,6 +219,8 @@ func (s *Service) Control(ctx context.Context, id string, enable bool) ControlRe
 		}
 		return ControlResult{PluginID: id, Accepted: true, State: state}
 	}
+	// Transient fallback: results are flagged so the UI knows the switch is
+	// not durable (the next reconcile overrides it).
 
 	// Transient fallback: direct Fiber.Load/Dispose. The next controller
 	// reconcile re-derives from the declaration and overrides this.
@@ -251,7 +257,7 @@ func (s *Service) Control(ctx context.Context, id string, enable bool) ControlRe
 		if err := fiber.Ready(wait); err != nil {
 			return resultFor(id, fiber, true, fmt.Errorf("activate %q: %w", id, err))
 		}
-		return ControlResult{PluginID: id, Accepted: true, State: fiber.State().String()}
+		return ControlResult{PluginID: id, Accepted: true, Transient: true, State: fiber.State().String()}
 	}
 
 	if err := fiber.Dispose(); err != nil {
@@ -260,11 +266,13 @@ func (s *Service) Control(ctx context.Context, id string, enable bool) ControlRe
 	if err := fiber.Gone(wait); err != nil {
 		return resultFor(id, fiber, true, fmt.Errorf("deactivate %q: %w", id, err))
 	}
-	return ControlResult{PluginID: id, Accepted: true, State: fiber.State().String()}
+	return ControlResult{PluginID: id, Accepted: true, Transient: true, State: fiber.State().String()}
 }
 
 // currentState is used for rejection responses. It reads Runtime only.
 func (s *Service) currentState(id string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.owned == nil {
 		return "Gone", errors.New("runtime inspection unavailable")
 	}

@@ -112,6 +112,10 @@ func (c *cmdRehomeBegin) apply(o *orchestrator) {
 		c.done <- ErrRehomeNotActive
 		return
 	}
+	if o.rt.mode == runtimeDeterministic {
+		c.done <- errors.New("runtime: rehome is not supported in deterministic mode")
+		return
+	}
 	if f.rehome != nil {
 		c.done <- ErrRehomeBusy
 		return
@@ -190,18 +194,22 @@ func (o *orchestrator) executeRehomeStep2(f *Fiber) {
 	}
 	f.keyRealms = freshTable
 
-	// Move the provision records out of the old namespaces.
+	// Move the provision records out of the old namespaces. Each moved record
+	// emits a withdrawn->published event pair so observation consumers
+	// (console event streams) see the migration.
 	for _, rr := range fiberNamespaces(f) {
 		if rr == plan.fresh {
 			continue
 		}
 		for _, rec := range rr.recordsOwnedBy(id) {
-			if _, wasRetiring := rr.removeOwn(rec.key, id); wasRetiring || true {
+			if _, _ = rr.removeOwn(rec.key, id); true {
 				if err := plan.fresh.registerOwn(rec.key, id, rec.value); err != nil {
 					// The fresh namespace is fresh: a duplicate is impossible
 					// unless the record was already moved; ignore defensively.
 					continue
 				}
+				o.rt.emitEvent(EventProviderWithdrawn, f.id, act.id, ProviderEventData{Key: rec.key.String()})
+				o.rt.emitEvent(EventProviderPublished, f.id, act.id, ProviderEventData{Key: rec.key.String()})
 			}
 		}
 	}

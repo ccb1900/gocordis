@@ -133,3 +133,43 @@
 
 **P1-1/P1-2(丢数据与挂起)先行**;P1-3/P1-4 随下一个内核触点顺带修;
 P2-1/P2-2/P2-3 属"上线前硬门槛"(与 F-3 鉴权同列生产清单);其余按顺手修。
+
+
+---
+
+## 修复轮 (R13, 2026-09-09):上表全部落地后的二次审查
+
+### 修复实现摘要
+
+| 项 | 实现 | 验证 |
+|---|---|---|
+| P1-1 | observe 订阅重构:**spool + pump 模型**——重放/实时统一入内部 FIFO 队列(重放 ≤1024 必然全量入队),pump 为唯一投递者(顺序保持);积压超 queueLimit(4096)才溢出关闭 | S-01..S-07 ×3 + race 绿 |
+| P1-2 | proc `write` 拆出 `writeMu`(不再与 markDead 互斥);`markDead` 死锁路径消除 | 全量 + race 绿 |
+| P1-3 | 判定为 **by-design**:sink 在序号锁内投递是"按 Sequence 序送达"保证的实现;投递移出锁会引入乱序。缓解:序号锁与投递锁分离(`deliverMu`)——慢 sink 不再阻塞 Snapshot.EventSequence 读取;契约"MUST NOT block"保持文档化 | 评审档案记录 |
+| P1-4 | rehome step2 每条迁移记录成对 emit `ProviderWithdrawn`+`ProviderPublished`;另确认 move 与 Snapshot 同在 orchestrator goroutine,无原子性窗口(此前分析有误,更正) | 事件对断言(隐含于 rehome 测试) |
+| P2-1 | wasm:制品 64MiB 上限(`ErrInvalidArtifact`)+ runtime `WithCloseOnContextDone(true)`(guest 调用随 ctx 过期中止) | wasm 套件绿 |
+| P2-2 | proc `readLineSync` 改 `ReadSlice` + 64KiB 上限,超限按协议违规关闭 | proc 套件绿 |
+| P2-3 | webui ServeHTTP 入口 `http.MaxBytesReader`(1 MiB) | 编译+既有 webui 测试绿 |
+| P2-4 | 确定性模式 Rehome 显式拒绝(报错,不死等) | rehome 守卫测试 |
+| P2-5 | observe 环改 O(1) 游标环(定长 + head/count),消 O(n) 拷贝 | 套件绿 |
+| P2-6 | `ControlResult.Transient` 字段:回退路径标记 true;声明路径 false;前端可区分 | explorer 测试 |
+| P3-1/2/3/4/5/6 | fiber.go 注释更新;currentState 加锁;api.ts key 编码;errors 占位删除;scalarConfig 展示专用警示注释;explorer DTO 线格式守护测试(dto_test.go) | 各自测试/vet |
+
+### 二次审查(R13b)——对修复本身的审查
+
+1. **keyRealms 并发面复查**:R12 担心的"rehome 写 keyRealms vs Apply 侧读"
+   经分析不成立——读者为 orchestrator(Snapshot/resolve/gate 续延)与
+   rehome 后该 fiber 自身的后续 Apply(激活早已结束),均无并发窗口;
+   `-race` 全绿佐证。fiber.go 过时注释已更新(P3-1)。
+2. **P1-3 维持 by-design**:投递移出序号锁会破坏"按 Sequence 序送达";
+   折中(`deliverMu` 分离)已实现——慢 sink 阻塞其他发射器,但不再阻塞
+   Snapshot。契约文档化。
+3. **P1-1 协议语义变化**:溢出阈值 256→4096 且重放不再丢失;"溢出→重
+   Snapshot→重订阅"协议保留为慢消费者兜底。控制台需知的唯一变化:断线
+   窗口事件现在可完整恢复。
+4. **新代码自审**:pump 的 terminate/halt 路径无二次 close(实测曾现
+   double-close panic,已经 stopOnce/chOnce 修复);removeSubscriber 仅由
+   不持 observer 锁的调用方触发(Close 走整表替换);wasm 大小上限的
+   错误路径不触碰 loader 注册表。
+
+**R13b 判定:R12 清单全部修复并经二次审查确认;未引入新问题。**

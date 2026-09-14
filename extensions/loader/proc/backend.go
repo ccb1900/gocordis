@@ -76,7 +76,10 @@ var (
 // Caller is one host-side RPC connection to a plugin process. Calls are
 // sequential (one in-flight request per connection, v1); every failure mode —
 // crash, protocol violation, cancellation — surfaces as a non-nil error so
-// callers honor the paper's asynchronous-tolerant contract.
+// callers honor the paper's asynchronous-tolerant contract. A caller-supplied
+// ctx without a deadline is wrapped with callTimeout when set (see
+// WithCallTimeout): the paper's warning that cross-process calls may fail
+// mid-flight implies calls must be bounded.
 type Caller interface {
 	// Call invokes the remote method with JSON params and decodes the JSON
 	// result into result (nil discards it).
@@ -317,7 +320,8 @@ type pluginClient struct {
 	hsLine   chan string   // handshake header line (buffered 1)
 	stopOnce sync.Once
 
-	mu      sync.Mutex // serializes stdin writes and the pending map
+	writeMu sync.Mutex // serializes stdin writes ONLY (never held by readLoop)
+	mu      sync.Mutex // guards pending map + dead
 	pending map[int]chan callResult
 	nextID  int
 	dead    error // sticky failure (process exit / protocol death); mu-guarded
@@ -423,16 +427,9 @@ type rpcMsg struct {
 	Error   *rpcError       `json:"error"`
 }
 
-func debugTrace(what, method string) {
-	if os.Getenv("GORIDIS_PROC_TRACE") != "" {
-		fmt.Fprintln(os.Stderr, "[proc-trace]", what, method)
-	}
-}
-
 // readLoop is the sole reader of plugin stdout: handshake first, then
 // line-delimited JSON-RPC dispatch.
 func (p *pluginClient) readLoop(r *bufio.Reader) {
-	debugTrace("readLoop start", "")
 	header, err := p.readLineSync(r)
 	if err != nil {
 		p.markDead(fmt.Errorf("%w: %v", ErrProcHandshake, err))
@@ -505,20 +502,25 @@ func (p *pluginClient) write(v any) error {
 	if err != nil {
 		return err
 	}
+	// writeMu serializes only the stdin write: it must NOT be held while
+	// blocked on a full pipe, otherwise markDead (read loop, crash handling)
+	// would deadlock behind us (R12 P1-2).
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.dead != nil {
-		return p.dead
+		dead := p.dead
+		p.mu.Unlock()
+		return dead
 	}
+	p.mu.Unlock()
 	_, err = p.stdin.Write(append(data, '\n'))
 	return err
 }
 
 // Call implements Caller.
 func (p *pluginClient) Call(ctx context.Context, method string, params any, result any) error {
-	debugTrace("call enter", method)
 	p.mu.Lock()
-	debugTrace("call registered", method)
 	if p.dead != nil {
 		err := p.dead
 		p.mu.Unlock()
@@ -539,10 +541,8 @@ func (p *pluginClient) Call(ctx context.Context, method string, params any, resu
 		return fmt.Errorf("%w: write: %v", ErrPluginUnavailable, err)
 	}
 
-	debugTrace("call waiting", method)
 	select {
 	case res := <-ch:
-		debugTrace("call got response", method)
 		if res.err != nil {
 			return res.err
 		}

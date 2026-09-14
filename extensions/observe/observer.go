@@ -122,7 +122,7 @@ func (o *Observer) Close() {
 	defer o.mu.Unlock()
 	o.closed = ErrObserverClosed
 	for sub := range o.subs {
-		sub.terminate(ErrObserverClosed)
+		sub.finish(ErrObserverClosed)
 	}
 	o.subs = make(map[*Subscription]struct{})
 	o.ring = nil

@@ -62,14 +62,27 @@ func (s *Subscription) Close() {
 	s.halt()
 }
 
-// terminate marks the terminal cause and closes the stream.
+// terminate marks the terminal cause and closes the stream. The CALLER owns
+// unregistration: Observer.Close replaces the map wholesale (sub.finish);
+// the pump (which never holds the observer lock) calls removeSubscriber
+// itself after terminate.
 func (s *Subscription) terminate(cause error) {
 	s.mu.Lock()
 	if s.overflow == nil && !s.closed {
 		s.overflow = cause
 	}
 	s.mu.Unlock()
-	s.log.removeSubscriber(s)
+	s.halt()
+}
+
+// finish marks the terminal cause and ends the stream WITHOUT unregistering
+// (used by Observer.Close, which replaces the subscriber map wholesale).
+func (s *Subscription) finish(cause error) {
+	s.mu.Lock()
+	if s.overflow == nil && !s.closed {
+		s.overflow = cause
+	}
+	s.mu.Unlock()
 	s.halt()
 }
 
@@ -124,6 +137,7 @@ func (s *Subscription) pump() {
 		if len(s.queue) > queueLimit {
 			s.mu.Unlock()
 			s.terminate(ErrSubscriptionOverflow)
+			s.log.removeSubscriber(s)
 			return
 		}
 		ev := s.queue[0]

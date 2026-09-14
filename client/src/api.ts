@@ -41,7 +41,7 @@ export const api = {
   pluginConfig: (id: string) => get<Record<string, unknown>>(`/api/plugins/${encodeURIComponent(id)}/config`),
   setPluginConfig: (id: string, cfg: Record<string, unknown>) => post(`/api/plugins/${encodeURIComponent(id)}/config`, { config: cfg }),
   hubQuery: <T = unknown>(name: string, params?: Record<string, string>) => {
-    const qs = params ? "?" + Object.entries(params).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&") : "";
+    const qs = params ? "?" + Object.entries(params).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&") : "";
     return get<T>(`/api/query/${name}${qs}`);
   },
   hubCommand: (name: string, body?: unknown) => post(`/api/command/${name}`, body),

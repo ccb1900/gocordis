@@ -10,7 +10,6 @@ package webui
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -103,7 +102,12 @@ func (s *Server) Publish(ev host.UIObservation) {
 	}
 }
 
+// maxRequestBodyBytes bounds every request body (OOM guard; 1 MiB is ample
+// for console commands and configs).
+const maxRequestBodyBytes = 1 << 20
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		s.serveAPI(w, r)
 		return
@@ -439,8 +443,6 @@ func (s *Server) serveStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
-
-var _ = errors.New // keep errors import for future typed handling
 
 // maxClientModuleBytes caps one served plugin file (a plugin bundle is
 // normally a few MB at most; anything larger is a misconfiguration).

@@ -173,3 +173,30 @@ P2-1/P2-2/P2-3 属"上线前硬门槛"(与 F-3 鉴权同列生产清单);其余�
    错误路径不触碰 loader 注册表。
 
 **R13b 判定:R12 清单全部修复并经二次审查确认;未引入新问题。**
+
+
+---
+
+## R13 补充 (2026-09-09):两个"偶发"的根因修复
+
+观察名单的两个偶发均为**测试/关停代码的真实缺陷**,已修:
+
+### C3 randomized schedule 偶发(根因:即时检查 vs 异步停泊)
+- `c3EnabledStep` 在 `c3WaitParked(任意完成≥1)` 后**立即**检查目标 fiber 的
+  步骤;多 fiber 调度下其他 fiber 的完成先泊入,目标 Apply goroutine 在满载
+  下稍后才泊 → 即时 Fatalf。与 runtime 无关(确定性驱动无竞争),纯测试驱动
+  时序误判。
+- 修复:`c3EnabledStep` 改为轮询目标步骤至 10s 上限(真死锁仍带全量状态
+  失败);`c3Drain` idle-grace 500ms→2s。单跑 ×8 + 全套件复验绿。
+
+### WHMR16 final CloseContext 偶发(根因:hmr 关停竞争窗口)
+- `hmr.Controller`:worker finalize 置 `stopped=true` 与 `close(h.done)` 之间
+  存在窗口(整个 finalize 排空期间);此窗口内到达的 `CloseContext` submit 被
+  拒 → 旧代码立即返回 `ErrHMRClosed`,违反自身文档"a later CloseContext
+  finishes the wait"。
+- 修复:submit 被拒时改为等待 `h.done`(以调用方 ctx 为界)—— WHMR16 的
+  final CloseContext(10s)即为此语义。审查结论:config.Controller 等同构
+  实现的 submit 拒绝路径使用"等待 done"的既有写法,无此窗口;hmr 为孤例,
+  已修。
+
+**两个观察名单项全部根因修复,清单清零。**

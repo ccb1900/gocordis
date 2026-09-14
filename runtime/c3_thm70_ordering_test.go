@@ -542,12 +542,20 @@ func c3WaitParked(t *testing.T, rt *Runtime, why string) {
 
 func c3EnabledStep(t *testing.T, rt *Runtime, fid FiberID, kind detStepKind) detStep {
 	t.Helper()
-	for _, s := range rt.detEnabledSteps() {
-		if s.FiberID == fid && s.Kind == kind {
-			return s
+	// Poll for the wanted step: other fibers' completions may park first
+	// (multi-fiber schedules), and under full-suite CPU load the target
+	// Apply/Cleanup goroutine may park later than the c3WaitParked(pending>=1)
+	// check. A true stall still fails via the deadline with full state.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, s := range rt.detEnabledSteps() {
+			if s.FiberID == fid && s.Kind == kind {
+				return s
+			}
 		}
+		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatalf("c3: no enabled step %v for fiber %d; enabled=%v pending=%d", kind, fid, rt.detEnabledSteps(), rt.detPending())
+	t.Fatalf("c3: no enabled step %v for fiber %d within deadline; enabled=%v pending=%d", kind, fid, rt.detEnabledSteps(), rt.detPending())
 	return detStep{}
 }
 
@@ -567,7 +575,7 @@ func c3Drain(t *testing.T, rt *Runtime, rec *c3Recorder) {
 	// idleGrace is only the dead-end confirmation window: parking after the
 	// orchestrator applies a command happens in microseconds, so a half-second
 	// of silence means no completion is coming without any further driver step.
-	const idleGrace = 500
+	const idleGrace = 2000
 	for iter := 0; iter < 500; iter++ {
 		if !c2Wait(idleGrace, func() bool { return rt.detPending() >= 1 }) {
 			return

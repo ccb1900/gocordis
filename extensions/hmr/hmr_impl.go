@@ -105,11 +105,15 @@ func (h *Controller) CloseContext(ctx context.Context) error {
 	}
 	res := make(chan error, 1)
 	if !h.submit(&cmdClose{res: res}) {
+		// Submit rejected: the worker is finalizing a close that a previous
+		// CloseContext initiated (stopped is set during finalize, before
+		// h.done closes). The contract "a later CloseContext finishes the
+		// wait" applies -- wait for the completion instead of erroring.
 		select {
 		case <-h.done:
 			return nil
-		default:
-			return ErrHMRClosed
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 	select {

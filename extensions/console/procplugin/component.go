@@ -28,6 +28,7 @@ import (
 //	queries  — hub query names the process serves (JSON-RPC methods of the
 //	           same name; params = the query string as a key→values map)
 //	commands — hub command names the process serves (params = the JSON body)
+//	handshake_timeout_seconds — startup handshake wait (default 5)
 type Component struct {
 	id       string
 	dir      string

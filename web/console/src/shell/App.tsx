@@ -5,6 +5,7 @@ import {
   ApiOutlined, BellOutlined, BlockOutlined, DashboardOutlined, DatabaseOutlined,
   FileTextOutlined, FolderOutlined, ProfileOutlined, SearchOutlined,
 } from "@ant-design/icons";
+import { Alert } from "antd";
 import { api } from "../api";
 import { loadClientModules } from "../lib/client-modules";
 import { useObservationGeneration, useStreamStatus, onObservation } from "../stream";

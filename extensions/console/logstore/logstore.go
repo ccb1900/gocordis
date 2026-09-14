@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -124,6 +125,14 @@ func (s *Store) Latest(n int, minLevel, contains string) []Entry {
 		if contains != "" && !containsFold(e.Msg+e.AttrStr, contains) {
 			continue
 		}
+		// 返回副本：调用方修改 Attrs 不得影响环内条目。
+		if e.Attrs != nil {
+			attrs := make(map[string]string, len(e.Attrs))
+			for k, v := range e.Attrs {
+				attrs[k] = v
+			}
+			e.Attrs = attrs
+		}
 		out = append(out, e)
 	}
 	return out
@@ -195,15 +204,20 @@ func (w *ringWriter) Write(p []byte) (int, error) {
 		Msg:   fmt.Sprint(raw["msg"]),
 		Attrs: map[string]string{},
 	}
-	for k, v := range raw {
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
 		if k == "time" || k == "level" || k == "msg" {
 			continue
 		}
-		e.Attrs[k] = fmt.Sprint(v)
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		e.Attrs[k] = fmt.Sprint(raw[k])
 	}
 	e.AttrStr = e.Msg
-	for _, v := range e.Attrs {
-		e.AttrStr += " " + v
+	for _, k := range keys {
+		e.AttrStr += " " + k + "=" + e.Attrs[k]
 	}
 	w.s.Add(e)
 	return len(p), nil

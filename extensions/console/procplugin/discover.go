@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	toml "github.com/pelletier/go-toml/v2"
 
@@ -44,6 +45,25 @@ type PluginPage struct {
 	Order       int    `toml:"order"`
 }
 
+var (
+	warnOnceMu sync.Mutex
+	warned     = map[string]bool{}
+)
+
+// warnOncePerDir suppresses repeated warnings for the same plugin directory
+// across hot reloads.
+func warnOncePerDir(key string, fn func()) {
+	warnOnceMu.Lock()
+	first := !warned[key]
+	if first {
+		warned[key] = true
+	}
+	warnOnceMu.Unlock()
+	if first {
+		fn()
+	}
+}
+
 // DiscoverPlugins scans dir for plugin directories (plugins/<name>/manifest.toml)
 // and expands each into its component rows:
 //
@@ -75,17 +95,18 @@ func DiscoverPlugins(dir string) ([]config.ComponentConfig, error) {
 		}
 		var m PluginManifest
 		if err := toml.Unmarshal(data, &m); err != nil {
-			// A broken declaration degrades to a warning so one bad plugin
-			// directory cannot block every hot reload; the rest of the
-			// deployment keeps applying.
-			slog.Warn("plugin manifest unparsable; skipped", "dir", name, "error", err)
+			warnOncePerDir(dir+"/"+name, func() {
+				slog.Warn("plugin manifest unparsable; skipped", "dir", name, "error", err)
+			})
 			continue
 		}
 		if m.Name == "" {
 			m.Name = name
 		}
 		if m.Name != name {
-			slog.Warn("plugin manifest name does not match directory; skipped", "dir", name, "declared", m.Name)
+			warnOncePerDir(dir+"/"+name+":name", func() {
+				slog.Warn("plugin manifest name does not match directory; skipped", "dir", name, "declared", m.Name)
+			})
 			continue
 		}
 		pluginDir := filepath.Join(dir, name)

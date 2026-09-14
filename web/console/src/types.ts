@@ -22,6 +22,8 @@ export interface UIPage {
   renderer: string;
   /** Menu icon hint from the console's curated set. */
   icon?: string;
+  /** Menu icon hint from the console's curated set. */
+  icon?: string;
   description?: string;
   view?: unknown;
   views?: ViewBlock[];

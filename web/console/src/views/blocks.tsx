@@ -191,9 +191,15 @@ function KVBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
   if (dormant) return <FocusHint />;
   if (error) return <p style={{ color: "#f0655a" }}>{error}</p>;
   const obj = (data ?? {}) as Record<string, unknown>;
+  // Declared fields win; without them the whole response object renders —
+  // the composition stays schema-agnostic (e.g. per-table row counts whose
+  // names only the deployment knows).
+  const entries = (block.fields ?? []).length
+    ? (block.fields ?? []).map((f) => ({ key: f.key, label: f.label }))
+    : Object.keys(obj).sort().map((k) => ({ key: k, label: k }));
   return (
     <Descriptions size="small" column={1} bordered title={block.title}>
-      {(block.fields ?? []).map((f) => (
+      {entries.map((f) => (
         <Descriptions.Item key={f.key} label={f.label}>
           {loading ? "…" : String(obj[f.key] ?? "—")}
         </Descriptions.Item>

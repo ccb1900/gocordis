@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os/exec"
 	"sync"
@@ -22,6 +23,9 @@ import (
 // Uninstall/disable of the component therefore stops the plugin process and
 // withdraws its vocabulary — composition-governed like everything else.
 //
+// 容错语义：后端启动失败时，组件降级而非阻断——Fiber 保持 Active，日志
+// 记录降级原因，观察流汇报失败。平台不会被单个插件阻断。
+//
 // Config:
 //
 //	backend  — plugin executable path (required)
@@ -35,6 +39,7 @@ type Component struct {
 	backend  string
 	queries  []string
 	commands []string
+	logger   *slog.Logger
 
 	mu     sync.Mutex
 	client *Client
@@ -46,7 +51,11 @@ func NewComponent(cc config.ComponentConfig) (*Component, error) {
 	if backend == "" {
 		return nil, fmt.Errorf("proc-plugin %q: backend is required", cc.ID)
 	}
-	c := &Component{id: cc.ID, backend: backend, dir: configutil.OptionalString(cc, "dir", ".")}
+	c := &Component{
+		id: cc.ID, backend: backend,
+		dir:    configutil.OptionalString(cc, "dir", "."),
+		logger: slog.Default(),
+	}
 	if raw, ok := cc.Config["queries"].([]any); ok {
 		for _, q := range raw {
 			if s, ok := q.(string); ok && s != "" {
@@ -79,7 +88,15 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	cmd.Dir = c.dir
 	client, err := Start(ctx.Context(), cmd, 5*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("proc-plugin %q: %w", c.id, err)
+		// 后端启动失败：降级而非阻断。Fiber 保持 Active，日志记录降级
+		// 原因，观察流汇报失败。平台不会被单个插件阻断——操作员可以
+		// 通过控制台禁用/卸载该插件，或修复后热加载恢复。
+		c.logger.Warn("proc-plugin backend failed to start; running in degraded mode",
+			"plugin", c.id, "backend", c.backend, "error", err)
+		_ = ctx.Effect(func() (func() error, error) {
+			return func() error { return nil }, nil
+		})
+		return nil, nil
 	}
 	c.mu.Lock()
 	c.client = client

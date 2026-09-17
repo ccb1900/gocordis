@@ -186,6 +186,14 @@ function TableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
   );
 }
 
+// KV values may be scalars or structured payloads; strings are shown as-is,
+// objects/arrays serialize so a generic fallback never prints "[object Object]".
+function renderKVValue(v: unknown) {
+  if (v == null) return "—";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
 function KVBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
   const { data, error, loading, dormant } = useQueryData(block, ctx);
   if (dormant) return <FocusHint />;
@@ -201,7 +209,7 @@ function KVBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
     <Descriptions size="small" column={1} bordered title={block.title}>
       {entries.map((f) => (
         <Descriptions.Item key={f.key} label={f.label}>
-          {loading ? "…" : String(obj[f.key] ?? "—")}
+          {loading ? "…" : renderKVValue(obj[f.key])}
         </Descriptions.Item>
       ))}
     </Descriptions>

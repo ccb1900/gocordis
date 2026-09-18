@@ -376,3 +376,162 @@ button {
   color: var(--danger);
   font-size: 12.5px;
 }
+
+/* ============================================================
+   Operator layout primitives: master-detail, calendar, cards.
+   Domain-free — pages compose these via the view schema.
+   ============================================================ */
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.card + .card {
+  margin-top: 14px;
+}
+
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.md-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 5fr) 7fr;
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .md-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.md-list,
+.md-detail {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.md-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.md-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.md-detail-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-right: auto;
+}
+
+.cal-week {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.cal-weekday {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.cal-cell {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-size: 12px;
+  font-family: var(--mono);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.06s ease, border-color 0.12s ease;
+}
+
+.cal-cell:hover {
+  transform: scale(1.06);
+  border-color: var(--accent);
+}
+
+.cal-succeeded {
+  background: var(--ok-soft);
+  border-color: transparent;
+  color: var(--ok);
+}
+
+.cal-failed {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.cal-pending {
+  background: var(--warn-soft);
+  border-color: transparent;
+  color: var(--warn);
+}
+
+.cal-skipped {
+  background: transparent;
+  color: var(--text-3);
+  opacity: 0.55;
+}
+
+.cal-today {
+  position: absolute;
+  bottom: 4px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.cal-legend {
+  display: flex;
+  gap: 14px;
+  margin-top: 10px;
+}
+
+.cal-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.cal-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}

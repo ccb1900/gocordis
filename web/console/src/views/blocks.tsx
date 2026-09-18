@@ -20,29 +20,37 @@ export type { ViewBlock, ViewContext, BlockRenderer };
 
 type Row = Record<string, unknown>;
 
+const STATUS_META: Record<string, { label: string; color: string; soft: string }> = {
+  Succeeded: { label: "成功", color: "var(--ok)", soft: "var(--ok-soft)" },
+  Active: { label: "活跃", color: "var(--accent)", soft: "var(--accent-soft)" },
+  Failed: { label: "失败", color: "var(--danger)", soft: "var(--danger-soft)" },
+  Pending: { label: "等待数据", color: "var(--warn)", soft: "var(--warn-soft)" },
+  Skipped: { label: "无数据", color: "var(--text-3)", soft: "rgba(137,147,166,0.14)" },
+};
+
+function statusMeta(s: string) {
+  return (
+    STATUS_META[s] || { label: s || "—", color: "var(--text-2)", soft: "rgba(137,147,166,0.14)" }
+  );
+}
+
 function statusNode(status: unknown) {
   const s = status == null ? "" : String(status);
-  const color =
-    s === "Succeeded" || s === "Active"
-      ? "#3ecf8e"
-      : s === "Failed"
-        ? "#f0655a"
-        : s === "Pending"
-          ? "#f2b544"
-          : "#8a93a6";
-  const label =
-    s === "Active"
-      ? "活跃"
-      : s === "Succeeded"
-        ? "成功"
-        : s === "Failed"
-          ? "失败"
-          : s === "Pending"
-            ? "等待数据"
-            : s === "Skipped"
-              ? "无数据"
-              : s;
-  return <span style={{ color }}>{label || "—"}</span>;
+  const m = statusMeta(s);
+  return (
+    <span
+      style={{
+        color: m.color,
+        background: m.soft,
+        padding: "1px 8px",
+        borderRadius: 999,
+        fontSize: 12,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {m.label}
+    </span>
+  );
 }
 
 function cellNode(key: string, format: string | undefined, v: unknown) {
@@ -68,8 +76,9 @@ function useQueryData(block: ViewBlock, ctx: ViewContext) {
   const [data, setData] = useState<unknown>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const dormant = needsFocus(block.params) && !ctx.focus;
-  const params = JSON.stringify(dormant ? {} : resolveParams(block.params, ctx.focus));
+  const resolved = resolveParams(block.params, ctx.focus);
+  const dormant = resolved === null;
+  const params = JSON.stringify(resolved ?? {});
   // Interest-scoped invalidation: the block re-queries when its declared
   // domain moves, not on every raw observation.
   const version = useDomainVersion(block.domain ?? ALL);
@@ -144,6 +153,11 @@ function TableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
   const { data, error, loading, dormant } = useQueryData(block, ctx);
   if (dormant) return <FocusHint />;
   if (error) return <p style={{ color: "#f0655a" }}>{error}</p>;
+  let raw = rowsOf(data);
+  if (block.filter) {
+    const allow = new Set(block.filter.in);
+    raw = raw.filter((r) => allow.has(String(r[block.filter!.key] ?? "")));
+  }
   const columns = (block.columns ?? []).map((c) => ({
     title: c.title,
     dataIndex: c.key,
@@ -165,7 +179,7 @@ function TableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
       size="small"
       rowKey={(_, i) => String(i)}
       loading={loading}
-      dataSource={rowsOf(data)}
+      dataSource={raw}
       pagination={{ pageSize: block.pageSize ?? 20, hideOnSinglePage: true }}
       columns={cols}
       expandable={expand ? { expandedRowRender: expand, rowExpandable: () => true } : undefined}
@@ -251,7 +265,11 @@ function StatsBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
     let alive = true;
     Promise.all(
       block.items.map(async (item) => {
-        const rows = rowsOf(await ctx.hubQuery(item.query ?? block.query ?? ""));
+        let rows = rowsOf(await ctx.hubQuery(item.query ?? block.query ?? ""));
+        if (item.filter) {
+          const allow = new Set(item.filter.in);
+          rows = rows.filter((r) => allow.has(String(r[item.filter!.key] ?? "")));
+        }
         let value = 0;
         const field = item.op === "sum" ? item.field : undefined;
         if (field) {
@@ -531,4 +549,179 @@ registerBlockRenderer("kv", KVBlock);
 registerBlockRenderer("list", ListBlock);
 registerBlockRenderer("stats", StatsBlock);
 registerBlockRenderer("trend", TrendBlock);
+
+// MasterDetail: the operator's home view for one dimension (sources). The
+// list selects a row; the nested detail views render beside it with the
+// row exposed as $focus (sourceId = row[focusKey ?? "id"]). The detail
+// stack is ordinary view blocks — the layout primitive stays domain-free.
+function MasterDetailBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
+  const { data, error, loading, dormant } = useQueryData(block, ctx);
+  const [sel, setSel] = useState<Row | null>(null);
+  const [date, setDate] = useState<string | null>(null);
+  if (dormant) return <FocusHint />;
+  if (error) return <p style={{ color: "#f0655a" }}>{error}</p>;
+  const rows = rowsOf(data);
+  const focusKey = block.focusKey ?? "id";
+  // 列表换数据（组合热更）时选中行可能已不存在：清空避免悬挂详情。
+  const selKey = sel ? String(sel[focusKey] ?? "") : null;
+  const current = selKey ? rows.find((r) => String(r[focusKey] ?? "") === selKey) ?? null : null;
+  const focus = current
+    ? { sourceId: String(current[focusKey] ?? ""), date: date ?? "" }
+    : null;
+  // 详情栈的 onFocus 局部化：日历点击驱动本栈的 $focus.date（而不是
+  // 把整页焦点写到 shell 全局）。
+  const detailCtx: ViewContext = {
+    ...ctx,
+    focus,
+    onFocus: (_sourceId, d) => setDate(d),
+  };
+  const columns = (block.columns ?? []).map((c) => ({
+    title: c.title,
+    dataIndex: c.key,
+    key: c.key,
+    render: (v: unknown) => cellNode(c.key, c.format, c.format ? undefined : v),
+  })) as TableColumnsType<Row>;
+  const list = (
+    <Table<Row>
+      size="small"
+      rowKey={(r) => String(r[focusKey] ?? Math.random())}
+      loading={loading}
+      dataSource={rows}
+      pagination={rows.length > (block.pageSize ?? 30) ? { pageSize: block.pageSize ?? 30 } : false}
+      columns={columns}
+      rowClassName={(r) =>
+        current && String(r[focusKey] ?? "") === selKey ? "ant-table-row-selected" : ""
+      }
+      onRow={(r) => ({
+        onClick: () => {
+          setSel(r);
+          setDate(null);
+        },
+        style: { cursor: "pointer" },
+      })}
+    />
+  );
+  return (
+    <div className="md-grid">
+      <div className="md-list">{list}</div>
+      <div className="md-detail">
+        {!current ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择左侧一行查看详情" />
+        ) : (
+          <>
+            <div className="md-detail-head">
+              <span className="md-detail-title">{String(current[(block.columns?.[0]?.key) ?? focusKey] ?? "")}</span>
+              {date ? (
+                <Typography.Text type="secondary">已选日期 {date}</Typography.Text>
+              ) : (
+                <Typography.Text type="secondary">在日历上选择日期查看当日明细</Typography.Text>
+              )}
+              {(block.rowActions ?? []).map((a) => {
+                const args: Record<string, unknown> = {};
+                for (const [k, ref] of Object.entries(a.args ?? {})) {
+                  const m = /^\$row\.(.+)$/.exec(ref);
+                  args[k] = m ? current[m[1]] : undefined;
+                }
+                return (
+                  <Button key={a.label} size="small" type="primary" disabled={ctx.busy}
+                    onClick={() => void ctx.hubCommand(a.command, args)}>
+                    {a.label}
+                  </Button>
+                );
+              })}
+            </div>
+            {(block.detailViews ?? []).map((v, i) => (
+              <ViewBlockRenderer key={i} block={v} ctx={detailCtx} />
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Calendar: one source's recent collection history as a month grid. Each
+// day cell aggregates that date's task statuses (worst wins: Failed >
+// Pending > Skipped > Succeeded); clicking a day drives $focus.date so
+// sibling detail views load that day.
+function CalendarBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
+  const { data, error, loading } = useQueryData(block, ctx);
+  const [month, setMonth] = useState(() => {
+    const d = new Date();
+    return { y: d.getFullYear(), m: d.getMonth() };
+  });
+  if (error) return <p style={{ color: "#f0655a" }}>{error}</p>;
+  const sourceId = ctx.focus?.sourceId ?? "";
+  const byDate = new Map<string, string>();
+  for (const r of rowsOf(data)) {
+    if (sourceId && String(r["sourceId"] ?? "") !== sourceId) continue;
+    const d = String(r["date"] ?? "");
+    const st = String(r["status"] ?? "");
+    const prev = byDate.get(d);
+    const rank = (x: string) => (x === "Failed" ? 3 : x === "Pending" ? 2 : x === "Skipped" ? 1 : 0);
+    if (!prev || rank(st) > rank(prev)) byDate.set(d, st);
+  }
+  const first = new Date(month.y, month.m, 1);
+  const days = new Date(month.y, month.m + 1, 0).getDate();
+  const lead = (first.getDay() + 6) % 7; // 周一为一周之首
+  const cells: Array<{ day: number; status: string | null; date: string }> = [];
+  for (let i = 0; i < lead; i++) cells.push({ day: 0, status: null, date: "" });
+  for (let d = 1; d <= days; d++) {
+    const iso = `${month.y}-${String(month.m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    cells.push({ day: d, status: byDate.get(iso) ?? null, date: iso });
+  }
+  const today = new Date();
+  const isThisMonth = today.getFullYear() === month.y && today.getMonth() === month.m;
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h3 style={{ margin: 0, fontSize: 14 }}>
+          {block.title || `${month.y} 年 ${month.m + 1} 月采集状态`}
+        </h3>
+        <span style={{ display: "flex", gap: 6 }}>
+          <Button size="small" onClick={() => setMonth((v) => ({ y: v.m === 0 ? v.y - 1 : v.y, m: v.m === 0 ? 11 : v.m - 1 }))}>←</Button>
+          <Button size="small" disabled={isThisMonth}
+            onClick={() => setMonth((v) => ({ y: v.m === 11 ? v.y + 1 : v.y, m: v.m === 11 ? 0 : v.m + 1 }))}>→</Button>
+        </span>
+      </div>
+      <div className="cal-week">
+        {["一", "二", "三", "四", "五", "六", "日"].map((w) => (
+          <span key={w} className="cal-weekday">{w}</span>
+        ))}
+      </div>
+      <div className="cal-grid">
+        {cells.map((c, i) =>
+          c.day === 0 ? (
+            <span key={`b${i}`} />
+          ) : (
+            <button
+              key={c.date}
+              className={"cal-cell" + (c.status ? " cal-" + c.status.toLowerCase() : " cal-empty")}
+              title={c.status ? `${c.date} · ${statusMeta(c.status).label}` : c.date}
+              onClick={() => ctx.focus && ctx.onFocus(ctx.focus.sourceId, c.date)}
+            >
+              <span className="cal-day">{c.day}</span>
+              {isThisMonth && c.day === today.getDate() && <span className="cal-today" />}
+            </button>
+          )
+        )}
+      </div>
+      {loading && <Typography.Text type="secondary">加载中…</Typography.Text>}
+      <div className="cal-legend">
+        {["Succeeded", "Failed", "Pending", "Skipped"].map((s) => {
+          const m = statusMeta(s);
+          return (
+            <span key={s} className="cal-legend-item">
+              <span className="cal-dot" style={{ background: m.color }} />
+              {m.label}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 registerBlockRenderer("query-table", QueryTableBlock);
+registerBlockRenderer("master-detail", MasterDetailBlock);
+registerBlockRenderer("calendar", CalendarBlock);

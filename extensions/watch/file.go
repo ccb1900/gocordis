@@ -5,9 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
+	"runtime"
 	"sync"
 )
 
@@ -135,19 +136,37 @@ func (f *FileWatcher) CloseContext(ctx context.Context) error {
 }
 
 // fileURItoPath validates "file:///abs/path" and returns the absolute path.
+
 func fileURItoPath(uri string) (string, error) {
-	if !strings.HasPrefix(uri, "file://") {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return "", fmt.Errorf("%w: uri %q: %w", ErrInvalidSource, uri, err)
+	}
+	if u.Scheme != "file" {
 		return "", fmt.Errorf("%w: uri %q is not a file:// uri", ErrInvalidSource, uri)
 	}
-	p := strings.TrimPrefix(uri, "file://")
-	if p == "" || !strings.HasPrefix(p, "/") {
-		return "", fmt.Errorf("%w: uri %q has no absolute path", ErrInvalidSource, uri)
+	if u.Host != "" && u.Host != "localhost" {
+		// 如需支持 UNC（file://server/share/x），在此返回 `\\`+u.Host+u.Path
+		return "", fmt.Errorf("%w: uri %q has unsupported host %q", ErrInvalidSource, uri, u.Host)
 	}
+
+	p := u.Path // url.Parse 已做百分号解码，中文/空格路径无需再处理
+
+	// RFC 8089：file:///D:/x/y 在 Windows 上还原为 D:\x\y
+	if runtime.GOOS == "windows" &&
+		len(p) >= 3 && p[0] == '/' && isASCIILetter(p[1]) && p[2] == ':' {
+		p = p[1:]
+	}
+
 	clean := filepath.Clean(p)
 	if !filepath.IsAbs(clean) {
-		return "", fmt.Errorf("%w: uri %q is not absolute", ErrInvalidSource, uri)
+		return "", fmt.Errorf("%w: uri %q has no absolute path", ErrInvalidSource, uri)
 	}
 	return clean, nil
+}
+
+func isASCIILetter(c byte) bool {
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }
 
 // fileRevision computes a Revision for path. When the file is readable its ID

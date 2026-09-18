@@ -28,6 +28,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -196,11 +199,15 @@ func New(source Source, controller *config.Controller, w watch.Watch, opts ...Op
 			o(a)
 		}
 	}
-
+	uri, err := pathToURI(source.Path)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("build file uri for %q: %w", source.Path, err)
+	}
 	sub, err := w.Watch(base, watch.Source{
 		ID:   source.ID,
 		Kind: "file",
-		URI:  "file://" + source.Path,
+		URI:  uri,
 	})
 	if err != nil {
 		cancel()
@@ -212,6 +219,21 @@ func New(source Source, controller *config.Controller, w watch.Watch, opts ...Op
 	a.listenerDone = make(chan struct{})
 	go a.worker()
 	return a, nil
+}
+
+// pathToURI 把本地路径规范化为合法 file:// URI（POSIX / Windows 通用）
+func pathToURI(path string) (string, error) {
+	abs, err := filepath.Abs(path) // 顺带兜住相对路径：原拼接方式在 Linux 上传相对路径同样会报 no absolute path
+	if err != nil {
+		return "", err
+	}
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") { // Windows 盘符: D:/x → /D:/x
+		p = "/" + p
+	}
+	return (&url.URL{Scheme: "file", Path: p}).String(), nil
+	// D:\Migrate\...\unc-machines.toml
+	//   → file:///D:/Migrate/Desktop/采集生产技术/configs/unc-machines.toml
 }
 
 // Sync reads, parses, and reconciles the CURRENT external state once. It

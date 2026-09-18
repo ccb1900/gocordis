@@ -39,6 +39,10 @@ func NewTOMLParser() Parser { return &tomlParser{} }
 type tomlParser struct{}
 
 func (p *tomlParser) Parse(ctx context.Context, source Source, data []byte) (config.Config, error) {
+	data = stripBOM(data)
+	if len(data) >= 2 && data[0] == 0xFF && data[1] == 0xFE || len(data) >= 2 && data[0] == 0xFE && data[1] == 0xFF {
+		return config.Config{}, fmt.Errorf("%w: source %q is UTF-16 encoded; re-save as UTF-8 (Windows PowerShell 5.1 defaults to UTF-16)", ErrInvalidSource, source.ID)
+	}
 	cfg, err := ComposeDocument(ctx, data, ComposeOptions{})
 	if err != nil {
 		return config.Config{}, fmt.Errorf("%w: source %q: %v", ErrInvalidSource, source.ID, err)
@@ -131,4 +135,14 @@ func parseComponents(source Source, rawComponents any) ([]config.ComponentConfig
 		out = append(out, cc)
 	}
 	return out, nil
+}
+
+// stripBOM removes a leading UTF-8 BOM (Windows editors write it by default
+// in the "UTF-8 with BOM" save format). UTF-16 manifests are rejected with an
+// actionable error by the caller.
+func stripBOM(data []byte) []byte {
+	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+		return data[3:]
+	}
+	return data
 }

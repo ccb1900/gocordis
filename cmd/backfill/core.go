@@ -117,7 +117,20 @@ type delimitedDecoder struct {
 	comma rune
 }
 
+// stripUTF8BOM 剥离 UTF-8 BOM(EF BB BF);其它字节原样通过。
+func stripUTF8BOM(r io.Reader) io.Reader {
+	br := bufio.NewReader(r)
+	b, err := br.Peek(3)
+	if err == nil && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF {
+		_, _ = br.Discard(3)
+	}
+	return br
+}
+
 func (d delimitedDecoder) Decode(r io.Reader) ([][]string, error) {
+	// Windows 来源的 CSV 常带 UTF-8 BOM(记事本/Excel 导出);不剥掉的话
+	// 第一行首列会带上 BOM 前缀,污染匹配。
+	r = stripUTF8BOM(r)
 	rd := csv.NewReader(r)
 	rd.Comma = d.comma
 	rd.FieldsPerRecord = -1
@@ -603,33 +616,44 @@ func writeOutput(path string, rows [][]string) error {
 
 // writeFileAtomic writes data to path via tmp + fsync + rename so a power loss
 // never leaves a half-written file.
+//
+// Windows 专属修正(R14b):目标文件被杀毒/索引器短暂占用时 rename 会以共享
+// 冲突失败,单次立即重试通常也撞在同一锁上 —— 改为有界退避重试;固定 .tmp
+// 名在两次运行重叠(服务 + 计划任务)时会互踩,改为唯一临时名。
 func writeFileAtomic(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
 	if _, err := f.Write(data); err != nil {
 		f.Close()
+		os.Remove(tmp)
 		return err
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
+		os.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
+		os.Remove(tmp)
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(path)
-		if err2 := os.Rename(tmp, path); err2 != nil {
-			return err2
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(100*attempt) * time.Millisecond)
+		}
+		if lastErr = os.Rename(tmp, path); lastErr == nil {
+			return nil
 		}
 	}
-	return nil
+	_ = os.Remove(tmp)
+	return lastErr
 }
 
 // sortedOutFiles lists normalized outputs in the out dir (for demo/tests).

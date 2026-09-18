@@ -375,6 +375,12 @@ func (b *Backend) spawn(exe, id string, actCtx context.Context) (*pluginClient, 
 		// activation (graceful stop has its own bounded path in stop()).
 		return cmd.Process.Kill()
 	}
+	// WaitDelay bounds the Wait hang when the plugin spawns children that
+	// inherit stdout/stderr: without it, cmd.Wait blocks forever even after
+	// the plugin itself exits (Windows GUI/detached children make this the
+	// common case). 5s covers graceful handoff; kill was already requested
+	// via Cancel on the stop path.
+	cmd.WaitDelay = 5 * time.Second
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrProcStart, err)

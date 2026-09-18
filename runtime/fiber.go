@@ -30,7 +30,11 @@ type Fiber struct {
 	// no rehome is pending). See rehome.go.
 	rehome *rehomePending
 
-	// keyRealms is the fiber's per-key isolation table (paper Definition 24,
+	// keyRealms is the fiber's per-key isolation table. Single-writer rule:
+	// the table is built at insertion and rewritten ONLY by the orchestrator
+	// (Rehome step 2); readers are the orchestrator itself and the fiber's
+	// own activation goroutine (which has completed before a rehome can
+	// retire its provisions) -- no external mutation path exists. (paper Definition 24,
 	// the realm table ρ): a key present here resolves and provides against the
 	// named namespace instead of the fiber's scope realm. Entries are fixed at
 	// insertion (Child/Load); runtime reassignment of a key's realm is a

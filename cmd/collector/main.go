@@ -26,6 +26,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/csv"
 	"fmt"
@@ -108,7 +109,12 @@ func (c *collectorComp) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		// fiber becomes Failed and is isolated from the rest of the system.
 		return nil, fmt.Errorf("open %s: %w", c.path, err)
 	}
-	r := csv.NewReader(f)
+	// Windows 来源的 CSV 可能带 UTF-8 BOM:剥掉,避免污染首列。
+	bomBuf := bufio.NewReader(f)
+	if b, _ := bomBuf.Peek(3); len(b) == 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF {
+		_, _ = bomBuf.Discard(3)
+	}
+	r := csv.NewReader(bomBuf)
 	n := 0
 	for {
 		row, err := r.Read()

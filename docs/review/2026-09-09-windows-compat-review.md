@@ -102,3 +102,27 @@
 **方法论修正记录**:静态审查(交叉编译 + 关键词走查)只能覆盖编译级与
 字面量级;路径语义类缺陷的系统性防线 = ①纯函数抽取 + 双 goos 参数化测试
 (本轮)②CI Windows 编译矩阵(本轮已加)③windows-latest 测试 job(后补)。
+
+
+---
+
+## R14b (2026-09-09, 同日):用户质问后的深挖 — 发现并修复 4 项运行时缺陷
+
+用户以 configwatch 相对路径为例指出 W-2/W-3 之外存在**运行时路径/编码语义**
+缺陷。逐类排查后发现并修复:
+
+| # | 缺陷 | 修复 |
+|---|---|---|
+| F-A | **TOML manifest 带 UTF-8 BOM 无法解析**(Windows 记事本"UTF-8 with BOM"格式);UTF-16 LE(PowerShell 5.1 `Out-File` 默认)直接失败且报因不明 | Parse 入口剥离 UTF-8 BOM;UTF-16 → 拒绝并给出"re-save as UTF-8"可行动错误;CRLF 已由 go-toml 正常处理 |
+| F-B | **CSV 数据源带 UTF-8 BOM**(backfill/collector 的 Windows SMB 场景恰好是 Windows 来源):encoding/csv 不剥 BOM,首列被污染 | backfill `delimitedDecoder` 与 collector 入口统一剥 BOM(Peek+Discard,不破坏流式) |
+| F-C | **writeFileAtomic 在 Windows 的两个坑**:① 目标被杀毒/索引器短暂占用时 rename 报共享冲突,原"单次立即重试"通常撞同一把锁;② 固定 `.tmp` 名在服务+计划任务重叠运行时互踩 | CreateTemp 同目录唯一临时名 + 5 次退避重试(100ms×n);失败清理临时文件 |
+| F-D | **proc 子进程句柄继承导致 Wait 永久挂起**:插件派生的子进程继承 stdout/stderr 句柄,插件退出后 cmd.Wait 仍无限等 | `cmd.WaitDelay = 5s`(Go 1.20+);优雅 RPC → 超时 kill → WaitDelay 兜底三层 |
+
+全部修复可在 macOS 上验证(字节/逻辑层,不依赖 Windows 主机):
+BOM 三态探针、writeFileAtomic 覆盖写、backfill/collector 全套件、proc 套件
++ race 全绿。
+
+**方法论沉淀**(修正 R14 的"静态审查"局限):Windows 兼容审查的正确姿势 =
+①交叉编译(编译级)②**编码语义探针**(BOM/UTF-16/CRLF,纯字节逻辑可在
+macOS 上复现)③**文件生命周期走查**(create/open/rename/sync 在 Windows
+的共享冲突语义)④信号/句柄继承差异。本节即按 ②③ 补做的第二轮。

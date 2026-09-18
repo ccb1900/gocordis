@@ -708,7 +708,7 @@ function CalendarBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
       </div>
       {loading && <Typography.Text type="secondary">加载中…</Typography.Text>}
       <div className="cal-legend">
-        {["Succeeded", "Failed", "Pending", "Skipped"].map((s) => {
+        {["Succeeded", "Failed", "Pending"].map((s) => {
           const m = statusMeta(s);
           return (
             <span key={s} className="cal-legend-item">

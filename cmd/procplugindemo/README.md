@@ -19,6 +19,12 @@ cd cmd/procplugindemo && go run . -plugin ../../build/plugin-echo
 
 | 操作 | 现象 |
 |---|---|
+## Windows
+
+- 构建：`go build -o build\plugin-echo.exe ./cmd/plugin-echo`（`-o` 不会自动补 .exe）
+- 运行：`-plugin` 参数指向 `build\plugin-echo.exe`
+- 杀进程排障：`taskkill /IM plugin-echo.exe /F`（对应 unix 的 `pkill -f plugin-echo`）
+
 | `pkill -f plugin-echo`(杀进程) | 消费者每 2s 报 `call failed: plugin call: … unavailable`;应用本体无恙(§4.4:无自动重试) |
 | manifest 中 `echo` 条目改 `enabled = false` 保存 | 插件进程被优雅停止;消费者自动撤回到 Pending(gating) |
 | 改回 `enabled = true` 保存 | 新进程被拉起,消费者自动重新激活 |

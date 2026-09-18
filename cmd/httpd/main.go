@@ -37,7 +37,7 @@ import (
 
 // ServerConfig describes where one HTTP server binds.
 type ServerConfig struct {
-	Network         string        // "tcp" (default), "tcp4", "tcp6", "unix"
+	Network         string        // "tcp" (default), "tcp4", "tcp6"; "unix" 仅 unix 系（Windows 需 Win10+ 且支持受限，默认 tcp 不受影响）
 	Address         string        // e.g. "127.0.0.1:8080"
 	ShutdownTimeout time.Duration // graceful-shutdown bound; 0 = 5s default
 }

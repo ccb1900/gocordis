@@ -43,3 +43,25 @@ jobs:
           go test -race ./integration/ -count=3
           go test -race ./extensions/hmr/ -count=3
           go test -race ./extensions/http/ -count=3
+
+  windows-build:
+    # W-2（R14）：编译层守住 Windows 兼容——build + vet + 测试二进制交叉
+    # 编译，零成本防回退。windows-latest 原生测试 job 可后补（-race 需镜像
+    # 自带 mingw）。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          cache: true
+
+      - name: Windows build
+        run: GOOS=windows go build ./...
+
+      - name: Windows vet
+        run: GOOS=windows go vet ./...
+
+      - name: Windows test compile
+        run: GOOS=windows go test -run xxx -count=1 ./...

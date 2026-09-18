@@ -45,7 +45,9 @@ func Serve(methods map[string]Handler) error {
 }
 
 // ServeContext is Serve with an explicit base context (canceled by SIGINT/
-// SIGTERM regardless).
+// SIGTERM regardless). On Windows these signals are not delivered; the
+// graceful path there is the host shutdown RPC (Ctrl+C maps to a partial
+// SIGINT at best) — behavior remains correct either way.
 func ServeContext(ctx context.Context, methods map[string]Handler) error {
 	w := &lineWriter{bw: bufio.NewWriter(os.Stdout)}
 	if _, err := fmt.Fprintln(w, HandshakeHeader); err != nil {

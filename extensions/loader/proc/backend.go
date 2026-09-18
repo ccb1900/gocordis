@@ -34,6 +34,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	stdruntime "runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -237,7 +238,10 @@ func validateExecutable(path string) error {
 	if st.IsDir() {
 		return errors.New("not a regular file")
 	}
-	if st.Mode()&0o111 == 0 {
+	// Windows 文件系统没有执行位（os.Stat 恒不含 0111），任何合法的
+	// .exe 都会被下面的检查拒绝——proc 后端在 Windows 完全不可用。
+	// Windows 上以 regular file 为准，执行位检查仅适用于 unix 系。
+	if stdruntime.GOOS != "windows" && st.Mode()&0o111 == 0 {
 		return errors.New("not executable")
 	}
 	return nil

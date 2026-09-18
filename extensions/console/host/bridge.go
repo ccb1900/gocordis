@@ -108,6 +108,10 @@ func (h *Host) ListPanels() (UIPanelList, *UIError) {
 
 // Observation bridge -----------------------------------------------------------
 
+// historyLimit bounds the retained observation history (diagnostics only;
+// the console re-queries rather than replaying state).
+const historyLimit = 512
+
 // observationBridge fans observations out to in-process listeners (the React
 // host during tests, Wails bindings in production use the sink instead).
 type observationBridge struct {
@@ -124,6 +128,10 @@ func newObservationBridge() *observationBridge {
 func (b *observationBridge) notify(ev UIObservation) {
 	b.mu.Lock()
 	b.history = append(b.history, ev)
+	// 长驻宿主的观测流是连续的:历史只保留最近 N 条,否则无界增长。
+	if n := len(b.history); n > historyLimit {
+		b.history = b.history[n-historyLimit:]
+	}
 	handlers := make([]func(UIObservation), 0, len(b.subs))
 	for _, h := range b.subs {
 		handlers = append(handlers, h)

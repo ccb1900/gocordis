@@ -126,3 +126,24 @@ BOM 三态探针、writeFileAtomic 覆盖写、backfill/collector 全套件、pr
 ①交叉编译(编译级)②**编码语义探针**(BOM/UTF-16/CRLF,纯字节逻辑可在
 macOS 上复现)③**文件生命周期走查**(create/open/rename/sync 在 Windows
 的共享冲突语义)④信号/句柄继承差异。本节即按 ②③ 补做的第二轮。
+
+
+---
+
+## R14c (2026-09-09, 三轮):用户追问"还有吗" — 深挖出的第二批(4 项,已修)
+
+把"Windows 语义不同"的每个类别对照到具体调用点逐个验证后的新发现:
+
+| # | 级别 | 类别 | 缺陷与修复 |
+|---|---|---|---|
+| W-6 | P2 | **进程句柄继承 → Wait 永久挂起** | Windows 上插件派生的子进程继承 stdout/stderr 句柄,插件退出后 `cmd.Wait` 仍无限阻塞(旧 fiber 的 Unloading 永不完成,替换/关停全部卡住)。修复:`exec.Cmd.WaitDelay = 5s`(loader/proc 与 console/procplugin 两处 spawn 点)。unix 同样受益。 |
+| W-7 | P2 | **观测历史无界增长** | console host 的 observation bridge `history` 无限追加,长驻宿主 + 连续观测流 = 内存持续增长。修复:环形截断至最近 512 条(仅诊断用途,控制台重查询而非重放状态)。 |
+| W-8 | P3 | **CSV UTF-8 BOM**(Windows SMB/Excel 来源) | encoding/csv 不剥 BOM,首列被 `\ufeff` 污染——backfill 与 collector 的数据源恰好是 Windows SMB 共享。修复:入口 Peek+Discard 剥除。 |
+| W-9 | P3 | **原子写 Windows 重试不足 + 固定临时名** | backfill `writeFileAtomic`:目标被 AV/索引器短暂占用时 rename 共享冲突失败,单次立即重试撞同一把锁;固定 `.tmp` 名在服务+计划任务重叠时互踩。修复:CreateTemp 同目录唯一临时名 + 5 次退避重试。 |
+
+### R14c 判定
+
+三轮(W-1 执行位 → R14b 泵模型/句柄 → R14c 第二批)之后,按类别清单
+(路径语义/编码语义/文件生命周期/进程句柄/信号)逐项过完,**未再发现新
+缺陷**。剩余为记录在案的既有事项(鉴权延期、windows-latest 测试 job 可
+后补、host 包更深测试可选)。

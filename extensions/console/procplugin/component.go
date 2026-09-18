@@ -114,6 +114,9 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	}
 	cmd := exec.CommandContext(ctx.Context(), c.resolveExecutable())
 	cmd.Dir = c.dir
+	// WaitDelay: 插件派生的子进程继承 stdout/stderr 句柄时,插件退出后
+	// cmd.Wait 仍会无限阻塞 —— 5s 兜底(杀进程已由 Cancel 路径先行请求)。
+	cmd.WaitDelay = 5 * time.Second
 	client, err := Start(ctx.Context(), cmd, 5*time.Second)
 	if err != nil {
 		// 后端启动失败：降级而非阻断。Fiber 保持 Active，日志记录降级

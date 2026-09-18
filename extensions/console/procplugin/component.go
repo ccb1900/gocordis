@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
+	stdruntime "runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,12 +83,36 @@ func (c *Component) Inject() []runtime.Dependency {
 }
 func (c *Component) Provide() []runtime.Capability { return nil }
 
+// resolveExecutable 解析后端可执行文件的绝对路径。清单按 POSIX 习惯写
+// backend = "./alarm-demo"——路径里含分隔符时 Windows 的 CreateProcess
+// 不会追加 .exe，而 Windows 构建产物是 alarm-demo.exe；相对路径再叠加
+// cmd.Dir 的解析差异。因此这里一次解析到位：相对路径锚定插件目录，
+// Windows 上缺省补 .exe，两不存在则返回原值让 Start 报出原始错误。
+func (c *Component) resolveExecutable() string {
+	p := c.backend
+	if p == "" {
+		return p
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(c.dir, p)
+	}
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	if stdruntime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(p), ".exe") {
+		if _, err := os.Stat(p + ".exe"); err == nil {
+			return p + ".exe"
+		}
+	}
+	return p
+}
+
 func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	hubReg, err := runtime.Require(ctx, consolehost.HubKey)
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx.Context(), c.backend)
+	cmd := exec.CommandContext(ctx.Context(), c.resolveExecutable())
 	cmd.Dir = c.dir
 	client, err := Start(ctx.Context(), cmd, 5*time.Second)
 	if err != nil {

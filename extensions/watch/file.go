@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -138,6 +138,17 @@ func (f *FileWatcher) CloseContext(ctx context.Context) error {
 // fileURItoPath validates "file:///abs/path" and returns the absolute path.
 
 func fileURItoPath(uri string) (string, error) {
+	slash, err := uriToSlashPath(uri)
+	if err != nil {
+		return "", err
+	}
+	return slashPathToOS(slash, runtime.GOOS), nil
+}
+
+// uriToSlashPath validates a file:// URI and returns the decoded path in
+// slash form ("/D:/x/y" for Windows drive URIs, "/usr/x" on POSIX). PURE: no
+// runtime.GOOS, no filesystem access -- testable from any platform.
+func uriToSlashPath(uri string) (string, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
 		return "", fmt.Errorf("%w: uri %q: %w", ErrInvalidSource, uri, err)
@@ -149,20 +160,35 @@ func fileURItoPath(uri string) (string, error) {
 		// 如需支持 UNC（file://server/share/x），在此返回 `\\`+u.Host+u.Path
 		return "", fmt.Errorf("%w: uri %q has unsupported host %q", ErrInvalidSource, uri, u.Host)
 	}
+	return u.Path, nil // url.Parse 已做百分号解码，中文/空格路径无需再处理
+}
 
-	p := u.Path // url.Parse 已做百分号解码，中文/空格路径无需再处理
-
+// slashPathToOS converts a slash-form path to OS form. On Windows: strip the
+// RFC 8089 drive prefix ("/D:/x" -> "D:\x") and flip separators to
+// backslashes; on unix unchanged. PURE.
+func slashPathToOS(slash string, goos string) string {
+	if goos != "windows" {
+		return slash
+	}
+	p := slash
 	// RFC 8089：file:///D:/x/y 在 Windows 上还原为 D:\x\y
-	if runtime.GOOS == "windows" &&
-		len(p) >= 3 && p[0] == '/' && isASCIILetter(p[1]) && p[2] == ':' {
+	if len(p) >= 3 && p[0] == '/' && isASCIILetter(p[1]) && p[2] == ':' {
 		p = p[1:]
 	}
+	return strings.ReplaceAll(p, "/", "\\")
+}
 
-	clean := filepath.Clean(p)
-	if !filepath.IsAbs(clean) {
-		return "", fmt.Errorf("%w: uri %q has no absolute path", ErrInvalidSource, uri)
+// isAbsSlashPath reports whether a slash-form path is absolute under goos.
+// PURE: no runtime.GOOS, no filesystem access.
+func isAbsSlashPath(slash string, goos string) bool {
+	if goos == "windows" {
+		if strings.HasPrefix(slash, "//") || strings.HasPrefix(slash, `\\`) {
+			return true // UNC
+		}
+		return len(slash) >= 3 && isASCIILetter(slash[1]) && slash[2] == ':' &&
+			(slash[2+1] == '/' || slash[3] == '\\')
 	}
-	return clean, nil
+	return strings.HasPrefix(slash, "/")
 }
 
 func isASCIILetter(c byte) bool {
@@ -192,3 +218,6 @@ func fileRevision(path string) Revision {
 }
 
 var _ Watch = (*FileWatcher)(nil)
+
+// isAbsSlashPath reports whether a slash-form path is absolute under goos.
+// PURE: no runtime.GOOS, no filesystem access.

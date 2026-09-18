@@ -79,3 +79,26 @@
 
 **W-1 是唯一功能阻断**(proc 后端 Windows 不可用),修复约 5 行;W-2 是防
 回退的 CI 投资;W-3/W-4/W-5 为文档补丁。确认后可一轮全部落地。
+
+
+---
+
+## R14b (2026-09-09, 同日):方法论修正 — Windows 分支的可回归测试化
+
+用户指出 R14 的盲区:静态审查抓不到"mac 能跑、Windows 不行"的**运行时路径
+语义**类问题(configwatch 相对路径 URI 即为一例,用户已修)。
+
+修复分两层:
+
+1. **可测试性重构**(`extensions/watch/file.go`):URI/路径的纯逻辑抽取为
+   goos 参数化的纯函数——`uriToSlashPath`(scheme/host/解码)、
+   `slashPathToOS`(盘符剥离 + 分隔符翻转)、`isAbsSlashPath`(含 UNC)、
+   `fileURItoPath`/生产路径只是三者的组合。Windows 分支从此**在 macOS 上
+   即可回归测试**。
+2. **回归测试**(`file_uri_test.go`,七项):Windows 盘符 URI 解析、
+   POSIX 路径、百分号解码(中文/空格)、非 file scheme 与 hosted URI 拒绝、
+   slash→OS 双向转换、绝对性判定(含 UNC/drive-relative)。
+
+**方法论修正记录**:静态审查(交叉编译 + 关键词走查)只能覆盖编译级与
+字面量级;路径语义类缺陷的系统性防线 = ①纯函数抽取 + 双 goos 参数化测试
+(本轮)②CI Windows 编译矩阵(本轮已加)③windows-latest 测试 job(后补)。

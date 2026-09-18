@@ -338,10 +338,12 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
   const [options, setOptions] = useState<Record<string, Array<{ value: string; label: string }>>>({});
   const [rows, setRows] = useState<Row[]>([]);
   const [total, setTotal] = useState<number | null>(null);
+  const [page, setPage] = useState(1);
   const [columns, setColumns] = useState<TableColumnsType<Row>>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const version = useDomainVersion(block.domain ?? ALL);
+  const pageSize = block.pageSize ?? 20;
 
   useEffect(() => {
     for (const f of block.filters ?? []) {
@@ -368,10 +370,12 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
   const load = useCallback(() => {
     if (!block.query) return;
     setLoading(true);
+    // 服务端分页：limit/offset 由翻页器驱动，数据量大时不再是"前 200 行"。
     ctx
       .hubQuery<{ columns?: string[]; rows?: unknown[][] } | unknown[]>(block.query, {
         ...filters,
-        limit: "200",
+        limit: String(pageSize),
+        offset: String((page - 1) * pageSize),
       })
       .then((data) => {
         let out: Row[] = [];
@@ -414,11 +418,21 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [block.query, block.columns, filters, version, ctx.hubQuery]);
+  }, [block.query, block.columns, filters, page, pageSize, version, ctx.hubQuery]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // 筛选变化回到第一页：offset 语义跟随当前筛选结果集。
+  const setFilterAndRewind = (key: string, value: string) => {
+    setFilters((m) => ({ ...m, [key]: value }));
+    setPage(1);
+  };
+  const clearFilterAndRewind = (key: string, value: string) => {
+    setFilters((m) => ({ ...m, [key]: value }));
+    setPage(1);
+  };
 
   const ready = (block.filters ?? []).every((f) => !f.required || filters[f.key]);
   return (
@@ -432,7 +446,7 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
               aria-label={f.label}
               style={{ minWidth: 160 }}
               value={filters[f.key]}
-              onChange={(v) => setFilters((m) => ({ ...m, [f.key]: v }))}
+              onChange={(v) => setFilterAndRewind(f.key, v)}
               options={options[f.key] ?? []}
               placeholder={f.label}
             />
@@ -442,7 +456,7 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
               aria-label={f.label}
               style={{ width: 140 }}
               value={filters[f.key] ? dayjs(filters[f.key]) : null}
-              onChange={(d) => setFilters((m) => ({ ...m, [f.key]: d ? d.format("YYYY-MM-DD") : "" }))}
+              onChange={(d) => clearFilterAndRewind(f.key, d ? d.format("YYYY-MM-DD") : "")}
               placeholder={f.label}
               allowClear={!f.required}
             />
@@ -452,17 +466,17 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
               aria-label={f.label}
               style={{ width: 140 }}
               value={filters[f.key]}
-              onChange={(e) => setFilters((m) => ({ ...m, [f.key]: e.target.value }))}
+              onChange={(e) => setFilterAndRewind(f.key, e.target.value)}
               placeholder={f.label}
             />
           )
         )}
-        <Button onClick={load} loading={loading} disabled={!ready}>
+        <Button onClick={() => { setPage(1); load(); }} loading={loading} disabled={!ready}>
           查询
         </Button>
         {total !== null && (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            共 {total} 行{rows.length < total ? `（当前页 ${rows.length}）` : ""}
+            共 {total} 行
           </Typography.Text>
         )}
       </Space>
@@ -472,7 +486,13 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
         rowKey={(_, i) => String(i)}
         loading={loading}
         dataSource={ready ? rows : []}
-        pagination={{ pageSize: block.pageSize ?? 20, hideOnSinglePage: true }}
+        pagination={{
+          current: page,
+          pageSize,
+          total: total ?? 0,
+          showSizeChanger: false,
+          onChange: (p) => setPage(p),
+        }}
         columns={columns}
       />
     </>

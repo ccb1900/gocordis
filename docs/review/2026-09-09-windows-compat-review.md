@@ -147,3 +147,42 @@ macOS 上复现)③**文件生命周期走查**(create/open/rename/sync 在 Wind
 (路径语义/编码语义/文件生命周期/进程句柄/信号)逐项过完,**未再发现新
 缺陷**。剩余为记录在案的既有事项(鉴权延期、windows-latest 测试 job 可
 后补、host 包更深测试可选)。
+
+
+---
+
+## 16. R15 收敛确认 (2026-09-09, 终轮)
+
+用封闭后的七类清单对**此前未审的文件**(console/logstore、host/clientmodule、
+webui fleet/meta 路由、client 剩余文件、patch/bundle)做最后一遍扫描:
+
+- logstore:有界环形 + Latest 返回副本 + level/contains 过滤 + limit 上限
+  (≤1000),带测试 ✓;
+- clientmodules 路由:Clean + `..` 拒绝 + EvalSymlinks 双侧 + 大小上限 ✓
+  (Windows 反斜杠形式也被 FromSlash 归一后拦截);
+- fleet/meta 路由:纯 GET 聚合,无写路径 ✓;
+- patch/bundle:纯 Go ✓;
+- client/:用户已精简为纯 SDK(api/types/index),tsc 绿 ✓。
+
+**无新发现。**
+
+### 收敛证据(浸泡)
+
+| 验证 | 规模 | 结果 |
+|---|---|---|
+| 全量套件 | `-count=3` ×3 轮 | 零失败 |
+| race 全量 | runtime + 全部 extensions | 零竞争 |
+| 前偶发专项 | C3 随机调度 + WHMR16 ×10 独立运行 | 零失败 |
+| GOOS=windows | build + vet + 测试编译 | 零错误 |
+| tsc | console client | 零错误 |
+
+### 收敛判定
+
+R12(17 项)→ R13(修复复审零新增)→ R14(5 项 Windows)→ R14b(4 项)
+→ R14c(2 项)→ **R15:七类清单全扫零新发现;全量门禁 + 浸泡全绿;
+GOOS=windows 编译矩阵在 CI 守住编译级防回退。**
+
+**判定:收敛。** 语义内核带定理级证据且历轮零回归;外围层缺陷全部修复并
+转化为回归测试;剩余为记录在案的无紧迫事项(鉴权延期、windows-latest
+运行时 job、§6.6 版本维度、host 包更深测试)。此后新问题按"单件发现 →
+修复 → 回归测试"处理,不再开无限审查轮。

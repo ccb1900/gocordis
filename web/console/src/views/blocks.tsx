@@ -158,7 +158,15 @@ function TableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
     const allow = new Set(block.filter.in);
     raw = raw.filter((r) => allow.has(String(r[block.filter!.key] ?? "")));
   }
-  const columns = (block.columns ?? []).map((c) => ({
+  // Declared columns win; without them the response's own shape becomes
+  // the header (columnar pages from typed sinks) — same contract as
+  // query-table, so embedded previews work without schema knowledge.
+  let spec = block.columns ?? [];
+  const allRows = raw;
+  if (spec.length === 0 && allRows.length > 0) {
+    spec = Object.keys(allRows[0]).map((k) => ({ key: k, title: k }));
+  }
+  const columns = spec.map((c) => ({
     title: c.title,
     dataIndex: c.key,
     key: c.key,
@@ -179,6 +187,7 @@ function TableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
       size="small"
       rowKey={(_, i) => String(i)}
       loading={loading}
+      scroll={{ x: "max-content" }}
       dataSource={raw}
       pagination={{ pageSize: block.pageSize ?? 20, hideOnSinglePage: true }}
       columns={cols}
@@ -503,6 +512,7 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
         size="small"
         rowKey={(_, i) => String(i)}
         loading={loading}
+        scroll={{ x: "max-content" }}
         dataSource={ready ? rows : []}
         pagination={{
           current: page,

@@ -13,7 +13,7 @@ import {
   getBlockRenderer, registerBlockRenderer,
   type BlockRenderer, type ViewContext,
 } from "./registry";
-import { formatRow, needsFocus, resolveParams, type Focus, type ViewBlock } from "./schema";
+import { formatRow, matchFilter, needsFocus, resolveParams, type Focus, type ViewBlock } from "./schema";
 import { TrendChart, type TrendPoint } from "./TrendChart";
 
 export type { ViewBlock, ViewContext, BlockRenderer };
@@ -155,9 +155,11 @@ function TableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
   if (error) return <p style={{ color: "#f0655a" }}>{error}</p>;
   let raw = rowsOf(data);
   if (block.filter) {
-    const allow = new Set(block.filter.in);
-    raw = raw.filter((r) => allow.has(String(r[block.filter!.key] ?? "")));
+    raw = raw.filter((r) => matchFilter(block.filter!, r));
   }
+  // hideWhenEmpty: an auxiliary table with nothing to show stays quiet —
+  // a large empty box for "no failures yet" is noise, not information.
+  if (block.hideWhenEmpty && raw.length === 0 && !loading) return null;
   // Declared columns win; without them the response's own shape becomes
   // the header (columnar pages from typed sinks) — same contract as
   // query-table, so embedded previews work without schema knowledge.
@@ -183,29 +185,33 @@ function TableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
   ];
   const expand = expandRenderer(block);
   return (
-    <Table<Row>
-      size="small"
-      rowKey={(_, i) => String(i)}
-      loading={loading}
-      scroll={{ x: "max-content" }}
-      dataSource={raw}
-      pagination={{ pageSize: block.pageSize ?? 20, hideOnSinglePage: true }}
-      columns={cols}
-      expandable={expand ? { expandedRowRender: expand, rowExpandable: () => true } : undefined}
-      rowClassName={(record) =>
-        ctx.focus && record["sourceId"] === ctx.focus.sourceId && record["date"] === ctx.focus.date
-          ? "ant-table-row-selected"
-          : ""
-      }
-      onRow={(record) => ({
-        onClick: () => {
-          if (block.selectFocus && record["sourceId"] && record["date"]) {
-            ctx.onFocus(String(record["sourceId"]), String(record["date"]));
-          }
-        },
-        style: block.selectFocus ? { cursor: "pointer" } : undefined,
-      })}
-    />
+    <>
+      {block.title && <h3 style={{ margin: "4px 0 8px", fontSize: 15 }}>{block.title}</h3>}
+      <Table<Row>
+        size="small"
+        rowKey={(_, i) => String(i)}
+        loading={loading}
+        scroll={{ x: "max-content" }}
+        dataSource={raw}
+        locale={{ emptyText: <Typography.Text type="secondary">暂无记录</Typography.Text> }}
+        pagination={{ pageSize: block.pageSize ?? 20, hideOnSinglePage: true }}
+        columns={cols}
+        expandable={expand ? { expandedRowRender: expand, rowExpandable: () => true } : undefined}
+        rowClassName={(record) =>
+          ctx.focus && record["sourceId"] === ctx.focus.sourceId && record["date"] === ctx.focus.date
+            ? "ant-table-row-selected"
+            : ""
+        }
+        onRow={(record) => ({
+          onClick: () => {
+            if (block.selectFocus && record["sourceId"] && record["date"]) {
+              ctx.onFocus(String(record["sourceId"]), String(record["date"]));
+            }
+          },
+          style: block.selectFocus ? { cursor: "pointer" } : undefined,
+        })}
+      />
+    </>
   );
 }
 
@@ -276,8 +282,7 @@ function StatsBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
       block.items.map(async (item) => {
         let rows = rowsOf(await ctx.hubQuery(item.query ?? block.query ?? ""));
         if (item.filter) {
-          const allow = new Set(item.filter.in);
-          rows = rows.filter((r) => allow.has(String(r[item.filter!.key] ?? "")));
+          rows = rows.filter((r) => matchFilter(item.filter!, r));
         }
         let value = 0;
         const field = item.op === "sum" ? item.field : undefined;

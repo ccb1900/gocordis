@@ -16,7 +16,7 @@ export interface ViewBlock {
     op?: "count" | "sum";
     field?: string;
     warn?: boolean;
-    filter?: { key: string; in: string[] };
+    filter?: Filter;
   }>;
   dateKey?: string;
   series?: Array<{ key: string; label: string }>;
@@ -36,10 +36,16 @@ export interface ViewBlock {
   pageSize?: number;
   selectFocus?: boolean;
   expand?: string;
-  /** Client-side row filter after fetch: exact membership on one field.
-   * Lets one query serve several presentations (e.g. "needs attention")
-   * without a new backend query per slice. */
-  filter?: { key: string; in: string[] };
+  /** Render nothing (not even an empty state) while the query returns no
+   * rows — auxiliary detail tables stay quiet instead of showing large
+   * empty boxes for sources that simply have no such records. */
+  hideWhenEmpty?: boolean;
+  /** Client-side row filter after fetch. A clause is exact membership
+   * ({key, in}) or a numeric comparison ({key, gt}); {anyOf} unions its
+   * clauses. Lets one query serve several presentations (e.g. "needs
+   * attention" = failed/pending rows OR rows with failed files) without a
+   * new backend query per slice. */
+  filter?: Filter;
   /** master-detail: nested views rendered beside the list, with the
    * selected row exposed as $focus (sourceId = row[focusKey]). */
   detailViews?: ViewBlock[];
@@ -97,4 +103,17 @@ export function formatRow(format: string, row: Record<string, unknown>): string 
   return format.replace(/\{(\w+)\}/g, (_, key: string) =>
     row[key] === undefined || row[key] === null ? "—" : String(row[key])
   );
+}
+
+// Row-filter clauses, declarative and composable: {key, in} membership,
+// {key, gt} numeric threshold, {anyOf} union.
+export type Filter =
+  | { key: string; in: string[] }
+  | { key: string; gt: number }
+  | { anyOf: Filter[] };
+
+export function matchFilter(f: Filter, row: Record<string, unknown>): boolean {
+  if ("anyOf" in f) return f.anyOf.some((clause) => matchFilter(clause, row));
+  if ("in" in f) return f.in.includes(String(row[f.key] ?? ""));
+  return Number(row[f.key] ?? 0) > f.gt;
 }

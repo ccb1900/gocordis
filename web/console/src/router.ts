@@ -23,3 +23,12 @@ export function navigate(path: string): void {
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
 }
+
+// replace 改写当前历史项（不新增）：用于"/ → 首页"这类规范化跳转，
+// 回退键不应把用户送回一个从未有意义的地址。
+export function replace(path: string): void {
+  if (window.location.pathname !== path) {
+    window.history.replaceState({}, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+}

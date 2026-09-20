@@ -10,7 +10,7 @@ import { api } from "../api";
 import { loadClientModules } from "../lib/client-modules";
 import { useObservationGeneration, useStreamStatus, onObservation } from "../stream";
 import { useDomainVersion } from "../lib/projections";
-import { usePath, navigate } from "../router";
+import { usePath, navigate, replace } from "../router";
 import { useTheme } from "../theme";
 import { GenericPage } from "../views/GenericPage";
 import { ViewBlockRenderer, type ViewContext } from "../views/blocks";
@@ -86,13 +86,11 @@ export default function App() {
   }, [refresh, compositionVersion]);
 
   const active = useMemo(() => pages.find((p) => p.route === path), [pages, path]);
+  // "/" 不是任何页面的路由：规范化到组合序第一页（服务端按 order 排序
+  // 返回，首页即 pages[0]）。replace 不留历史项——回退键不会把用户送回
+  // 无意义的根地址。
   useEffect(() => {
-    if (!pages.length) return;
-    if (!pages.some((p) => p.route === path)) {
-      // Unknown route: render the not-found state instead of forcing the
-      // first page on the user.
-      return;
-    }
+    if (pages.length && path === "/") replace(pages[0].route);
   }, [pages, path]);
 
   // Command dispatch: mark busy, accept, then let observations invalidate.

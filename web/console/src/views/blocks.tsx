@@ -737,6 +737,99 @@ function CalendarBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
   );
 }
 
+// FormBlock: declarative input row → hub command. Generic editing
+// primitive: fields are data, the target is a named command — the console
+// never learns what the values mean.
+function FormBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+  if (!block.command) return null;
+  const command = block.command;
+  const submit = async () => {
+    setError(null);
+    try {
+      await ctx.hubCommand(command, { ...values });
+      setValues({});
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  return (
+    <div className="card" style={{ padding: 12 }}>
+      {block.title && <h3 style={{ margin: "0 0 8px", fontSize: 15 }}>{block.title}</h3>}
+      <Space wrap>
+        {(block.fields ?? []).map((f) => (
+          <Input
+            key={f.key}
+            aria-label={f.label}
+            placeholder={f.label}
+            style={{ width: 170 }}
+            value={values[f.key] ?? ""}
+            onChange={(e) => setValues((m) => ({ ...m, [f.key]: e.target.value }))}
+          />
+        ))}
+        <Button type="primary" disabled={ctx.busy} onClick={() => void submit()}>
+          {block.submitLabel ?? "提交"}
+        </Button>
+      </Space>
+      {error && <p style={{ color: "#f0655a", marginBottom: 0 }}>{error}</p>}
+    </div>
+  );
+}
+
+// JsonBlock: power edit of a structured document — fetch the named query,
+// edit its JSON, post the parsed object to a command. The raw escape hatch
+// for shapes too deep for forms (e.g. column contracts).
+function JsonBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
+  const { data, error: loadError, loading } = useQueryData(block, ctx);
+  const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [ok, setOk] = useState(false);
+  if (!block.command || !block.query) return null;
+  const command = block.command;
+  const jsonKey = block.jsonKey ?? "doc";
+  const body = text ?? (data == null ? "" : JSON.stringify(data, null, 2));
+  const submit = async () => {
+    setError(null);
+    setOk(false);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch (e) {
+      setError("JSON 解析失败：" + (e instanceof Error ? e.message : String(e)));
+      return;
+    }
+    try {
+      await ctx.hubCommand(command, { [jsonKey]: parsed });
+      setOk(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  return (
+    <div className="card" style={{ padding: 12 }}>
+      {block.title && <h3 style={{ margin: "0 0 8px", fontSize: 15 }}>{block.title}</h3>}
+      {loadError && <p style={{ color: "#f0655a" }}>{loadError}</p>}
+      <Input.TextArea
+        aria-label={block.title || "JSON"}
+        value={body}
+        rows={14}
+        style={{ fontFamily: "monospace", fontSize: 12 }}
+        onChange={(e) => { setText(e.target.value); setOk(false); }}
+      />
+      <Space style={{ marginTop: 8 }}>
+        <Button type="primary" loading={loading} disabled={ctx.busy} onClick={() => void submit()}>
+          {block.submitLabel ?? "应用"}
+        </Button>
+        {ok && <Typography.Text type="success">已提交，组合重调和中。</Typography.Text>}
+      </Space>
+      {error && <p style={{ color: "#f0655a", marginBottom: 0 }}>{error}</p>}
+    </div>
+  );
+}
+
 registerBlockRenderer("query-table", QueryTableBlock);
 registerBlockRenderer("master-detail", MasterDetailBlock);
 registerBlockRenderer("calendar", CalendarBlock);
+registerBlockRenderer("form", FormBlock);
+registerBlockRenderer("json", JsonBlock);

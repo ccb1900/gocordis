@@ -53,6 +53,13 @@ export interface ViewBlock {
   /** Interest domain for invalidation: "collection" (default), "composition",
    * "source:<id>", or "all". The block re-queries only when this moves. */
   domain?: string;
+  /** form: declarative input row → hub command (uses the shared `fields`
+   * shape as its inputs). Values post as a flat object {fieldKey: stringValue}. */
+  command?: string;
+  submitLabel?: string;
+  /** json: power edit — fetch `query`, render the JSON in an editable text
+   * area, submit the parsed object as {jsonKey: parsed} to `command`. */
+  jsonKey?: string;
 }
 
 export interface PageAction {

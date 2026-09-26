@@ -41,6 +41,11 @@ type ComposeOptions struct {
 	// Layers are the application/domain layers, applied in order between
 	// plugin discovery and the explicit [[components]] rows.
 	Layers []Layer
+	// Base overlays top-level keys after parsing and before any layer runs.
+	// A persisted configuration store (e.g. SQLite) overrides the file's
+	// declaration tables this way: the file stays the seed document, the
+	// store's keys win when present. Nil means the file is authoritative.
+	Base map[string]any
 }
 
 // ComposeDocument is the canonical composition pipeline shared by every
@@ -49,10 +54,24 @@ type ComposeOptions struct {
 // hooks, and validate row identities. Patches are intentionally NOT part of
 // the pipeline — they are desired-state overlays applied by the host over
 // the expanded composition (console overlay and --patch operator layers).
+// ParseDocument decodes a TOML document into its top-level map without
+// composing any components — the entry point for configuration stores that
+// import the file form of a document (e.g. seeding a SQLite fleet store).
+func ParseDocument(data []byte) (map[string]any, error) {
+	doc := map[string]any{}
+	if err := toml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("toml parse: %w", err)
+	}
+	return doc, nil
+}
+
 func ComposeDocument(ctx context.Context, data []byte, opts ComposeOptions) (config.Config, error) {
 	doc := map[string]any{}
 	if err := toml.Unmarshal(data, &doc); err != nil {
 		return config.Config{}, fmt.Errorf("toml parse: %w", err)
+	}
+	for key, value := range opts.Base {
+		doc[key] = value
 	}
 	known := map[string]bool{"bundles": true, "components": true}
 	for _, layer := range opts.Layers {

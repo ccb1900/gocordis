@@ -64,6 +64,13 @@ export function useProjection<S>(id: string): S | undefined {
 export const ALL = "all";
 
 export function domainsOf(ev: UIObservation): string[] {
+  // Started 事件只是时间线锚点（"正在采"）：读取模型不消费它们，数据域
+  // 不因它们失效。并行采集下每个文件两条 Started 事件会把默认域（all）
+  // 的全部块打成一昼夜不停的重查询——UI 闪烁的根源。事件流面板靠
+  // generation 计数器取数，不经过这里。
+  if (typeof ev.type === "string" && /Started$/.test(ev.type)) {
+    return [];
+  }
   const out = [ALL];
   if (typeof ev.type === "string" && ev.type.startsWith("composition.")) {
     out.push("composition");

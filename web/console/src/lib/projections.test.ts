@@ -80,6 +80,10 @@ describe("domain counters", () => {
     expect(domainsOf(ev({ type: "composition.changed" }))).toContain("composition");
     expect(domainsOf(ev({ type: "composition.failed" }))).toContain("composition");
     expect(domainsOf(ev({ type: "CollectionCompleted" }))).toContain("collection");
+    // Started 只是时间线锚点：不失效任何数据域（否则并行采集期间
+    // 所有页面持续重查询——UI 闪烁的根源）。
+    expect(domainsOf(ev({ type: "CollectionStarted" }))).toEqual([]);
+    expect(domainsOf(ev({ type: "FileStarted" }))).toEqual([]);
     expect(domainsOf(ev())).toContain(ALL);
     expect(domainsOf(ev())).toContain("source:production-source");
   });

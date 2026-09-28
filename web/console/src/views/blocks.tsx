@@ -97,7 +97,10 @@ function useQueryData(block: ViewBlock, ctx: ViewContext) {
     };
   }, [block.query, params, dormant, version, ctx.hubQuery]);
 
-  return { data, error, loading: loading && !dormant, dormant };
+  // 后台刷新保留旧数据原位换新：采集期间域版本持续前进，若把 loading
+  // 翻给表格，所有页面就会整页闪（旧实现正是这样）。加载指示只在
+  // 尚无任何数据的首查出现。
+  return { data, error, loading: loading && !dormant && data == null, dormant };
 }
 
 function rowsOf(data: unknown): Row[] {
@@ -516,7 +519,7 @@ function QueryTableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext })
       <Table<Row>
         size="small"
         rowKey={(_, i) => String(i)}
-        loading={loading}
+        loading={loading && rows.length === 0}
         scroll={{ x: "max-content" }}
         dataSource={ready ? rows : []}
         pagination={{

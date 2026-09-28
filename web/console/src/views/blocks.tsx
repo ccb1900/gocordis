@@ -781,10 +781,11 @@ function FormBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
 // edit its JSON, post the parsed object to a command. The raw escape hatch
 // for shapes too deep for forms (e.g. column contracts).
 function JsonBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
-  const { data, error: loadError, loading } = useQueryData(block, ctx);
+  const { data, error: loadError } = useQueryData(block, ctx);
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   if (!block.command || !block.query) return null;
   const command = block.command;
   const jsonKey = block.jsonKey ?? "doc";
@@ -799,11 +800,14 @@ function JsonBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
       setError("JSON 解析失败：" + (e instanceof Error ? e.message : String(e)));
       return;
     }
+    setSubmitting(true);
     try {
       await ctx.hubCommand(command, { [jsonKey]: parsed });
       setOk(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
     }
   };
   return (
@@ -818,7 +822,7 @@ function JsonBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
         onChange={(e) => { setText(e.target.value); setOk(false); }}
       />
       <Space style={{ marginTop: 8 }}>
-        <Button type="primary" loading={loading} disabled={ctx.busy} onClick={() => void submit()}>
+        <Button type="primary" loading={submitting} disabled={ctx.busy} onClick={() => void submit()}>
           {block.submitLabel ?? "应用"}
         </Button>
         {ok && <Typography.Text type="success">已提交，组合重调和中。</Typography.Text>}

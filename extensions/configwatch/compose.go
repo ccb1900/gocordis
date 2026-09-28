@@ -2,6 +2,7 @@ package configwatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -59,15 +60,28 @@ type ComposeOptions struct {
 // import the file form of a document (e.g. seeding a SQLite fleet store).
 func ParseDocument(data []byte) (map[string]any, error) {
 	doc := map[string]any{}
-	if err := toml.Unmarshal(data, &doc); err != nil {
+	if err := decodeTOML(data, &doc); err != nil {
 		return nil, fmt.Errorf("toml parse: %w", err)
 	}
 	return doc, nil
 }
 
+// decodeTOML 把解码错误的行号与出错行带出来（go-toml 的 Error() 只有
+// 一句"invalid escape character"，没有位置——操作员得逐行找）。
+func decodeTOML(data []byte, doc *map[string]any) error {
+	if err := toml.Unmarshal(data, doc); err != nil {
+		var de *toml.DecodeError
+		if errors.As(err, &de) {
+			return fmt.Errorf("%s", de.String())
+		}
+		return err
+	}
+	return nil
+}
+
 func ComposeDocument(ctx context.Context, data []byte, opts ComposeOptions) (config.Config, error) {
 	doc := map[string]any{}
-	if err := toml.Unmarshal(data, &doc); err != nil {
+	if err := decodeTOML(data, &doc); err != nil {
 		return config.Config{}, fmt.Errorf("toml parse: %w", err)
 	}
 	for key, value := range opts.Base {

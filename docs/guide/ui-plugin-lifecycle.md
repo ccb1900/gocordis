@@ -1,0 +1,122 @@
+# UI 插件生命周期（Client Module Lifecycle）
+
+本文描述插件前端模块（`ui-client` 组件）在控制台中的完整生命周期：激活、
+停用、重新启用、内容更新与失败回滚。它与 GOCORDIS Runtime 的 activation
+语义一一镜像——前端模块管理器是论文"可逆 effect、LIFO 撤销"在浏览器侧的
+对应物。
+
+权威来源：`docs/论文.pdf`（唯一规范）；撤销顺序的运行时锚点是
+`runtime/component.go`（"Apply 返回的 Cleanup 被转换为 activation 的最后
+一个 effect，因此最先被撤销；`Context.Effect` 的逆随后按 LIFO 执行"）。
+
+## 参与者
+
+| 参与者 | 位置 | 职责 |
+|---|---|---|
+| `ui-client` 组件 | `extensions/console/host/clientmodule.go` | 声明层：一个组件 = 一个前端模块；启用/停用走声明开关 |
+| Composition Registry | `extensions/console/registry/composition.go` | 模块清单的权威；注册/注销都是 Effect 拥有的可逆操作 |
+| webui manifest | `extensions/console/webui/server.go` `GET /api/ui/client-modules` | 输出期望模块集 `{name, url}`；url 带内容修订 `?v=<sha256 前 8 hex>` |
+| Module Manager | `web/console/src/lib/client-modules.ts` | 前端 reconcile：对比期望集与激活集，执行激活/停用/重载 |
+| keyed registry | `web/console/src/views/registry.tsx` | 渲染器资源池；dispose 由 Manager 持有并执行 |
+
+## 生命周期一览
+
+| 事件 | 行为 |
+|---|---|
+| 插件启用（声明 `enabled=true`，Load） | `ui-client` Apply → `RegisterClientModule` → manifest 出现该模块 → SSE `composition.changed` → 前端 reconcile → 动态 import → 调用 `register(facade)` → 激活 |
+| 插件停用（Disable / uninstall） | Effect 撤销 → 模块离开 manifest → SSE → 前端 dispose：先执行 `register` 返回的 dispose，再按 LIFO 撤销 facade 注册的渲染器 |
+| 插件重新启用 | manifest 重新出现 → reconcile 重新执行 `register`（ESM 模块体留在浏览器缓存，不会重跑；只有注册逻辑重跑） |
+| 模块文件内容更新 | manifest url 的 `?v=` 哈希变化 → reconcile 视为新 URL → dispose 旧激活 → 重新 import + 注册（会话内热更新，无需刷新页面） |
+| import / register 失败 | 已注册部分全部回滚，激活不落地；下一次**调和触发**时重新尝试（见下文锚定），从不自发重试；一个模块失败不影响其他模块 |
+| manifest 拉取失败 | 视为"期望状态未知"，**保留**当前激活，不卸载（防止瞬时故障卸光全部插件） |
+
+## register 契约
+
+```js
+// plugins/<name>/ui.js
+export default function register(api) {
+  // 经 facade 注册的一切资源由框架记账，模块无需自己维护清理逻辑
+  const disposeGauge = api.registerBlockRenderer("gauge", GaugeBlock);
+  const disposePage  = api.registerPageRenderer("alarm", AlarmPage);
+
+  // 可选：返回一个 dispose，覆盖 facade 之外创建的资源
+  // （定时器、WebSocket、自管理的事件订阅……）
+  return () => {
+    disposeGauge();
+    disposePage();
+  };
+}
+```
+
+规则：
+
+1. **资源归属在框架**：通过 `api.register*Renderer` 注册的每一项都被记入
+   本次激活的撤销栈；模块提前调用返回的 dispose 也可以（幂等，once 包装，
+   不会双重执行）。
+2. **返回的 dispose 是"最后一个 effect"**：停用时**最先**执行它，然后按
+   LIFO 撤销 facade 注册（镜像 `runtime/component.go`）。
+3. **facade 之外的资源必须由返回的 dispose 覆盖**：模块体顶层不要建立
+   需要清理的副作用——模块体只在首次 import 时执行一次，之后启停只重跑
+   `register`。
+4. 内置渲染器（`views/blocks.tsx`、控制台基建页面）不走模块管理器，
+   生命周期为进程级，行为不变。
+
+## 失败与重试的论文锚定
+
+前端模块的失败重试**不是**铁律 5"不会自动重试"的反例，边界如下：
+
+- **铁律 5 约束的是 Runtime fiber**：组件 Apply 失败 → Failed outcome 阻止
+  重入，直到显式 Load（"重试是修正声明后重新启用"）。前端模块加载失败
+  不经过任何 fiber——`ui-client` 组件本身 Active（它只负责把模块写入
+  manifest，且已成功），失败的只是浏览器侧对 manifest 的实现。
+- **前端 manager 镜像的是 config Controller 的 diff 调和**
+  （`extensions/config/config.go`）：声明组件加载失败时**不进入 `applied`
+  集合**，每次 `Reconcile` 触发（声明文件变更/显式调用）都按 diff 重新
+  尝试；"no automatic retry" 指的是 Controller 不自发循环，而不是失败
+  永久粘滞。前端 manager 逐字镜像：激活不落地 = 不进 applied；下一次
+  调和触发（`composition.changed` / 引导）重新尝试；两次触发之间**从不
+  自发重试**。
+- **修正声明的三个入口**（对应"重试是修正声明后重新启用"）：内容修订
+  （`?v=` 哈希变化）、插件停用→重新启用（离开再进入期望集）、页面刷新
+  （浏览器侧"重启 = 全新调和"，铁律 9）。
+
+## 驱动机制
+
+- 期望集的唯一来源是 manifest（`GET /api/ui/client-modules`），它由
+  Composition Registry 派生——**磁盘上存在模块文件从不等于加载**。
+- 驱动信号是观察流：`composition.changed` → `composition` domain 版本
+  bump（250ms 合并）→ `App.tsx` 的 effect 重新 fetch pages/panels 并调用
+  `reconcileClientModules()`。首次渲染前（`main.tsx`）也 reconcile 一次。
+- reconcile 被串行化：并发调用排队执行，期望集相同的重跑是 no-op。
+
+## 撤销顺序（与 Runtime 对照）
+
+```
+register(facade) 期间                    dispose（停用 / URL 变更）
+  ├─ facade.register* → 记入撤销栈  ⇄   3. 撤销栈 LIFO（后注册先撤）
+  └─ return dispose                ⇄   1. 返回的 dispose 最先执行
+                                          （= Apply 返回的 Cleanup：
+                                            "最后一个 effect，最先撤销"）
+```
+
+## 验收对照（Iteration UI-01）
+
+| 验收标准 | 保证机制 | 测试 |
+|---|---|---|
+| 插件启动两次，不产生重复注册 | 期望集相同 → no-op diff | `unchanged desired set does not re-register` |
+| 插件停止后，所有对应 UI Contribution 消失 | dispose = moduleDispose + LIFO | `disable disposes everything` |
+| 插件重新启动，页面可以恢复 | 重跑 register（模块体走缓存） | `re-enable re-registers on the cached module` |
+| 一个模块加载失败，不影响其他模块 | per-module try/catch + 回滚 | `failing mid-register rolls back…` / `one broken module never blocks` |
+| 部分注册失败，可回滚已注册资源 | 激活不落地 + 已入栈 dispose 全执行 | 同上 |
+| 连续启停 100 次，无持续增长 | 每次停用全额撤销 | `100 enable/disable cycles leave no residue` |
+| TypeScript 检查、单元测试通过 | CI 门禁 | `npx tsc --noEmit && npm test` |
+
+## 相关代码
+
+- `web/console/src/lib/client-modules.ts` — Module Manager（reconcile / activate / unwind）
+- `web/console/src/views/registry.tsx` — keyed 渲染器注册与 dispose
+- `web/console/src/shell/App.tsx` — composition domain 驱动 reconcile
+- `extensions/console/host/clientmodule.go` — 声明层 ui-client 组件
+- `extensions/console/webui/server.go` — manifest（含 `?v=` 内容修订）与模块文件服务
+- 测试：`web/console/src/lib/client-modules.test.ts`、
+  `extensions/console/webui/client_modules_test.go`

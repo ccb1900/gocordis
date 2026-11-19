@@ -104,3 +104,29 @@ URL is directory-shaped so vendored libraries load via plain relative
 imports. Trust = operator install, exactly like the plugin binary
 itself; an out-of-process plugin already runs with host privileges, so
 its client module adds no new risk.
+
+### Module lifecycle
+
+The module manager (`lib/client-modules.ts`) reconciles the active module
+set against the manifest on every `composition.changed` observation —
+mirroring the runtime's activation semantics:
+
+- **Disable/uninstall** removes the module from the manifest → the manager
+  disposes the activation: the register function's returned dispose runs
+  first (the "last effect", as `runtime/component.go` prescribes for the
+  Apply-returned Cleanup), then every renderer the module registered
+  through the facade unwinds LIFO. The page disappears without a reload.
+- **Re-enable** re-executes `register` on the cached ESM — the module body
+  stays in the browser's module cache; only the registrations re-run.
+- **Content update** changes the manifest URL's `?v=<content hash>` → the
+  old activation disposes and the module re-imports (in-session hot update).
+- **Failure** (import or register throwing) rolls back what was already
+  registered, is never remembered, and retries on the next reconcile —
+  one broken module never blocks the console or its siblings. A failing
+  manifest *fetch* keeps current activations: unknown desired state is not
+  an empty desired state.
+
+Contract: register through the facade and the framework owns the cleanup;
+resources created outside the facade must be covered by the optional
+dispose your register function returns. Full details:
+`docs/guide/ui-plugin-lifecycle.md`.

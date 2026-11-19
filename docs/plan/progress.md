@@ -161,3 +161,27 @@
 - C-2/C-3 open spec question (realm resolution over a retiring child record vs ancestor fallback) resolved in favor of block-no-fallback, matching the existing `resolveDependency` implementation.
 - Gates: `go test ./runtime/...` PASS; `go test -race ./runtime/...` PASS; production diff zero (test + docs only).
 - Matrix: P0-12 → PASS; Status Summary P0 12 PASS / 0 PARTIAL; GAP-01 gap log CLOSED.
+
+## Session: 2026-11-20 — Console UI-01 Lifecycle & Composition (client module reconcile)
+
+- Closed the frontend half of the plugin UI lifecycle: the Go side was already composition-governed (`ui-client` ctx.Effect register/unregister, manifest 404s on disable), but the browser never unloaded — `loadedModules` was add-only (failed loads poisoned forever), register dispose handles were dropped, and a disabled plugin's renderers stayed live until a page reload.
+- Active Module Registry: `web/console/src/lib/client-modules.ts` rebuilt around `createModuleManager` — reconcile diffs the manifest against active activations; activate = import (cached ESM) + `register(facade)`; dispose = module-returned dispose FIRST, then facade-collected inverses LIFO (exact mirror of `runtime/component.go` Cleanup ordering). Failed import/register rolls back and retries (never remembered); failing manifest fetch keeps activations (unknown ≠ empty); reconciles serialize through a promise queue; `reconcileClientModules()` driven from `main.tsx` bootstrap + `App.tsx` composition domain.
+- Go manifest revision: `GET /api/ui/client-modules` URLs now carry `?v=<sha256[:4] hex>` content hash (`extensions/console/webui/server.go` clientModuleURL) — in-session plugin file updates re-import instead of serving the stale ESM cache; unreadable files degrade to the bare URL.
+- Docs: `docs/guide/ui-plugin-lifecycle.md` (lifecycle + register contract + runtime mirror), `web/console/README.md` module lifecycle section.
+- Tests: `web/console/src/lib/client-modules.test.ts` rewritten — 14 cases incl. 100-cycle leak test (importer 1×, register 100×, dispose 100×, zero registry residue), rollback/retry isolation, dispose idempotence, serialized overlap; `extensions/console/webui/client_modules_test.go` pins the `?v=` wire contract + revision-tracks-content. Gates: `go build/vet/gofmt` clean, `go test -race ./extensions/console/...` PASS, `tsc --noEmit` clean, vitest 30/30 PASS.
+- Deferred to UI-02: Widget/Settings/Action extension-point contracts (`api.pages.register` style facade); `ui-page` factory for DiscoverPlugins rows.
+
+## Session: 2026-11-20 — UI-01 paper-conformance review round (twelve-law audit + anchoring)
+
+- Audited the client-module lifecycle work against AGENTS.md §1 (12 iron laws) with first-source evidence. Verdict: semantics conform; two ANCHORING gaps fixed, zero behavior change.
+- F1 retry anchoring: "retry only on reconcile triggers" is the mirror of the config Controller's applied-diff reconcile (extensions/config/config.go:18-19, 221, 486-497 — a failed add never enters `applied`, every Reconcile re-attempts by diff; "no automatic retry" = no self-loop). Iron law 5's no-auto-retry binds the Runtime fiber (Failed outcome blocks re-entry); the frontend module load is not a fiber — the ui-client component stays Active. Anchored in client-modules.ts header comment + docs/guide/ui-plugin-lifecycle.md §失败与重试的论文锚定.
+- F2 ROADMAP §1.3 class A membership added: console 前端模块调和 (§5.2.1 disable→dispose / re-enable→re-register, `?v=` revision = mini-HMR).
+- Considered and rejected (logged): explicit frontend Failed table (redundant with not-landing-in-activations, matches Controller applied semantics); moduleCache old-revision pruning (growth bounded by operator actions; browser ESM cache holds the same objects anyway).
+- `?v=` compatibility verified: Go serves on `r.URL.Path` only (query excluded), frontend compares URL strings opaquely, plugin-kit parses nothing.
+- Next: browser E2E smoke (real ESM import / EventSource / React dispose), then ordered commits.
+
+## Session: 2026-11-20 — UI-01 browser E2E + late-registration reactivity fix
+
+- Browser E2E (real Chromium via playwright-core + a temporary .e2e-smoke harness — runtime + configwatch + webui + fixture ui-client, removed after the run; script kept in /tmp): 18/18 assertions pass — enable→page+marker render (SSE 观察流在线), disable→page/marker vanish + dispose exactly once, re-enable→register re-runs on the cached module body (registers=2, bodies=1), content revision (?v= change)→module body re-executes + hot re-render, three fast toggles→counters exact (registers=6/disposes=5), zero duplicate markers/menu items, zero page errors. Screenshots verified.
+- The E2E caught one real defect unit tests could not: a page whose renderer registers LATE (module import finishing after the pages fetch) rendered the "renderer not registered" fallback forever — the registry Maps were not reactive. Fix (TDD): registry.tsx now bumps a version on every real register/dispose (identity-guarded stale disposals don't bump) and exports subscribeRenderers/rendererRegistryVersion; App reads it via useSyncExternalStore and pins it into the ViewContext memo — renderer availability is a dependency that re-triggers, not a race (paper: dependency satisfaction is the trigger, 铁律 2).
+- Gates after fix: vitest 32/32 (new registry.test.tsx), tsc clean, go build/vet/gofmt clean, `go test -race ./...` full repo PASS, E2E 18/18 ALL PASS.

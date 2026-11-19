@@ -30,27 +30,66 @@ const blockRenderers = new Map<string, BlockRenderer>();
 const pageRenderers = new Map<string, PageRenderer>();
 const panelRenderers = new Map<string, PanelRenderer>();
 
+// Registry reactivity: the Maps are module-global (not React state), so a
+// renderer registered AFTER the first render (client module import finishing
+// late) would otherwise never reach an already-rendered page. Bumping a
+// version on every real change and subscribing via useSyncExternalStore makes
+// renderer availability a trigger, not a race: pages re-render when the
+// resource they depend on arrives or departs.
+let registryVersion = 0;
+const registryListeners = new Set<() => void>();
+
+function bump(): void {
+  registryVersion++;
+  for (const listener of registryListeners) listener();
+}
+
+/** subscribeRenderers registers a change listener; returns the unsubscribe. */
+export function subscribeRenderers(listener: () => void): () => void {
+  registryListeners.add(listener);
+  return () => {
+    registryListeners.delete(listener);
+  };
+}
+
+/** rendererRegistryVersion is the current registry generation. */
+export function rendererRegistryVersion(): number {
+  return registryVersion;
+}
+
 /** registerBlockRenderer adds (or overrides) the renderer for one view kind. */
 export function registerBlockRenderer(kind: string, renderer: BlockRenderer): () => void {
   blockRenderers.set(kind, renderer);
+  bump();
   return () => {
-    if (blockRenderers.get(kind) === renderer) blockRenderers.delete(kind);
+    if (blockRenderers.get(kind) === renderer) {
+      blockRenderers.delete(kind);
+      bump();
+    }
   };
 }
 
 /** registerPageRenderer adds (or overrides) a page-level renderer by name. */
 export function registerPageRenderer(name: string, renderer: PageRenderer): () => void {
   pageRenderers.set(name, renderer);
+  bump();
   return () => {
-    if (pageRenderers.get(name) === renderer) pageRenderers.delete(name);
+    if (pageRenderers.get(name) === renderer) {
+      pageRenderers.delete(name);
+      bump();
+    }
   };
 }
 
 /** registerPanelRenderer adds (or overrides) a panel-level renderer by name. */
 export function registerPanelRenderer(name: string, renderer: PanelRenderer): () => void {
   panelRenderers.set(name, renderer);
+  bump();
   return () => {
-    if (panelRenderers.get(name) === renderer) panelRenderers.delete(name);
+    if (panelRenderers.get(name) === renderer) {
+      panelRenderers.delete(name);
+      bump();
+    }
   };
 }
 

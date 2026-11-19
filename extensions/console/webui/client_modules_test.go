@@ -1,10 +1,12 @@
 package webui_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -13,6 +15,11 @@ import (
 	appui "dynamic-runtime/extensions/console/registry"
 	"dynamic-runtime/extensions/console/webui"
 )
+
+// manifestRevisionRe pins the manifest URL contract: directory-shaped entry
+// path plus the ?v=<8 hex> content revision the frontend keys module
+// activation on.
+var manifestRevisionRe = regexp.MustCompile(`^/client-modules/demo-ui/ui\.js\?v=[0-9a-f]{8}$`)
 
 func newModuleServer(t *testing.T) (*webui.Server, string, appui.Registry) {
 	t.Helper()
@@ -52,9 +59,25 @@ func TestClientModulesManifestAndServing(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("manifest status %d: %s", rec.Code, rec.Body.String())
 	}
-	want := `{"data":{"modules":[{"name":"demo-ui","url":"/client-modules/demo-ui/ui.js"}]}}`
-	if got := strings.TrimSpace(rec.Body.String()); got != want {
-		t.Fatalf("manifest = %s, want %s", got, want)
+	// Wire contract: one module row per manifest entry — name plus the
+	// directory-shaped entry URL with its content revision (?v=<8 hex>).
+	var body struct {
+		Data struct {
+			Modules []struct {
+				Name string `json:"name"`
+				URL  string `json:"url"`
+			} `json:"modules"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("manifest json: %v (%s)", err, rec.Body.String())
+	}
+	if len(body.Data.Modules) != 1 {
+		t.Fatalf("manifest rows = %d, want 1: %s", len(body.Data.Modules), rec.Body.String())
+	}
+	row := body.Data.Modules[0]
+	if row.Name != "demo-ui" || !manifestRevisionRe.MatchString(row.URL) {
+		t.Fatalf(`manifest row = %q/%q, want name "demo-ui" and url "/client-modules/demo-ui/ui.js?v=<8 hex>"`, row.Name, row.URL)
 	}
 
 	// The entry file at its directory-shaped URL: relative imports of
@@ -74,6 +97,54 @@ func TestClientModulesManifestAndServing(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Body.String() != "export const init = () => 1;" {
 		t.Fatalf("vendored lib status %d body %q", rec.Code, rec.Body.String())
 	}
+}
+
+// The manifest URL carries a content revision: same bytes → same ?v=, changed
+// bytes → changed ?v=. This is what lets the console frontend re-import an
+// updated plugin module in-session instead of keeping the stale ESM cache.
+func TestClientModulesManifestRevisionTracksContent(t *testing.T) {
+	s, dir, _ := newModuleServer(t)
+
+	first := manifestModuleURL(t, s)
+	if second := manifestModuleURL(t, s); second != first {
+		t.Fatalf("same content must keep the revision: %q vs %q", first, second)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "ui.js"),
+		[]byte("export default function register(m) { void m; }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed := manifestModuleURL(t, s)
+	if changed == first {
+		t.Fatalf("changed content must change the revision: %q", changed)
+	}
+	if !manifestRevisionRe.MatchString(changed) {
+		t.Fatalf("changed url lost the contract shape: %q", changed)
+	}
+}
+
+func manifestModuleURL(t *testing.T, s *webui.Server) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/ui/client-modules", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("manifest status %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Modules []struct {
+				Name string `json:"name"`
+				URL  string `json:"url"`
+			} `json:"modules"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("manifest json: %v (%s)", err, rec.Body.String())
+	}
+	if len(body.Data.Modules) != 1 {
+		t.Fatalf("manifest rows = %d, want 1", len(body.Data.Modules))
+	}
+	return body.Data.Modules[0].URL
 }
 
 func TestClientModulesTraversalImpossible(t *testing.T) {

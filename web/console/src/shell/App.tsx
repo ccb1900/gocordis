@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import "../styles.css";
 import { Badge, Button, Layout, Menu, Space, Switch, Tabs, Typography } from "antd";
 import {
@@ -7,14 +7,21 @@ import {
 } from "@ant-design/icons";
 import { Alert } from "antd";
 import { api } from "../api";
-import { loadClientModules } from "../lib/client-modules";
+import { reconcileClientModules } from "../lib/client-modules";
 import { useObservationGeneration, useStreamStatus, onObservation } from "../stream";
 import { useDomainVersion } from "../lib/projections";
 import { usePath, navigate, replace } from "../router";
 import { useTheme } from "../theme";
 import { GenericPage } from "../views/GenericPage";
 import { ViewBlockRenderer, type ViewContext } from "../views/blocks";
-import { getPageRenderer, getPanelRenderer, registerPageRenderer, registerPanelRenderer } from "../views/registry";
+import {
+  getPageRenderer,
+  getPanelRenderer,
+  registerPageRenderer,
+  registerPanelRenderer,
+  rendererRegistryVersion,
+  subscribeRenderers,
+} from "../views/registry";
 import type { UIPage, UIPanel } from "../types";
 
 const { Sider, Content } = Layout;
@@ -64,6 +71,10 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [hubError, setHubError] = useState<string | null>(null);
   const generation = useObservationGeneration();
+  // Renderer availability is a dependency, not a race: when a client module
+  // finishes registering after the pages already rendered (late import), the
+  // version bump re-renders and the lookup below resolves.
+  const rendererVersion = useSyncExternalStore(subscribeRenderers, rendererRegistryVersion);
   const stream = useStreamStatus();
   const path = usePath();
   const { isDark, toggle } = useTheme();
@@ -79,9 +90,11 @@ export default function App() {
   const compositionVersion = useDomainVersion("composition");
   useEffect(() => {
     refresh();
-    // A newly installed ui-client component must load without a manual
-    // reload; already-loaded modules are skipped by the loader.
-    void loadClientModules();
+    // A ui-client component appearing, disappearing (disable/uninstall) or
+    // changing content (?v= revision) in the manifest reconciles without a
+    // manual reload: new modules register, departed ones dispose their
+    // renderers, changed ones re-import. Unchanged modules are left alone.
+    void reconcileClientModules();
     return onObservation(() => undefined);
   }, [refresh, compositionVersion]);
 
@@ -123,7 +136,7 @@ export default function App() {
       busy,
       generation,
     }),
-    [hubCommand, focus, busy, generation]
+    [hubCommand, focus, busy, generation, rendererVersion]
   );
 
   const visibleOn = (list: UIPanel[]) =>

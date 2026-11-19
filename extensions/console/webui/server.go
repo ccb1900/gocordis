@@ -9,6 +9,8 @@ package webui
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io/fs"
 	"mime"
@@ -21,6 +23,7 @@ import (
 
 	"dynamic-runtime/extensions/console/explorer"
 	host "dynamic-runtime/extensions/console/host"
+	appui "dynamic-runtime/extensions/console/registry"
 )
 
 // Observation event name is fixed and shared with the Wails bridge.
@@ -183,6 +186,23 @@ func (s *Server) serveClientModule(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
+// clientModuleURL builds one manifest entry URL: the directory-shaped entry
+// URL plus a short content hash as the revision query (?v=…). The browser
+// caches ES modules per URL, so an updated ui.js at the same path would
+// otherwise stay stale for the whole session; the changed hash makes the
+// console frontend dispose the old activation and re-import. Hash failures
+// degrade to the bare URL — first load works, in-session updates of that
+// module just need a page reload.
+func clientModuleURL(m appui.ClientModule) string {
+	url := "/client-modules/" + m.Name + "/" + filepath.Base(m.Path)
+	data, err := os.ReadFile(m.Path)
+	if err != nil {
+		return url
+	}
+	sum := sha256.Sum256(data)
+	return url + "?v=" + hex.EncodeToString(sum[:4])
+}
+
 // serveStatic serves the embedded SPA build with an index fallback.
 func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 	if s.assets == nil {
@@ -230,7 +250,7 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 				"name": m.Name,
 				// Directory-shaped entry URL: relative imports of vendored
 				// libraries resolve inside the plugin directory.
-				"url": "/client-modules/" + m.Name + "/" + filepath.Base(m.Path),
+				"url": clientModuleURL(m),
 			})
 		}
 		s.writeResult(w, map[string]any{"modules": modules}, nil)

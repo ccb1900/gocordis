@@ -163,3 +163,25 @@ R4 评审(2026-09-09)按"是否服务论文实现"将扩展定类:
 | T63 | Theorem 70(Ordering) |
 | T66 | Theorem 73(Progress) |
 | T73 | Theorem 80(Confluence)⚠ 注意:论文 Theorem 73 是 Progress,勿混淆 |
+
+## §4 语义复审记录（2026-11-20，论文 × JS Cordis）
+
+- **P0 已修**：`Fiber.Ready` 在 RUnlock 后读 `f.intent`（Load/Dispose 在锁内
+  写）→ 锁内快照，并发测试 `-race` 绿；`Context.Effect` 的 Installing slot
+  与 beginUnwind 竞态 → beginUnwind 等 in-flight install 归零后才快照
+  Committed，Gone 保证所有逆完成；late-install 自撤销统一走
+  `guardedInverse`，panic 不再逃逸。既有 late-commit 测试的断言已按新语义
+  更新（先释放 install，再等 Gone）。
+- **Isolation**：`runtime/providers.go` 注释曾写 "lookup walks own → parent"，
+  与 `lookupOwn` 的实际逐 realm 无祖先回退语义相悖，已修正；**不得**为方便
+  重新引入祖先回退（论文 Def 24/25、ADR-0001）。
+- **Interception 分层**：`InterceptMeta` 按元数据 monoid 合并由 provider 解释，
+  是论文 Def 26/27（§6.3 capability 访问控制）的正式实现；`Intercept` 是
+  读值变换链，属 Go Runtime 附加能力，不应与论文机制混为一谈。
+- **事件边界**：Kernel 只保留事件注册（可逆 effect）与 EventBindings 读模型；
+  emit/serial/parallel/bail/waterfall 派发在 extensions/event；observe 层
+  负责 Runtime 观察事件的订阅/重放。Kernel 不演化为大型事件总线。
+- **定位**：论文定义核心语义；JS Cordis 是实现参考与兼容参照；Go 用自身的
+  类型系统（typed Key[T]、Require）与并发模型（orchestrator + goroutine），
+  **复刻语义而非语法**。本轮不新增功能，只证明既有语义在并发/动态替换下
+  仍成立。

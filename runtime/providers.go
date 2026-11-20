@@ -8,8 +8,11 @@ import "sync"
 //   - Runtime.Load roots compose in the Runtime root realm (backward
 //     compatible single-realm behavior);
 //   - ctx.Child defaults to inheriting the parent fiber's realm;
-//   - only an explicitly derived scope creates a child realm, which may
-//     SHADOW ancestor bindings (lookup walks own -> parent).
+//   - only an explicitly derived scope creates a child realm; lookupOwn is
+//     STRICTLY per-realm (no ancestor fallback). A child binding shadows an
+//     ancestor only in the sense that the child resolves to its OWN map —
+//     there is no implicit walk up to the parent (paper Def 24/25, ADR-0001,
+//     GAP-01 retiring-shadow). Do not reintroduce ancestor fallback here.
 //
 // Exclusivity is per realm: at most one provider per typed key in a realm's own
 // map. Sibling realms may provide the same key in parallel, invisible to each

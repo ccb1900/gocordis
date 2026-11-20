@@ -311,6 +311,23 @@ type ReviseOption func(*reviseOptions)
 
 type reviseOptions struct {
 	freshIsolation bool
+	resolvedRealms bool
+}
+
+// WithResolvedRealms makes the revision ADOPT the post-move namespace of
+// whatever active provider currently satisfies each declared dependency
+// (paper §5.2.1: after a provider's realm move, old-namespace dependents
+// "follow only through their own revision" — §4.4 allows a revision to carry
+// the new realm pairs). For every Inject key that currently resolves to a
+// live, non-retiring provider record, the reinserted fiber's ρ(k) is fixed to
+// that provider's EFFECTIVE realm for k — re-insertion-time resolution made
+// explicit. Unresolvable keys keep their prior routing. This is a declared
+// realm reassignment at the revision boundary, not an implicit ancestor walk:
+// ordinary Require keeps resolving exactly one namespace (Def 24). Without
+// it, a dependent's revision reinserts into the OLD namespace and can never
+// rebind to a rehomed provider (verified at composition level).
+func WithResolvedRealms() ReviseOption {
+	return func(o *reviseOptions) { o.resolvedRealms = true }
 }
 
 // WithFreshIsolation reassigns the revised fiber's realm pairs (paper §4.4
@@ -318,7 +335,9 @@ type reviseOptions struct {
 // declared key of the new definition resolves and provides there. Dependents
 // whose own ρ still points at the old namespace see a withdrawal (Pending) —
 // they follow only through their own revision, which is the paper-faithful
-// reading of crossing a realm reassignment.
+// reading of crossing a realm reassignment. When combined with
+// WithResolvedRealms, WithFreshIsolation wins for the declared keys (a fresh
+// namespace cannot simultaneously adopt foreign realms).
 func WithFreshIsolation() ReviseOption {
 	return func(o *reviseOptions) { o.freshIsolation = true }
 }
@@ -429,6 +448,7 @@ func (f *Fiber) Revise(ctx context.Context, component Component, opts ...ReviseO
 		provide:        provide,
 		realm:          scope,
 		freshIsolation: o.freshIsolation,
+		resolvedRealms: o.resolvedRealms,
 		reply:          reply,
 	}) {
 		return nil, ErrRuntimeClosed

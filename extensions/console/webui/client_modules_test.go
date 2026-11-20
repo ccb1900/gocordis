@@ -312,3 +312,61 @@ func TestClientModuleDoesNotServeManifestOrBackend(t *testing.T) {
 		t.Fatalf("ui.js = %d, want 200", rec.Code)
 	}
 }
+
+// 没有 public/ 目录时，根目录中的 JSON/TXT/MAP 不是公开资源（联合审查 P2-5）。
+func TestClientModuleRootDoesNotServeSensitiveTextFiles(t *testing.T) {
+	s, dir, _ := newModuleServer(t)
+	for name, body := range map[string]string{
+		"secrets.json": `{"password":"x"}`,
+		"config.txt":   "operator note",
+		"ui.js.map":    `{"sources":["secret"]}`,
+		"module.wasm":  "binary",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/client-modules/demo-ui/"+name, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s = %d, want 404 (not a public asset)", name, rec.Code)
+		}
+	}
+}
+
+// public/ 存在时，其内容整体公开（含 json），且入口从 public/ 解析。
+func TestClientModulePublicDirectory(t *testing.T) {
+	dir := t.TempDir()
+	pub := filepath.Join(dir, "public")
+	if err := os.MkdirAll(pub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pub, "ui.js"), []byte("export default function register(m){void m}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pub, "data.json"), []byte(`{"ok":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.json"), []byte(`x`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := appui.NewRegistry(func() {})
+	_, err := reg.RegisterClientModule(
+		appui.ContributionOwner{PluginID: "ui-client", ComponentID: "p", ActivationID: "a1"},
+		appui.ClientModule{Name: "pubmod", Path: filepath.Join(dir, "ui.js")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := webui.New(host.NewHost(nil, reg, nil), nil)
+	for path, want := range map[string]int{
+		"/client-modules/pubmod/ui.js":        http.StatusOK,
+		"/client-modules/pubmod/data.json":    http.StatusOK,
+		"/client-modules/pubmod/secrets.json": http.StatusNotFound,
+	} {
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != want {
+			t.Fatalf("GET %s = %d, want %d", path, rec.Code, want)
+		}
+	}
+}

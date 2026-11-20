@@ -218,7 +218,8 @@ func (s *Server) serveClientModule(w http.ResponseWriter, r *http.Request) {
 			// entry URL with a public/ root: serve <public>/<basename(entry)>
 			target = filepath.Join(root, filepath.Base(m.Path))
 		}
-		if !publicWebFile(target) {
+		isPublicRoot := root != filepath.Dir(m.Path)
+		if (isPublicRoot && !publicWebFileInRoot(target)) || (!isPublicRoot && !publicWebFile(target)) {
 			http.NotFound(w, r)
 			return
 		}
@@ -603,11 +604,23 @@ func publicWebFile(path string) bool {
 	// executable (manifest backend = "./alarm-demo"). Web assets have a
 	// recognizable extension — require one.
 	ext := strings.ToLower(filepath.Ext(base))
+	// 明确的公开类型：脚本/样式/图片/字体/媒体。JSON/TXT/MAP/WASM 这类
+	// 可能被误当配置或源码的文件只允许放在 public/ 目录中（见调用点），
+	// 普通插件根目录不因扩展名白名单就变成公开资源池。
 	switch ext {
-	case ".js", ".mjs", ".cjs", ".css", ".json", ".html", ".svg", ".png",
+	case ".js", ".mjs", ".cjs", ".css", ".html", ".svg", ".png",
 		".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf",
-		".map", ".txt", ".wasm", ".mp3", ".mp4":
+		".mp3", ".mp4":
 		return true
 	}
 	return false
+}
+
+// publicWebFileInRoot 对 public/ 内的资源放宽（允许 json/map/txt/wasm），
+// 因为该目录的全部内容已被明确声明为公开。
+func publicWebFileInRoot(path string) bool {
+	if strings.HasPrefix(strings.ToLower(filepath.Base(path)), ".") {
+		return false
+	}
+	return true
 }

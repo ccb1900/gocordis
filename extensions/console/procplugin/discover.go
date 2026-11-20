@@ -110,6 +110,11 @@ func DiscoverPlugins(dir string) ([]config.ComponentConfig, error) {
 			continue
 		}
 		pluginDir := filepath.Join(dir, name)
+		if m.Client != "" {
+			if err := validateClientPath(pluginDir, m.Client); err != nil {
+				return nil, fmt.Errorf("plugin %q: %w", name, err)
+			}
+		}
 		rows := m.componentRows(pluginDir)
 		out = append(out, rows...)
 	}
@@ -197,4 +202,21 @@ func PluginsDirForConfig(configPath string) string {
 		dir = filepath.Dir(dir)
 	}
 	return filepath.Join(dir, "plugins")
+}
+
+// validateClientPath checks that a manifest client entry stays INSIDE the
+// plugin directory: an absolute path or a ".." escape must not be expanded
+// into a ui-client row (that would let a broken manifest serve files outside
+// the plugin mount).
+func validateClientPath(pluginDir, client string) error {
+	clean := filepath.Clean(filepath.FromSlash(client))
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("client path %q escapes plugin directory", client)
+	}
+	full := filepath.Join(pluginDir, clean)
+	rel, err := filepath.Rel(filepath.Clean(pluginDir), full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("client path %q escapes plugin directory", client)
+	}
+	return nil
 }

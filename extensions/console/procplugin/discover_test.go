@@ -191,3 +191,18 @@ func TestDiscoverPluginsDirIsFile(t *testing.T) {
 		t.Fatal("ENOTDIR must be reported")
 	}
 }
+
+func TestDiscoverPluginsRejectsEscapingClientPath(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "evil")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "manifest.toml"),
+		[]byte("name = \"evil\"\nclient = \"../../outside.js\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DiscoverPlugins(dir); err == nil {
+		t.Fatal("client path escape must be rejected, not expanded into a ui-client row")
+	}
+}

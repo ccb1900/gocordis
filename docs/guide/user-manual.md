@@ -386,9 +386,9 @@ http.ListenAndServe(":8080", srv)
 - 插件启停走声明(`PluginLifecycle`/`Enabled`),由应用决定如何持久化;
   参考实现:`console.ControllerLifecycle`(声明存储 + 控制器调和驱动);
 - 插件前端模块是 `ui-client` 组件(`host.NewClientModuleComponent`),插件页
-  面声明是 `ui-page` 组件(`host.NewUIPageComponent`)。二者默认**不**在工厂
-  注册表里——组合根按需各注册一行,`procplugin.DiscoverPlugins` 展开出的
-  `ui-client`/`ui-page` 声明行才会在调和时生效:
+  面声明是 `ui-page` 组件(`host.NewUIPageComponent`)。三者默认**不**在工厂
+  注册表里——组合根按需注册,`procplugin.DiscoverPlugins` 展开出的
+  `ui-client`/`ui-page`/`proc-plugin`/`plugin-error` 声明行才会在调和时生效:
 
   ```go
   _ = reg.Register("ui-client", config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
@@ -397,7 +397,22 @@ http.ListenAndServe(":8080", srv)
   _ = reg.Register("ui-page", config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
       return host.NewUIPageComponent(cc)
   }))
+  _ = reg.Register("plugin-error", config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
+      return procplugin.NewErrorComponent(cc)
+  }))
   ```
+
+  - **follows(插件业务单元)**:manifest 有 backend 时,发现层给该插件的
+    `ui-client`/`ui-page` 行自动加 `follows = <插件名>`——UI 行依赖后端行
+    的存活能力(`host.PluginAliveKey`),停用/移除后端即由 Runtime 依赖规则
+    撤销 UI(Active→Pending),重新启用自动恢复。一个插件一个业务单元,
+    但仍只有一个生命周期权威(§5.2.1,铁律 7)。纯前端插件不带 follows。
+    后端启动失败/进程异常的"降级不阻断"语义不受影响:follows 跟踪的是
+    **声明激活**,不是进程健康。
+  - **plugin-error(坏清单不消失)**:manifest 存在但不可读/解析失败/声明名
+    与目录不符时,发现层产出一行 `plugin-error`(Apply 即报错 → Failed 可见,
+    带原因),而不是静默跳过——坏配置不等于操作员卸载(铁律 6)。修复
+    manifest 后该行被替换,插件自动恢复。
 
   插件前端的扩展点契约(页面/面板渲染器、widget、设置界面、上下文操作)
   见 `docs/guide/ui-plugin-lifecycle.md`。

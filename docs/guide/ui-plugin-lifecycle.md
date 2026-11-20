@@ -119,6 +119,33 @@ export default function register(api) {
 `when`/`run` 收到的 `ctx` 与声明式视图同源（hub 查询/命令、focus、busy），
 `run` 返回 Promise 时 shell 跟踪其完成但不阻塞 UI。
 
+## 插件业务单元（follows）与坏清单（plugin-error）
+
+一个 manifest 插件展开成后端行 + 前端模块行 + 页面行，它们必须**同进退**，
+但不能引入第二个生命周期权威（铁律 7）。机制是 Runtime 自己的依赖门控：
+
+- 后端组件（proc-plugin）Provide `console:plugin-alive/<id>`（声明激活标记，
+  Apply 顶端提供——语义是"声明活着"，不是"进程健康"）；
+- 有后端的插件，发现层给其 `ui-client`/`ui-page` 行加 `follows = <插件名>`，
+  这些组件的 Inject 因此多一条依赖；
+- **停用/移除后端** → 能力退休 → UI 行按消费优先规则 Active→Pending，
+  manifest 与页面同步消失；**重新启用** → 依赖再满足 → 自动重激活。
+  无轮询、无手工编排，撤销方向天然干净（UI 行的 Apply 从未执行，贡献为零）。
+- 降级路径不级联：后端启动失败或进程异常退出时 fiber 仍 Active、marker 仍
+  在——UI 保留可见、hub 词汇诚实报 plugin_error、`plugin.exited` 观察上报。
+  让"进程死亡"撤销页面会把瞬时故障变成整插件消失，比可见的错误更难诊断，
+  且崩溃不重跑 Apply、无法用声明机制表达——死亡不是生命周期事件（铁律 12
+  合作假设的边界）。
+- 纯前端插件（无 backend）**不得**带 follows：提供者永不存在，UI 行会
+  永远 Pending（无超时、无错误——`TestDependencyPendingUntilProvider` 钉
+  的行为）。发现层天然不会加上这条。
+
+坏清单：manifest 存在但不可读/解析失败/名不副实时，发现层产出
+`plugin-error` 行（Apply 即 raise → Failed 带原因，explorer 可见），绝不
+静默跳过——坏配置不等于操作员卸载（铁律 6），而静默跳过会让下一次调和
+把插件的既有组件**整体撤销**。修复 manifest = 声明修正 → 行被替换 →
+自动重装（铁律 5 的合法恢复路径）。
+
 ## 安全边界（授权接缝）
 
 前端的一切可见性控制都只是展示：**`Action.when` 过滤、菜单隐藏、渲染器

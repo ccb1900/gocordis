@@ -72,10 +72,11 @@ func TestInstallingInverseCompletesBeforeGone(t *testing.T) {
 	gone := make(chan error, 1)
 	go func() { gone <- f.Gone(ctx) }()
 
+	// 纯 channel 检查：install 仍阻塞时 Gone 不得已完成（无时间窗口）。
 	select {
 	case err := <-gone:
 		t.Fatalf("fiber reached Gone before installing inverse completed: %v", err)
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 
 	close(c.releaseInstall) // 让 install 完成；此时 Context 已 Unwinding

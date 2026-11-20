@@ -82,11 +82,20 @@ func TestPhaseGoneImpliesInverseDone(t *testing.T) {
 	if err := f.Dispose(); err != nil {
 		t.Fatal(err)
 	}
-	// 阶段屏障：先释放 install，再从 Gone 的返回点反查 inverse 是否
-	// 已完成。Gone 返回时 inverse 必须已在 order 中（不是先等 inverse）。
+	// 阶段屏障：Dispose 已触发 Unwinding，但 install 仍阻塞 → Gone 未完成。
+	goneCh := make(chan error, 1)
+	go func() { goneCh <- f.Gone(ctx) }()
+	assertNoGone(t, goneCh, "with install still blocked")
+
+	// 释放 install → 补偿逆执行 → inverseDone 事件（order 中记录）。
 	close(c.release)
-	if err := f.Gone(ctx); err != nil {
-		t.Fatalf("Gone: %v", err)
+	select {
+	case err := <-goneCh:
+		if err != nil {
+			t.Fatalf("Gone: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Gone never completed")
 	}
 	mu.Lock()
 	inverseDone := false
@@ -104,8 +113,119 @@ func TestPhaseGoneImpliesInverseDone(t *testing.T) {
 	}
 }
 
-// 多个并发 Installing 全部完成后才开始最终 LIFO 撤销。
-func TestPhaseMultipleInstallingAllDoneBeforeLIFO(t *testing.T) {
+// 确定性注册顺序下的严格 LIFO 撤销（与并发屏障测试分离）。
+// 真正的多并发 Installing 屏障：3 个 install 在独立 goroutine 中并发进入
+// 并阻塞（各自 entered channel 确认），Dispose 触发 Unwinding 后逐个释放，
+// Fiber Gone 必须等到【全部补偿逆完成】——用 inverseDone channel 做纯
+// channel 阶段屏障，不用 sleep / 轮询。
+func TestConcurrentInstallingBarrier(t *testing.T) {
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	t.Cleanup(func() { _ = rt.Close(ctx) })
+
+	const n = 3
+	entered := make(chan struct{}, n)
+	releases := make([]chan struct{}, n)
+	for i := range releases {
+		releases[i] = make(chan struct{})
+	}
+	inverseDone := make(chan struct{}, n)
+	var calls atomic.Int32
+
+	comp := &concurrentInstallComp{
+		entered: entered, releases: releases,
+		inverseDone: inverseDone, calls: &calls,
+	}
+	f, err := rt.Load(comp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Ready(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// 三个 install 都进入阻塞阶段（纯 channel 确认，无 sleep）。
+	for i := 0; i < n; i++ {
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("install goroutine never entered")
+		}
+	}
+	if err := f.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	goneCh := make(chan error, 1)
+	go func() { goneCh <- f.Gone(ctx) }()
+	// install 仍阻塞时 Gone 不得完成（非阻塞检查，无时间窗口）。
+	assertNoGone(t, goneCh, "before installs released")
+
+	// 同时释放全部 install：每个补偿逆完成时发 signal。
+	for i := 0; i < n; i++ {
+		close(releases[i])
+	}
+	for i := 0; i < n; i++ {
+		select {
+		case <-inverseDone:
+		case <-ctx.Done():
+			t.Fatalf("inverse signal %d/%d never arrived", i+1, n)
+		}
+	}
+	// 全部 inverse 完成后 Gone 才可返回。
+	select {
+	case err := <-goneCh:
+		if err != nil {
+			t.Fatalf("Gone: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Gone never completed after all inverses")
+	}
+	if got := calls.Load(); got != n {
+		t.Fatalf("inverse calls=%d, want %d", got, n)
+	}
+}
+
+type concurrentInstallComp struct {
+	entered     chan struct{}
+	releases    []chan struct{}
+	inverseDone chan struct{}
+	calls       *atomic.Int32
+}
+
+func (c *concurrentInstallComp) Name() string                  { return "concurrent-install" }
+func (c *concurrentInstallComp) Inject() []runtime.Dependency  { return nil }
+func (c *concurrentInstallComp) Provide() []runtime.Capability { return nil }
+func (c *concurrentInstallComp) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	for _, rel := range c.releases {
+		rel := rel
+		go func() {
+			_ = ctx.Effect(func() (func() error, error) {
+				c.entered <- struct{}{}
+				<-rel
+				return func() error {
+					c.calls.Add(1)
+					c.inverseDone <- struct{}{}
+					return nil
+				}, nil
+			})
+		}()
+	}
+	return nil, nil
+}
+
+func assertNoGone(t *testing.T, goneCh chan error, phase string) {
+	t.Helper()
+	select {
+	case err := <-goneCh:
+		t.Fatalf("Gone completed %s (inverse still in flight): %v", phase, err)
+	default:
+	}
+}
+
+func TestEffectStrictLIFO(t *testing.T) {
 	rt, err := runtime.New()
 	if err != nil {
 		t.Fatal(err)
@@ -319,8 +439,13 @@ func (c *panicMixComp) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 // 收到 Undoing/Undone，且 Gone 不得早于对应的终态事件（联合审查 P1）。
 // 用 EventSink 记录真实事件顺序，不用 sleep。
 type effectEventSink struct {
-	mu     sync.Mutex
-	events []string
+	mu      sync.Mutex
+	events  []string
+	eventCh chan string // stage signal: every effect event delivered here (buffered)
+}
+
+func newEffectEventSink() *effectEventSink {
+	return &effectEventSink{eventCh: make(chan string, 64)}
 }
 
 func (s *effectEventSink) Emit(ev runtime.RuntimeEvent) {
@@ -330,6 +455,10 @@ func (s *effectEventSink) Emit(ev runtime.RuntimeEvent) {
 	s.mu.Lock()
 	s.events = append(s.events, string(ev.Type))
 	s.mu.Unlock()
+	select {
+	case s.eventCh <- string(ev.Type):
+	default: // never block: EventSink contract
+	}
 }
 
 func (s *effectEventSink) snapshot() []string {
@@ -339,7 +468,7 @@ func (s *effectEventSink) snapshot() []string {
 }
 
 func TestPhaseEffectEventsOrderedBeforeGone(t *testing.T) {
-	sink := &effectEventSink{}
+	sink := newEffectEventSink()
 	rt, err := runtime.New(runtime.WithEventSink(sink))
 	if err != nil {
 		t.Fatal(err)
@@ -396,7 +525,7 @@ func TestPhaseEffectEventsOrderedBeforeGone(t *testing.T) {
 // 第二个场景：install 完成（Committed 已发布）之后再 Dispose，
 // 事件顺序必须是 Committed → Undoing → Undone。
 func TestPhaseEffectEventsAfterCommit(t *testing.T) {
-	sink := &effectEventSink{}
+	sink := newEffectEventSink()
 	rt, err := runtime.New(runtime.WithEventSink(sink))
 	if err != nil {
 		t.Fatal(err)
@@ -422,15 +551,14 @@ func TestPhaseEffectEventsAfterCommit(t *testing.T) {
 	<-c.entered
 	// 先让 install 完成 → Committed 事件应发布
 	close(c.release)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && len(sink.snapshot()) < 1 {
-		time.Sleep(2 * time.Millisecond)
-	}
-	if len(sink.snapshot()) < 1 {
-		t.Fatalf("Committed event never published: %v", sink.snapshot())
-	}
-	if first := sink.snapshot()[0]; first != "EffectCommitted" {
-		t.Fatalf("first event = %s, want EffectCommitted", first)
+	// 纯 channel 阶段同步：Committed 事件一到就继续，不用 sleep/轮询。
+	select {
+	case ev := <-sink.eventCh:
+		if ev != "EffectCommitted" {
+			t.Fatalf("first effect event = %s, want EffectCommitted", ev)
+		}
+	case <-ctx.Done():
+		t.Fatal("Committed event never published")
 	}
 	if err := f.Dispose(); err != nil {
 		t.Fatal(err)
@@ -450,7 +578,7 @@ func TestPhaseEffectEventsAfterCommit(t *testing.T) {
 // 高重复调度下产生 Gone 早于 EffectUndone 的可观测违规。
 func TestPhaseEffectUndoneBeforeGoneRepeated(t *testing.T) {
 	for i := 0; i < 200; i++ {
-		sink := &effectEventSink{}
+		sink := newEffectEventSink()
 		rt, err := runtime.New(runtime.WithEventSink(sink))
 		if err != nil {
 			t.Fatal(err)

@@ -90,3 +90,7 @@ jobs:
       - name: TypeScript check
         working-directory: web/console
         run: npx tsc --noEmit
+
+      - name: Production build (tsc + vite)
+        working-directory: web/console
+        run: npm run build

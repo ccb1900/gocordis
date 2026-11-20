@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/extensions/console/webui"
@@ -44,7 +45,14 @@ var (
 
 // ControllerLifecycle implements webui.PluginLifecycle over a DesiredStore +
 // controller reconciler.
+//
+// Every operation serializes the whole Load-Modify-Save-Reconcile flow under
+// one mutex: HTTP handlers call these concurrently (one goroutine per
+// request), and two interleaved flows would Save divergent snapshots while
+// reconciling in the opposite order — the store and the runtime could end up
+// disagreeing with nothing scheduled to repair them.
 type ControllerLifecycle struct {
+	mu         sync.Mutex
 	store      DesiredStore
 	reconciler ControllerReconciler
 }
@@ -80,19 +88,46 @@ func (l *ControllerLifecycle) saveAndReconcile(ctx context.Context, prev, comps 
 		if perr := l.store.Save(ctx, prev); perr != nil {
 			return errors.Join(err, perr)
 		}
-		_ = l.reconciler.Reconcile(ctx, config.Config{Components: prev})
+		// The restore must reconcile too — its failure must NOT be swallowed:
+		// the store says prev while the runtime would still run the new set,
+		// and a silently diverging declaration contradicts the contract above.
+		if rerr := l.reconciler.Reconcile(ctx, config.Config{Components: prev}); rerr != nil {
+			return errors.Join(err, fmt.Errorf("restore reconcile after failed switch: %w", rerr))
+		}
 		return err
 	}
 	return nil
 }
 
+// cloneDesiredSet deep-copies a desired set: rows and their Config maps.
+// DesiredStore.Load may return its internal slice (the interface does not
+// mandate a defensive copy), so mutating a row in place would corrupt the
+// store's state even when a later Save fails.
+func cloneDesiredSet(comps []config.ComponentConfig) []config.ComponentConfig {
+	out := make([]config.ComponentConfig, 0, len(comps))
+	for _, cc := range comps {
+		row := cc
+		if cc.Config != nil {
+			row.Config = make(map[string]any, len(cc.Config))
+			for k, v := range cc.Config {
+				row.Config[k] = v
+			}
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
 // Uninstall disables the component: Enabled=false in the declaration, then
 // reconcile. The entry survives (install-back = re-enable).
 func (l *ControllerLifecycle) Uninstall(ctx context.Context, id string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	comps, i, err := l.load(ctx, id)
 	if err != nil {
 		return err
 	}
+	comps = cloneDesiredSet(comps)
 	prev := append([]config.ComponentConfig(nil), comps...)
 	off := false
 	comps[i].Enabled = &off
@@ -102,10 +137,13 @@ func (l *ControllerLifecycle) Uninstall(ctx context.Context, id string) error {
 // Install re-enables a previously disabled component: Enabled=true in the
 // declaration, then reconcile.
 func (l *ControllerLifecycle) Install(ctx context.Context, id string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	comps, i, err := l.load(ctx, id)
 	if err != nil {
 		return err
 	}
+	comps = cloneDesiredSet(comps)
 	prev := append([]config.ComponentConfig(nil), comps...)
 	on := true
 	comps[i].Enabled = &on
@@ -113,8 +151,10 @@ func (l *ControllerLifecycle) Install(ctx context.Context, id string) error {
 }
 
 // Removed lists the disabled (uninstalled) declarations, sorted by ID.
-func (l *ControllerLifecycle) Removed(_ context.Context) ([]webui.RemovedPlugin, error) {
-	comps, err := l.store.Load(context.Background())
+func (l *ControllerLifecycle) Removed(ctx context.Context) ([]webui.RemovedPlugin, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	comps, err := l.store.Load(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -130,8 +170,10 @@ func (l *ControllerLifecycle) Removed(_ context.Context) ([]webui.RemovedPlugin,
 
 // Config returns the desired configuration of one component (from the
 // declaration, not the running fiber).
-func (l *ControllerLifecycle) Config(_ context.Context, id string) (map[string]any, error) {
-	comps, i, err := l.load(context.Background(), id)
+func (l *ControllerLifecycle) Config(ctx context.Context, id string) (map[string]any, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	comps, i, err := l.load(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -144,10 +186,13 @@ func (l *ControllerLifecycle) Config(_ context.Context, id string) (map[string]a
 // SetConfig replaces one component's declaration configuration and
 // reconciles; a reconcile failure rolls the declaration back.
 func (l *ControllerLifecycle) SetConfig(ctx context.Context, id string, cfg map[string]any) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	comps, i, err := l.load(ctx, id)
 	if err != nil {
 		return err
 	}
+	comps = cloneDesiredSet(comps)
 	prev := append([]config.ComponentConfig(nil), comps...)
 	comps[i].Config = cfg
 	return l.saveAndReconcile(ctx, prev, comps)

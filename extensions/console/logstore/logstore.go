@@ -40,13 +40,37 @@ type Store struct {
 }
 
 // New creates a store with the given ring capacity, optionally persisting to
-// a rotated JSONL file.
+// a rotated JSONL file. A persistence-setup failure is NOT silently dropped:
+// it is recorded in the store (Err()) so the durability contract is honest —
+// the store keeps operating on the ring alone.
 func New(ringSize int, filePath string) *Store {
 	s := &Store{cap: ringSize}
 	if filePath != "" {
-		_ = s.SetFile(filePath, 10<<20)
+		s.fileErr = s.SetFile(filePath, 10<<20)
 	}
 	return s
+}
+
+// Err reports the terminal persistence failure, if any: a setup failure from
+// New/SetFile, or a rotation failure. nil means every log line is durably
+// persisted (when a file was configured).
+func (s *Store) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.fileErr
+}
+
+// Close releases the persistence file (idempotent). After Close, Add keeps
+// feeding the ring but stops persisting.
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.file == nil {
+		return nil
+	}
+	err := s.file.Close()
+	s.file = nil
+	return err
 }
 
 var defaultStore = New(2000, "")
@@ -72,8 +96,13 @@ func (s *Store) SetFile(path string, maxSize int64) error {
 	if st, err := f.Stat(); err == nil {
 		s.size = st.Size()
 	}
+	// P3-8: a previous handle must not leak when SetFile is called again.
+	if s.file != nil {
+		_ = s.file.Close()
+	}
 	s.file = f
 	s.maxSize = maxSize
+	s.fileErr = nil
 	return nil
 }
 
@@ -98,12 +127,27 @@ func (s *Store) Add(e Entry) {
 }
 
 func (s *Store) rotateLocked() {
-	_ = s.file.Close()
-	_ = os.Rename(s.file.Name(), s.file.Name()+".1")
+	// P2-5: a failed rotation must stay honest and keep the size accounting
+	// correct. The old code ignored the Rename error and reset s.size to 0 on
+	// reopen, so a failed rename left the old file at ~maxSize with the
+	// accounting reset — the size check never tripped again and the file grew
+	// unbounded, all invisible (fileErr was write-only).
+	if err := s.file.Close(); err != nil {
+		s.fileErr = err
+		s.file = nil
+		return
+	}
+	if err := os.Rename(s.file.Name(), s.file.Name()+".1"); err != nil {
+		// Keep the CURRENT file open and its size accounting intact; retry the
+		// rotation on the next overflow. Persisting continues (the file just
+		// exceeds maxSize until a later rotation succeeds).
+		s.fileErr = err
+		return
+	}
 	f, err := os.OpenFile(s.file.Name(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
-		s.file = nil
 		s.fileErr = err
+		s.file = nil
 		return
 	}
 	s.file = f
@@ -113,12 +157,21 @@ func (s *Store) rotateLocked() {
 // Latest returns up to n entries, newest first, filtered by minimum level and
 // an optional substring match on message+attributes.
 func (s *Store) Latest(n int, minLevel, contains string) []Entry {
+	// P3-9: snapshot the ring under the lock and scan OUTSIDE it — `contains`
+	// is unbounded HTTP input and the O(entries x needle) scan under s.mu
+	// stalled every Add() (every log line app-wide) for its duration. The
+	// needle itself is also capped: beyond the cap it cannot match a ring
+	// entry's realistic line anyway.
+	if len(contains) > maxNeedleLen {
+		contains = contains[:maxNeedleLen]
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	ring := append([]Entry(nil), s.ring...)
+	s.mu.Unlock()
 	min := levelRank(minLevel)
 	out := make([]Entry, 0, n)
-	for i := len(s.ring) - 1; i >= 0 && len(out) < n; i-- {
-		e := s.ring[i]
+	for i := len(ring) - 1; i >= 0 && len(out) < n; i-- {
+		e := ring[i]
 		if levelRank(e.Level) < min {
 			continue
 		}
@@ -222,3 +275,8 @@ func (w *ringWriter) Write(p []byte) (int, error) {
 	w.s.Add(e)
 	return len(p), nil
 }
+
+// maxNeedleLen bounds the user-supplied substring filter (P3-9): beyond this,
+// a match against any realistic log line is impossible, so scanning further is
+// wasted work that used to run under the store mutex.
+const maxNeedleLen = 4096

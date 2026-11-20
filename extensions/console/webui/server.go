@@ -417,7 +417,12 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 			writeData(w, http.StatusOK, []any{})
 			return
 		}
-		removed, lerr := s.lifecycle.Removed(r.Context())
+		lifecycle := s.currentLifecycle()
+		if lifecycle == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "error", "plugin lifecycle not available")
+			return
+		}
+		removed, lerr := lifecycle.Removed(r.Context())
 		if lerr != nil {
 			writeAPIError(w, http.StatusInternalServerError, "error", lerr.Error())
 			return

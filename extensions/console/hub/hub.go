@@ -165,14 +165,33 @@ func (r *Registry) OnObservation(buffer int, fn func(Observation)) (func() error
 		buffer = 8
 	}
 	ch := make(chan Observation, buffer)
+	// done gates delivery: unregister must stop delivery IMMEDIATELY —
+	// draining the buffered channel after unsub() would still invoke fn for
+	// every buffered message, contradicting "buffered messages are dropped,
+	// never replayed" (P3-6: post-unsub delivery resurrected cleared bridge
+	// state in the console host).
+	done := make(chan struct{})
 	r.mu.Lock()
 	r.nextID++
 	id := r.nextID
 	r.observers[id] = ch
 	r.mu.Unlock()
 	go func() {
-		for ev := range ch {
-			fn(ev)
+		for {
+			select {
+			case <-done:
+				return
+			case ev, ok := <-ch:
+				if !ok {
+					return
+				}
+				select {
+				case <-done:
+					return
+				default:
+				}
+				fn(ev)
+			}
 		}
 	}()
 	unsub := func() error {
@@ -181,6 +200,7 @@ func (r *Registry) OnObservation(buffer int, fn func(Observation)) (func() error
 		if c, ok := r.observers[id]; ok {
 			delete(r.observers, id)
 			close(c)
+			close(done)
 		}
 		return nil
 	}

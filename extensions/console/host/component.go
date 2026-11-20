@@ -50,7 +50,7 @@ type ObservationSink interface {
 // hub capability and register their vocabulary as Effects owned by their own
 // activations.
 type UIComponent struct {
-	mu sync.Mutex
+	mu sync.RWMutex
 
 	registry      appui.Registry
 	hub           *hub.Registry
@@ -72,30 +72,35 @@ func (c *UIComponent) Provide() []runtime.Capability {
 }
 
 func (c *UIComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
-	c.hub = hub.New()
+	h := hub.New()
 	// The registry belongs to this console activation. Contributions arrive
-	// later from independent plugins; no page/panel is hard-coded here.
-	c.registry = appui.NewRegistry(c.emitCompositionChanged)
-	c.bridge = newObservationBridge()
-	c.baseCtx = ctx.Context()
-	c.hostAdapter = NewHost(c.baseCtx, c.registry, c.hub)
-	if err := runtime.Provide(ctx, UIHostKey, c.registry); err != nil {
+	// later from independent plugins; no page/panel is hard-coded here. The
+	// onChange closure captures the bridge VARIABLE (assigned below) so the
+	// registration callbacks use the activation-local references.
+	var bridge *observationBridge
+	registry := appui.NewRegistry(func() { c.emitCompositionChangedWith(bridge) })
+	bridge = newObservationBridge()
+	baseCtx := ctx.Context()
+	hostAdapter := NewHost(baseCtx, registry, h)
+	if err := runtime.Provide(ctx, UIHostKey, registry); err != nil {
 		return nil, err
 	}
-	if err := runtime.Provide(ctx, HubKey, c.hub); err != nil {
+	if err := runtime.Provide(ctx, HubKey, h); err != nil {
 		return nil, err
 	}
 	// Observations published into the hub fan out to the bridge and sink.
-	unsub, err := c.hub.OnObservation(16, c.onObservation)
-	if err != nil {
-		return nil, err
-	}
+	// The subscription is created INSIDE the Effect install (P2-4): a refused
+	// Effect (context already closing) must leave nothing behind — the old
+	// order spawned the hub delivery goroutine before admission, leaking it
+	// permanently when admission failed.
 	if err := ctx.Effect(func() (func() error, error) {
+		unsub, err := h.OnObservation(16, c.onObservation)
+		if err != nil {
+			return nil, err
+		}
 		return func() error {
 			unsub()
-			if c.bridge != nil {
-				c.bridge.clear()
-			}
+			bridge.clear()
 			return nil
 		}, nil
 	}); err != nil {
@@ -103,7 +108,9 @@ func (c *UIComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	}
 	// Fleet self-contribution: with peers configured, the console contributes
 	// its own Fleet page — contribution-driven like every other page, no
-	// hard-coded navigation anywhere.
+	// hard-coded navigation anywhere. Registered inside the Effect install for
+	// the same admission-atomicity reason (a refused Effect must not leave a
+	// page in the registry nor fire a composition-changed event for it).
 	if len(c.fleetPeers) > 0 {
 		owner := appui.ContributionOwner{
 			PluginID:     "console",
@@ -113,14 +120,24 @@ func (c *UIComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		page := appui.PageDefinition{
 			ID: "fleet", Title: "Fleet", Route: "/fleet", Renderer: "fleet", Order: 90,
 		}
-		unregister, err := c.registry.RegisterPage(owner, page)
-		if err != nil {
-			return nil, err
-		}
-		if err := ctx.Effect(func() (func() error, error) { return unregister, nil }); err != nil {
+		if err := ctx.Effect(func() (func() error, error) {
+			unregister, err := registry.RegisterPage(owner, page)
+			if err != nil {
+				return nil, err
+			}
+			return unregister, nil
+		}); err != nil {
 			return nil, err
 		}
 	}
+	// Publish the wiring under the component mutex (P2-3): every accessor and
+	// callback reads these fields under c.mu; registration callbacks above run
+	// against the LOCAL references, so no c.mu critical section in Apply
+	// overlaps with a synchronous registry onChange (which would deadlock on
+	// the non-reentrant mutex).
+	c.mu.Lock()
+	c.hub, c.registry, c.bridge, c.baseCtx, c.hostAdapter = h, registry, bridge, baseCtx, hostAdapter
+	c.mu.Unlock()
 	return nil, nil
 }
 
@@ -133,19 +150,26 @@ func activationLabel() string {
 }
 
 func (c *UIComponent) emitUIObservation(ev UIObservation) {
-	if c.sink != nil {
-		c.sink.NotifyObservation(ev)
-	} else if c.bridge != nil {
+	c.mu.RLock()
+	sink, bridge := c.sink, c.bridge
+	c.mu.RUnlock()
+	if sink != nil {
+		sink.NotifyObservation(ev)
+	} else if bridge != nil {
 		// test adapter only; production path uses SetObservationSink.
-		c.bridge.notify(ev)
+		bridge.notify(ev)
 	}
 }
 
-func (c *UIComponent) emitCompositionChanged() {
-	// Startup composition is fetched directly by clients. Only emit an
-	// observation when a production sink or a live listener can consume it;
-	// the event never carries state.
-	if c.sink == nil && c.bridge != nil && !c.bridge.hasSubscribers() {
+// emitCompositionChangedWith is the registry onChange callback. It captures
+// the activation-local bridge (created in Apply) so a synchronous
+// registration callback never needs c.mu while Apply may be mid-wiring; the
+// production sink is still read dynamically under c.mu.
+func (c *UIComponent) emitCompositionChangedWith(bridge *observationBridge) {
+	c.mu.RLock()
+	sink := c.sink
+	c.mu.RUnlock()
+	if sink == nil && (bridge == nil || !bridge.hasSubscribers()) {
 		return
 	}
 	c.emitUIObservation(UIObservation{
@@ -174,19 +198,30 @@ func (c *UIComponent) Invalidations() int {
 }
 
 // Registry returns the UI Host composition registry.
-func (c *UIComponent) Registry() appui.Registry { return c.registry }
+func (c *UIComponent) Registry() appui.Registry {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.registry
+}
 
 // HostAdapter returns the transport adapter (hub forwarding + composition
 // DTOs). A Wails App binds its methods; the web server wraps it.
-func (c *UIComponent) HostAdapter() *Host { return c.hostAdapter }
+func (c *UIComponent) HostAdapter() *Host {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.hostAdapter
+}
 
 // OnObservation registers an observation listener. It returns an unsubscribe
 // function; lifecycle is Effect-owned on the Component.
 func (c *UIComponent) OnObservation(handler func(UIObservation)) (func() error, error) {
-	if c.bridge == nil {
+	c.mu.RLock()
+	bridge := c.bridge
+	c.mu.RUnlock()
+	if bridge == nil {
 		return nil, errors.New("console: observation bridge not active")
 	}
-	return c.bridge.on(handler)
+	return bridge.on(handler)
 }
 
 // SetObservationSink switches observation delivery to the production sink
@@ -218,17 +253,36 @@ func (c *UIComponent) PublishObservation(typ, sourceID, message string) {
 }
 
 func (c *UIComponent) Observations() []UIObservation {
-	if c.bridge == nil {
+	c.mu.RLock()
+	bridge := c.bridge
+	c.mu.RUnlock()
+	if bridge == nil {
 		return nil
 	}
-	return c.bridge.latest()
+	return bridge.latest()
 }
 
 // Pages returns the registered UI pages from the isolated Composition Snapshot.
-func (c *UIComponent) Pages() []PageDefinition { return c.registry.Snapshot().Pages }
+func (c *UIComponent) Pages() []PageDefinition {
+	c.mu.RLock()
+	registry := c.registry
+	c.mu.RUnlock()
+	if registry == nil {
+		return nil
+	}
+	return registry.Snapshot().Pages
+}
 
 // Panels returns the registered UI panels from the isolated Composition Snapshot.
-func (c *UIComponent) Panels() []PanelDefinition { return c.registry.Snapshot().Panels }
+func (c *UIComponent) Panels() []PanelDefinition {
+	c.mu.RLock()
+	registry := c.registry
+	c.mu.RUnlock()
+	if registry == nil {
+		return nil
+	}
+	return registry.Snapshot().Panels
+}
 
 // NewConsole creates the console host component.
 //

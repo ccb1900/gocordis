@@ -55,6 +55,7 @@ type Server struct {
 	assets    fs.FS
 	explorer  *explorer.ExplorerTransport
 	lifecycle PluginLifecycle
+	policy    AccessPolicy
 
 	hostID          string
 	startedAt       time.Time
@@ -87,6 +88,60 @@ func (s *Server) SetPluginLifecycle(l PluginLifecycle) {
 
 func (s *Server) SetExplorer(exp *explorer.ExplorerTransport) {
 	s.explorer = exp
+}
+
+// AccessKind classifies what an access request targets.
+type AccessKind string
+
+const (
+	// AccessQuery gates GET /api/query/<name> (name = the query name).
+	AccessQuery AccessKind = "query"
+	// AccessCommand gates POST /api/command/<name> (name = the command name).
+	AccessCommand AccessKind = "command"
+	// AccessLifecycle gates the plugin control/uninstall/install operations
+	// (name = the plugin id).
+	AccessLifecycle AccessKind = "lifecycle"
+	// AccessConfig gates plugin config reads/writes (name = the plugin id).
+	AccessConfig AccessKind = "config"
+)
+
+// AccessRequest describes one console API operation the transport is about
+// to perform. The full request is available for caller inspection.
+type AccessRequest struct {
+	Kind AccessKind
+	Name string
+	*http.Request
+}
+
+// AccessPolicy decides whether one console API operation may proceed. It is
+// the APPLICATION's authorization seam: return nil to allow, any error to
+// deny (the message reaches the client as the 403 body).
+//
+// The default is allow-everything: the console ships with no authentication
+// by design (user-manual §13), and this seam exists so applications can
+// enforce that side-effectful operations are gated SERVER-side. The frontend
+// Action `when` filter is display-only — it is never a security boundary:
+// hiding a button does not revoke the underlying command. Kernel-level
+// capability access control (paper §6.3, Def 26/27) is a separate roadmap
+// item (P3/ADR-0002); this seam is transport policy, not capability
+// interception.
+type AccessPolicy func(ctx context.Context, req AccessRequest) error
+
+// SetAccessPolicy installs the authorization seam. nil restores the default
+// allow-everything behavior.
+func (s *Server) SetAccessPolicy(p AccessPolicy) { s.policy = p }
+
+// allowed runs the policy for one operation and writes the 403 itself on
+// denial; false means the caller must return immediately.
+func (s *Server) allowed(w http.ResponseWriter, r *http.Request, kind AccessKind, name string) bool {
+	if s.policy == nil {
+		return true
+	}
+	if err := s.policy(r.Context(), AccessRequest{Kind: kind, Name: name, Request: r}); err != nil {
+		writeAPIError(w, http.StatusForbidden, "forbidden", err.Error())
+		return false
+	}
+	return true
 }
 
 // Publish pushes one observation to every SSE subscriber (non-blocking).
@@ -271,6 +326,9 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
+		if !s.allowed(w, r, AccessLifecycle, req.PluginID) {
+			return
+		}
 		data, ue := s.explorer.ControlPluginContext(r.Context(), req)
 		s.writeResult(w, data, explorerErr(ue))
 	case r.Method == http.MethodPost && r.URL.Path == "/api/plugins/uninstall":
@@ -281,6 +339,9 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		var req explorer.ExplorerControlRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if !s.allowed(w, r, AccessLifecycle, req.PluginID) {
 			return
 		}
 		if err := s.lifecycle.Uninstall(r.Context(), req.PluginID); err != nil {
@@ -296,6 +357,9 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		var req2 explorer.ExplorerControlRequest
 		if err := json.NewDecoder(r.Body).Decode(&req2); err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if !s.allowed(w, r, AccessLifecycle, req2.PluginID) {
 			return
 		}
 		if err := s.lifecycle.Install(r.Context(), req2.PluginID); err != nil {
@@ -320,6 +384,9 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/plugins/"), "/config")
+		if !s.allowed(w, r, AccessConfig, id) {
+			return
+		}
 		cfg, cerr := s.lifecycle.Config(r.Context(), id)
 		if cerr != nil {
 			writeAPIError(w, http.StatusNotFound, "not_found", cerr.Error())
@@ -339,6 +406,9 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
+		if !s.allowed(w, r, AccessConfig, id) {
+			return
+		}
 		if err := s.lifecycle.SetConfig(r.Context(), id, body.Config); err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
@@ -346,6 +416,9 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		writeData(w, http.StatusAccepted, nil)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/query/"):
 		name := strings.TrimPrefix(r.URL.Path, "/api/query/")
+		if !s.allowed(w, r, AccessQuery, name) {
+			return
+		}
 		data, ue := s.adapter.Query(name, r.URL.Query())
 		if ue != nil {
 			status, code := uiErrorStatus(ue.Code)
@@ -358,6 +431,9 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		var body json.RawMessage
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {
 			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if !s.allowed(w, r, AccessCommand, name) {
 			return
 		}
 		if ue := s.adapter.Command(name, body); ue != nil {

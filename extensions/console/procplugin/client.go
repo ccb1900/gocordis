@@ -223,6 +223,15 @@ func (c *Client) Close() error {
 	}
 }
 
+// Exited returns the channel closed when the plugin process terminates —
+// expected (Close-driven) or unexpected (crash). Pair with Closed() to tell
+// the two apart: Close marks teardown before termination is requested, so
+// an exit observed with Closed()==true is ours.
+func (c *Client) Exited() <-chan struct{} { return c.exited }
+
+// Closed reports whether teardown of this client has begun.
+func (c *Client) Closed() bool { return c.closed.Load() }
+
 func trimCR(s string) string {
 	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {
 		s = s[:len(s)-1]

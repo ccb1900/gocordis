@@ -6,6 +6,7 @@
 // tests pin actual resource ownership, not mocks of it.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  FACADE_VERSION,
   clientModuleAPI,
   createModuleManager,
   type ClientModuleAPI,
@@ -81,6 +82,7 @@ describe("client module manager", () => {
     expect(typeof facade.actions.register).toBe("function");
     expect(typeof facade.listWidgets).toBe("function");
     expect(typeof facade.listActions).toBe("function");
+    expect(facade.frameworkVersion).toBe(FACADE_VERSION);
   });
 
   it("tracks grouped extension-point registrations on the activation", async () => {
@@ -428,5 +430,67 @@ describe("client module manager", () => {
     expect(await mgr.reconcile()).toEqual(["good"]);
     expect(getBlockRenderer("cm11-block")).toBeDefined();
     expect(warn).toHaveBeenCalled();
+  });
+
+  it("reports reconciling across queue boundaries", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const importer = vi.fn(async (url: string) => {
+      if (url.includes("slow")) await gate;
+      return { default: vi.fn() };
+    });
+    vi.stubGlobal("fetch", okManifest([{ name: "slow", url: "/cm/slow.js" }]));
+    const mgr = createModuleManager({ manifestUrl: "/x", importer });
+    const seen: boolean[] = [];
+    const unsub = mgr.subscribeState(() => seen.push(mgr.state().reconciling));
+    expect(mgr.state().reconciling).toBe(false);
+
+    const first = mgr.reconcile();
+    expect(mgr.state().reconciling).toBe(true);
+    const second = mgr.reconcile(); // queued: the flag must stay true, no blip
+    release();
+    await first;
+    await second;
+    expect(mgr.state().reconciling).toBe(false);
+    unsub();
+    expect(seen).toEqual([true, false]);
+  });
+
+  it("warns when an activation overrides another active module's key, silent on self re-register", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const sharedA = vi.fn((api: ClientModuleAPI) => {
+      api.registerPageRenderer("shared", () => null);
+    });
+    const sharedB = vi.fn((api: ClientModuleAPI) => {
+      api.registerPageRenderer("shared", () => null);
+    });
+    vi.stubGlobal(
+      "fetch",
+      okManifest([
+        { name: "a", url: "/cm/a.js" },
+        { name: "b", url: "/cm/b.js" },
+      ])
+    );
+    const mgr = createModuleManager({
+      manifestUrl: "/x",
+      importer: async (url) => ({ default: url.includes("b") ? sharedB : sharedA }),
+    });
+    await mgr.reconcile();
+    const overrides = warn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes("overrides page renderer"));
+    expect(overrides.length).toBe(1);
+    expect(overrides[0]).toContain(`"b"`);
+
+    // Both modules disabled, then "a" alone re-enabled: its dispose freed the
+    // key first — re-registration is its own, silent.
+    vi.stubGlobal("fetch", okManifest([]));
+    await mgr.reconcile();
+    warn.mockClear();
+    vi.stubGlobal("fetch", okManifest([{ name: "a", url: "/cm/a.js" }]));
+    await mgr.reconcile();
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes("overrides")).length).toBe(0);
   });
 });

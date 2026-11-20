@@ -1,7 +1,9 @@
 // Build-time shim: antd comes from the console instance (theme/context
 // consistent, portals through the console's react-dom); plugins never
 // bundle their own.
-const A = globalThis.__CORDIS_CONSOLE.antd;
+const F = globalThis.__CORDIS_CONSOLE;
+if (!F) throw new Error("gocordis plugin: console facade missing — a bundled plugin must be loaded by a GoCordis console (webui/host), never standalone");
+const A = F.antd;
 
 export default A;
 export const {

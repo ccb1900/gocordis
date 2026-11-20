@@ -1,7 +1,9 @@
 // Build-time shim (never import this from app code): esbuild aliases
 // "react" here so a bundled plugin binds to the CONSOLE's React instance —
 // a page must have exactly one React or hooks break.
-const R = globalThis.__CORDIS_CONSOLE.React;
+const F = globalThis.__CORDIS_CONSOLE;
+if (!F) throw new Error("gocordis plugin: console facade missing — a bundled plugin must be loaded by a GoCordis console (webui/host), never standalone");
+const R = F.React;
 
 export default R;
 export const {

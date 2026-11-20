@@ -39,6 +39,11 @@ import * as ReactDOMClient from "react-dom/client";
 import * as antd from "antd";
 import { api } from "../api";
 import {
+  getBlockRenderer,
+  getPanelRenderer,
+  getPageRenderer,
+  getSettings,
+  getWidget,
   listActions,
   registerAction,
   registerBlockRenderer,
@@ -56,10 +61,19 @@ import {
   type WidgetComponent,
 } from "../views/registry";
 
+/** FACADE_VERSION is the console's module-facade contract version. Plugin
+ * bundles (web/plugin-kit) and register functions may feature-detect it;
+ * the rule is major-alignment: a bundle targets the facade contract it was
+ * built against. Content updates of a bundle itself are covered separately
+ * by the manifest URL's ?v= revision. */
+export const FACADE_VERSION = "1";
+
 /** The static half of the module facade: everything a module (or an esbuild
  * shim reading globalThis.__CORDIS_CONSOLE) needs that does not depend on the
  * activating module's identity. */
 export interface BaseModuleAPI {
+  /** The console's facade contract version (see FACADE_VERSION). */
+  frameworkVersion: string;
   React: typeof React;
   /** The console's own react/jsx-runtime: JSX build shims re-export it, so
    * automatic JSX in a bundled plugin runs on the console's React instance
@@ -85,6 +99,7 @@ declare global {
 
 export function clientModuleAPI(): BaseModuleAPI {
   return {
+    frameworkVersion: FACADE_VERSION,
     React, jsxRuntime: reactJsxRuntime,
     reactDom: ReactDOM, reactDomClient: ReactDOMClient,
     antd, api,
@@ -156,6 +171,15 @@ export interface ModuleManagerDeps {
   apiFactory?: () => BaseModuleAPI;
 }
 
+/** ModuleManagerState is the manager's observable state. reconciling is
+ * true from the moment a reconcile is requested until the LAST queued one
+ * settles. Consumers use it to tell an honest in-between (plugin modules
+ * still arriving — render a loading state) from a real composition
+ * mismatch (module set settled, renderer genuinely missing). */
+export interface ModuleManagerState {
+  reconciling: boolean;
+}
+
 export interface ModuleManager {
   /** reconcile brings the active module set to the manifest: loads and
    * registers newly declared modules, disposes modules no longer declared,
@@ -165,6 +189,9 @@ export interface ModuleManager {
   reconcile(): Promise<string[]>;
   /** Names of the modules with a live activation (diagnostics/tests). */
   activeNames(): string[];
+  state(): ModuleManagerState;
+  /** subscribeState registers a state listener; returns the unsubscribe. */
+  subscribeState(listener: () => void): () => void;
 }
 
 export function createModuleManager(deps: ModuleManagerDeps = {}): ModuleManager {
@@ -197,9 +224,24 @@ export function createModuleManager(deps: ModuleManagerDeps = {}): ModuleManager
 
   /** activationFacade wraps the base facade so EVERY extension-point
    * registration made through it is recorded on the activation — the
-   * framework owns the resources, not the module. */
+   * framework owns the resources, not the module. Registrations that would
+   * silently override a contribution of ANOTHER active module are warned:
+   * the keyed registry stays first-class open, but cross-plugin shadowing
+   * becomes visible instead of confusing (paper 铁律 11: one provider per
+   * key within a namespace). Re-registering one's own key (module restart
+   * after dispose, or an intentional in-module override) is silent. */
   function activationFacade(activation: ModuleActivation, moduleName: string): ClientModuleAPI {
     const base = apiFactory();
+    const ownKeys = new Set<string>();
+    const guard = (type: string, key: string, occupied: () => boolean): void => {
+      const id = `${type}:${key}`;
+      if (!ownKeys.has(id) && occupied()) {
+        console.warn(
+          `[console] client module "${moduleName}" overrides ${type} "${key}" — an active module already contributes it`,
+        );
+      }
+      ownKeys.add(id);
+    };
     const track = (dispose: () => void): (() => void) => {
       const guarded = once(dispose);
       activation.disposables.push(guarded);
@@ -207,17 +249,56 @@ export function createModuleManager(deps: ModuleManagerDeps = {}): ModuleManager
     };
     return {
       ...base,
-      registerBlockRenderer: (kind, renderer) => track(base.registerBlockRenderer(kind, renderer)),
-      registerPageRenderer: (name, renderer) => track(base.registerPageRenderer(name, renderer)),
-      registerPanelRenderer: (name, renderer) => track(base.registerPanelRenderer(name, renderer)),
-      pages: { register: (def) => track(base.registerPageRenderer(def.name, def.component)) },
-      panels: { register: (def) => track(base.registerPanelRenderer(def.name, def.component)) },
-      blocks: { register: (kind, component) => track(base.registerBlockRenderer(kind, component)) },
-      widgets: { register: (name, component) => track(registerWidget(name, component)) },
-      actions: { register: (def) => track(registerAction(def)) },
+      registerBlockRenderer: (kind, renderer) => {
+        guard("block kind", kind, () => getBlockRenderer(kind) !== undefined);
+        return track(base.registerBlockRenderer(kind, renderer));
+      },
+      registerPageRenderer: (name, renderer) => {
+        guard("page renderer", name, () => getPageRenderer(name) !== undefined);
+        return track(base.registerPageRenderer(name, renderer));
+      },
+      registerPanelRenderer: (name, renderer) => {
+        guard("panel renderer", name, () => getPanelRenderer(name) !== undefined);
+        return track(base.registerPanelRenderer(name, renderer));
+      },
+      pages: {
+        register: (def) => {
+          guard("page renderer", def.name, () => getPageRenderer(def.name) !== undefined);
+          return track(base.registerPageRenderer(def.name, def.component));
+        },
+      },
+      panels: {
+        register: (def) => {
+          guard("panel renderer", def.name, () => getPanelRenderer(def.name) !== undefined);
+          return track(base.registerPanelRenderer(def.name, def.component));
+        },
+      },
+      blocks: {
+        register: (kind, component) => {
+          guard("block kind", kind, () => getBlockRenderer(kind) !== undefined);
+          return track(base.registerBlockRenderer(kind, component));
+        },
+      },
+      widgets: {
+        register: (name, component) => {
+          guard("widget", name, () => getWidget(name) !== undefined);
+          return track(registerWidget(name, component));
+        },
+      },
+      actions: {
+        register: (def) => {
+          guard("action", def.id, () => listActions().some((a) => a.id === def.id));
+          return track(registerAction(def));
+        },
+      },
       // The Settings extension point binds to the activating module's name —
       // the plugin never repeats its own id (and cannot bind to someone else's).
-      settings: { register: (component) => track(registerSettings(moduleName, component)) },
+      settings: {
+        register: (component) => {
+          guard("settings", moduleName, () => getSettings(moduleName) !== undefined);
+          return track(registerSettings(moduleName, component));
+        },
+      },
       listWidgets: registeredWidgets,
       listActions,
     };
@@ -313,18 +394,45 @@ export function createModuleManager(deps: ModuleManagerDeps = {}): ModuleManager
     return Array.from(activations.keys());
   }
 
+  // Observable reconcile state: true from the request until the LAST queued
+  // reconcile settles (consumers render "loading", not "missing", in between).
+  const stateListeners = new Set<() => void>();
+  let inflight = 0;
+  function bumpInflight(delta: number): void {
+    const before = inflight > 0;
+    inflight += delta;
+    if ((inflight > 0) !== before) {
+      for (const listener of stateListeners) listener();
+    }
+  }
+  function state(): ModuleManagerState {
+    return { reconciling: inflight > 0 };
+  }
+
   return {
     reconcile(): Promise<string[]> {
+      bumpInflight(1);
       // The chain never rejects (reconcileOnce contains its own failures and
       // this catch guards injected-dependency surprises): callers may `void` it.
       const run = queue
         .then(reconcileOnce, reconcileOnce)
         .catch((e) => console.warn("[console] client module reconcile failed", e))
-        .then(activeNames);
+        .then(activeNames)
+        .then((names) => {
+          bumpInflight(-1);
+          return names;
+        });
       queue = run;
       return run;
     },
     activeNames,
+    state,
+    subscribeState(listener: () => void): () => void {
+      stateListeners.add(listener);
+      return () => {
+        stateListeners.delete(listener);
+      };
+    },
   };
 }
 
@@ -337,4 +445,16 @@ const defaultManager = createModuleManager();
  * no-ops, and concurrent calls are serialized. */
 export function reconcileClientModules(): Promise<string[]> {
   return defaultManager.reconcile();
+}
+
+/** clientModuleManagerState exposes the console-wide manager's observable
+ * state for React consumers (useSyncExternalStore with
+ * subscribeClientModulesState): a renderer lookup that misses while a
+ * reconcile is in flight is an in-between, not a failure. */
+export function clientModuleManagerState(): ModuleManagerState {
+  return defaultManager.state();
+}
+
+export function subscribeClientModulesState(listener: () => void): () => void {
+  return defaultManager.subscribeState(listener);
 }

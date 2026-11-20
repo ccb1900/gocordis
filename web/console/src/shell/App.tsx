@@ -7,7 +7,11 @@ import {
 } from "@ant-design/icons";
 import { Alert } from "antd";
 import { api } from "../api";
-import { reconcileClientModules } from "../lib/client-modules";
+import {
+  reconcileClientModules,
+  subscribeClientModulesState,
+  clientModuleManagerState,
+} from "../lib/client-modules";
 import { useObservationGeneration, useStreamStatus, onObservation } from "../stream";
 import { useDomainVersion } from "../lib/projections";
 import { usePath, navigate, replace } from "../router";
@@ -76,6 +80,14 @@ export default function App() {
   // finishes registering after the pages already rendered (late import), the
   // version bump re-renders and the lookup below resolves.
   const rendererVersion = useSyncExternalStore(subscribeRenderers, rendererRegistryVersion);
+  // An honest in-between: composition already references a renderer whose
+  // client module is still being imported/registered. During a reconcile a
+  // missing renderer means "loading", never "broken" — the error text is
+  // reserved for a settled module set (paper 铁律 4: not-ready ≠ failed).
+  const modulesReconciling = useSyncExternalStore(
+    subscribeClientModulesState,
+    () => clientModuleManagerState().reconciling
+  );
   const stream = useStreamStatus();
   const path = usePath();
   const { isDark, toggle } = useTheme();
@@ -178,8 +190,10 @@ export default function App() {
         if (Renderer) return <Renderer page={page} ctx={ctx} />;
         return (
           <section className="card" style={{ padding: 16 }}>
-            <Typography.Text type="secondary">
-              渲染器 “{page.renderer}” 未在控制台注册，且页面未声明 views。
+            <Typography.Text type={modulesReconciling ? "secondary" : "warning"}>
+              {modulesReconciling
+                ? `插件模块加载中，渲染器 “${page.renderer}” 即将就绪…`
+                : `渲染器 “${page.renderer}” 未在控制台注册，且页面未声明 views。`}
             </Typography.Text>
           </section>
         );
@@ -201,7 +215,13 @@ export default function App() {
     }
     const Renderer = getPanelRenderer(panel.renderer);
     if (Renderer) return <Renderer panel={panel} ctx={ctx} generation={generation} />;
-    return <Typography.Text type="secondary">渲染器 “{panel.renderer}” 未注册。</Typography.Text>;
+    return (
+      <Typography.Text type={modulesReconciling ? "secondary" : "warning"}>
+        {modulesReconciling
+          ? `插件模块加载中，渲染器 “${panel.renderer}” 即将就绪…`
+          : `渲染器 “${panel.renderer}” 未注册。`}
+      </Typography.Text>
+    );
   };
 
   return (

@@ -157,7 +157,11 @@ export interface ActionContext {
 export interface ActionDefinition {
   id: string;
   title: string;
-  /** Optional filter — the shell surfaces the action only when it returns true. */
+  /** Optional DISPLAY filter — the shell surfaces the action only when it
+   * returns true. It is never a security boundary: hiding the button does
+   * not revoke the underlying hub command. Server-side authorization lives
+   * at the webui AccessPolicy seam; plugins with side-effectful operations
+   * must rely on that, not on this filter. */
   when?: (cx: ActionContext) => boolean;
   run: (cx: ActionContext) => void | Promise<void>;
 }

@@ -175,6 +175,28 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		}
 		cleanups = append(cleanups, un)
 	}
+	// Liveness observation: an unexpected process death is a real state
+	// change the operator must be able to SEE. The hub registrations stay
+	// and the fiber stays Active (degrade-not-block, like the start
+	// failure) — but the observation stream reports the exit. Recovery is
+	// deliberately NOT platform policy (paper 铁律 5: fix the declaration
+	// / re-enable, no self-retry storm): disable+enable or a spec-changing
+	// Reconcile re-launches the process. An exit observed after Close has
+	// begun is our own teardown and stays silent.
+	go func() {
+		<-client.Exited()
+		if client.Closed() {
+			return
+		}
+		c.logger.Warn("proc-plugin backend exited unexpectedly", "plugin", c.id, "backend", c.backend)
+		hubReg.Publish(hub.Observation{
+			Type:      "plugin.exited",
+			SourceID:  c.id,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Message:   "backend process exited unexpectedly — disable/enable the plugin to restart it",
+		})
+	}()
+
 	if err := ctx.Effect(func() (func() error, error) {
 		return func() error {
 			for i := len(cleanups) - 1; i >= 0; i-- {

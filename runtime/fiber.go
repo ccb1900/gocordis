@@ -213,6 +213,10 @@ func (f *Fiber) Ready(ctx context.Context) error {
 		f.mu.RLock()
 		st := f.state
 		err := f.err
+		// intent must be snapshot INSIDE the lock: Load/Dispose write it under
+		// the same mutex. Reading it after RUnlock races with a concurrent
+		// Load/Dispose (联合审查 P0-01).
+		intent := f.intent
 		ch := f.signal.Channel()
 		f.mu.RUnlock()
 
@@ -228,7 +232,7 @@ func (f *Fiber) Ready(ctx context.Context) error {
 			// Gone is terminal only when the fiber does not intend to mount
 			// again (or the runtime is shutting down). A Mounted fiber that is
 			// transiently Gone is about to remount or land in Pending.
-			if f.intent == IntentUnmounted || f.rt.stateSnapshot() != RuntimeRunning {
+			if intent == IntentUnmounted || f.rt.stateSnapshot() != RuntimeRunning {
 				if err != nil {
 					return err
 				}

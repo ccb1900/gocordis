@@ -279,14 +279,16 @@ func TestEffectLateCommitRunsInverseExactlyOnce(t *testing.T) {
 	if err := f.Dispose(); err != nil {
 		t.Fatalf("Dispose error: %v", err)
 	}
-	if err := f.Gone(testTimeout(t)); err != nil {
-		t.Fatalf("Gone error: %v", err)
-	}
 
-	// Now let the install complete; its inverse must run exactly once.
+	// Gone now waits for the in-flight install to settle and its inverse to
+	// finish (paper Temporal Composability): release the install first, then
+	// observe Gone — the old order asserted a window that was a bug.
 	close(releaseInstall)
 	if err := <-installResult; err != nil {
 		t.Fatalf("Effect() returned %v, want nil", err)
+	}
+	if err := f.Gone(testTimeout(t)); err != nil {
+		t.Fatalf("Gone error: %v", err)
 	}
 
 	want := []string{"undo:late"}

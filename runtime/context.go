@@ -115,6 +115,13 @@ type Context struct {
 	nextSeq   uint64
 	unwindErr error
 
+	// installing counts Effect slots whose install function is running
+	// outside the lock. beginUnwind must wait for it to reach zero before
+	// the Fiber can go Gone — otherwise a late install's inverse would run
+	// after the activation ended (paper Temporal Composability, P0-02).
+	installing  int
+	installDone *sync.Cond
+
 	// declaredInject / declaredProvide are activation-local, immutable copies
 	// of the owning Component's Inject/Provide declarations, captured when the
 	// Context is created. Require/Provide outside these sets are rejected:
@@ -258,6 +265,7 @@ func (c *Context) effect(kind EffectKind, key CapabilityKey, install func() (fun
 	s := &effectSlot{seq: c.nextSeq, state: effectInstalling, kind: kind, key: key}
 	c.nextSeq++
 	c.effects = append(c.effects, s)
+	c.installing++
 	c.mu.Unlock()
 
 	// Step 3: run install outside the lock; a panic is contained and reported
@@ -266,8 +274,14 @@ func (c *Context) effect(kind EffectKind, key CapabilityKey, install func() (fun
 	var installErr error
 	inverse, installErr = guardedInstall(install)
 
-	// Step 4: re-acquire the lock and commit or self-undo.
+	// Step 4: re-acquire the lock and commit or self-undo. In every path the
+	// Installing counter is released (with a broadcast) so beginUnwind can
+	// proceed once no install is in flight.
 	c.mu.Lock()
+	c.installing--
+	if c.installDone != nil {
+		c.installDone.Broadcast()
+	}
 	if installErr != nil {
 		c.removeSlot(s)
 		c.mu.Unlock()
@@ -282,7 +296,8 @@ func (c *Context) effect(kind EffectKind, key CapabilityKey, install func() (fun
 	}
 
 	// The context is already unwinding/unwound: do not commit as a persistent
-	// effect; execute the returned inverse immediately (exactly once).
+	// effect; execute the returned inverse immediately (exactly once), with
+	// the SAME panic guard as the normal unwind path (P0-02).
 	s.inverse = inverse
 	s.state = effectUndoing
 	c.mu.Unlock()
@@ -290,7 +305,7 @@ func (c *Context) effect(kind EffectKind, key CapabilityKey, install func() (fun
 
 	var invErr error
 	if inverse != nil {
-		invErr = inverse()
+		invErr = guardedInverse(inverse)
 	}
 
 	c.mu.Lock()
@@ -640,18 +655,33 @@ func (c *Context) removeSlot(target *effectSlot) {
 // snapshot in reverse order outside the context lock.
 func (c *Context) beginUnwind() []*effectSlot {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.state != contextActive {
+		c.mu.Unlock()
 		return nil
 	}
 	c.state = contextUnwinding
 	c.cancel()
+
+	// Wait for in-flight installs to finish. New Effect calls are refused
+	// once state != contextActive, so the counter can only decrease. Each
+	// completing install either commits (state already Unwinding → it will
+	// self-undo) or reports an error; its inverse is guarded. Only after all
+	// of them settle do we snapshot the committed effects for LIFO reversal.
+	if c.installing > 0 {
+		if c.installDone == nil {
+			c.installDone = sync.NewCond(&c.mu)
+		}
+		for c.installing > 0 {
+			c.installDone.Wait()
+		}
+	}
 	var out []*effectSlot
 	for _, s := range c.effects {
 		if s.state == effectCommitted {
 			out = append(out, s)
 		}
 	}
+	c.mu.Unlock()
 	return out
 }
 

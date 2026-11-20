@@ -65,3 +65,28 @@ jobs:
 
       - name: Windows test compile
         run: GOOS=windows go test -run xxx -count=1 ./...
+
+  console-web:
+    # UI-01..03 的前端门面是插件 ABI：vitest + tsc 必须在 CI 执行，
+    # 不能只靠提交说明里"本地跑过"（联合审查 P2）。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/console/package-lock.json
+
+      - name: npm ci
+        working-directory: web/console
+        run: npm ci
+
+      - name: Vitest
+        working-directory: web/console
+        run: npm test
+
+      - name: TypeScript check
+        working-directory: web/console
+        run: npx tsc --noEmit

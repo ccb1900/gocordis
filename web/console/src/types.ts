@@ -65,4 +65,8 @@ export interface ExplorerControlResult {
   failed: boolean;
   state: string;
   error: string;
+  /** True when the switch fell back to the direct fiber path (no
+   * declaration wired by the application): non-durable — the next
+   * reconcile overrides it. */
+  transient?: boolean;
 }

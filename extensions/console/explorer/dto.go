@@ -51,6 +51,10 @@ type ExplorerControlResult struct {
 	Failed   bool   `json:"failed"`
 	State    string `json:"state"`
 	Error    string `json:"error"`
+	// Transient marks a fallback result (fiber switched directly, no
+	// declaration wired): the console labels it as non-durable, since the
+	// next reconcile overrides it.
+	Transient bool `json:"transient,omitempty"`
 }
 
 // Host is the Plugin Explorer transport adapter. It is created during the
@@ -130,11 +134,12 @@ func cloneStrings(in []string) []string {
 
 func toControlResult(r ControlResult) ExplorerControlResult {
 	return ExplorerControlResult{
-		PluginID: r.PluginID,
-		Accepted: r.Accepted,
-		Rejected: r.Rejected,
-		Failed:   r.Failed,
-		State:    r.State,
-		Error:    r.Error,
+		PluginID:  r.PluginID,
+		Accepted:  r.Accepted,
+		Rejected:  r.Rejected,
+		Failed:    r.Failed,
+		State:     r.State,
+		Error:     r.Error,
+		Transient: r.Transient,
 	}
 }

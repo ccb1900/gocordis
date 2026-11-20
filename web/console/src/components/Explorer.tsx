@@ -230,8 +230,10 @@ export function PluginExplorer() {
                 />
               )}
               {outcome && outcome.accepted && !error && (
-                <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 8 }}>
-                  运行时已接受请求 — 以下状态重新读取自 fibers。
+                <Typography.Text type={outcome.transient ? "warning" : "secondary"} style={{ fontSize: 12, display: "block", marginBottom: 8 }}>
+                  {outcome.transient
+                    ? "运行时已接受请求（临时）— 该应用未接声明开关，下一次调和会按声明覆盖此状态。"
+                    : "运行时已接受请求 — 以下状态重新读取自 fibers。"}
                 </Typography.Text>
               )}
               <Descriptions size="small" bordered column={1}>

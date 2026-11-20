@@ -191,16 +191,17 @@ func (r *Registry) OnObservation(buffer int, fn func(Observation)) (func() error
 // non-blocking: a slow consumer drops the message (observation only
 // invalidates; consumers compensate by re-querying).
 func (r *Registry) Publish(ev Observation) {
+	// Send under the read lock: OnObservation's unregister closes each
+	// channel while holding the WRITE lock, so a send after releasing RLock
+	// races with close (application -race reproduced it on plugin-exit
+	// observation). Delivery is non-blocking, so holding RLock is safe —
+	// unregister simply waits for in-flight publishes to finish.
 	r.mu.RLock()
-	chans := make([]chan Observation, 0, len(r.observers))
+	defer r.mu.RUnlock()
 	for _, c := range r.observers {
-		chans = append(chans, c)
-	}
-	r.mu.RUnlock()
-	for _, c := range chans {
 		select {
 		case c <- ev:
-		default:
+		default: // slow consumer: drop
 		}
 	}
 }

@@ -33,6 +33,25 @@ type rehomeKeyVal struct{ tag string }
 
 var rehomeKey = NewKey[rehomeKeyVal]("rehome.service")
 
+// rehomeOtherKey exists only to give Isolate a DIFFERENT key to re-home, so
+// that rehomeKey's provision stays in the PARENT realm (an isolation override
+// whose realm differs from the fiber's own base realm — the Rehome bug case).
+var rehomeOtherKey = NewKey[rehomeKeyVal]("rehome.other")
+
+type rehomeDualProvider struct{}
+
+func (c *rehomeDualProvider) Name() string         { return "rehome-dual-provider" }
+func (c *rehomeDualProvider) Inject() []Dependency { return nil }
+func (c *rehomeDualProvider) Provide() []Capability {
+	return []Capability{rehomeKey.Capability(), rehomeOtherKey.Capability()}
+}
+func (c *rehomeDualProvider) Apply(ctx *Context) (Cleanup, error) {
+	if err := Provide(ctx, rehomeKey, rehomeKeyVal{tag: "iso"}); err != nil {
+		return nil, err
+	}
+	return nil, Provide(ctx, rehomeOtherKey, rehomeKeyVal{tag: "other"})
+}
+
 type rehomeConsumer struct {
 	seen chan string
 }
@@ -337,4 +356,126 @@ func rehomeNewRT(t *testing.T) *Runtime {
 		_ = rt.Close(ctx)
 	})
 	return rt
+}
+
+// TestRehomeIsolatedNamespace — R3 extension: a provision that lives in a
+// per-key ISOLATION realm (not the fiber's base realm) must also migrate on
+// Rehome. Phase 1 retires it in every fiberNamespaces(f); phase 2 must use
+// that SAME pre-migration snapshot to find and move the record. Deriving the
+// old namespaces AFTER replacing f.keyRealms loses the isolated realm: the
+// record stays retiring there and Dispose can no longer find it.
+type rehomeIsolatedHost struct {
+	child chan *Fiber
+}
+
+func (c *rehomeIsolatedHost) Name() string          { return "rehome-isolated-host" }
+func (c *rehomeIsolatedHost) Inject() []Dependency  { return nil }
+func (c *rehomeIsolatedHost) Provide() []Capability { return nil }
+func (c *rehomeIsolatedHost) Apply(ctx *Context) (Cleanup, error) {
+	child, err := ctx.Child(&rehomeDualProvider{}, Isolate(rehomeOtherKey.Capability()))
+	if err != nil {
+		return nil, err
+	}
+	if c.child != nil {
+		c.child <- child
+	}
+	return nil, nil
+}
+
+func TestRehomeIsolatedNamespace(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	childCh := make(chan *Fiber, 1)
+	host, err := rt.Load(&rehomeIsolatedHost{child: childCh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, host)
+	rehomeWaitState(t, host, StateActive)
+	pf := <-childCh
+	rehomeWaitState(t, pf, StateActive)
+
+	// The isolated realm is distinct from the fiber base realm and holds the
+	// provision for rehomeKey.
+	pf.mu.RLock()
+	isoRealm := pf.keyRealms[rehomeKey.Capability()]
+	baseRealm := pf.realm
+	pf.mu.RUnlock()
+	if isoRealm == nil || isoRealm == baseRealm {
+		t.Fatalf("isolated realm not established: iso=%v base=%v", isoRealm, baseRealm)
+	}
+	pID := ProviderIdentity{FiberID: pf.ID(), ActivationID: pf.activation.id}
+	if _, ok := isoRealm.lookupOwn(rehomeKey.Capability()); !ok {
+		t.Fatal("provision not in isolated realm before rehome")
+	}
+	if rec, ok := isoRealm.lookupOwn(rehomeKey.Capability()); !ok || rec.identity != pID {
+		t.Fatalf("isolated realm does not own the provision record: %+v/%v", rec, ok)
+	}
+
+	if err := pf.Rehome(ctx, RehomeWithFreshIsolation()); err != nil {
+		t.Fatalf("rehome: %v", err)
+	}
+
+	pf.mu.RLock()
+	fresh := pf.keyRealms[rehomeKey.Capability()]
+	pf.mu.RUnlock()
+	if fresh == nil || fresh == isoRealm {
+		t.Fatalf("fresh namespace missing: %v", pf.keyRealms)
+	}
+	// R3 isolated: the OLD isolated realm must no longer hold the provision.
+	if _, ok := isoRealm.lookupOwn(rehomeKey.Capability()); ok {
+		t.Fatal("old isolated realm still holds the provision after rehome")
+	}
+	// And the fresh realm must hold it with the SAME activation (short route).
+	rec, ok := fresh.lookupOwn(rehomeKey.Capability())
+	if !ok || rec.identity != pID {
+		t.Fatalf("fresh realm missing the migrated provision record: %+v/%v", rec, ok)
+	}
+	if rec.retiring {
+		t.Fatal("migrated record is still retiring")
+	}
+
+	// R5 isolated: disposing the provider removes the migrated record too.
+	if err := pf.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pf.Gone(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fresh.lookupOwn(rehomeKey.Capability()); ok {
+		t.Fatal("fresh isolated realm still holds the provision after dispose")
+	}
+}
+
+// Isolate must re-home ONLY the listed keys into a fresh namespace. If the
+// scopeKeys are dropped between Context.Child and cmdSpawnChild, Isolate
+// degenerates to WithScope (all keys) or no isolation at all — breaking the
+// per-key realm contract (paper Def 24/25) that Rehome isolation depends on.
+func TestIsolatePerKeyRealm(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	childCh := make(chan *Fiber, 1)
+	host, err := rt.Load(&rehomeIsolatedHost{child: childCh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, host)
+	rehomeWaitState(t, host, StateActive)
+	pf := <-childCh
+	rehomeWaitState(t, pf, StateActive)
+
+	pf.mu.RLock()
+	iso := pf.keyRealms[rehomeKey.Capability()]
+	base := pf.realm
+	pf.mu.RUnlock()
+	if iso == nil || iso == base {
+		t.Fatalf("Isolate should leave rehomeKey in a realm distinct from the fiber base: iso=%v base=%v", iso, base)
+	}
+	if iso != rt.rootRealm {
+		t.Fatalf("rehomeKey provision realm = %v, want parent (root) realm %v", iso, rt.rootRealm)
+	}
 }

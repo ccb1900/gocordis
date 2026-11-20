@@ -435,6 +435,10 @@ func (c *Context) Child(component Component, opts ...ScopeOption) (*Fiber, error
 		inject:    inject,
 		provide:   provide,
 		newScope:  o.newRealm,
+		// Isolate(keys) must reach the orchestrator: without scopeKeys the
+		// fresh child realm re-homes ALL declared keys (WithScope behavior),
+		// silently breaking per-key isolation (paper Def 24/25).
+		scopeKeys: o.scopeKeys,
 		keyRealms: o.keyRealms,
 		reply:     reply,
 	}) {

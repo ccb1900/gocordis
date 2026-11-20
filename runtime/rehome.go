@@ -40,7 +40,15 @@ func RehomeWithFreshIsolation() RehomeOption {
 // rehomePending is the in-flight rehome state on a Fiber (orchestrator-only).
 type rehomePending struct {
 	fresh *realm
-	done  chan error
+	// oldRealms is the namespace snapshot taken at the START of the rehome
+	// (phase 1). Phase 2 MUST move provisions using THIS snapshot: deriving
+	// old namespaces from fiberNamespaces(f) after replacing f.keyRealms
+	// loses every per-key isolation realm whose key table just changed —
+	// leaving retiring records stranded there (and Dispose unable to find
+	// them). Paper Def 24/25: ρ is fixed at insertion; a realm move carries
+	// the record, not just the routing table.
+	oldRealms []*realm
+	done      chan error
 }
 
 // Rehome moves the fiber's provisions to a fresh namespace without reloading
@@ -152,7 +160,7 @@ func (c *cmdRehomeBegin) apply(o *orchestrator) {
 	// Prepare the plan; phase 2 fires from the gate-clear continuation.
 	fresh := newRealm(f.realm)
 	fresh.id = o.rt.newScopeID()
-	f.rehome = &rehomePending{fresh: fresh, done: c.done}
+	f.rehome = &rehomePending{fresh: fresh, oldRealms: oldRealms, done: c.done}
 
 	for _, c2 := range consumers {
 		o.reconcile(c2)
@@ -194,10 +202,11 @@ func (o *orchestrator) executeRehomeStep2(f *Fiber) {
 	}
 	f.keyRealms = freshTable
 
-	// Move the provision records out of the old namespaces. Each moved record
-	// emits a withdrawn->published event pair so observation consumers
-	// (console event streams) see the migration.
-	for _, rr := range fiberNamespaces(f) {
+	// Move the provision records out of the namespaces captured at phase 1,
+	// NOT out of fiberNamespaces(f): f.keyRealms was just replaced above, so
+	// the current namespaces no longer include the per-key isolation realms
+	// that actually hold the provisions being migrated.
+	for _, rr := range plan.oldRealms {
 		if rr == plan.fresh {
 			continue
 		}

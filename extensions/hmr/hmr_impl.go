@@ -11,7 +11,21 @@ import (
 	"dynamic-runtime/runtime"
 )
 
+// hmrOwner is the owner-id PREFIX of HMR-owned ModuleUsage entries.
+//
+// ModuleUsage is a (ModuleID, OwnerID) SET, not a refcount: every Target must
+// hold its OWN entry, so the owner id is derived per Target (ownerFor). A
+// single shared owner id would let the second Target of the same module
+// silently reuse the first's entry (its Acquire fails with
+// ErrModuleUseExists), and the first Target's release would then free the
+// module while the second still uses it.
 const hmrOwner = "hmr"
+
+// ownerFor derives the per-Target ModuleUsage owner id. Target IDs are unique
+// in the registry (Register rejects duplicates), so the id is a stable owner
+// identity across the Target's whole bound life (bind -> replace ->
+// unregister/close).
+func ownerFor(targetID string) string { return hmrOwner + ":" + targetID }
 
 // Controller is the concrete HMR implementation. It satisfies the HMR and
 // TargetRegistry interfaces.
@@ -61,7 +75,8 @@ func (h *Controller) Unregister(id string) error {
 
 // Bind establishes the CURRENT implementation for a registered target. `mod`
 // is the Loader Module the running fiber was built from. Bind acquires HMR
-// usage on that module (released on replacement or close).
+// usage on that module under the target's own owner id (released on
+// replacement, re-bind, unregister, or close).
 func (h *Controller) Bind(targetID string, mod loader.Module, fiber *runtime.Fiber) error {
 	return h.submitResp(&cmdBind{targetID: targetID, mod: mod, fiber: fiber})
 }
@@ -283,7 +298,7 @@ func (c *cmdClose) run(h *Controller) {
 	// Release every HMR-owned Loader usage and clear HMR state (Fibers are not
 	// owned by HMR and are left to the Runtime/application).
 	for id, b := range h.binding {
-		_ = h.usage.Release(b.Module.ID, hmrOwner)
+		_ = h.usage.Release(b.Module.ID, ownerFor(id))
 		delete(h.binding, id)
 	}
 	h.targets = make(map[string]Target)
@@ -334,7 +349,7 @@ func (h *Controller) doUnregister(id string) error {
 	}
 	delete(h.targets, id)
 	if b, ok := h.binding[id]; ok {
-		_ = h.usage.Release(b.Module.ID, hmrOwner)
+		_ = h.usage.Release(b.Module.ID, ownerFor(id))
 		delete(h.binding, id)
 	}
 	return nil
@@ -352,15 +367,28 @@ func (h *Controller) doBind(targetID string, mod loader.Module, fiber *runtime.F
 	if mod.ID == "" || mod.Type == "" || mod.Factory == nil || fiber == nil {
 		return ErrInvalidTarget
 	}
-	if err := h.usage.Acquire(mod.ID, hmrOwner); err != nil && !errors.Is(err, loader.ErrModuleUseExists) {
+	owner := ownerFor(targetID)
+	// ErrModuleUseExists can only mean this target already holds usage on this
+	// exact module (per-target owner id), e.g. a re-Bind of the same module:
+	// the existing entry still covers the binding, so keep it.
+	if err := h.usage.Acquire(mod.ID, owner); err != nil && !errors.Is(err, loader.ErrModuleUseExists) {
 		return err
 	}
+	old, hadOld := h.binding[targetID]
 	h.binding[targetID] = &Binding{
 		TargetID:    targetID,
 		ComponentID: h.targets[targetID].ComponentID,
 		Module:      mod.Identity(),
 		ModuleType:  mod.Type,
 		Fiber:       fiber,
+	}
+	// Rebinding from an old module releases the old binding's usage:
+	// ModuleUsage is a (ModuleID, OwnerID) set, so the old entry would
+	// otherwise pin the old module forever and it could never unload. (When
+	// old and new module are the same, the single entry above still covers the
+	// binding and must not be released.)
+	if hadOld && old.Module.ID != mod.ID {
+		_ = h.usage.Release(old.Module.ID, owner)
 	}
 	return nil
 }
@@ -409,8 +437,9 @@ func (h *Controller) doReplace(ctx context.Context, target Target) error {
 		return errWrap(ErrIncompatibleModule, "new module type %q != old type %q", newMod.Type, bound.ModuleType)
 	}
 
-	// 3. Acquire explicit usage on the new Module.
-	if err := h.usage.Acquire(newMod.ID, hmrOwner); err != nil && !errors.Is(err, loader.ErrModuleUseExists) {
+	// 3. Acquire explicit usage on the new Module (this target's own owner id).
+	owner := ownerFor(target.ID)
+	if err := h.usage.Acquire(newMod.ID, owner); err != nil && !errors.Is(err, loader.ErrModuleUseExists) {
 		_ = h.loader.Unload(context.Background(), newMod.ID)
 		return err
 	}
@@ -419,7 +448,7 @@ func (h *Controller) doReplace(ctx context.Context, target Target) error {
 			_ = fiber.Dispose()
 			_ = fiber.Gone(context.Background())
 		}
-		_ = h.usage.Release(newMod.ID, hmrOwner)
+		_ = h.usage.Release(newMod.ID, owner)
 		_ = h.loader.Unload(context.Background(), newMod.ID)
 	}
 
@@ -507,24 +536,28 @@ func (h *Controller) commitReplacement(bound *Binding, newFiber *runtime.Fiber, 
 	if err := bound.Fiber.Dispose(); err != nil {
 		return err
 	}
-	if err := bound.Fiber.Gone(context.Background()); err != nil {
-		return err
-	}
+	// Runtime Gone contract: the fiber IS Gone even when its cleanup returned
+	// an error (the cleanup error is recorded as the fiber's lifecycle error
+	// and reported by the Runtime as a Cleanup-phase failure). For HMR the
+	// lifecycle fact is "old fiber is Gone": treat it as success and always
+	// release the old binding's usage — a retained stale binding/usage would
+	// otherwise poison every later replacement.
+	_ = bound.Fiber.Gone(context.Background())
 	// Old Fiber Gone: only now release Old Module usage (H13).
-	_ = h.usage.Release(bound.Module.ID, hmrOwner)
+	_ = h.usage.Release(bound.Module.ID, ownerFor(bound.TargetID))
 	_ = h.loader.Unload(context.Background(), bound.Module.ID)
 	return h.bindNew(bound.TargetID, newFiber, newMod)
 }
 
 // unloadOld disposes the old fiber and waits for Gone (sequential fallback).
+// Gone is success for lifecycle purposes even when the cleanup returned an
+// error (see commitReplacement).
 func (h *Controller) unloadOld(bound *Binding) error {
 	if err := bound.Fiber.Dispose(); err != nil {
 		return err
 	}
-	if err := bound.Fiber.Gone(context.Background()); err != nil {
-		return err
-	}
-	_ = h.usage.Release(bound.Module.ID, hmrOwner)
+	_ = bound.Fiber.Gone(context.Background())
+	_ = h.usage.Release(bound.Module.ID, ownerFor(bound.TargetID))
 	_ = h.loader.Unload(context.Background(), bound.Module.ID)
 	return nil
 }
@@ -533,12 +566,12 @@ func (h *Controller) bindNew(targetID string, fiber *runtime.Fiber, mod *loader.
 	h.stateMu.Lock()
 	defer h.stateMu.Unlock()
 	if h.closed {
-		_ = h.usage.Release(mod.ID, hmrOwner)
+		_ = h.usage.Release(mod.ID, ownerFor(targetID))
 		return ErrHMRClosed
 	}
 	reg, ok := h.targets[targetID]
 	if !ok {
-		_ = h.usage.Release(mod.ID, hmrOwner)
+		_ = h.usage.Release(mod.ID, ownerFor(targetID))
 		return ErrTargetNotFound
 	}
 	h.binding[targetID] = &Binding{

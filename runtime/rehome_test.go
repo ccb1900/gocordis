@@ -531,9 +531,11 @@ func rehomeWaitInFlight(t *testing.T, f *Fiber) {
 	t.Helper()
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		f.mu.RLock()
+		// f.rehome is written under routeMu (orchestrator) — read it under the
+		// same lock, not f.mu, or the race detector rightly complains.
+		f.routeMu.RLock()
 		inFlight := f.rehome != nil
-		f.mu.RUnlock()
+		f.routeMu.RUnlock()
 		if inFlight {
 			return
 		}
@@ -584,9 +586,9 @@ func TestRehomeConcurrentDispose(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("consumer Cleanup never entered — Rehome not gated")
 	}
-	pf.mu.RLock()
+	pf.routeMu.RLock()
 	inFlight := pf.rehome != nil
-	pf.mu.RUnlock()
+	pf.routeMu.RUnlock()
 	if !inFlight {
 		t.Fatal("Rehome already completed before Dispose")
 	}

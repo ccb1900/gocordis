@@ -2,6 +2,7 @@ package broker_test
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -182,6 +183,112 @@ func bailT(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// leakyProv calls broker.Register AFTER its activation context has been
+// cancelled (Dispose while the fiber is Loading): the Effect must be refused
+// and the registration must NOT leak into the broker beyond the fiber's
+// lifecycle.
+type leakyProv struct {
+	b       *broker.Broker[encoder]
+	entered chan struct{}
+	regErr  chan error
+}
+
+func (c *leakyProv) Name() string                  { return "leaky-provider" }
+func (c *leakyProv) Inject() []runtime.Dependency  { return nil }
+func (c *leakyProv) Provide() []runtime.Capability { return nil }
+func (c *leakyProv) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	c.entered <- struct{}{}
+	// Wakes exactly when the withdrawal cancels this activation, so Register
+	// below runs with an already-cancelling context (deterministic ordering).
+	<-ctx.Done()
+	var impl encoder = &upper{tag: "leak"}
+	err := broker.Register(ctx, c.b, "leak", impl)
+	c.regErr <- err
+	return nil, err
+}
+
+func waitGoneB(t *testing.T, f *runtime.Fiber) {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if f.State() == runtime.StateGone {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting %s Gone (state %v err %v)", f.Name(), f.State(), f.Err())
+}
+
+// TestBrokerRegisterRefusedEffectLeaksNothing — the route registration is one
+// ATOMIC Effect: the route is registered inside the Effect install function,
+// so registration and its inverse are committed together by the effect system.
+// If the effect is refused (activation context already cancelling/unwinding),
+// nothing is registered — a provider must never leak into the broker beyond
+// its fiber's lifecycle.
+func TestBrokerRegisterRefusedEffectLeaksNothing(t *testing.T) {
+	rt := newBrokerRT(t)
+	b := broker.New[encoder](broker.First[encoder]())
+	entered := make(chan struct{})
+	regErr := make(chan error, 1)
+
+	p, err := rt.Load(&leakyProv{b: b, entered: entered, regErr: regErr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-entered // Apply is running and waiting for its withdrawal
+	if err := p.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	// Apply wakes on ctx.Done(), Register is refused, and the fiber finishes
+	// its whole lifecycle (Apply error + Unmounted intent -> Gone): nothing
+	// may remain registered afterwards.
+	waitGoneB(t, p)
+	if err := <-regErr; err == nil {
+		t.Fatal("Register must fail when the effect is refused")
+	}
+	if got := b.Names(); len(got) != 0 {
+		t.Fatalf("provider leaked into the broker beyond its fiber's lifecycle: %v", got)
+	}
+}
+
+// TestBrokerRoundRobinStartsAtOldest — the selector starts at index 0: the
+// first call reaches the OLDEST registered provider and cycles from there.
+func TestBrokerRoundRobinStartsAtOldest(t *testing.T) {
+	rt := newBrokerRT(t)
+	b := broker.New[encoder](nil) // nil policy = RoundRobin
+	if _, err := rt.Load(&brokerStack{b: b}); err != nil {
+		t.Fatal(err)
+	}
+	p1, err := rt.Load(&encProv{name: "v1", tag: "v1", b: b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := rt.Load(&encProv{name: "v2", tag: "v2", b: b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitActiveB(t, p1)
+	waitActiveB(t, p2)
+
+	names := b.Names() // registration order (oldest first)
+	if len(names) != 2 {
+		t.Fatalf("routing set = %v, want 2 entries", names)
+	}
+	got := make([]string, 0, 4)
+	for i := 0; i < 4; i++ {
+		if err := b.Call(func(e encoder) error {
+			got = append(got, e.Encode("x"))
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{names[0] + ":x", names[1] + ":x", names[0] + ":x", names[1] + ":x"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round robin = %v, want %v (first call must select the oldest provider)", got, want)
+	}
 }
 
 // TestBrokerRollingUpdate — §6.2 rolling updates: register the new provider,

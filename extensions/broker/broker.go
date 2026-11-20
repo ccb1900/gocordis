@@ -30,11 +30,12 @@ var ErrNoProvider = errors.New("broker: no backing provider registered")
 // Policy selects one backing provider among the routing set.
 type Policy[T any] func(providers []T) T
 
-// RoundRobin cycles through the routing set.
+// RoundRobin cycles through the routing set in registration order, starting at
+// the oldest registered provider (index 0 on the first call).
 func RoundRobin[T any]() func([]T) T {
 	var counter atomic.Uint64
 	return func(providers []T) T {
-		return providers[counter.Add(1)%uint64(len(providers))]
+		return providers[(counter.Add(1)-1)%uint64(len(providers))]
 	}
 }
 
@@ -93,20 +94,37 @@ func (b *Broker[T]) Names() []string {
 	return out
 }
 
-// Register adds one backing provider. The returned func is the registration's
-// inverse: install it through ctx.Effect so the provider's own unwind removes
-// it from the routing set automatically.
+// Register adds one backing provider as ONE ATOMIC EFFECT: the route is
+// registered inside the Effect install function, so the registration and its
+// inverse are committed together by the effect system. If the effect is
+// refused (the activation context is already cancelling/unwinding), nothing is
+// registered — a provider can never leak into the broker beyond its fiber's
+// lifecycle. When the provider's activation unwinds, the committed inverse
+// drops it from the routing set automatically.
 func Register[T any](ctx *runtime.Context, b *Broker[T], name string, impl T) error {
-	b.mu.Lock()
+	// Duplicate pre-check before engaging the effect machinery: a duplicate is
+	// rejected as a plain error, with no registration side effects.
+	b.mu.RLock()
 	for _, r := range b.routes {
 		if r.name == name {
-			b.mu.Unlock()
+			b.mu.RUnlock()
 			return errors.New("broker: duplicate provider name " + name)
 		}
 	}
-	b.routes = append(b.routes, route[T]{name: name, impl: impl})
-	b.mu.Unlock()
+	b.mu.RUnlock()
 	return ctx.Effect(func() (func() error, error) {
+		b.mu.Lock()
+		// Re-check under the write lock: a concurrent Register may have won the
+		// race between the pre-check and this install. A failing install
+		// refuses the whole effect, so nothing is registered.
+		for _, r := range b.routes {
+			if r.name == name {
+				b.mu.Unlock()
+				return nil, errors.New("broker: duplicate provider name " + name)
+			}
+		}
+		b.routes = append(b.routes, route[T]{name: name, impl: impl})
+		b.mu.Unlock()
 		return func() error {
 			b.mu.Lock()
 			defer b.mu.Unlock()

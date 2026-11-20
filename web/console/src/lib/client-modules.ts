@@ -39,14 +39,27 @@ import * as ReactDOMClient from "react-dom/client";
 import * as antd from "antd";
 import { api } from "../api";
 import {
+  listActions,
+  registerAction,
   registerBlockRenderer,
-  registerPageRenderer,
   registerPanelRenderer,
+  registerPageRenderer,
+  registerSettings,
+  registerWidget,
   registeredBlockKinds,
+  registeredWidgets,
+  type ActionDefinition,
+  type BlockRenderer,
+  type PageRenderer,
+  type PanelRenderer,
+  type SettingsComponent,
+  type WidgetComponent,
 } from "../views/registry";
 
-/** The facade handed to every client module's register function. */
-export interface ClientModuleAPI {
+/** The static half of the module facade: everything a module (or an esbuild
+ * shim reading globalThis.__CORDIS_CONSOLE) needs that does not depend on the
+ * activating module's identity. */
+export interface BaseModuleAPI {
   React: typeof React;
   /** The console's own react/jsx-runtime: JSX build shims re-export it, so
    * automatic JSX in a bundled plugin runs on the console's React instance
@@ -59,9 +72,6 @@ export interface ClientModuleAPI {
   antd: typeof antd;
   /** Hub named queries/commands — the unified data channel. */
   api: typeof api;
-  /** Register a block renderer. Returns an idempotent dispose; the manager
-   * also owns it — the module may call it early, the framework calls it at
-   * most once more when the module deactivates. */
   registerBlockRenderer: typeof registerBlockRenderer;
   registerPageRenderer: typeof registerPageRenderer;
   registerPanelRenderer: typeof registerPanelRenderer;
@@ -70,10 +80,10 @@ export interface ClientModuleAPI {
 
 declare global {
   // eslint-disable-next-line no-var
-  var __CORDIS_CONSOLE: ClientModuleAPI | undefined;
+  var __CORDIS_CONSOLE: BaseModuleAPI | undefined;
 }
 
-export function clientModuleAPI(): ClientModuleAPI {
+export function clientModuleAPI(): BaseModuleAPI {
   return {
     React, jsxRuntime: reactJsxRuntime,
     reactDom: ReactDOM, reactDomClient: ReactDOMClient,
@@ -81,6 +91,38 @@ export function clientModuleAPI(): ClientModuleAPI {
     registerBlockRenderer, registerPageRenderer, registerPanelRenderer,
     registeredBlockKinds,
   };
+}
+
+export interface PageRendererDef {
+  name: string;
+  component: PageRenderer;
+}
+export interface PanelRendererDef {
+  name: string;
+  component: PanelRenderer;
+}
+
+/** The facade handed to every client module's register function: the five
+ * extension points (page / panel / widget / settings / action renderers and
+ * handlers) plus the block-kind palette. Every register returns an idempotent
+ * dispose and is OWNED BY THE MANAGER — the module may release early, and
+ * module deactivation unwinds everything LIFO. */
+export interface ClientModuleAPI extends BaseModuleAPI {
+  /** Page RENDERERS keyed by name. Page definitions themselves are Go-side
+   * composition declarations (ui-page components / RegisterPage) — the
+   * frontend never declares pages, or it would become a second lifecycle
+   * authority. */
+  pages: { register(def: PageRendererDef): () => void };
+  panels: { register(def: PanelRendererDef): () => void };
+  blocks: { register(kind: string, component: BlockRenderer): () => void };
+  /** Composable components referenced by declarative `widget` view blocks. */
+  widgets: { register(name: string, component: WidgetComponent): () => void };
+  /** This plugin's settings UI; bound to the activating module's name. */
+  settings: { register(component: SettingsComponent): () => void };
+  /** Context-bound operations surfaced by the shell's ActionBar. */
+  actions: { register(def: ActionDefinition): () => void };
+  listWidgets: typeof registeredWidgets;
+  listActions: typeof listActions;
 }
 
 export interface ClientModuleRef {
@@ -111,7 +153,7 @@ interface ModuleActivation {
 export interface ModuleManagerDeps {
   manifestUrl?: string;
   importer?: ModuleImporter;
-  apiFactory?: () => ClientModuleAPI;
+  apiFactory?: () => BaseModuleAPI;
 }
 
 export interface ModuleManager {
@@ -153,10 +195,10 @@ export function createModuleManager(deps: ModuleManagerDeps = {}): ModuleManager
     };
   }
 
-  /** activationFacade wraps the base facade so every renderer registration
-   * made through it is recorded on the activation — the framework owns the
-   * resources, not the module. */
-  function activationFacade(activation: ModuleActivation): ClientModuleAPI {
+  /** activationFacade wraps the base facade so EVERY extension-point
+   * registration made through it is recorded on the activation — the
+   * framework owns the resources, not the module. */
+  function activationFacade(activation: ModuleActivation, moduleName: string): ClientModuleAPI {
     const base = apiFactory();
     const track = (dispose: () => void): (() => void) => {
       const guarded = once(dispose);
@@ -168,6 +210,16 @@ export function createModuleManager(deps: ModuleManagerDeps = {}): ModuleManager
       registerBlockRenderer: (kind, renderer) => track(base.registerBlockRenderer(kind, renderer)),
       registerPageRenderer: (name, renderer) => track(base.registerPageRenderer(name, renderer)),
       registerPanelRenderer: (name, renderer) => track(base.registerPanelRenderer(name, renderer)),
+      pages: { register: (def) => track(base.registerPageRenderer(def.name, def.component)) },
+      panels: { register: (def) => track(base.registerPanelRenderer(def.name, def.component)) },
+      blocks: { register: (kind, component) => track(base.registerBlockRenderer(kind, component)) },
+      widgets: { register: (name, component) => track(registerWidget(name, component)) },
+      actions: { register: (def) => track(registerAction(def)) },
+      // The Settings extension point binds to the activating module's name —
+      // the plugin never repeats its own id (and cannot bind to someone else's).
+      settings: { register: (component) => track(registerSettings(moduleName, component)) },
+      listWidgets: registeredWidgets,
+      listActions,
     };
   }
 
@@ -209,7 +261,9 @@ export function createModuleManager(deps: ModuleManagerDeps = {}): ModuleManager
     }
     const activation: ModuleActivation = { name: m.name, url: m.url, disposables: [] };
     try {
-      const returned = (register as (api: ClientModuleAPI) => unknown)(activationFacade(activation));
+      const returned = (register as (api: ClientModuleAPI) => unknown)(
+        activationFacade(activation, m.name)
+      );
       if (typeof returned === "function") activation.moduleDispose = returned as () => void;
     } catch (e) {
       // Partial registration rolls back: everything registered so far

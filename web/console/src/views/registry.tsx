@@ -109,3 +109,111 @@ export function getPanelRenderer(name: string): PanelRenderer | undefined {
 export function registeredBlockKinds(): string[] {
   return Array.from(blockRenderers.keys()).sort();
 }
+
+// ---- Widget extension point -----------------------------------------------
+// Widgets are composable components a plugin contributes; declarative views
+// compose them via the built-in `widget` block kind ({kind: "widget",
+// params: {name: ...}}), so pages stack widgets from different plugins
+// without imperative glue.
+
+export interface WidgetProps {
+  ctx: ViewContext;
+  /** The widget block's params with $focus references already resolved. */
+  params: Record<string, string>;
+}
+export type WidgetComponent = ComponentType<WidgetProps>;
+
+const widgets = new Map<string, WidgetComponent>();
+
+/** registerWidget contributes one composable component under a name. */
+export function registerWidget(name: string, component: WidgetComponent): () => void {
+  widgets.set(name, component);
+  bump();
+  return () => {
+    if (widgets.get(name) === component) {
+      widgets.delete(name);
+      bump();
+    }
+  };
+}
+
+export function getWidget(name: string): WidgetComponent | undefined {
+  return widgets.get(name);
+}
+
+export function registeredWidgets(): string[] {
+  return Array.from(widgets.keys()).sort();
+}
+
+// ---- Action extension point ------------------------------------------------
+// Actions are context-bound operations a plugin surfaces through the shell
+// (a dropdown above the page card). `when` filters by the live context; `run`
+// executes with the same hub/focus channel the declarative views use.
+
+export interface ActionContext {
+  ctx: ViewContext;
+  page: UIPage | null;
+}
+export interface ActionDefinition {
+  id: string;
+  title: string;
+  /** Optional filter — the shell surfaces the action only when it returns true. */
+  when?: (cx: ActionContext) => boolean;
+  run: (cx: ActionContext) => void | Promise<void>;
+}
+
+const actions = new Map<string, ActionDefinition>();
+
+/** registerAction contributes one context action; re-registering the same id
+ * overrides in place (insertion order preserved). */
+export function registerAction(def: ActionDefinition): () => void {
+  actions.set(def.id, def);
+  bump();
+  return () => {
+    if (actions.get(def.id) === def) {
+      actions.delete(def.id);
+      bump();
+    }
+  };
+}
+
+export function listActions(): ActionDefinition[] {
+  return Array.from(actions.values());
+}
+
+// ---- Settings extension point ----------------------------------------------
+// A plugin may replace the generic config editor with its own settings UI for
+// its plugin id; without one, the explorer falls back to the structured
+// ConfigEditor.
+
+export interface SettingsProps {
+  pluginId: string;
+  /** The plugin's current config (null when it has none yet). */
+  config: Record<string, unknown> | null;
+  /** Persist the edited config (api.setPluginConfig); resolves after the
+   * save round-trip so the component can report success. */
+  onSaved: (config: Record<string, unknown>) => Promise<void>;
+}
+export type SettingsComponent = ComponentType<SettingsProps>;
+
+const settings = new Map<string, SettingsComponent>();
+
+/** registerSettings contributes the settings UI for one plugin id. */
+export function registerSettings(name: string, component: SettingsComponent): () => void {
+  settings.set(name, component);
+  bump();
+  return () => {
+    if (settings.get(name) === component) {
+      settings.delete(name);
+      bump();
+    }
+  };
+}
+
+export function getSettings(pluginId: string): SettingsComponent | undefined {
+  const direct = settings.get(pluginId);
+  if (direct) return direct;
+  // The explorer lists the ui-client row as "<plugin>:client"; settings bind
+  // to the plugin's module name — tolerate both spellings.
+  return settings.get(pluginId.replace(/:client$/, ""));
+}

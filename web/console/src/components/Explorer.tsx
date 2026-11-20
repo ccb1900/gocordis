@@ -6,7 +6,7 @@ import {
 import { UndoOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import { onObservation } from "../stream";
-import { ConfigEditor } from "./ConfigEditor";
+import { SettingsSlot } from "./SettingsSlot";
 import type { ExplorerControlResult, ExplorerPlugin } from "../types";
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -265,7 +265,7 @@ export function PluginExplorer() {
                   </Descriptions.Item>
                 )}
               </Descriptions>
-              <ConfigEditor key={selected.id} pluginId={selected.id} />
+              <SettingsSlot key={selected.id} pluginId={selected.id} />
               {removed.length > 0 && (
                 <>
                   <Typography.Text type="secondary">已卸载 — 安装可恢复</Typography.Text>

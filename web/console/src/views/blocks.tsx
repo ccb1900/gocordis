@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { ALL, useDomainVersion } from "../lib/projections";
 import {
-  getBlockRenderer, registerBlockRenderer,
+  getBlockRenderer, getWidget, registerBlockRenderer,
   type BlockRenderer, type ViewContext,
 } from "./registry";
 import { formatRow, matchFilter, needsFocus, resolveParams, type Focus, type ViewBlock } from "./schema";
@@ -840,3 +840,35 @@ registerBlockRenderer("master-detail", MasterDetailBlock);
 registerBlockRenderer("calendar", CalendarBlock);
 registerBlockRenderer("form", FormBlock);
 registerBlockRenderer("json", JsonBlock);
+
+// WidgetBlock: declarative composition of plugin-contributed widgets. The
+// block carries only a name + params — the component itself comes from the
+// widget registry (a client module's contribution), so pages stack widgets
+// from different plugins with zero imperative glue. Unregistered names
+// degrade to an explicit fallback, never silence; incomplete $focus refs
+// keep the block dormant like every query block.
+function UnknownWidget({ name, block }: { name: string; block: ViewBlock }) {
+  return (
+    <div style={{ color: "#8a93a6", padding: 8 }}>
+      <Typography.Text type="secondary">
+        Widget “{name || "（未声明）"}” 未在此控制台注册。
+      </Typography.Text>
+      <details style={{ marginTop: 6 }}>
+        <summary style={{ cursor: "pointer", fontSize: 12, color: "#8a93a6" }}>原始声明</summary>
+        <pre style={{ fontSize: 11, whiteSpace: "pre-wrap", margin: "6px 0 0" }}>
+          {JSON.stringify(block, null, 2)}
+        </pre>
+      </details>
+    </div>
+  );
+}
+
+function WidgetBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
+  const resolved = resolveParams(block.params, ctx.focus);
+  if (resolved === null) return null;
+  const Widget = getWidget(resolved.name ?? "");
+  if (!Widget) return <UnknownWidget name={resolved.name ?? ""} block={block} />;
+  return <Widget ctx={ctx} params={resolved} />;
+}
+
+registerBlockRenderer("widget", WidgetBlock);

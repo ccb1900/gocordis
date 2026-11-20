@@ -12,6 +12,7 @@ import { useObservationGeneration, useStreamStatus, onObservation } from "../str
 import { useDomainVersion } from "../lib/projections";
 import { usePath, navigate, replace } from "../router";
 import { useTheme } from "../theme";
+import { ActionBar } from "./ActionBar";
 import { GenericPage } from "../views/GenericPage";
 import { ViewBlockRenderer, type ViewContext } from "../views/blocks";
 import {
@@ -240,6 +241,7 @@ export default function App() {
           {hubError && (
             <Typography.Paragraph type="danger" style={{ marginBottom: 12 }}>{hubError}</Typography.Paragraph>
           )}
+          <ActionBar ctx={ctx} page={active ?? null} />
           {active ? (
             renderPage(active)
           ) : pages.length ? (

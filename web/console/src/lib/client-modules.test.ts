@@ -14,6 +14,9 @@ import {
   getBlockRenderer,
   getPageRenderer,
   getPanelRenderer,
+  getSettings,
+  getWidget,
+  listActions,
   registeredBlockKinds,
   type BlockRenderer,
   type PageRenderer,
@@ -69,6 +72,45 @@ describe("client module manager", () => {
     expect(facade.antd).toBeTruthy();
     expect(typeof facade.api.hubQuery).toBe("function");
     expect(typeof facade.registeredBlockKinds).toBe("function");
+    // The five extension points, grouped (target API shape).
+    expect(typeof facade.pages.register).toBe("function");
+    expect(typeof facade.panels.register).toBe("function");
+    expect(typeof facade.blocks.register).toBe("function");
+    expect(typeof facade.widgets.register).toBe("function");
+    expect(typeof facade.settings.register).toBe("function");
+    expect(typeof facade.actions.register).toBe("function");
+    expect(typeof facade.listWidgets).toBe("function");
+    expect(typeof facade.listActions).toBe("function");
+  });
+
+  it("tracks grouped extension-point registrations on the activation", async () => {
+    const register = vi.fn((api: ClientModuleAPI) => {
+      const disposePage = api.pages.register({ name: "grp-page", component: () => null });
+      api.panels.register({ name: "grp-panel", component: () => null });
+      api.blocks.register("grp-kind", () => null);
+      api.widgets.register("grp-widget", () => null);
+      api.actions.register({ id: "grp-action", title: "Do", run: () => undefined });
+      api.settings.register(() => null);
+      expect(getPageRenderer("grp-page")).toBeDefined();
+      expect(getWidget("grp-widget")).toBeDefined();
+      expect(listActions().map((a) => a.id)).toContain("grp-action");
+      disposePage(); // early self-release stays allowed and idempotent
+      expect(getPageRenderer("grp-page")).toBeUndefined();
+    });
+    vi.stubGlobal("fetch", okManifest([{ name: "grouped", url: "/cm/grouped.js" }]));
+    const mgr = manager(register);
+    await mgr.reconcile();
+    // The Settings UI binds to the MODULE name (the plugin), not a component id.
+    expect(getSettings("grouped")).toBeDefined();
+
+    vi.stubGlobal("fetch", okManifest([]));
+    await mgr.reconcile();
+    // Deactivation unwinds every grouped registration.
+    expect(getBlockRenderer("grp-kind")).toBeUndefined();
+    expect(getPanelRenderer("grp-panel")).toBeUndefined();
+    expect(getWidget("grp-widget")).toBeUndefined();
+    expect(getSettings("grouped")).toBeUndefined();
+    expect(listActions().map((a) => a.id)).not.toContain("grp-action");
   });
 
   it("accepts a bare register export", async () => {

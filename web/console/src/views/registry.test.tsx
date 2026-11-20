@@ -2,10 +2,17 @@
 // that React consumers can subscribe to (useSyncExternalStore), so a page
 // rendered before its renderer arrived re-renders once the module registers.
 // Identity-guarded stale dispose calls must NOT bump (nothing changed).
+// Widget/Action/Settings registries follow the same semantics.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  getSettings,
+  getWidget,
+  listActions,
+  registerAction,
   registerBlockRenderer,
   registerPageRenderer,
+  registerSettings,
+  registerWidget,
   rendererRegistryVersion,
   subscribeRenderers,
   type BlockRenderer,
@@ -55,5 +62,47 @@ describe("renderer registry version", () => {
     const afterOverride = rendererRegistryVersion();
     disposeOld();
     expect(rendererRegistryVersion()).toBe(afterOverride);
+  });
+});
+
+describe("widget registry", () => {
+  it("registers, looks up, and disposes widgets with version bumps", () => {
+    const before = rendererRegistryVersion();
+    const w = () => null;
+    const dispose = registerWidget("e2e-widget", w);
+    expect(getWidget("e2e-widget")).toBe(w);
+    expect(rendererRegistryVersion()).toBe(before + 1);
+    dispose();
+    expect(getWidget("e2e-widget")).toBeUndefined();
+    expect(rendererRegistryVersion()).toBe(before + 2);
+  });
+});
+
+describe("action registry", () => {
+  it("registers actions in order and disposes them", () => {
+    const before = rendererRegistryVersion();
+    const a = { id: "a1", title: "A1", run: () => undefined };
+    const b = { id: "a2", title: "A2", when: () => false, run: () => undefined };
+    const da = registerAction(a);
+    registerAction(b);
+    expect(listActions().map((x) => x.id)).toEqual(["a1", "a2"]);
+    expect(rendererRegistryVersion()).toBe(before + 2);
+    da();
+    expect(listActions().map((x) => x.id)).toEqual(["a2"]);
+    expect(rendererRegistryVersion()).toBe(before + 3);
+  });
+});
+
+describe("settings registry", () => {
+  it("registers a settings UI and looks it up with :client-suffix tolerance", () => {
+    const before = rendererRegistryVersion();
+    const s = () => null;
+    const dispose = registerSettings("alarm", s);
+    expect(getSettings("alarm")).toBe(s);
+    expect(getSettings("alarm:client")).toBe(s); // ui-client row id tolerance
+    expect(rendererRegistryVersion()).toBe(before + 1);
+    dispose();
+    expect(getSettings("alarm")).toBeUndefined();
+    expect(getSettings("alarm:client")).toBeUndefined();
   });
 });

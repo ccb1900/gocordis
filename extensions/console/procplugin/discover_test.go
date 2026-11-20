@@ -202,7 +202,43 @@ func TestDiscoverPluginsRejectsEscapingClientPath(t *testing.T) {
 		[]byte("name = \"evil\"\nclient = \"../../outside.js\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DiscoverPlugins(dir); err == nil {
-		t.Fatal("client path escape must be rejected, not expanded into a ui-client row")
+	rows, err := DiscoverPlugins(dir)
+	if err != nil {
+		t.Fatalf("client path error must be isolated: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Type != "plugin-error" {
+		t.Fatalf("escaping client must surface as plugin-error, got %+v", rows)
+	}
+}
+
+// 一个插件的 client 路径错误不能株连其他插件：错误插件产出 plugin-error，
+// 正常插件继续进入本次组合（Iteration 12）。
+func TestDiscoverPluginsClientErrorIsolated(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(name, manifest string) {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name, "manifest.toml"), []byte(manifest), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("good-a", "name = \"good-a\"\nclient = \"ui.js\"\n")
+	mk("evil", "name = \"evil\"\nclient = \"../../outside.js\"\n")
+	mk("good-b", "name = \"good-b\"\nclient = \"ui.js\"\n")
+
+	rows, err := DiscoverPlugins(dir)
+	if err != nil {
+		t.Fatalf("client path error must be isolated, not abort discovery: %v", err)
+	}
+	found := map[string]string{}
+	for _, r := range rows {
+		found[r.ID] = r.Type
+	}
+	if found["evil"] != "plugin-error" {
+		t.Fatalf("bad client plugin must appear as plugin-error, got %+v", found)
+	}
+	if found["good-a:client"] != "ui-client" || found["good-b:client"] != "ui-client" {
+		t.Fatalf("good plugins must still be discovered: %+v", found)
 	}
 }

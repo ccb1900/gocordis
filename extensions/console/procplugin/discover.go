@@ -112,7 +112,11 @@ func DiscoverPlugins(dir string) ([]config.ComponentConfig, error) {
 		pluginDir := filepath.Join(dir, name)
 		if m.Client != "" {
 			if err := validateClientPath(pluginDir, m.Client); err != nil {
-				return nil, fmt.Errorf("plugin %q: %w", name, err)
+				// 与 manifest 解析/不可读错误一致：坏声明变成 plugin-error
+				// 行而不是让整个插件目录发现失败——一个插件的路径错误不能
+				// 株连其他插件（Iteration 12）。
+				out = append(out, errorRow(name, fmt.Sprintf("invalid client path: %v", err)))
+				continue
 			}
 		}
 		rows := m.componentRows(pluginDir)

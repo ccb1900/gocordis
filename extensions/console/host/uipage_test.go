@@ -60,6 +60,23 @@ func TestUIPageComponentDefaultsAndValidation(t *testing.T) {
 			t.Fatalf("%s: must be rejected", name)
 		}
 	}
+
+	// follows: accepted when well-formed (key name safety), rejected with
+	// separators; a declared follows adds the liveness dependency.
+	c2, err := host.NewUIPageComponent(uiPageConfig("alarm:page:p", map[string]any{
+		"title": "t", "route": "/t", "renderer": "r", "follows": "alarm",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c2.Inject()) != 2 {
+		t.Fatalf("follows page must declare two dependencies, got %+v", c2.Inject())
+	}
+	if _, err := host.NewUIPageComponent(uiPageConfig("bad", map[string]any{
+		"title": "t", "route": "/t", "renderer": "r", "follows": "a/b",
+	})); err == nil {
+		t.Fatal("separated follows must be rejected")
+	}
 }
 
 func TestUIPageComponentLifecycle(t *testing.T) {

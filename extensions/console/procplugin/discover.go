@@ -2,12 +2,10 @@ package procplugin
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 
 	toml "github.com/pelletier/go-toml/v2"
 
@@ -45,25 +43,6 @@ type PluginPage struct {
 	Order       int    `toml:"order"`
 }
 
-var (
-	warnOnceMu sync.Mutex
-	warned     = map[string]bool{}
-)
-
-// warnOncePerDir suppresses repeated warnings for the same plugin directory
-// across hot reloads.
-func warnOncePerDir(key string, fn func()) {
-	warnOnceMu.Lock()
-	first := !warned[key]
-	if first {
-		warned[key] = true
-	}
-	warnOnceMu.Unlock()
-	if first {
-		fn()
-	}
-}
-
 // DiscoverPlugins scans dir for plugin directories (plugins/<name>/manifest.toml)
 // and expands each into its component rows:
 //
@@ -71,8 +50,24 @@ func warnOncePerDir(key string, fn func()) {
 //	client  → a ui-client component (id = <name>:client)
 //	pages   → ui-page components (id = <name>:page:<page id>)
 //
+// When a plugin has a backend, its UI rows carry follows=<name>: disabling
+// the backend withdraws the UI through the Runtime's dependency rules —
+// one business unit, one lifecycle (host.PluginAliveKey).
+//
 // Missing directories yield no rows; malformed manifests are errors — a
-// broken declaration must surface, not vanish.
+// broken declaration must surface, not vanish. A manifest that exists but
+// cannot be read, parsed, or whose declared name does not match its
+// directory expands to ONE plugin-error row (id = directory name) instead:
+// the broken plugin stays visible in the composition and the explorer in a
+// Failed activation, never silently removed from the desired set (a
+// corrupted config must not read as an operator uninstall). Repairing the
+// manifest changes the row and the reconcile replaces the error component —
+// re-enablement by fixing the declaration, the documented recovery path.
+//
+// Applications that enable discovery (ComposeOptions.PluginDir) must
+// register factories for BOTH procplugin.NewErrorComponent (type
+// "plugin-error") and the plugin's real row types; an unregistered type
+// fails composition validation loudly, never silently.
 func DiscoverPlugins(dir string) ([]config.ComponentConfig, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -86,27 +81,27 @@ func DiscoverPlugins(dir string) ([]config.ComponentConfig, error) {
 	}
 	sort.Strings(names)
 
-	var out []config.ComponentConfig
+	out := []config.ComponentConfig{}
 	for _, name := range names {
 		manifestPath := filepath.Join(dir, name, PluginsManifestName)
 		data, err := os.ReadFile(manifestPath)
 		if err != nil {
-			continue // not a plugin directory
+			if os.IsNotExist(err) {
+				continue // not a plugin directory
+			}
+			out = append(out, errorRow(name, fmt.Sprintf("manifest unreadable: %v", err)))
+			continue // present-but-unreadable: surface, do not treat as absent
 		}
 		var m PluginManifest
 		if err := toml.Unmarshal(data, &m); err != nil {
-			warnOncePerDir(dir+"/"+name, func() {
-				slog.Warn("plugin manifest unparsable; skipped", "dir", name, "error", err)
-			})
+			out = append(out, errorRow(name, fmt.Sprintf("manifest parse failed: %v", err)))
 			continue
 		}
 		if m.Name == "" {
 			m.Name = name
 		}
 		if m.Name != name {
-			warnOncePerDir(dir+"/"+name+":name", func() {
-				slog.Warn("plugin manifest name does not match directory; skipped", "dir", name, "declared", m.Name)
-			})
+			out = append(out, errorRow(name, fmt.Sprintf("manifest name %q does not match directory %q", m.Name, name)))
 			continue
 		}
 		pluginDir := filepath.Join(dir, name)
@@ -114,6 +109,14 @@ func DiscoverPlugins(dir string) ([]config.ComponentConfig, error) {
 		out = append(out, rows...)
 	}
 	return out, nil
+}
+
+// errorRow is the loud placeholder one broken plugin expands to.
+func errorRow(name, reason string) config.ComponentConfig {
+	return config.ComponentConfig{
+		ID: name, Type: "plugin-error",
+		Config: map[string]any{"reason": reason},
+	}
 }
 
 func (m *PluginManifest) componentRows(pluginDir string) []config.ComponentConfig {
@@ -130,17 +133,21 @@ func (m *PluginManifest) componentRows(pluginDir string) []config.ComponentConfi
 		}))
 	}
 	if m.Client != "" {
-		out = append(out, row(m.Name+":client", "ui-client", map[string]any{
+		cfg := map[string]any{
 			"module": m.Name,
 			"path":   filepath.Join(pluginDir, m.Client),
-		}))
+		}
+		if m.Backend != "" {
+			cfg["follows"] = m.Name
+		}
+		out = append(out, row(m.Name+":client", "ui-client", cfg))
 	}
 	for i, p := range m.Pages {
 		id := p.ID
 		if id == "" {
 			id = fmt.Sprintf("page-%d", i)
 		}
-		out = append(out, row(m.Name+":page:"+id, "ui-page", map[string]any{
+		cfg := map[string]any{
 			"page_id":     id,
 			"title":       p.Title,
 			"route":       p.Route,
@@ -148,7 +155,11 @@ func (m *PluginManifest) componentRows(pluginDir string) []config.ComponentConfi
 			"renderer":    p.Renderer,
 			"icon":        p.Icon,
 			"order":       p.Order,
-		}))
+		}
+		if m.Backend != "" {
+			cfg["follows"] = m.Name
+		}
+		out = append(out, row(m.Name+":page:"+id, "ui-page", cfg))
 	}
 	return out
 }

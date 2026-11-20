@@ -44,6 +44,7 @@ type Component struct {
 	queries  []string
 	commands []string
 	logger   *slog.Logger
+	alive    runtime.Key[string] // console:plugin-alive/<id> — see host.PluginAliveKey
 
 	mu     sync.Mutex
 	client *Client
@@ -59,6 +60,7 @@ func NewComponent(cc config.ComponentConfig) (*Component, error) {
 		id: cc.ID, backend: backend,
 		dir:    configutil.OptionalString(cc, "dir", "."),
 		logger: slog.Default(),
+		alive:  consolehost.PluginAliveKey(cc.ID),
 	}
 	if raw, ok := cc.Config["queries"].([]any); ok {
 		for _, q := range raw {
@@ -81,7 +83,17 @@ func (c *Component) Name() string { return "console:proc-plugin" }
 func (c *Component) Inject() []runtime.Dependency {
 	return []runtime.Dependency{runtime.Requires(consolehost.HubKey)}
 }
-func (c *Component) Provide() []runtime.Capability { return nil }
+
+// Provide declares the plugin's liveness capability so UI contribution rows
+// can declare `follows = <this id>` and share this row's lifecycle through
+// the Runtime's dependency rules (host.PluginAliveKey). Declared unconditionally;
+// provided at the top of Apply — the semantics are "the plugin's declaration
+// is active", NOT "the process is healthy": the documented degrade-not-block
+// contract keeps the fiber Active (and its UI visible, hub vocabulary
+// answering honestly) when the backend fails to start or dies at runtime.
+func (c *Component) Provide() []runtime.Capability {
+	return []runtime.Capability{c.alive.Capability()}
+}
 
 // resolveExecutable 解析后端可执行文件的绝对路径。清单按 POSIX 习惯写
 // backend = "./alarm-demo"——路径里含分隔符时 Windows 的 CreateProcess
@@ -110,6 +122,11 @@ func (c *Component) resolveExecutable() string {
 func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	hubReg, err := runtime.Require(ctx, consolehost.HubKey)
 	if err != nil {
+		return nil, err
+	}
+	// Liveness marker first: even the degraded path below keeps the plugin's
+	// UI rows alive (declared-active semantics, see Provide docs).
+	if err := runtime.Provide(ctx, c.alive, c.id); err != nil {
 		return nil, err
 	}
 	cmd := exec.CommandContext(ctx.Context(), c.resolveExecutable())

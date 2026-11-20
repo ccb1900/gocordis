@@ -34,9 +34,13 @@ import (
 //	order       — composition order (default 100).
 //	views       — optional declarative view block stack (transported verbatim).
 //	actions     — optional page-level hub command buttons (transported verbatim).
+//	follows     — optional plugin id whose backend row (proc-plugin) governs
+//	              this page: disabling the backend withdraws the page through
+//	              the Runtime's dependency rules (see ClientModuleComponent).
 type UIPageComponent struct {
-	id   string
-	page appui.PageDefinition
+	id      string
+	page    appui.PageDefinition
+	follows string
 }
 
 var uiPageActivationSeq atomic.Int64
@@ -73,6 +77,12 @@ func NewUIPageComponent(cc config.ComponentConfig) (*UIPageComponent, error) {
 	if renderer == "" && len(views) == 0 {
 		return nil, fmt.Errorf("ui-page %q: needs a renderer or a views stack", cc.ID)
 	}
+	follows := configutil.OptionalString(cc, "follows", "")
+	if follows != "" {
+		if err := ValidateFollows(follows); err != nil {
+			return nil, fmt.Errorf("ui-page %q: %w", cc.ID, err)
+		}
+	}
 	return &UIPageComponent{
 		id: cc.ID,
 		page: appui.PageDefinition{
@@ -86,6 +96,7 @@ func NewUIPageComponent(cc config.ComponentConfig) (*UIPageComponent, error) {
 			Views:       views,
 			Actions:     actions,
 		},
+		follows: follows,
 	}, nil
 }
 
@@ -110,7 +121,11 @@ func (c *UIPageComponent) Page() appui.PageDefinition { return c.page }
 
 func (c *UIPageComponent) Name() string { return "console:ui-page" }
 func (c *UIPageComponent) Inject() []runtime.Dependency {
-	return []runtime.Dependency{runtime.Requires(UIHostKey)}
+	deps := []runtime.Dependency{runtime.Requires(UIHostKey)}
+	if c.follows != "" {
+		deps = append(deps, runtime.Requires(PluginAliveKey(c.follows)))
+	}
+	return deps
 }
 func (c *UIPageComponent) Provide() []runtime.Capability { return nil }
 

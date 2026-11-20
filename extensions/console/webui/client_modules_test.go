@@ -269,4 +269,16 @@ func TestClientModuleComponentDefaults(t *testing.T) {
 	if _, err := host.NewClientModuleComponent(mk(map[string]any{"module": ".."})); err == nil {
 		t.Fatal("traversal module name must be rejected")
 	}
+	// follows: well-formed adds the plugin liveness dependency; separated
+	// ids are rejected (the id becomes part of the capability name).
+	cf, err := host.NewClientModuleComponent(mk(map[string]any{"follows": "alarm-demo"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cf.Inject()) != 2 {
+		t.Fatalf("follows module must declare two dependencies, got %+v", cf.Inject())
+	}
+	if _, err := host.NewClientModuleComponent(mk(map[string]any{"follows": "a/b"})); err == nil {
+		t.Fatal("separated follows must be rejected")
+	}
 }

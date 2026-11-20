@@ -29,12 +29,18 @@ const DefaultPluginsDir = "plugins"
 //
 // Config:
 //
-//	module — the module name (URL slug). Default: the component id.
-//	path   — entry file. Default: the convention plugins/<module>/ui.js
-//	         (DefaultPluginsDir).
+//	module  — the module name (URL slug). Default: the component id.
+//	path    — entry file. Default: the convention plugins/<module>/ui.js
+//	          (DefaultPluginsDir).
+//	follows — optional plugin id whose backend row (proc-plugin) governs
+//	          this module: the component then requires that plugin's liveness
+//	          capability, so disabling the backend withdraws the module and
+//	          re-enabling restores it (one business unit, one lifecycle).
+//	          Discovery sets it automatically for plugins with a backend.
 type ClientModuleComponent struct {
-	id     string
-	module appui.ClientModule
+	id      string
+	module  appui.ClientModule
+	follows string
 }
 
 var clientModuleActivationSeq atomic.Int64
@@ -46,15 +52,22 @@ func NewClientModuleComponent(cc config.ComponentConfig) (*ClientModuleComponent
 		return nil, fmt.Errorf("ui-client %q: invalid module name", cc.ID)
 	}
 	path := configutil.OptionalString(cc, "path", filepath.Join(DefaultPluginsDir, name, "ui.js"))
-	return &ClientModuleComponent{
-		id:     cc.ID,
-		module: appui.ClientModule{Name: name, Path: path},
-	}, nil
+	follows := configutil.OptionalString(cc, "follows", "")
+	if follows != "" {
+		if err := ValidateFollows(follows); err != nil {
+			return nil, fmt.Errorf("ui-client %q: %w", cc.ID, err)
+		}
+	}
+	return &ClientModuleComponent{id: cc.ID, module: appui.ClientModule{Name: name, Path: path}, follows: follows}, nil
 }
 
 func (c *ClientModuleComponent) Name() string { return "console:client-module" }
 func (c *ClientModuleComponent) Inject() []runtime.Dependency {
-	return []runtime.Dependency{runtime.Requires(UIHostKey)}
+	deps := []runtime.Dependency{runtime.Requires(UIHostKey)}
+	if c.follows != "" {
+		deps = append(deps, runtime.Requires(PluginAliveKey(c.follows)))
+	}
+	return deps
 }
 func (c *ClientModuleComponent) Provide() []runtime.Capability { return nil }
 

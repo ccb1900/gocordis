@@ -30,17 +30,21 @@ type Fiber struct {
 	// no rehome is pending). See rehome.go.
 	rehome *rehomePending
 
-	// keyRealms is the fiber's per-key isolation table. Single-writer rule:
-	// the table is built at insertion and rewritten ONLY by the orchestrator
-	// (Rehome step 2); readers are the orchestrator itself and the fiber's
-	// own activation goroutine (which has completed before a rehome can
-	// retire its provisions) -- no external mutation path exists. (paper Definition 24,
+	// keyRealms is the fiber's per-key isolation table (paper Definition 24,
 	// the realm table ρ): a key present here resolves and provides against the
 	// named namespace instead of the fiber's scope realm. Entries are fixed at
-	// insertion (Child/Load); runtime reassignment of a key's realm is a
-	// revision (retire -> reinsert), never an in-place resolve change.
-	// Written only on the orchestrator goroutine before publication; read-only
-	// afterwards, so no lock.
+	// insertion (Child/Load); a runtime reassignment is a revision (retire ->
+	// reinsert), never an in-place resolve change.
+	//
+	// routeMu synchronizes this table across the two actors that touch it after
+	// publication: the orchestrator (Rehome step 2 rewrites the whole table and
+	// migrates records) and activation goroutines (Provide/Require resolve a
+	// key's namespace, async Provide registers into it). It is a NARROW lock —
+	// held only around the map lookup/assignment plus the realm map operation,
+	// never across user install/inverse code or orchestrator waits. This is the
+	// linearization point that keeps a Provide from registering into a namespace
+	// Rehome has already migrated past (and fixes the map data race).
+	routeMu   sync.RWMutex
 	keyRealms map[CapabilityKey]*realm
 
 	parent   *Fiber
@@ -328,6 +332,10 @@ func (f *Fiber) Revise(ctx context.Context, component Component, opts ...ReviseO
 	f.mu.RLock()
 	parent := f.parent
 	scope := f.realm
+	f.mu.RUnlock()
+	// keyRealms can be rewritten by Rehome step 2; snapshot it under routeMu
+	// (separate from mu) so the copy cannot race with a concurrent move.
+	f.routeMu.RLock()
 	var keyRealms map[CapabilityKey]*realm
 	for k, r := range f.keyRealms {
 		if keyRealms == nil {
@@ -335,7 +343,7 @@ func (f *Fiber) Revise(ctx context.Context, component Component, opts ...ReviseO
 		}
 		keyRealms[k] = r
 	}
-	f.mu.RUnlock()
+	f.routeMu.RUnlock()
 
 	// Retire + deactivate + remove (children first). Dispose is idempotent;
 	// Gone waits for the entry's removal with the deferred-finalization gate.

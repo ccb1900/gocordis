@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -735,5 +736,483 @@ func TestRehomeLateProvideProbe(t *testing.T) {
 			}
 		}
 		_ = rt.Close(ctx)
+	}
+}
+
+// rehomeAsyncProvider fires one Provide from a background goroutine at the
+// precise moment the test releases fire. The record is created only then, so
+// the test owns the capture-vs-rehome interleaving.
+type rehomeAsyncProvider struct {
+	lateKey Key[rehomeKeyVal]
+	fire    chan struct{}
+	done    chan error
+}
+
+func (c *rehomeAsyncProvider) Name() string         { return "rehome-async-provider" }
+func (c *rehomeAsyncProvider) Inject() []Dependency { return nil }
+func (c *rehomeAsyncProvider) Provide() []Capability {
+	return []Capability{rehomeKey.Capability(), c.lateKey.Capability()}
+}
+func (c *rehomeAsyncProvider) Apply(ctx *Context) (Cleanup, error) {
+	if err := Provide(ctx, rehomeKey, rehomeKeyVal{tag: "v1"}); err != nil {
+		return nil, err
+	}
+	go func() {
+		<-c.fire
+		c.done <- Provide(ctx, c.lateKey, rehomeKeyVal{tag: "late"})
+	}()
+	return nil, nil
+}
+
+// TestRehomeAsyncProvideLinearization — P0: a Provide whose route decision is
+// paused at the hook cannot publish into a namespace that Rehome has already
+// migrated past. The choreography is fully deterministic (channels only):
+//
+//  1. async Provide reaches the route-decision hook and blocks (has NOT registered);
+//  2. Rehome runs to completion: replaces the key table, scans the old namespaces;
+//  3. the hook is released, so Provide registers;
+//  4. the provision must be resolvable in the CURRENT effective realm, and
+//     Dispose must leave no residue in ANY namespace.
+//
+// On the buggy code the capture happens before the hook, so step 3 registers
+// into the stale realm that step 2 already scanned -> step 4 fails.
+func TestRehomeAsyncProvideLinearization(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	lateKey := NewKey[rehomeKeyVal]("rehome.async-late")
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	provideDone := make(chan error, 1)
+
+	prev := testProvideHook
+	defer func() { testProvideHook = prev }()
+	testProvideHook = func(key CapabilityKey, _ ProviderIdentity) {
+		if key == lateKey.Capability() {
+			close(entered)
+			<-resume
+		}
+	}
+
+	p := &rehomeAsyncProvider{
+		lateKey: lateKey,
+		fire:    make(chan struct{}),
+		done:    provideDone,
+	}
+	pf, err := rt.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, pf)
+	rehomeWaitState(t, pf, StateActive)
+
+	// 1. fire the async Provide, wait until it is paused at the route hook.
+	close(p.fire)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("async Provide never reached the route hook")
+	}
+
+	// 2. Rehome runs to completion while the Provide is paused (no consumers,
+	// so phase 2 fires immediately). It replaces the key table and scans old
+	// namespaces — the late record is not there yet.
+	if err := pf.Rehome(ctx, RehomeWithFreshIsolation()); err != nil {
+		t.Fatalf("rehome: %v", err)
+	}
+
+	// 3. release the Provide; it registers now.
+	close(resume)
+	select {
+	case err := <-provideDone:
+		if err != nil {
+			t.Fatalf("late Provide: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("late Provide never completed")
+	}
+
+	// 4a. the provision must live in the CURRENT effective realm (the fresh
+	// namespace after rehome), not in a stale realm that was already scanned.
+	eff := effectiveRealm(pf, lateKey.Capability())
+	rec, ok := eff.lookupOwn(lateKey.Capability())
+	if !ok || rec == nil || rec.value == nil {
+		var stale []string
+		for _, rr := range fiberNamespaces(pf) {
+			if r, found := rr.lookupOwn(lateKey.Capability()); found {
+				stale = append(stale, rr.id.String()+"/"+fmt.Sprintf("%+v", r.identity))
+			}
+		}
+		t.Fatalf("late Provide stranded in stale realm: current effective realm has no record; stale=%v", stale)
+	}
+
+	// 4b. resolve-by-probe agrees with the direct lookup.
+	if _, ok := rehomeResolve(t, rt, pf, lateKey.Capability()); !ok {
+		t.Fatal("late key does not resolve on the provider after rehome")
+	}
+
+	// 4c. Dispose must leave no residue in any namespace (the inverse must
+	// find the record where it actually landed).
+	if err := pf.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pf.Gone(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, rr := range fiberNamespaces(pf) {
+		if r, found := rr.lookupOwn(lateKey.Capability()); found {
+			t.Fatalf("late Provide residue after dispose: realm=%s id=%+v", rr.id.String(), r.identity)
+		}
+	}
+}
+
+// rehomeMultiAsyncProvider fires one async Provide per key, all released by
+// the same fire channel. Used to prove the route linearization holds for N
+// concurrent installs (not just one).
+type rehomeMultiAsyncProvider struct {
+	keys []Key[rehomeKeyVal]
+	fire chan struct{}
+	done chan error
+}
+
+func (c *rehomeMultiAsyncProvider) Name() string         { return "rehome-multi-async" }
+func (c *rehomeMultiAsyncProvider) Inject() []Dependency { return nil }
+func (c *rehomeMultiAsyncProvider) Provide() []Capability {
+	out := make([]Capability, len(c.keys))
+	for i, k := range c.keys {
+		out[i] = k.Capability()
+	}
+	return out
+}
+func (c *rehomeMultiAsyncProvider) Apply(ctx *Context) (Cleanup, error) {
+	for _, k := range c.keys {
+		k := k
+		go func() {
+			<-c.fire
+			c.done <- Provide(ctx, k, rehomeKeyVal{tag: "n-" + k.Capability().String()})
+		}()
+	}
+	return nil, nil
+}
+
+// TestRehomeAsyncProvideMultiple — P2: N async Provides paused at the route
+// hook, then a Rehome, then released. Every record must land in the fresh
+// namespace and be removed by Dispose; none may be stranded in a stale realm.
+func TestRehomeAsyncProvideMultiple(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	const n = 3
+	keys := make([]Key[rehomeKeyVal], n)
+	keySet := make(map[CapabilityKey]struct{}, n)
+	for i := range keys {
+		keys[i] = NewKey[rehomeKeyVal](fmt.Sprintf("rehome.async-%d", i))
+		keySet[keys[i].Capability()] = struct{}{}
+	}
+	entered := make(chan struct{}, n)
+	resume := make(chan struct{})
+	prev := testProvideHook
+	defer func() { testProvideHook = prev }()
+	testProvideHook = func(key CapabilityKey, _ ProviderIdentity) {
+		if _, ok := keySet[key]; ok {
+			entered <- struct{}{}
+			<-resume
+		}
+	}
+
+	fire := make(chan struct{})
+	done := make(chan error, n)
+	pf, err := rt.Load(&rehomeMultiAsyncProvider{keys: keys, fire: fire, done: done})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, pf)
+	rehomeWaitState(t, pf, StateActive)
+
+	close(fire)
+	for i := 0; i < n; i++ {
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatalf("only %d/%d async Provides reached the hook", i, n)
+		}
+	}
+	if err := pf.Rehome(ctx, RehomeWithFreshIsolation()); err != nil {
+		t.Fatalf("rehome: %v", err)
+	}
+	close(resume)
+	for i := 0; i < n; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("async Provide %d: %v", i, err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("only %d/%d async Provides completed", i, n)
+		}
+	}
+	for _, k := range keys {
+		if _, ok := effectiveRealm(pf, k.Capability()).lookupOwn(k.Capability()); !ok {
+			t.Fatalf("key %v not in the current effective realm after rehome", k)
+		}
+	}
+	if err := pf.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pf.Gone(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range keys {
+		assertNoResidue(t, pf, k.Capability())
+	}
+}
+
+// rehomeAsyncSingleProvider fires exactly one async Provide on lateKey.
+type rehomeAsyncSingleProvider struct {
+	lateKey Key[rehomeKeyVal]
+	fire    chan struct{}
+	done    chan error
+}
+
+func (c *rehomeAsyncSingleProvider) Name() string         { return "rehome-async-single" }
+func (c *rehomeAsyncSingleProvider) Inject() []Dependency { return nil }
+func (c *rehomeAsyncSingleProvider) Provide() []Capability {
+	return []Capability{c.lateKey.Capability()}
+}
+func (c *rehomeAsyncSingleProvider) Apply(ctx *Context) (Cleanup, error) {
+	go func() {
+		<-c.fire
+		c.done <- Provide(ctx, c.lateKey, rehomeKeyVal{tag: "late"})
+	}()
+	return nil, nil
+}
+
+// TestRehomeAsyncProvideThenClose — P2: a late Provide that landed after a
+// rehome must still be unwound cleanly by Runtime.Close (no residue).
+func TestRehomeAsyncProvideThenClose(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx) // idempotent; guards t.Fatal paths before the explicit Close
+
+	lateKey := NewKey[rehomeKeyVal]("rehome.async-close")
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	done := make(chan error, 1)
+	prev := testProvideHook
+	defer func() { testProvideHook = prev }()
+	testProvideHook = func(key CapabilityKey, _ ProviderIdentity) {
+		if key == lateKey.Capability() {
+			close(entered)
+			<-resume
+		}
+	}
+
+	fire := make(chan struct{})
+	pf, err := rt.Load(&rehomeAsyncSingleProvider{lateKey: lateKey, fire: fire, done: done})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, pf)
+	rehomeWaitState(t, pf, StateActive)
+	close(fire)
+	<-entered
+	if err := pf.Rehome(ctx, RehomeWithFreshIsolation()); err != nil {
+		t.Fatalf("rehome: %v", err)
+	}
+	close(resume)
+	if err := <-done; err != nil {
+		t.Fatalf("late Provide: %v", err)
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- rt.Close(ctx) }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Close never completed")
+	}
+	if pf.State() != StateGone {
+		t.Fatalf("provider not Gone after Close: %v", pf.State())
+	}
+	assertNoResidue(t, pf, lateKey.Capability())
+}
+
+// rehomeAsyncIsolatedHost spawns a child whose lateKey is isolated into its
+// own namespace, then fires an async Provide into that isolated namespace.
+type rehomeAsyncIsolatedHost struct {
+	child chan *Fiber
+}
+
+func (c *rehomeAsyncIsolatedHost) Name() string          { return "rehome-async-isolated-host" }
+func (c *rehomeAsyncIsolatedHost) Inject() []Dependency  { return nil }
+func (c *rehomeAsyncIsolatedHost) Provide() []Capability { return nil }
+func (c *rehomeAsyncIsolatedHost) Apply(ctx *Context) (Cleanup, error) {
+	child, err := ctx.Child(&rehomeAsyncSingleProvider{
+		lateKey: rehomeOtherKey,
+		fire:    make(chan struct{}),
+		done:    make(chan error, 1),
+	}, Isolate(rehomeOtherKey.Capability()))
+	if err != nil {
+		return nil, err
+	}
+	if c.child != nil {
+		c.child <- child
+	}
+	return nil, nil
+}
+
+// TestRehomeAsyncProvideIsolated — P2: an async Provide into a per-key ISOLATED
+// namespace must also be linearized with Rehome. The isolated realm is part of
+// the phase-1 snapshot; a record registered after the migration must land in
+// the fresh realm, and Dispose must find it there.
+func TestRehomeAsyncProvideIsolated(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	prev := testProvideHook
+	defer func() { testProvideHook = prev }()
+	testProvideHook = func(key CapabilityKey, _ ProviderIdentity) {
+		if key == rehomeOtherKey.Capability() {
+			close(entered)
+			<-resume
+		}
+	}
+
+	childCh := make(chan *Fiber, 1)
+	host, err := rt.Load(&rehomeAsyncIsolatedHost{child: childCh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, host)
+	rehomeWaitState(t, host, StateActive)
+	pf := <-childCh
+	rehomeWaitState(t, pf, StateActive)
+
+	// Isolate(rehomeOtherKey) gives that key an explicit per-key table entry.
+	// (Because the child declares only that key, the entry coincides with the
+	// child's base realm — what matters here is that Rehome replaces it with a
+	// NEW realm and the async install must follow the move.)
+	pf.routeMu.RLock()
+	isoRealm := pf.keyRealms[rehomeOtherKey.Capability()]
+	pf.routeMu.RUnlock()
+	if isoRealm == nil {
+		t.Fatal("isolated per-key realm not established")
+	}
+
+	// Fire the async Provide into the isolated realm and pause it.
+	// The child's Apply stored its fire/done channels inside the component; we
+	// need to reach them — re-find via a typed assertion on the child component.
+	asp, ok := pf.component.(*rehomeAsyncSingleProvider)
+	if !ok {
+		t.Fatalf("child component type = %T", pf.component)
+	}
+	close(asp.fire)
+	<-entered
+	if err := pf.Rehome(ctx, RehomeWithFreshIsolation()); err != nil {
+		t.Fatalf("rehome: %v", err)
+	}
+	close(resume)
+	if err := <-asp.done; err != nil {
+		t.Fatalf("async Provide: %v", err)
+	}
+
+	pf.routeMu.RLock()
+	fresh := pf.keyRealms[rehomeOtherKey.Capability()]
+	pf.routeMu.RUnlock()
+	if fresh == nil || fresh == isoRealm {
+		t.Fatalf("fresh isolated realm missing: %v", pf.keyRealms)
+	}
+	if _, ok := isoRealm.lookupOwn(rehomeOtherKey.Capability()); ok {
+		t.Fatal("old isolated realm still holds the late provision after rehome")
+	}
+	if _, ok := fresh.lookupOwn(rehomeOtherKey.Capability()); !ok {
+		t.Fatal("fresh isolated realm does not hold the late provision")
+	}
+	if err := pf.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pf.Gone(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertNoResidue(t, pf, rehomeOtherKey.Capability())
+}
+
+// TestRehomeAsyncProvideConsecutive — P2: two consecutive rehomes after a late
+// Provide. The record must follow each move into the newest fresh namespace,
+// with no residue left in any superseded realm.
+func TestRehomeAsyncProvideConsecutive(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	lateKey := NewKey[rehomeKeyVal]("rehome.async-twice")
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	done := make(chan error, 1)
+	prev := testProvideHook
+	defer func() { testProvideHook = prev }()
+	testProvideHook = func(key CapabilityKey, _ ProviderIdentity) {
+		if key == lateKey.Capability() {
+			close(entered)
+			<-resume
+		}
+	}
+
+	fire := make(chan struct{})
+	pf, err := rt.Load(&rehomeAsyncSingleProvider{lateKey: lateKey, fire: fire, done: done})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, pf)
+	rehomeWaitState(t, pf, StateActive)
+	close(fire)
+	<-entered
+	if err := pf.Rehome(ctx, RehomeWithFreshIsolation()); err != nil {
+		t.Fatalf("rehome #1: %v", err)
+	}
+	close(resume)
+	if err := <-done; err != nil {
+		t.Fatalf("late Provide: %v", err)
+	}
+	firstFresh := effectiveRealm(pf, lateKey.Capability())
+
+	if err := pf.Rehome(ctx, RehomeWithFreshIsolation()); err != nil {
+		t.Fatalf("rehome #2: %v", err)
+	}
+	secondFresh := effectiveRealm(pf, lateKey.Capability())
+	if secondFresh == firstFresh {
+		t.Fatal("consecutive rehome did not move to a fresh namespace")
+	}
+	if _, ok := firstFresh.lookupOwn(lateKey.Capability()); ok {
+		t.Fatal("first fresh realm still holds the record after second rehome")
+	}
+	if _, ok := secondFresh.lookupOwn(lateKey.Capability()); !ok {
+		t.Fatal("second fresh realm missing the record")
+	}
+	if err := pf.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pf.Gone(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertNoResidue(t, pf, lateKey.Capability())
+}
+
+// assertNoResidue checks every namespace the fiber currently knows about for a
+// record of the given key (the inverse must find the record where it landed).
+func assertNoResidue(t *testing.T, f *Fiber, key CapabilityKey) {
+	t.Helper()
+	for _, rr := range fiberNamespaces(f) {
+		if r, found := rr.lookupOwn(key); found {
+			t.Fatalf("residue for key %v: realm=%s id=%+v", key, rr.id.String(), r.identity)
+		}
 	}
 }

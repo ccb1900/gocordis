@@ -122,16 +122,7 @@ func (o *orchestrator) beginWithdrawal(f *Fiber) {
 	// the key's effective namespace (paper Definition 24), which may differ
 	// per key, so scan the scope realm plus every isolated namespace.
 	id := ProviderIdentity{FiberID: f.id, ActivationID: act.id}
-	realmSeen := make(map[*realm]bool, len(f.keyRealms)+1)
-	realms := []*realm{f.realm}
-	realmSeen[f.realm] = true
-	for _, r := range f.keyRealms {
-		if !realmSeen[r] {
-			realmSeen[r] = true
-			realms = append(realms, r)
-		}
-	}
-	for _, rr := range realms {
+	for _, rr := range fiberNamespaces(f) {
 		for _, rec := range rr.recordsOwnedBy(id) {
 			rr.markRetiringOwn(rec.key, id)
 		}

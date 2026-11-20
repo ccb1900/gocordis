@@ -257,8 +257,11 @@ type providerRecord struct {
 }
 
 // fiberNamespaces returns the fiber's scope realm plus every per-key
-// isolation namespace, deduplicated.
+// isolation namespace, deduplicated. The key table is guarded by routeMu
+// against a concurrent Rehome step 2 rewrite.
 func fiberNamespaces(f *Fiber) []*realm {
+	f.routeMu.RLock()
+	defer f.routeMu.RUnlock()
 	seen := make(map[*realm]bool, len(f.keyRealms)+1)
 	realms := []*realm{f.realm}
 	seen[f.realm] = true

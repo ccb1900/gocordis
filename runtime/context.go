@@ -424,8 +424,13 @@ func (c *Context) Child(component Component, opts ...ScopeOption) (*Fiber, error
 	// present on this context's fiber, then default every declared key to this
 	// fiber's effective namespaces. WithScope re-homes all keys to the fresh
 	// child realm (built on the orchestrator at spawn).
-	if len(c.fiber.keyRealms) > 0 || o.newRealm {
-		o.isolateIn(c.realm, c.fiber.keyRealms, inject, provide)
+	// Snapshot the parent's route table under routeMu: a concurrent Rehome step
+	// 2 may be rewriting it while a child is being derived.
+	c.fiber.routeMu.RLock()
+	parentKeyRealms := c.fiber.keyRealms
+	c.fiber.routeMu.RUnlock()
+	if len(parentKeyRealms) > 0 || o.newRealm {
+		o.isolateIn(c.realm, parentKeyRealms, inject, provide)
 	}
 
 	reply := make(chan spawnChildReply, 1)
@@ -448,23 +453,43 @@ func (c *Context) Child(component Component, opts ...ScopeOption) (*Fiber, error
 	return resp.fiber, resp.err
 }
 
+// testProvideHook is a test-only seam for deterministic interleaving of a
+// Provide install with a concurrent Rehome. Production code never sets it; the
+// nil check is the only cost on the hot path. It fires at the route-decision
+// point of the provider install, after the Effect Installing slot is reserved
+// but before the provision record is registered into a namespace.
+var testProvideHook func(key CapabilityKey, id ProviderIdentity)
+
 func (c *Context) provideCap(key CapabilityKey, value any) error {
 	if _, ok := c.declaredProvide[key]; !ok {
 		return fmt.Errorf("%w: %s is not declared in this activation's Provide set", ErrUndeclaredProvide, key)
 	}
 	id := ProviderIdentity{FiberID: c.fiberID, ActivationID: c.activationID}
-	// The provision lives in the key's EFFECTIVE namespace (paper Definition
-	// 24: the fiber provides (k, ρ(k))) — not blindly in its scope realm.
-	eff := effectiveRealm(c.fiber, key)
+	f := c.fiber
 	err := c.effect(EffectKindProvider, key, func() (func() error, error) {
-		if err := eff.registerOwn(key, id, value); err != nil {
-			return nil, err
+		if testProvideHook != nil {
+			testProvideHook(key, id)
+		}
+		// The provision lives in the key's EFFECTIVE namespace (paper Definition
+		// 24: the fiber provides (k, ρ(k))) — not blindly in its scope realm.
+		// Derive the route and register UNDER routeMu: Rehome step 2 takes the
+		// same lock to rewrite the table and migrate records, so this install
+		// either lands before the migration (and is moved by it) or after it
+		// (and lands in the fresh namespace) — never into a stale namespace the
+		// migration already scanned. Deriving before effect() (the old code)
+		// left a capture->install window for exactly that stale registration.
+		f.routeMu.Lock()
+		eff := effectiveRealmLocked(f, key)
+		regErr := eff.registerOwn(key, id, value)
+		f.routeMu.Unlock()
+		if regErr != nil {
+			return nil, regErr
 		}
 		// The inverse searches the fiber's namespaces instead of capturing
 		// the install-time realm: a rehome may have moved the provision after
 		// install, and the unwind must still find it (no leak).
 		return func() error {
-			removed, wasRetiring := removeProvisionAround(c.fiber, key, id)
+			removed, wasRetiring := removeProvisionAround(f, key, id)
 			if removed && !wasRetiring {
 				// The record was never satisfiable (e.g. failed-Apply cleanup);
 				// a retiring record already announced its withdrawal to its

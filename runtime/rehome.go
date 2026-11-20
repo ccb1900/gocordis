@@ -200,12 +200,21 @@ func (o *orchestrator) executeRehomeStep2(f *Fiber) {
 	for k := range declared {
 		freshTable[k] = plan.fresh
 	}
-	f.keyRealms = freshTable
 
-	// Move the provision records out of the namespaces captured at phase 1,
-	// NOT out of fiberNamespaces(f): f.keyRealms was just replaced above, so
-	// the current namespaces no longer include the per-key isolation realms
-	// that actually hold the provisions being migrated.
+	// Replace the table and move the provision records UNDER routeMu. This is
+	// the write side of the linearization shared with Provide: a concurrent
+	// async Provide either registered before we took the lock (its record is in
+	// plan.oldRealms and is moved below) or registers after we release it (it
+	// derives the fresh table). No record can slip into a stale realm after the
+	// scan. Migrate out of the phase-1 snapshot, NOT fiberNamespaces(f): the
+	// table was just replaced, so the current namespaces no longer include the
+	// per-key isolation realms that actually hold the provisions.
+	//
+	// Events are collected and emitted after unlocking — a sink must never run
+	// while the route lock is held.
+	var moved []CapabilityKey
+	f.routeMu.Lock()
+	f.keyRealms = freshTable
 	for _, rr := range plan.oldRealms {
 		if rr == plan.fresh {
 			continue
@@ -217,12 +226,17 @@ func (o *orchestrator) executeRehomeStep2(f *Fiber) {
 					// unless the record was already moved; ignore defensively.
 					continue
 				}
-				o.rt.emitEvent(EventProviderWithdrawn, f.id, act.id, ProviderEventData{Key: rec.key.String()})
-				o.rt.emitEvent(EventProviderPublished, f.id, act.id, ProviderEventData{Key: rec.key.String()})
+				moved = append(moved, rec.key)
 			}
 		}
 	}
 	f.rehome = nil
+	f.routeMu.Unlock()
+
+	for _, k := range moved {
+		o.rt.emitEvent(EventProviderWithdrawn, f.id, act.id, ProviderEventData{Key: k.String()})
+		o.rt.emitEvent(EventProviderPublished, f.id, act.id, ProviderEventData{Key: k.String()})
+	}
 	close(plan.done)
 
 	// Consumers mounted inside the fresh namespace (children created after

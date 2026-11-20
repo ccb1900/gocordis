@@ -35,10 +35,21 @@ func (o *orchestrator) removeGraphEdge(id ProviderIdentity, f *Fiber) {
 // key: the per-key isolation override (paper Definition 24, the realm table ρ)
 // when present, else the fiber's scope realm. Resolution never walks realms —
 // a declared key resolves against exactly one realm (paper §4.4 Isolation).
+//
+// The table read is guarded by routeMu because Rehome step 2 rewrites it on the
+// orchestrator while activation goroutines resolve keys. Callers that already
+// hold routeMu use effectiveRealmLocked instead.
 func effectiveRealm(f *Fiber, key CapabilityKey) *realm {
 	if f == nil {
 		return nil
 	}
+	f.routeMu.RLock()
+	defer f.routeMu.RUnlock()
+	return effectiveRealmLocked(f, key)
+}
+
+// effectiveRealmLocked is effectiveRealm with routeMu already held by the caller.
+func effectiveRealmLocked(f *Fiber, key CapabilityKey) *realm {
 	if r, ok := f.keyRealms[key]; ok && r != nil {
 		return r
 	}

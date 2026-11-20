@@ -22,7 +22,11 @@ hooks 与 antd 弹层因此安全。版本与控制台门面契约同步演进�
   `register(api)` 里读 `api.frameworkVersion` 做特性检测。
 - **缺失门面即报错**:shims 在 `__CORDIS_CONSOLE` 不存在时抛出可读错误
   (bundle 必须被 GoCordis 控制台加载,不能独立运行)——不再是对
-  `undefined` 的属性访问崩溃。
+  `undefined` 的属性访问崩溃。**shim 只再导出宿主实际存在的绑定**（2026-11
+  审计）：react shim 移除了 React-19-only 的 `useOptimistic`（React 18 上该
+  绑定为 undefined，调用即崩）；jsx-runtime shim 在生产 runtime 缺 `jsxDEV`
+  时降级为 `jsx`（dev-condition esbuild 产物首次渲染不再崩溃，仅失去 dev
+  源码标注）。
 - **内容修订 ≠ 契约版本**:manifest URL 的 `?v=<内容哈希>` 只反映 ui.js
   自身字节变化(热更新用),与门面契约版本无关。
 - **扩展点契约**:register 收到的分组 API(pages/panels/blocks/widgets/

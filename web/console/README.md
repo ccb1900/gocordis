@@ -62,6 +62,62 @@ Page-level and panel-level renderers work the same way via
 Unknown kinds never break a page: the console renders an explicit fallback
 showing the raw declaration.
 
+### Widgets (composable components)
+
+A plugin can contribute reusable components; declarative views compose them
+by name through the built-in `widget` block kind — params resolve `$focus`
+references like every query block:
+
+```js
+// in the plugin module's register function
+api.widgets.register("alarm-summary", function AlarmSummary({ ctx, params }) {
+  // ctx: hubQuery/hubCommand/focus; params: the block's resolved params
+});
+```
+
+```toml
+[[components.config.views]]
+kind = "widget"
+[components.config.params]
+name = "alarm-summary"
+source = "$focus.sourceId"
+```
+
+An unregistered widget name renders an explicit fallback (the declaration is
+shown, never dropped).
+
+### Settings (per-plugin config UI)
+
+A plugin may replace the generic structured config editor in the plugin
+explorer with its own settings UI — registered against its own module name:
+
+```js
+api.settings.register(function AlarmSettings({ pluginId, config, onSaved }) {
+  // custom editing UX; persist via onSaved(config) (api.setPluginConfig)
+});
+```
+
+The slot owns the config round-trip (fetch + save) so every settings UI
+stays a pure view of its plugin's config. Without a registration the
+explorer falls back to the built-in editor.
+
+### Actions (context operations)
+
+Plugins can surface context-bound operations in the shell — a dropdown above
+the page card, filtered by the live context:
+
+```js
+api.actions.register({
+  id: "alarm-rerun", title: "重跑当日采集",
+  when: ({ page }) => page?.id === "collections", // optional filter
+  run: ({ ctx }) => ctx.hubCommand("rerun", {}),
+});
+```
+
+`when`/`run` receive the same context declarative views use (hub queries and
+commands, focus, busy). Everything a module registers through the facade is
+unwound when the plugin deactivates.
+
 **Trust model.** Registered renderers execute inside the console with
 full page privileges — they are frontend code, never sandboxed. The
 same rule dsh applies to its keyed renderers.

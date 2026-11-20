@@ -80,6 +80,45 @@ export default function register(api) {
   （`?v=` 哈希变化）、插件停用→重新启用（离开再进入期望集）、页面刷新
   （浏览器侧"重启 = 全新调和"，铁律 9）。
 
+## 五种扩展点契约
+
+插件前端通过 register 函数拿到的 facade（`ClientModuleAPI`）暴露五个扩展
+点，全部返回幂等 dispose 并由模块管理器记账——插件永不自己维护全局注册表
+的清理：
+
+```js
+export default function register(api) {
+  const p = api.pages.register({ name: "alarm-console", component: AlarmPage });
+  const w = api.widgets.register("alarm-summary", AlarmSummary);
+  api.panels.register({ name: "alarm-feed", component: AlarmFeed });
+  api.blocks.register("alarm-trend", AlarmTrendBlock);
+  api.settings.register(AlarmSettings);            // 绑定本插件
+  api.actions.register({
+    id: "alarm-rerun", title: "重跑当日采集",
+    when: ({ page }) => page?.id === "collections",
+    run: ({ ctx }) => ctx.hubCommand("rerun", {}),
+  });
+  return () => { p(); w(); };  // 可选：facade 之外的资源在此覆盖
+}
+```
+
+| 扩展点 | 注册内容 | 消费方 | 声明来源 |
+|---|---|---|---|
+| Page | 页面**渲染器** `{name, component}` | shell `renderPage` | 页面**定义**（标题/路由）是 Go 侧组合声明（`ui-page` 组件 / `RegisterPage`） |
+| Panel | 面板渲染器 `{name, component}` | shell 面板槽位 | 面板定义同上（Go 侧声明） |
+| Widget | 可组合组件 `registerWidget(name, component)` | 内置 `widget` 视图块：`{kind:"widget", params:{name, ...}}`，params 走 `$focus` 解析 | 组件在插件模块内，引用在页面声明里 |
+| Settings | 本插件的设置界面 `settings.register(component)` | Explorer 详情区：有注册用之，否则回落结构化 ConfigEditor | 绑定插件模块名 |
+| Action | 上下文操作 `{id, title, when?, run}` | shell 页面卡片上方的「上下文操作」下拉，`when({ctx, page})` 过滤 | 组件在插件模块内 |
+
+**为什么 `api.pages.register` 注册的是渲染器而不是页面定义**：页面定义
+（id/标题/路由/顺序）是组合声明，声明权威在 Go 侧运行时（铁律 1/7）。
+前端若能声明页面，控制台就成了第二个生命周期权威——启停、依赖撤销、
+声明校验都会出现两套真相。所以前端只提供渲染器，定义经 `ui-page`
+组件声明（声明存储里的一行，enabled 开关即启停）。
+
+`when`/`run` 收到的 `ctx` 与声明式视图同源（hub 查询/命令、focus、busy），
+`run` 返回 Promise 时 shell 跟踪其完成但不阻塞 UI。
+
 ## 驱动机制
 
 - 期望集的唯一来源是 manifest（`GET /api/ui/client-modules`），它由

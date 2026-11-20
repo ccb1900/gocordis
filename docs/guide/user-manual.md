@@ -384,7 +384,23 @@ http.ListenAndServe(":8080", srv)
 - 应用通过 `hub.RegisterQuery/RegisterCommand` 注册领域查询/命令(可逆);
 - 控制台**没有鉴权**(开发姿态)——暴露到网络前请自行加反代/中间件;
 - 插件启停走声明(`PluginLifecycle`/`Enabled`),由应用决定如何持久化;
-  参考实现:`console.ControllerLifecycle`(声明存储 + 控制器调和驱动)。
+  参考实现:`console.ControllerLifecycle`(声明存储 + 控制器调和驱动);
+- 插件前端模块是 `ui-client` 组件(`host.NewClientModuleComponent`),插件页
+  面声明是 `ui-page` 组件(`host.NewUIPageComponent`)。二者默认**不**在工厂
+  注册表里——组合根按需各注册一行,`procplugin.DiscoverPlugins` 展开出的
+  `ui-client`/`ui-page` 声明行才会在调和时生效:
+
+  ```go
+  _ = reg.Register("ui-client", config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
+      return host.NewClientModuleComponent(cc)
+  }))
+  _ = reg.Register("ui-page", config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
+      return host.NewUIPageComponent(cc)
+  }))
+  ```
+
+  插件前端的扩展点契约(页面/面板渲染器、widget、设置界面、上下文操作)
+  见 `docs/guide/ui-plugin-lifecycle.md`。
 
 ---
 

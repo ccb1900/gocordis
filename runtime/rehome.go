@@ -228,4 +228,12 @@ func (o *orchestrator) executeRehomeStep2(f *Fiber) {
 	// Consumers mounted inside the fresh namespace (children created after
 	// the rehome inherit the new table) can now bind.
 	o.sweepWaiting()
+
+	// Re-decide THIS fiber now that the rehome guard is gone. A Dispose (or
+	// Runtime.Close) that arrived while f.rehome != nil saw beginWithdrawal
+	// return early; without this reconcile the recorded Unmounted intent
+	// would be stranded with the fiber still Active and Gone never reached.
+	// reconcile is idempotent: a normal rehome with no intent change is a
+	// no-op, and an already-withdrawing fiber is not re-entered.
+	o.reconcile(f)
 }

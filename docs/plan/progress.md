@@ -216,3 +216,21 @@
 - Bad manifests surface (铁律 6, restores discover.go's own doc claim "must surface, not vanish" that contradicted the skip): unparsable / unreadable-but-present / name-mismatch expand to ONE `plugin-error` row (id = directory name — the declared name is untrusted) whose Apply raises → Failed with reason in the explorer; repairing the manifest changes the row → replace → auto-recovery (fix-the-declaration re-enablement, 铁律 5). Missing manifest.toml still = not a plugin directory. warnOncePerDir deleted (its map also leaked entries per broken dir forever). NewErrorComponent + tests (activation raise carries reason, default reason, rows incl. error-row assertions + follows assertions).
 - Docs: user-manual §13 (follows semantics, plugin-error contract, factory registration now lists plugin-error), ui-plugin-lifecycle.md new 插件业务单元 section (incl. the explicit non-cascade ruling for degrade), ROADMAP §1.3 class A updated.
 - Gates: full `go test -race ./...` PASS (zero FAIL lines), build/vet/gofmt clean. Applications enabling discovery must register the plugin-error factory — documented loudly; config validation rejects unknown types for the whole document, which is the intended (visible) failure if they forget.
+
+## Session: 2026-11-20 — Rehome 并发收敛（Dispose/Close + late-Provide probe）
+
+- P0 修复：`executeRehomeStep2` 清除 `f.rehome` 后新增 `o.reconcile(f)`。
+  Rehome 期间到达的 Dispose/Close 意图不再被 `beginWithdrawal` 的
+  `f.rehome != nil` 守卫吞掉——迁移完成后重新决策，Unmounted 意图生效；
+  正常 Rehome 无意图变化是 no-op，不重复 unwind。
+- P1 红测试（channel 握手，无 Sleep）：`TestRehomeConcurrentDispose` 用
+  阻塞型 consumer Cleanup 把 Rehome 停在阶段 1，orchestrator barrier 证明
+  Dispose 已处理；修前红 "fiber stuck in Active (intent=Unmounted)"，修后
+  provider 正确 Gone。`TestRuntimeCloseDuringRehome` 修前 "Close never
+  completed"，修后所有 fiber Gone。
+- P2 late-Provide 探针：50 轮未复现残留——分析表明 `provideCap` 捕获的
+  effective realm 要么在阶段 2 扫描前写入（被迁移），要么在阶段 2 后写入
+  （写到 fresh）；跨阶段 2 的极窄窗口（capture 与 install 之间）未复现。
+  按"不复现不实现屏障"原则不加新抽象；保留探针作持续监控。
+- 验收：`go test ./runtime -count=10`、`go test -race ./runtime -count=3`、
+  `go test -race ./...`、`go test ./...`、`go vet ./...`、gofmt 全绿。

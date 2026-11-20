@@ -479,3 +479,261 @@ func TestIsolatePerKeyRealm(t *testing.T) {
 		t.Fatalf("rehomeKey provision realm = %v, want parent (root) realm %v", iso, rt.rootRealm)
 	}
 }
+
+// A consumer whose Cleanup blocks until released: Rehome phase 1 waits for this
+// consumer to detach, so blocking the Cleanup holds Rehome in-flight at a
+// deterministic point (no Sleep).
+type rehomeBlockingConsumer struct {
+	cleanupEntered chan struct{}
+	releaseCleanup chan struct{}
+}
+
+func (c *rehomeBlockingConsumer) Name() string          { return "rehome-blocking-consumer" }
+func (c *rehomeBlockingConsumer) Inject() []Dependency  { return []Dependency{Requires(rehomeKey)} }
+func (c *rehomeBlockingConsumer) Provide() []Capability { return nil }
+func (c *rehomeBlockingConsumer) Apply(ctx *Context) (Cleanup, error) {
+	if _, err := Require(ctx, rehomeKey); err != nil {
+		return nil, err
+	}
+	return func() error {
+		close(c.cleanupEntered)
+		<-c.releaseCleanup
+		return nil
+	}, nil
+}
+
+// rehomeBarrier is a no-op orchestrator command: submitting it after Dispose
+// and waiting for its completion proves the Dispose command was already
+// processed (FIFO command queue) — without timing windows.
+type rehomeBarrier struct{ done chan struct{} }
+
+func (b *rehomeBarrier) apply(*orchestrator) { close(b.done) }
+
+func rehomeOrchestratorBarrier(t *testing.T, rt *Runtime) {
+	t.Helper()
+	b := &rehomeBarrier{done: make(chan struct{})}
+	if !rt.submit(b) {
+		t.Fatal("barrier submit failed")
+	}
+	select {
+	case <-b.done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("orchestrator barrier timeout")
+	}
+}
+
+func rehomeAwaitGone(t *testing.T, ctx context.Context, f *Fiber, phase string) {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if f.State() == StateGone {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("%s: fiber stuck in %v (intent=%v) — Unmounted intent was lost across Rehome", phase, f.State(), f.intent)
+}
+
+// TestRehomeConcurrentDispose — P0: a Dispose issued WHILE Rehome is in flight
+// must not be swallowed by the "f.rehome != nil" guard in beginWithdrawal.
+// After the rehome completes the fiber must reconcile and reach Gone.
+func TestRehomeConcurrentDispose(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	pf, _ := rt.Load(&rehomeProvider{tag: "v1"})
+	rehomeAdmit(t, rt, pf)
+	rehomeWaitState(t, pf, StateActive)
+
+	bc := &rehomeBlockingConsumer{
+		cleanupEntered: make(chan struct{}),
+		releaseCleanup: make(chan struct{}),
+	}
+	cf, _ := rt.Load(bc)
+	rehomeAdmit(t, rt, cf)
+	rehomeWaitState(t, cf, StateActive)
+
+	// Start Rehome in the background: phase 1 retires provisions and asks the
+	// consumer to withdraw; its Cleanup blocks, holding Rehome in-flight.
+	rehomeDone := make(chan error, 1)
+	go func() { rehomeDone <- pf.Rehome(ctx, RehomeWithFreshIsolation()) }()
+
+	select {
+	case <-bc.cleanupEntered:
+	case <-ctx.Done():
+		t.Fatal("consumer Cleanup never entered — Rehome not gated")
+	}
+	pf.mu.RLock()
+	inFlight := pf.rehome != nil
+	pf.mu.RUnlock()
+	if !inFlight {
+		t.Fatal("Rehome already completed before Dispose")
+	}
+
+	// Dispose WHILE Rehome is in flight. The barrier proves the orchestrator
+	// processed cmdDispose before we release the consumer.
+	if err := pf.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	rehomeOrchestratorBarrier(t, rt)
+
+	// Release the consumer → Rehome phase 2 completes.
+	close(bc.releaseCleanup)
+	select {
+	case err := <-rehomeDone:
+		if err != nil {
+			t.Fatalf("rehome: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("rehome never completed")
+	}
+	rehomeAwaitGone(t, ctx, pf, "concurrent dispose")
+	// The consumer was never disposed: after the provider moved to a fresh
+	// realm its old-namespace binding is gone, so it legitimately rests at
+	// Pending (paper §5.2.1: old-namespace dependents do not follow a realm
+	// move). Only the disposed provider must reach Gone.
+	rehomeWaitState(t, cf, StatePending)
+	// No provision residue in any namespace.
+	for _, rr := range fiberNamespaces(pf) {
+		for _, rec := range rr.recordsOwnedBy(ProviderIdentity{FiberID: pf.ID()}) {
+			t.Fatalf("provision residue after rehome+dispose: key=%v retiring=%v", rec.key, rec.retiring)
+		}
+	}
+}
+
+// TestRuntimeCloseDuringRehome — P0: Close issued during Rehome must still
+// reach Gone for the rehoming fiber.
+func TestRuntimeCloseDuringRehome(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+
+	pf, _ := rt.Load(&rehomeProvider{tag: "v1"})
+	rehomeAdmit(t, rt, pf)
+	rehomeWaitState(t, pf, StateActive)
+
+	bc := &rehomeBlockingConsumer{
+		cleanupEntered: make(chan struct{}),
+		releaseCleanup: make(chan struct{}),
+	}
+	cf, _ := rt.Load(bc)
+	rehomeAdmit(t, rt, cf)
+	rehomeWaitState(t, cf, StateActive)
+
+	rehomeDone := make(chan error, 1)
+	go func() { rehomeDone <- pf.Rehome(ctx, RehomeWithFreshIsolation()) }()
+	select {
+	case <-bc.cleanupEntered:
+	case <-ctx.Done():
+		t.Fatal("consumer Cleanup never entered")
+	}
+
+	// Close while Rehome is in flight (cmdClose processed before barrier).
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- rt.Close(ctx) }()
+	rehomeOrchestratorBarrier(t, rt)
+
+	close(bc.releaseCleanup)
+	select {
+	case err := <-rehomeDone:
+		if err != nil {
+			t.Fatalf("rehome: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("rehome never completed")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Close never completed after Rehome")
+	}
+	if pf.State() != StateGone || cf.State() != StateGone {
+		t.Fatalf("fibers not Gone after Close: provider=%v consumer=%v", pf.State(), cf.State())
+	}
+}
+
+// P2 probe: a late Provide issued during Rehome. provideCap captures the
+// effective realm on the caller goroutine BEFORE effect() installs; if a
+// rehome moves the fiber between capture and install, the record can land in
+// the (now stale) old realm, after phase 2's migration scan.
+type rehomeLateProvider struct {
+	lateKey Key[rehomeKeyVal]
+	gate    chan struct{}
+	issued  chan struct{}
+}
+
+func (c *rehomeLateProvider) Name() string         { return "rehome-late-provider" }
+func (c *rehomeLateProvider) Inject() []Dependency { return nil }
+func (c *rehomeLateProvider) Provide() []Capability {
+	return []Capability{rehomeKey.Capability(), c.lateKey.Capability()}
+}
+func (c *rehomeLateProvider) Apply(ctx *Context) (Cleanup, error) {
+	if err := Provide(ctx, rehomeKey, rehomeKeyVal{tag: "v1"}); err != nil {
+		return nil, err
+	}
+	go func() {
+		<-c.gate
+		_ = Provide(ctx, c.lateKey, rehomeKeyVal{tag: "late"})
+		close(c.issued)
+	}()
+	return nil, nil
+}
+
+// TestRehomeLateProvideProbe — deterministic probe of the late-Provide race.
+// The late Provide is issued while Rehome phase 1 is gated by a blocking
+// consumer Cleanup. We assert the NO-LEAK invariant: after rehome+dispose,
+// no provision record may remain in any of the fiber's namespaces.
+func TestRehomeLateProvideProbe(t *testing.T) {
+	for round := 0; round < 50; round++ {
+		rt := rehomeNewRT(t)
+		ctx := ctxBG(t)
+
+		lateKey := NewKey[rehomeKeyVal]("rehome.late")
+		gate := make(chan struct{})
+		issued := make(chan struct{})
+		lp := &rehomeLateProvider{lateKey: lateKey, gate: gate, issued: issued}
+		pf, err := rt.Load(lp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rehomeAdmit(t, rt, pf)
+		rehomeWaitState(t, pf, StateActive)
+
+		bc := &rehomeBlockingConsumer{
+			cleanupEntered: make(chan struct{}),
+			releaseCleanup: make(chan struct{}),
+		}
+		cf, _ := rt.Load(bc)
+		rehomeAdmit(t, rt, cf)
+		rehomeWaitState(t, cf, StateActive)
+
+		rehomeDone := make(chan error, 1)
+		go func() { rehomeDone <- pf.Rehome(ctx, RehomeWithFreshIsolation()) }()
+		<-bc.cleanupEntered // Rehome phase 1 gated
+
+		// Issue a late Provide while Rehome is in flight.
+		close(gate)
+		<-issued
+		close(bc.releaseCleanup)
+		if err := <-rehomeDone; err != nil {
+			t.Fatalf("rehome: %v", err)
+		}
+		if err := pf.Dispose(); err != nil {
+			t.Fatal(err)
+		}
+		if err := pf.Gone(ctx); err != nil {
+			t.Fatal(err)
+		}
+
+		// No-leak invariant across every namespace the fiber has ever used.
+		for _, rr := range fiberNamespaces(pf) {
+			for _, rec := range rr.recordsOwnedBy(ProviderIdentity{FiberID: pf.ID()}) {
+				t.Fatalf("round %d: late Provide left residue key=%v retiring=%v", round, rec.key, rec.retiring)
+			}
+		}
+		_ = rt.Close(ctx)
+	}
+}

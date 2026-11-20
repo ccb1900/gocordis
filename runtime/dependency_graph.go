@@ -185,6 +185,19 @@ func (o *orchestrator) notifyGateWaiters(f *Fiber) {
 		if len(w.waitGates) != 0 {
 			continue
 		}
+		// Dispatch priority: finalizePending first, then rehome, then plain
+		// withdrawal resume. The finalizePending-before-rehome order is safe BY
+		// CONSTRUCTION — finalizePending && rehome != nil is unreachable, so
+		// the finalization path can never strand a rehome's plan.done:
+		//   1. finalizePending is set in finishActivation, after f.activation
+		//      was cleared; Rehome requires state == Active && activation != nil
+		//      (both the caller-side check and cmdRehomeBegin).
+		//   2. While f.rehome != nil, maybeStartUnload refuses to start an
+		//      unwind (reconcile.go), so no unwind can complete into
+		//      finishActivation while a rehome is pending.
+		//   3. disposeChildren gates the parent on every live child BEFORE
+		//      withdrawing it, so when the parent's gate set drains, any gated
+		//      child is already Gone.
 		if w.finalizePending {
 			o.finalizePendingFiber(w)
 		} else if w.rehome != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1215,4 +1216,321 @@ func assertNoResidue(t *testing.T, f *Fiber, key CapabilityKey) {
 			t.Fatalf("residue for key %v: realm=%s id=%+v", key, rr.id.String(), r.identity)
 		}
 	}
+}
+
+// rehomeWindowProvider provides rehomeKey synchronously (so phase 1 has an
+// initial consumer to gate on) and a second key from a background goroutine at
+// a test-controlled moment. The second record lands AFTER phase 1's retiring
+// sweep, so it is NOT retiring and a new consumer can bind to it mid-rehome.
+type rehomeWindowProvider struct {
+	lateKey Key[rehomeKeyVal]
+	fire    chan struct{}
+	done    chan error
+}
+
+func (c *rehomeWindowProvider) Name() string         { return "rehome-window-provider" }
+func (c *rehomeWindowProvider) Inject() []Dependency { return nil }
+func (c *rehomeWindowProvider) Provide() []Capability {
+	return []Capability{rehomeKey.Capability(), c.lateKey.Capability()}
+}
+func (c *rehomeWindowProvider) Apply(ctx *Context) (Cleanup, error) {
+	if err := Provide(ctx, rehomeKey, rehomeKeyVal{tag: "v1"}); err != nil {
+		return nil, err
+	}
+	go func() {
+		<-c.fire
+		c.done <- Provide(ctx, c.lateKey, rehomeKeyVal{tag: "window"})
+	}()
+	return nil, nil
+}
+
+// rehomeKeyedConsumer requires an arbitrary key and reports entry into its
+// Cleanup (it does NOT block, so a gated withdrawal cannot deadlock phase 2).
+type rehomeKeyedConsumer struct {
+	key            Key[rehomeKeyVal]
+	cleanupEntered chan struct{}
+}
+
+func (c *rehomeKeyedConsumer) Name() string         { return "rehome-keyed-consumer" }
+func (c *rehomeKeyedConsumer) Inject() []Dependency { return []Dependency{Requires(c.key)} }
+func (c *rehomeKeyedConsumer) Provide() []Capability {
+	return nil
+}
+func (c *rehomeKeyedConsumer) Apply(ctx *Context) (Cleanup, error) {
+	if _, err := Require(ctx, c.key); err != nil {
+		return nil, err
+	}
+	return func() error {
+		close(c.cleanupEntered)
+		return nil
+	}, nil
+}
+
+// TestRehomeNewConsumerDuringWait — P1: a consumer that binds to a record
+// registered AFTER phase 1's retiring sweep must still be withdrawn before
+// phase 2 migrates the provider's namespace (consumer-first across the WHOLE
+// rehome window, not just the frozen phase-1 consumer snapshot).
+//
+// Choreography (all channels, no Sleep):
+//  1. initial consumer on rehomeKey blocks in Cleanup -> Rehome parks in phase 1;
+//  2. async Provide of lateKey lands in the old namespace, NOT retiring;
+//  3. a new consumer binds to that record and reaches Active;
+//  4. release the initial consumer -> phase 2 may migrate;
+//  5. assert the new consumer's Cleanup ran before rehome returned.
+//
+// On the current code phase 2 never re-scans o.graph[id], so step 5 fails.
+func TestRehomeNewConsumerDuringWait(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	lateKey := NewKey[rehomeKeyVal]("rehome.window-late")
+	fire := make(chan struct{})
+	provideDone := make(chan error, 1)
+	pf, err := rt.Load(&rehomeWindowProvider{lateKey: lateKey, fire: fire, done: provideDone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, pf)
+	rehomeWaitState(t, pf, StateActive)
+
+	// 1. initial consumer on rehomeKey with a blocking Cleanup.
+	initial := &rehomeBlockingConsumer{
+		cleanupEntered: make(chan struct{}),
+		releaseCleanup: make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	releaseInitial := func() { releaseOnce.Do(func() { close(initial.releaseCleanup) }) }
+	defer releaseInitial() // don't strand rt.Close on a t.Fatal before step 4
+	cf0, err := rt.Load(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, cf0)
+
+	rehomeDone := make(chan error, 1)
+	go func() { rehomeDone <- pf.Rehome(ctx, RehomeWithFreshIsolation()) }()
+	select {
+	case <-initial.cleanupEntered:
+	case <-ctx.Done():
+		t.Fatal("initial consumer Cleanup never entered — rehome not gated in phase 1")
+	}
+
+	// 2. late Provide lands after phase 1's retiring sweep.
+	close(fire)
+	select {
+	case err := <-provideDone:
+		if err != nil {
+			t.Fatalf("late Provide: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("late Provide never completed")
+	}
+
+	// 3. a new consumer tries to bind to the late-registered record while
+	// Rehome is still in phase 1. The record is retiring (registered mid-rehome),
+	// so the consumer must stay Pending: a live binding to the old namespace
+	// would be migrated out from under it without any withdrawal gate.
+	newCleanup := make(chan struct{})
+	nc := &rehomeKeyedConsumer{key: lateKey, cleanupEntered: newCleanup}
+	cf1, err := rt.Load(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// cmdLoad.apply reconciles synchronously; a FIFO barrier after Load makes
+	// the Pending-vs-Loading decision deterministic (no timing window).
+	rehomeOrchestratorBarrier(t, rt)
+	if st := cf1.State(); st != StatePending {
+		t.Fatalf("new consumer bound to a mid-rehome old-namespace record: state=%v, want Pending", st)
+	}
+	bound := rehomeResolveAs(t, rt, cf1, lateKey.Capability())
+	if bound.ok {
+		t.Fatalf("retiring mid-rehome record satisfied a new dependent: %+v", bound)
+	}
+
+	// 4. release the initial consumer so phase 1's last gate clears.
+	releaseInitial()
+	select {
+	case err := <-rehomeDone:
+		if err != nil {
+			t.Fatalf("rehome: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("rehome never completed")
+	}
+
+	// 5. the late record was migrated into the fresh namespace with retiring
+	// cleared; the old-namespace dependent remains Pending (it does not follow
+	// a realm move) and never produced a stale dependency.
+	fresh := effectiveRealm(pf, lateKey.Capability())
+	rec, ok := fresh.lookupOwn(lateKey.Capability())
+	if !ok || rec == nil {
+		t.Fatal("late Provide was not migrated to the fresh namespace")
+	}
+	if rec.retiring {
+		t.Fatal("migrated late record is still retiring")
+	}
+	if st := cf1.State(); st != StatePending {
+		t.Fatalf("old-namespace dependent should stay Pending after rehome: %v", st)
+	}
+	select {
+	case <-newCleanup:
+		t.Fatal("new consumer ran Cleanup although it never applied")
+	default:
+	}
+}
+
+// TestRehomeMultipleNewConsumersDuringWait — P2: several consumers attempting
+// to bind to a mid-rehome late record must ALL stay Pending. None may become a
+// live old-namespace dependent that phase 2 would migrate out from under.
+func TestRehomeMultipleNewConsumersDuringWait(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	lateKey := NewKey[rehomeKeyVal]("rehome.multi-window-late")
+	fire := make(chan struct{})
+	provideDone := make(chan error, 1)
+	pf, err := rt.Load(&rehomeWindowProvider{lateKey: lateKey, fire: fire, done: provideDone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, pf)
+
+	initial := &rehomeBlockingConsumer{
+		cleanupEntered: make(chan struct{}),
+		releaseCleanup: make(chan struct{}),
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { close(initial.releaseCleanup) }) }
+	defer release()
+	cf0, err := rt.Load(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, cf0)
+
+	rehomeDone := make(chan error, 1)
+	go func() { rehomeDone <- pf.Rehome(ctx, RehomeWithFreshIsolation()) }()
+	<-initial.cleanupEntered
+
+	close(fire)
+	if err := <-provideDone; err != nil {
+		t.Fatalf("late Provide: %v", err)
+	}
+
+	const n = 3
+	lateConsumers := make([]*Fiber, n)
+	for i := 0; i < n; i++ {
+		nc := &rehomeKeyedConsumer{key: lateKey, cleanupEntered: make(chan struct{})}
+		cf, err := rt.Load(nc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lateConsumers[i] = cf
+	}
+	rehomeOrchestratorBarrier(t, rt)
+	for i, cf := range lateConsumers {
+		if st := cf.State(); st != StatePending {
+			t.Fatalf("new consumer %d bound to mid-rehome record: state=%v, want Pending", i, st)
+		}
+		if r := rehomeResolveAs(t, rt, cf, lateKey.Capability()); r.ok {
+			t.Fatalf("new consumer %d resolved retiring mid-rehome record: %+v", i, r)
+		}
+	}
+
+	release()
+	if err := <-rehomeDone; err != nil {
+		t.Fatalf("rehome: %v", err)
+	}
+	for i, cf := range lateConsumers {
+		if st := cf.State(); st != StatePending {
+			t.Fatalf("old-namespace consumer %d followed the realm move: state=%v", i, st)
+		}
+	}
+	if err := pf.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pf.Gone(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertNoResidue(t, pf, lateKey.Capability())
+}
+
+// TestRehomeConsecutiveWithMidFlightBinding — P2: a mid-rehome binding attempt
+// in the first window must not poison the second consecutive rehome. The late
+// record follows each move into the newest fresh namespace, cleanly.
+func TestRehomeConsecutiveWithMidFlightBinding(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	lateKey := NewKey[rehomeKeyVal]("rehome.consecutive-window-late")
+	fire := make(chan struct{})
+	provideDone := make(chan error, 1)
+	pf, err := rt.Load(&rehomeWindowProvider{lateKey: lateKey, fire: fire, done: provideDone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, pf)
+
+	initial := &rehomeBlockingConsumer{
+		cleanupEntered: make(chan struct{}),
+		releaseCleanup: make(chan struct{}),
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { close(initial.releaseCleanup) }) }
+	defer release()
+	cf0, err := rt.Load(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, cf0)
+
+	rehomeDone := make(chan error, 1)
+	go func() { rehomeDone <- pf.Rehome(ctx, RehomeWithFreshIsolation()) }()
+	<-initial.cleanupEntered
+	close(fire)
+	if err := <-provideDone; err != nil {
+		t.Fatalf("late Provide: %v", err)
+	}
+	nc := &rehomeKeyedConsumer{key: lateKey, cleanupEntered: make(chan struct{})}
+	cf1, err := rt.Load(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeOrchestratorBarrier(t, rt)
+	if st := cf1.State(); st != StatePending {
+		t.Fatalf("mid-flight consumer bound in rehome #1: state=%v", st)
+	}
+	release()
+	if err := <-rehomeDone; err != nil {
+		t.Fatalf("rehome #1: %v", err)
+	}
+	firstFresh := effectiveRealm(pf, lateKey.Capability())
+	if rec, ok := firstFresh.lookupOwn(lateKey.Capability()); !ok || rec.retiring {
+		t.Fatalf("late record not usable in first fresh namespace: %+v/%v", rec, ok)
+	}
+
+	// second consecutive rehome: no live consumers remain, phase 2 fires now.
+	if err := pf.Rehome(ctx, RehomeWithFreshIsolation()); err != nil {
+		t.Fatalf("rehome #2: %v", err)
+	}
+	secondFresh := effectiveRealm(pf, lateKey.Capability())
+	if secondFresh == firstFresh {
+		t.Fatal("consecutive rehome did not move to a fresh namespace")
+	}
+	if _, ok := firstFresh.lookupOwn(lateKey.Capability()); ok {
+		t.Fatal("first fresh namespace still holds the record after second rehome")
+	}
+	if rec, ok := secondFresh.lookupOwn(lateKey.Capability()); !ok || rec.retiring {
+		t.Fatalf("late record not usable in second fresh namespace: %+v/%v", rec, ok)
+	}
+	if err := pf.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pf.Gone(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertNoResidue(t, pf, lateKey.Capability())
 }

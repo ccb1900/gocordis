@@ -187,6 +187,28 @@ func (r *realm) registerOwn(key CapabilityKey, identity ProviderIdentity, value 
 	return nil
 }
 
+// registerOwnRetiring inserts a provider record that is ALREADY retiring at
+// registration time (one r.mu critical section — a register-then-mark sequence
+// would leave a window where a new dependent could bind to a live-looking
+// record). It is used when a Provide lands while its fiber is mid-rehome: the
+// record must not satisfy any new dependent in the namespace being vacated.
+// Rehome step 2 still migrates it and clears retiring by re-registering in the
+// fresh namespace, so the provision becomes usable again after the move.
+func (r *realm) registerOwnRetiring(key CapabilityKey, identity ProviderIdentity, value any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.own[key]; exists {
+		return ErrDuplicateProvider
+	}
+	r.own[key] = &providerRecord{
+		key:      key,
+		identity: identity,
+		value:    value,
+		retiring: true,
+	}
+	return nil
+}
+
 // removeOwn deletes a provider only when its identity matches (stale-cleanup
 // safety). It never deletes a newer activation's or a different realm's record.
 //

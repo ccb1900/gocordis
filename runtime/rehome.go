@@ -130,13 +130,23 @@ func (c *cmdRehomeBegin) apply(o *orchestrator) {
 	}
 	id := ProviderIdentity{FiberID: f.id, ActivationID: act.id}
 
-	// Phase 1a — retire the provisions in every namespace they live in.
+	// Capture the old namespaces, then publish the rehome marker and retire
+	// every record already in them — BOTH under routeMu. Publishing the marker
+	// inside the same critical section as the retiring sweep closes the window
+	// in which a late Provide could register a non-retiring record into a
+	// namespace the sweep had already passed (paper §5.2.1: a record in a
+	// namespace being vacated must never satisfy a new dependent).
 	oldRealms := fiberNamespaces(f)
+	fresh := newRealm(f.realm)
+	fresh.id = o.rt.newScopeID()
+	f.routeMu.Lock()
+	f.rehome = &rehomePending{fresh: fresh, oldRealms: oldRealms, done: c.done}
 	for _, rr := range oldRealms {
 		for _, rec := range rr.recordsOwnedBy(id) {
 			rr.markRetiringOwn(rec.key, id)
 		}
 	}
+	f.routeMu.Unlock()
 
 	// Phase 1b — collect the consumers bound to THIS provider identity and
 	// gate the rehome on their full detachment (consumer-first, identical to
@@ -156,11 +166,6 @@ func (c *cmdRehomeBegin) apply(o *orchestrator) {
 	for _, c2 := range consumers {
 		o.addWaitGate(f, c2)
 	}
-
-	// Prepare the plan; phase 2 fires from the gate-clear continuation.
-	fresh := newRealm(f.realm)
-	fresh.id = o.rt.newScopeID()
-	f.rehome = &rehomePending{fresh: fresh, oldRealms: oldRealms, done: c.done}
 
 	for _, c2 := range consumers {
 		o.reconcile(c2)
@@ -182,7 +187,9 @@ func (o *orchestrator) executeRehomeStep2(f *Fiber) {
 	act := f.activation
 	f.mu.RUnlock()
 	if act == nil {
+		f.routeMu.Lock()
 		f.rehome = nil
+		f.routeMu.Unlock()
 		plan.done <- ErrRehomeNotActive
 		return
 	}

@@ -480,7 +480,19 @@ func (c *Context) provideCap(key CapabilityKey, value any) error {
 		// left a capture->install window for exactly that stale registration.
 		f.routeMu.Lock()
 		eff := effectiveRealmLocked(f, key)
-		regErr := eff.registerOwn(key, id, value)
+		var regErr error
+		if f.rehome != nil {
+			// Mid-rehome: the namespace is being vacated and its consumers are
+			// already gated. Registering a normal (live) record here would let
+			// a new dependent bind to the old namespace AFTER phase 1's
+			// retiring sweep — a consumer that phase 2 would migrate out from
+			// under without ever withdrawing it (consumer-first violated).
+			// Register atomically as retiring so no new binding is possible;
+			// step 2 migrates the record and clears retiring in the fresh realm.
+			regErr = eff.registerOwnRetiring(key, id, value)
+		} else {
+			regErr = eff.registerOwn(key, id, value)
+		}
 		f.routeMu.Unlock()
 		if regErr != nil {
 			return nil, regErr

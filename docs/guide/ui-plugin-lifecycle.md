@@ -119,6 +119,68 @@ export default function register(api) {
 `when`/`run` 收到的 `ctx` 与声明式视图同源（hub 查询/命令、focus、busy），
 `run` 返回 Promise 时 shell 跟踪其完成但不阻塞 UI。
 
+## 安全边界（授权接缝）
+
+前端的一切可见性控制都只是展示：**`Action.when` 过滤、菜单隐藏、渲染器
+缺失都不撤销底层能力**——`/api/command/*`、`/api/plugins/install|uninstall|
+control`、配置写入始终由服务端决定。控制台保持"无鉴权开发姿态"
+（用户手册 §13），UI-03 提供正式接缝让**应用**（而非框架）落策略：
+
+```go
+srv.SetAccessPolicy(func(ctx context.Context, req webui.AccessRequest) error {
+    if req.Kind == webui.AccessCommand && dangerous(req.Name) && !isAdmin(ctx, req.Request) {
+        return fmt.Errorf("operation %q requires admin", req.Name)
+    }
+    return nil // 默认允许 = 开发姿态不变
+})
+```
+
+- 四类门：`query` / `command` / `lifecycle` / `config`；拒绝 → `403
+  forbidden`，前端经 hubError/块内错误如实显示。
+- `nil` policy = 全允许——接缝存在是事实，默认姿态不变也是事实；把接缝
+  当成安全边界用（部署时不设 policy 就暴露公网）是错误用法，文档负责
+  说清这一点。
+- 接缝在传输层，不是内核 capability 拦截——论文 §6.3 的 provider 按元
+  数据裁决（Def 26/27）仍归 P3/ADR-0002，未因本接缝提前。
+
+## 一致性契约（中间态与收敛）
+
+组合更新期间页面与模块**允许短暂不匹配**——Go 侧 remove-then-add、每个
+fiber 独立转换、SSE 无状态载荷，前端两次 fetch 也存在先后。UI-03 的整改
+不是伪造原子性，而是让中间态**诚实可见**并修掉真实的错误路径：
+
+- **Manager 可观察调和态**：`clientModuleManagerState().reconciling` +
+  `subscribeClientModulesState`（useSyncExternalStore 友好）。调和进行中
+  渲染器缺失显示"插件模块加载中"，调和结束仍缺失才显示"未注册"错误——
+  未就绪 ≠ 失败（铁律 4 的展示面推论）。
+- **Go 侧 replace 不再孤儿化**：声明调和里 replacement 的旧侧撤销未确认
+  Gone 时，新侧**不加载**（`extensions/config`，C21 回归测试锚定）——旧
+  fiber 的清理句柄不可能被丢弃，Applied 不撒谎；下一次 Reconcile 完整重
+  试整个替换。
+- **收敛保证**：reconcile 按期望态 diff，不依赖事件顺序；相同期望集重复
+  reconcile 是 no-op。刷新页面 = 重新引导 = 全新调和（铁律 9），因此任何
+  前端中间态 bug 都不可能持久化。
+- **proc 后端异常退出可观察**：进程意外死亡发布 `plugin.exited` 观察
+  （fiber 保持 Active、注册保留——降级不阻断）；恢复走操作员开关
+  （disable/enable），平台不自作重启（铁律 5）。
+- **跨模块覆盖可见**：插件模块经 facade 覆盖**其他模块**已注册的同名
+  扩展点键时 console 告警点名双方模块；同模块重启（先 dispose 再注册）
+  不告警。
+
+## 版本契约
+
+三条互不混淆的版本线：
+
+| 线 | 载体 | 语义 |
+|---|---|---|
+| 门面契约 | `globalThis.__CORDIS_CONSOLE.frameworkVersion`（`FACADE_VERSION`，当前 `"1"`） | Kit ↔ 控制台的 API 面；major 对齐，插件可在 register 特性检测 |
+| 模块内容修订 | manifest URL `?v=<sha256 前 8 hex>` | ui.js 字节变化 → 会话内热重导入；与契约版本无关 |
+| proc 协议 | 握手串 `GORIDIS-PROC-PLUGIN 1` | 后端 RPC 线协议版本 |
+
+plugin-kit 的 shims 在门面缺失时抛出可读错误（bundle 必须被控制台加载），
+不再是对 `undefined` 的属性访问崩溃。manifest.toml 尚未有插件语义版本字段
+（记为已知边界，升级兼容策略等真实需要时再定，避免空转字段）。
+
 ## 驱动机制
 
 - 期望集的唯一来源是 manifest（`GET /api/ui/client-modules`），它由

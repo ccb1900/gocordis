@@ -245,10 +245,18 @@ func TestE2E24CrossExtensionIsolation(t *testing.T) {
 	_ = regComp.reg.Add("x", "1")
 	_ = regComp.reg.Remove("x")
 
+	// P2-6 (audit): the "scheduler ran concurrently" premise must be VERIFIED,
+	// not assumed — a fixed sleep on a loaded runner proves only that closing
+	// an idle scheduler is harmless. Count the runs and wait for a real tick.
 	sch := scheduler.New()
-	_ = sch.Add(scheduler.Job{ID: "j", Schedule: scheduler.Interval{Every: 5 * time.Millisecond},
-		Task: func(context.Context) error { return nil }})
-	time.Sleep(15 * time.Millisecond)
+	var runs atomic.Int32
+	if err := sch.Add(scheduler.Job{ID: "j", Schedule: scheduler.Interval{Every: 5 * time.Millisecond},
+		Task: func(context.Context) error { runs.Add(1); return nil }}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 5*time.Second, "scheduler job ran at least 3 times", func() bool {
+		return runs.Load() >= 3
+	})
 	_ = sch.Close()
 
 	if healthy.State() != runtime.StateActive {

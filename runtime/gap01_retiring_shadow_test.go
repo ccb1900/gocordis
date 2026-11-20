@@ -162,7 +162,7 @@ func gap01AdmitApply(t *testing.T, rt *Runtime, f *Fiber) {
 				if err == nil {
 					return true
 				}
-				if errors.Is(err, errDetStale) {
+				if errors.Is(err, ErrDetStale) {
 					t.Fatalf("gap01: ApplyDone(%d) stale: %v", f.ID(), err)
 				}
 				return false // admission rejected; parked completion retries
@@ -183,7 +183,7 @@ func gap01AdmitUnwind(t *testing.T, rt *Runtime, f *Fiber) {
 				if err == nil {
 					return true
 				}
-				if errors.Is(err, errDetStale) {
+				if errors.Is(err, ErrDetStale) {
 					t.Fatalf("gap01: UnwindDone(%d) stale: %v", f.ID(), err)
 				}
 				return false
@@ -211,7 +211,7 @@ func gap01DriveActive(t *testing.T, rt *Runtime, targets ...*Fiber) {
 	if !waitB(t, rt, 8000, func() bool {
 		for _, s := range rt.detEnabledSteps() {
 			if s.Kind == detStepApplyDone {
-				if err := rt.detExecute(s); err != nil && !errors.Is(err, errDetAdmission) && !errors.Is(err, errDetStale) {
+				if err := rt.detExecute(s); err != nil && !errors.Is(err, errDetAdmission) && !errors.Is(err, ErrDetStale) {
 					return false
 				}
 			}

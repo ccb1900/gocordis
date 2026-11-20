@@ -25,6 +25,111 @@ func withRuntimeMode(mode runtimeMode) Option {
 	return func(o *options) { o.mode = mode }
 }
 
+// ---------------------------------------------------------------------------
+// Public deterministic-mode surface (P2-4, integration audit). The driver is
+// scheduling INSTRUMENTATION for composition tests and tools: it lets a test
+// admit parked completions (ApplyDone/UnwindDone) in a chosen order instead
+// of free-running scheduling. It changes NOTHING about lifecycle semantics —
+// the same commands are admitted, only their order is controlled — so any
+// composition that works in normal mode must quiesce to the same state here
+// (Thm 80 conformance at composition level).
+// ---------------------------------------------------------------------------
+
+// WithDeterministicMode runs the runtime under the deterministic driver:
+// Apply/Unwind completions are PARKED instead of free-running, and a DetDriver
+// admits them one step at a time in the order the test chooses. Close still
+// drains the shutdown completions it needs to reach Closed.
+func WithDeterministicMode() Option {
+	return withRuntimeMode(runtimeDeterministic)
+}
+
+// DetStepKind names one parked completion kind.
+type DetStepKind string
+
+const (
+	// DetApplyDone is a parked Apply completion.
+	DetApplyDone DetStepKind = "ApplyDone"
+	// DetUnwindDone is a parked Unwind completion.
+	DetUnwindDone DetStepKind = "UnwindDone"
+)
+
+// DetStep identifies one parked completion: the kind plus the fiber/activation
+// generation it belongs to. Stale steps (the fiber moved past the step) are
+// rejected by Execute.
+type DetStep struct {
+	Kind         DetStepKind
+	FiberID      FiberID
+	ActivationID ActivationID
+}
+
+func (s DetStep) String() string {
+	return fmt.Sprintf("%s(%d/%d)", s.Kind, s.FiberID, s.ActivationID)
+}
+
+// DetDriver admits parked completions in deterministic mode. Obtain it from
+// Runtime.DetDriver; the methods are safe for concurrent use (the underlying
+// machinery is mutex-guarded), though a test normally drives it from one
+// goroutine.
+type DetDriver struct {
+	rt *Runtime
+}
+
+// DetDriver returns the deterministic-mode driver. On a normal-mode runtime
+// the driver's methods are no-ops / errors — deterministic mode is chosen at
+// construction with WithDeterministicMode.
+func (r *Runtime) DetDriver() *DetDriver { return &DetDriver{rt: r} }
+
+// EnabledSteps lists the currently valid parked steps in a deterministic
+// (kind, fiber, activation) order.
+func (d *DetDriver) EnabledSteps() []DetStep {
+	r := d.rt
+	if r.mode != runtimeDeterministic {
+		return nil
+	}
+	var out []DetStep
+	for _, s := range r.detEnabledSteps() {
+		out = append(out, detStepToPublic(s))
+	}
+	return out
+}
+
+// Execute admits one parked completion. It returns an ErrDetStale-wrapped
+// error when the fiber has moved past the step, ErrDetAdmission when
+// the orchestrator rejected the command (queue full / halted), and
+// ErrDetWrongMode on a normal-mode runtime.
+func (d *DetDriver) Execute(step DetStep) error {
+	r := d.rt
+	if r.mode != runtimeDeterministic {
+		return ErrDetWrongMode
+	}
+	return r.detExecute(detStepFromPublic(step))
+}
+
+// Pending reports how many completions are currently parked.
+func (d *DetDriver) Pending() int {
+	r := d.rt
+	if r.mode != runtimeDeterministic {
+		return 0
+	}
+	return r.detPending()
+}
+
+func detStepToPublic(s detStep) DetStep {
+	k := DetApplyDone
+	if s.Kind == detStepUnwindDone {
+		k = DetUnwindDone
+	}
+	return DetStep{Kind: k, FiberID: s.FiberID, ActivationID: s.ActivationID}
+}
+
+func detStepFromPublic(s DetStep) detStep {
+	k := detStepApplyDone
+	if s.Kind == DetUnwindDone {
+		k = detStepUnwindDone
+	}
+	return detStep{Kind: k, FiberID: s.FiberID, ActivationID: s.ActivationID}
+}
+
 type deterministicState struct {
 	mu      sync.Mutex
 	pending map[detStep]command
@@ -49,6 +154,14 @@ var (
 	// fiber/activation already moved past the step, so the completion is
 	// obsolete and will never be admitted.
 	errDetStale = errors.New("runtime: stale completion")
+
+	// ErrDetStale reports that a parked completion is no longer valid: the
+	// fiber/activation already moved past the step (compare with errors.Is).
+	ErrDetStale = errors.New("runtime: stale deterministic step")
+
+	// ErrDetWrongMode reports that a deterministic-driver operation ran on a
+	// normal-mode runtime.
+	ErrDetWrongMode = errors.New("runtime: deterministic driver requires WithDeterministicMode")
 
 	// errDetAdmission reports that the orchestrator rejected a deterministic
 	// completion (command queue full or stopped). The completion REMAINS
@@ -178,7 +291,7 @@ func (r *Runtime) detExecute(step detStep) error {
 		return fmt.Errorf("runtime: detExecute requires runtimeDeterministic")
 	}
 	if !stepStillValid(r, step) {
-		return fmt.Errorf("%w: %v", errDetStale, step)
+		return fmt.Errorf("%w: %v", ErrDetStale, step)
 	}
 
 	// Enqueue-before-delete: a completion is admitted to the orchestrator
@@ -231,7 +344,7 @@ func (r *Runtime) drainShutdownCompletions(ctx context.Context) error {
 			}
 			blocked := false
 			for _, s := range en {
-				if err := r.detExecute(s); err != nil && !errors.Is(err, errDetStale) {
+				if err := r.detExecute(s); err != nil && !errors.Is(err, ErrDetStale) {
 					// Admission rejected (queue full/stopped): the completion
 					// stays parked (never lost). Do NOT report it as drained;
 					// back off and retry below.

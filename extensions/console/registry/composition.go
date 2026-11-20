@@ -393,10 +393,13 @@ func (r *registry) Contributions() []Contribution {
 	panelEntries := r.orderedPanelEntriesLocked()
 	out := make([]Contribution, 0, len(pageEntries)+len(panelEntries))
 	for _, entry := range pageEntries {
-		out = append(out, Contribution{Kind: ContributionPage, Owner: entry.owner, Page: entry.def})
+		// Same deep copy as Snapshot: the RawMessage view fields alias
+		// registry-owned bytes, and Contributions is exported to hosts that
+		// may hold the structs longer than one transport round-trip.
+		out = append(out, Contribution{Kind: ContributionPage, Owner: entry.owner, Page: copyPageDef(entry.def)})
 	}
 	for _, entry := range panelEntries {
-		out = append(out, Contribution{Kind: ContributionPanel, Owner: entry.owner, Panel: entry.def})
+		out = append(out, Contribution{Kind: ContributionPanel, Owner: entry.owner, Panel: copyPanelDef(entry.def)})
 	}
 	return out
 }

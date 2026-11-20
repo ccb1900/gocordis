@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2024,5 +2025,45 @@ func TestRehomeProvisionsVisibleInSnapshot(t *testing.T) {
 	// the record and resolve its live owner.
 	if err := rt.checkPreservationInvariants(); err != nil {
 		t.Fatalf("preservation invariants after rehome: %v", err)
+	}
+}
+
+// P2-4 pin: Rehome is rejected in deterministic mode (the realm move drives
+// its own completion ordering through the gate path, which the deterministic
+// driver does not model). The fiber must first be driven Active via the
+// public driver, so the guard that fires is the det-mode one, not the
+// not-Active one.
+func TestRehomeRejectedInDeterministicMode(t *testing.T) {
+	rt, err := New(WithDeterministicMode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := ctxBG(t)
+	defer func() { _ = rt.Close(ctx) }()
+
+	pf, err := rt.Load(&rehomeProvider{tag: "v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := rt.DetDriver()
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		steps := d.EnabledSteps()
+		if len(steps) == 1 && steps[0].Kind == DetApplyDone {
+			if err := d.Execute(steps[0]); err != nil && !errors.Is(err, ErrDetStale) {
+				t.Fatalf("execute apply: %v", err)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ApplyDone never parked: %v", steps)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	rehomeWaitState(t, pf, StateActive)
+
+	err = pf.Rehome(ctx, RehomeWithFreshIsolation())
+	if err == nil || !strings.Contains(err.Error(), "deterministic") {
+		t.Fatalf("det-mode rehome not rejected with the det-mode reason: %v", err)
 	}
 }

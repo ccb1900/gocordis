@@ -61,6 +61,7 @@ type twoPhaseInstallComp struct {
 	releaseInstall []chan struct{}
 	releaseInverse []chan struct{}
 	calls          *atomic.Int32
+	unwinding      chan struct{} // closed when ctx.Done() fires (= Context entered Unwinding)
 }
 
 func newTwoPhaseComp(n int, calls *atomic.Int32) *twoPhaseInstallComp {
@@ -70,6 +71,7 @@ func newTwoPhaseComp(n int, calls *atomic.Int32) *twoPhaseInstallComp {
 		releaseInstall: make([]chan struct{}, n),
 		releaseInverse: make([]chan struct{}, n),
 		calls:          calls,
+		unwinding:      make(chan struct{}),
 	}
 	for i := 0; i < n; i++ {
 		c.releaseInstall[i] = make(chan struct{})
@@ -82,6 +84,12 @@ func (c *twoPhaseInstallComp) Name() string                  { return "two-phase
 func (c *twoPhaseInstallComp) Inject() []runtime.Dependency  { return nil }
 func (c *twoPhaseInstallComp) Provide() []runtime.Capability { return nil }
 func (c *twoPhaseInstallComp) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	// 把 Context 的取消信号转发给测试：ctx.Done() 在 beginUnwind 中触发，
+	// 收到它即证明 Context 已进入 Unwinding——比轮询 Fiber.State() 更精确。
+	go func() {
+		<-ctx.Done()
+		close(c.unwinding)
+	}()
 	for i := range c.releaseInstall {
 		ri, ro := c.releaseInstall[i], c.releaseInverse[i]
 		go func() {
@@ -103,18 +111,6 @@ func (c *twoPhaseInstallComp) Apply(ctx *runtime.Context) (runtime.Cleanup, erro
 		<-c.entered
 	}
 	return nil, nil
-}
-
-func waitFiberStateForEffect(t *testing.T, f *runtime.Fiber, want runtime.FiberState) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if f.State() == want {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatalf("fiber never reached %v (state=%v)", want, f.State())
 }
 
 func waitSignals(t *testing.T, ch chan struct{}, n int, phase string) {
@@ -153,9 +149,13 @@ func TestPhaseGoneImpliesInverseDone(t *testing.T) {
 	if err := f.Dispose(); err != nil {
 		t.Fatal(err)
 	}
-	// 等 Context 进入 Unwinding（Fiber=Unloading）后再释放 install，
+	// 等 Context.Done 信号（= beginUnwind 已执行）后再释放 install，
 	// 确保走自撤销路径——这是屏障要保护的场景。
-	waitFiberStateForEffect(t, f, runtime.StateUnloading)
+	select {
+	case <-c.unwinding:
+	case <-ctx.Done():
+		t.Fatal("context never entered unwinding")
+	}
 	close(c.releaseInstall[0])
 	waitSignals(t, c.inverseEntered, 1, "inverse entered") // inverse 正在执行
 
@@ -200,16 +200,20 @@ func TestConcurrentInstallingBarrier(t *testing.T) {
 	if err := f.Dispose(); err != nil {
 		t.Fatal(err)
 	}
-	// Fiber 进入 Unloading 表示 orchestrator 已执行 beginUnwind，
+	// ctx.Done 表示 orchestrator 已执行 beginUnwind，
 	// 此时释放 install 必走自撤销路径（屏障保护的场景）。
-	waitFiberStateForEffect(t, f, runtime.StateUnloading)
+	select {
+	case <-c.unwinding:
+	case <-ctx.Done():
+		t.Fatal("context never entered unwinding")
+	}
 	for i := 0; i < n; i++ {
 		close(c.releaseInstall[i])
 	}
 	// 三个 inverse 都已进入执行阶段（全部被 releaseInverse 阻塞）。
-	// 等至少一个 inverse 进入执行阶段即可证明核心不变量。三个 install
-	// 的完成时机分散（有的 commit、有的自撤销），不强求三者同时阻塞。
-	waitSignals(t, c.inverseEntered, 1, "first inverse entered")
+	// 三个 inverse 必须全部进入执行阶段：完整证明三个并发 Installing
+	// 对应的撤销工作都受屏障保护（联合审查 P1）。
+	waitSignals(t, c.inverseEntered, n, "all inverses entered")
 
 	// 核心断言：inverse 执行期间 Fiber 不得 Gone，且 inverse 尚未完成。
 	if st := f.State(); st == runtime.StateGone {

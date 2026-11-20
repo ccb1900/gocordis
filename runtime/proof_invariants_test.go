@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 )
@@ -179,6 +180,9 @@ func (rt *Runtime) checkOnOrch(t *testing.T) error {
 	var err error
 	onOrchestrator(t, rt, func(o *orchestrator) {
 		err = rt.checkPreservationInvariants()
+		if err == nil {
+			err = rt.checkWaitGateInvariants()
+		}
 	})
 	return err
 }
@@ -450,4 +454,101 @@ func FuzzPreservation(f *testing.F) {
 			_ = f.Dispose()
 		}
 	})
+}
+
+// checkWaitGateInvariants asserts the wait-gate reverse consistency (ENG-04):
+// the orchestrator's gateWaiters index is the exact reverse of each fiber's
+// waitGates set, every gated member refers to a registered fiber, and a fiber
+// holding gates is semantically waiting (mid-rehome, withdrawing, or holding
+// a pending finalization). Runs on the orchestrator (checkOnOrch).
+func (rt *Runtime) checkWaitGateInvariants() error {
+	o := rt.orch
+	// gateWaiters is orchestrator-only state and this check runs ON the
+	// orchestrator goroutine (checkOnOrch), so it is read without a lock — the
+	// same access rule every orchestrator-side function uses.
+	// Forward direction: f.waitGates ⊆ gateWaiters[member.id] ∋ f.
+	for _, f := range rt.fibersSnapshot() {
+		f.mu.RLock()
+		gates := make(map[FiberID]struct{}, len(f.waitGates))
+		for mid := range f.waitGates {
+			gates[mid] = struct{}{}
+		}
+		rehoming, withdrawing, finalizing := f.rehome != nil, f.withdrawing, f.finalizePending
+		f.mu.RUnlock()
+		for mid := range gates {
+			member := rt.lookupFiber(mid)
+			if member == nil {
+				return fmt.Errorf("invariant: fiber %d waits on gate %d but no such fiber exists", f.id, mid)
+			}
+			_, ok := o.gateWaiters[mid][f]
+			if !ok {
+				return fmt.Errorf("invariant: reverse index missing fiber %d from gate %d waiters", f.id, mid)
+			}
+		}
+		if len(gates) > 0 && !rehoming && !withdrawing && !finalizing {
+			return fmt.Errorf("invariant: fiber %d holds %d wait gates without a waiting reason", f.id, len(gates))
+		}
+	}
+	// Reverse direction: every indexed waiter really holds that gate.
+	for mid, waiters := range o.gateWaiters {
+		member := rt.lookupFiber(mid)
+		if member == nil {
+			return fmt.Errorf("invariant: gateWaiters[%d] exists but the member fiber is gone", mid)
+		}
+		for wf := range waiters {
+			wf.mu.RLock()
+			_, ok := wf.waitGates[mid]
+			wf.mu.RUnlock()
+			if !ok {
+				return fmt.Errorf("invariant: indexed waiter fiber %d does not hold gate %d", wf.id, mid)
+			}
+		}
+	}
+	return nil
+}
+
+// TestProofWaitGateReverseConsistency — ENG-04: the gate reverse index must
+// mirror every fiber's waitGates across rehome/withdrawal traffic.
+func TestProofWaitGateReverseConsistency(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := contextOf(t)
+	defer func() { _ = rt.Close(ctx) }()
+
+	pf := rt.mustLoad(t, &rehomeProvider{tag: "inv-gates"})
+	waitActiveList(t, pf)
+	bc := &rehomeBlockingConsumer{
+		cleanupEntered: make(chan struct{}),
+		releaseCleanup: make(chan struct{}),
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { close(bc.releaseCleanup) }) }
+	defer release()
+	cf := rt.mustLoad(t, bc)
+	waitActiveList(t, cf)
+
+	if err := rt.checkOnOrch(t); err != nil {
+		t.Fatalf("invariants clean before gate traffic: %v", err)
+	}
+
+	// Drive rehome traffic that installs gates, while the consumer blocks.
+	rehomeDone := make(chan error, 1)
+	go func() { rehomeDone <- pf.Rehome(ctx, RehomeWithFreshIsolation()) }()
+	<-bc.cleanupEntered
+
+	if err := rt.checkOnOrch(t); err != nil {
+		t.Fatalf("wait-gate invariants violated mid-rehome: %v", err)
+	}
+
+	release()
+	select {
+	case err := <-rehomeDone:
+		if err != nil {
+			t.Fatalf("rehome: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("rehome never completed")
+	}
+	if err := rt.checkOnOrch(t); err != nil {
+		t.Fatalf("wait-gate invariants violated after rehome: %v", err)
+	}
 }

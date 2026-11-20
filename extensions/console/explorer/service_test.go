@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/extensions/console/explorer"
@@ -20,23 +21,54 @@ type fakeOwned struct{ entries []config.OwnedComponent }
 
 func (f *fakeOwned) owned() []config.OwnedComponent { return f.entries }
 
+// switchTestService builds a fixture with a REAL runtime fiber: the
+// declaration-first branch settles on the Runtime's terminal state (Ready /
+// Gone), so a zero-value Fiber would neither compile a truthful result nor
+// survive the wait. The switch simulates a declaration reconcile by
+// loading/disposing the fiber — exactly what an application's switch does.
 func switchTestService(t *testing.T, switchCalls *[]string) *explorer.Service {
 	t.Helper()
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = rt.Close(ctx)
+	})
+	fiber, err := rt.Load(&svcComp{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fiber.Ready(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
 	s := explorer.New(nil)
 	s.SetOwned(func() []config.OwnedComponent {
-		return []config.OwnedComponent{{
-			ID:    "p1",
-			Type:  "svc",
-			Fiber: &runtime.Fiber{}, // non-nil: declared and owned
-		}}
+		return []config.OwnedComponent{{ID: "p1", Type: "svc", Fiber: fiber}}
 	})
 	s.SetDesired(config.Config{Components: []config.ComponentConfig{{ID: "p1", Type: "svc"}}})
 	s.SetDeclarationSwitch(func(_ context.Context, id string, enable bool) error {
 		*switchCalls = append(*switchCalls, id+":"+map[bool]string{true: "on", false: "off"}[enable])
-		return nil
+		if id != "p1" {
+			return nil
+		}
+		if enable {
+			return fiber.Load()
+		}
+		return fiber.Dispose()
 	})
 	return s
 }
+
+type svcComp struct{}
+
+func (c *svcComp) Name() string                                    { return "svc-p1" }
+func (c *svcComp) Inject() []runtime.Dependency                    { return nil }
+func (c *svcComp) Provide() []runtime.Capability                   { return nil }
+func (c *svcComp) Apply(*runtime.Context) (runtime.Cleanup, error) { return nil, nil }
 
 func TestControlRoutesThroughDeclarationSwitch(t *testing.T) {
 	var calls []string

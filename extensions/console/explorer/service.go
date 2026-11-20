@@ -213,11 +213,14 @@ func (s *Service) Control(ctx context.Context, id string, enable bool) ControlRe
 			}
 			return ControlResult{PluginID: id, Rejected: true, State: state, Error: errText(err)}
 		}
-		state, stateErr := s.currentState(id)
-		if stateErr != nil {
-			state = "Unknown"
-		}
-		return ControlResult{PluginID: id, Accepted: true, State: state}
+		// The declaration was accepted and reconciled; report the RUNTIME
+		// terminal state, never a mid-flight snapshot. Activation is async
+		// (Apply runs on the orchestrator), so reading State() here would
+		// "accept" a component that is about to fail — the same settle the
+		// transient path performs, now declaration-backed. A component
+		// legitimately waiting on a disabled dependency stays Pending and
+		// surfaces as Failed-with-reason, never as a fake Active (PE-11).
+		return s.settledResult(ctx, id, enable)
 	}
 	// Transient fallback: results are flagged so the UI knows the switch is
 	// not durable (the next reconcile overrides it).
@@ -267,6 +270,53 @@ func (s *Service) Control(ctx context.Context, id string, enable bool) ControlRe
 		return resultFor(id, fiber, true, fmt.Errorf("deactivate %q: %w", id, err))
 	}
 	return ControlResult{PluginID: id, Accepted: true, Transient: true, State: fiber.State().String()}
+}
+
+// settledResult waits for the switch's runtime terminal state after a
+// declaration-backed switch: enable converges to Active (or reports the
+// activation failure with its reason), disable converges to Gone. The bounded
+// wait never invents state — on timeout the live Fiber state is reported with
+// the wait error attached, so the console shows what actually happened.
+func (s *Service) settledResult(ctx context.Context, id string, enable bool) ControlResult {
+	wait, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+	s.mu.Lock()
+	var fiber *runtime.Fiber
+	if s.owned != nil {
+		for _, o := range s.owned() {
+			if o.ID == id && o.Fiber != nil {
+				fiber = o.Fiber
+				break
+			}
+		}
+	}
+	s.mu.Unlock()
+
+	if !enable {
+		if fiber == nil {
+			return ControlResult{PluginID: id, Accepted: true, State: "Gone"}
+		}
+		if err := fiber.Gone(wait); err != nil {
+			return resultFor(id, fiber, true, fmt.Errorf("deactivate %q: %w", id, err))
+		}
+		return ControlResult{PluginID: id, Accepted: true, State: "Gone"}
+	}
+	if fiber == nil {
+		// Reconcile produced no live object: the row is not owned (removed
+		// concurrently, or the switch raced a declaration edit). Report it.
+		state, err := s.currentState(id)
+		if err != nil {
+			state = "Unknown"
+		}
+		return ControlResult{PluginID: id, Accepted: true, State: state}
+	}
+	if fiber.State() == runtime.StateFailed {
+		return resultFor(id, fiber, true, fiber.Err())
+	}
+	if err := fiber.Ready(wait); err != nil {
+		return resultFor(id, fiber, true, fmt.Errorf("activate %q: %w", id, err))
+	}
+	return ControlResult{PluginID: id, Accepted: true, State: fiber.State().String()}
 }
 
 // currentState is used for rejection responses. It reads Runtime only.

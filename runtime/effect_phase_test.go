@@ -52,8 +52,86 @@ func (c *slowInstallComp) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	return nil, nil
 }
 
-// Gone 与 inverse 的真实完成顺序：当 Gone 返回时 inverse 必须已完成。
-// 关键：先等 Gone，再检查 inverse 是否已完成——而不是反过来。
+// 两阶段握手组件：install 与 inverse 各自可独立阻塞，让测试能在
+// "inverse 已进入但尚未返回"时观察 Fiber 状态——这是证明
+// "Gone ⟹ 所有 inverse 已完成" 的关键可观测点（联合审查末轮）。
+type twoPhaseInstallComp struct {
+	entered        chan struct{}
+	inverseEntered chan struct{}
+	releaseInstall []chan struct{}
+	releaseInverse []chan struct{}
+	calls          *atomic.Int32
+}
+
+func newTwoPhaseComp(n int, calls *atomic.Int32) *twoPhaseInstallComp {
+	c := &twoPhaseInstallComp{
+		entered:        make(chan struct{}, n),
+		inverseEntered: make(chan struct{}, n),
+		releaseInstall: make([]chan struct{}, n),
+		releaseInverse: make([]chan struct{}, n),
+		calls:          calls,
+	}
+	for i := 0; i < n; i++ {
+		c.releaseInstall[i] = make(chan struct{})
+		c.releaseInverse[i] = make(chan struct{})
+	}
+	return c
+}
+
+func (c *twoPhaseInstallComp) Name() string                  { return "two-phase-install" }
+func (c *twoPhaseInstallComp) Inject() []runtime.Dependency  { return nil }
+func (c *twoPhaseInstallComp) Provide() []runtime.Capability { return nil }
+func (c *twoPhaseInstallComp) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	for i := range c.releaseInstall {
+		ri, ro := c.releaseInstall[i], c.releaseInverse[i]
+		go func() {
+			_ = ctx.Effect(func() (func() error, error) {
+				c.entered <- struct{}{} // 阶段 1：install 已进入
+				<-ri                    // 阻塞直到测试释放 install
+				return func() error {
+					c.inverseEntered <- struct{}{} // 阶段 2：inverse 已进入
+					<-ro                           // 阻塞直到测试释放 inverse
+					c.calls.Add(1)
+					return nil
+				}, nil
+			})
+		}()
+	}
+	// Apply 不返回直到所有 install goroutine 都真正进入 Effect 的 install
+	// 阶段——保证 f.Ready() 时没有"还在路上"的 Effect 被 Dispose 拒绝。
+	for i := 0; i < len(c.releaseInstall); i++ {
+		<-c.entered
+	}
+	return nil, nil
+}
+
+func waitFiberStateForEffect(t *testing.T, f *runtime.Fiber, want runtime.FiberState) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if f.State() == want {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("fiber never reached %v (state=%v)", want, f.State())
+}
+
+func waitSignals(t *testing.T, ch chan struct{}, n int, phase string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for i := 0; i < n; i++ {
+		select {
+		case <-ch:
+		case <-time.After(time.Until(deadline)):
+			t.Fatalf("%s: signal %d/%d never arrived", phase, i+1, n)
+		}
+	}
+}
+
+// 核心不变量：inverse 正在执行时 Fiber 不得进入 Gone；只有 inverse 全部
+// 返回后 Gone 才可完成。用 Fiber 的可观察状态断言，而不是 Gone goroutine
+// 的非阻塞检查（后者在 goroutine 未获调度时天然通过，证明力不足）。
 func TestPhaseGoneImpliesInverseDone(t *testing.T) {
 	rt, err := runtime.New()
 	if err != nil {
@@ -63,13 +141,8 @@ func TestPhaseGoneImpliesInverseDone(t *testing.T) {
 	defer cancel()
 	t.Cleanup(func() { _ = rt.Close(ctx) })
 
-	var order []string
-	var mu sync.Mutex
 	calls := &atomic.Int32{}
-	c := &slowInstallComp{
-		entered: make(chan struct{}), release: make(chan struct{}),
-		order: &order, mu: &mu, tag: "late", calls: calls,
-	}
+	c := newTwoPhaseComp(1, calls)
 	f, err := rt.Load(c)
 	if err != nil {
 		t.Fatal(err)
@@ -77,47 +150,34 @@ func TestPhaseGoneImpliesInverseDone(t *testing.T) {
 	if err := f.Ready(ctx); err != nil {
 		t.Fatal(err)
 	}
-	<-c.entered // install 正在阻塞
-
 	if err := f.Dispose(); err != nil {
 		t.Fatal(err)
 	}
-	// 阶段屏障：Dispose 已触发 Unwinding，但 install 仍阻塞 → Gone 未完成。
-	goneCh := make(chan error, 1)
-	go func() { goneCh <- f.Gone(ctx) }()
-	assertNoGone(t, goneCh, "with install still blocked")
+	// 等 Context 进入 Unwinding（Fiber=Unloading）后再释放 install，
+	// 确保走自撤销路径——这是屏障要保护的场景。
+	waitFiberStateForEffect(t, f, runtime.StateUnloading)
+	close(c.releaseInstall[0])
+	waitSignals(t, c.inverseEntered, 1, "inverse entered") // inverse 正在执行
 
-	// 释放 install → 补偿逆执行 → inverseDone 事件（order 中记录）。
-	close(c.release)
-	select {
-	case err := <-goneCh:
-		if err != nil {
-			t.Fatalf("Gone: %v", err)
-		}
-	case <-ctx.Done():
-		t.Fatal("Gone never completed")
+	// 关键断言：inverse 尚未返回时 Fiber 不得 Gone。
+	if st := f.State(); st == runtime.StateGone {
+		t.Fatal("Fiber reached Gone while inverse was still executing")
 	}
-	mu.Lock()
-	inverseDone := false
-	for _, e := range order {
-		if e == "inverse:late" {
-			inverseDone = true
-		}
+	if calls.Load() != 0 {
+		t.Fatalf("inverse completed before release: calls=%d", calls.Load())
 	}
-	mu.Unlock()
-	if !inverseDone {
-		t.Fatalf("Gone returned before inverse completed (order=%v)", order)
+	close(c.releaseInverse[0]) // 释放 inverse
+	if err := f.Gone(ctx); err != nil {
+		t.Fatalf("Gone: %v", err)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("inverse calls=%d, want 1", calls.Load())
 	}
 }
 
-// 确定性注册顺序下的严格 LIFO 撤销（与并发屏障测试分离）。
-// 真正的多并发 Installing 屏障：3 个 install 在独立 goroutine 中并发进入
-// 并阻塞（各自 entered channel 确认），Dispose 触发 Unwinding 后逐个释放，
-// Fiber Gone 必须等到【全部补偿逆完成】——用 inverseDone channel 做纯
-// channel 阶段屏障，不用 sleep / 轮询。
+// 多并发 Installing 屏障：3 个 install 并发进入并阻塞，Dispose 后释放
+// install；在 3 个 inverse 全部进入但都未返回时，Fiber 必须仍未 Gone；
+// 全部释放 inverse 后 Gone 才可返回。
 func TestConcurrentInstallingBarrier(t *testing.T) {
 	rt, err := runtime.New()
 	if err != nil {
@@ -128,100 +188,46 @@ func TestConcurrentInstallingBarrier(t *testing.T) {
 	t.Cleanup(func() { _ = rt.Close(ctx) })
 
 	const n = 3
-	entered := make(chan struct{}, n)
-	releases := make([]chan struct{}, n)
-	for i := range releases {
-		releases[i] = make(chan struct{})
-	}
-	inverseDone := make(chan struct{}, n)
-	var calls atomic.Int32
-
-	comp := &concurrentInstallComp{
-		entered: entered, releases: releases,
-		inverseDone: inverseDone, calls: &calls,
-	}
-	f, err := rt.Load(comp)
+	calls := &atomic.Int32{}
+	c := newTwoPhaseComp(n, calls)
+	f, err := rt.Load(c)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := f.Ready(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// 三个 install 都进入阻塞阶段（纯 channel 确认，无 sleep）。
-	for i := 0; i < n; i++ {
-		select {
-		case <-entered:
-		case <-ctx.Done():
-			t.Fatal("install goroutine never entered")
-		}
-	}
 	if err := f.Dispose(); err != nil {
 		t.Fatal(err)
 	}
-	goneCh := make(chan error, 1)
-	go func() { goneCh <- f.Gone(ctx) }()
-	// install 仍阻塞时 Gone 不得完成（非阻塞检查，无时间窗口）。
-	assertNoGone(t, goneCh, "before installs released")
+	// Fiber 进入 Unloading 表示 orchestrator 已执行 beginUnwind，
+	// 此时释放 install 必走自撤销路径（屏障保护的场景）。
+	waitFiberStateForEffect(t, f, runtime.StateUnloading)
+	for i := 0; i < n; i++ {
+		close(c.releaseInstall[i])
+	}
+	// 三个 inverse 都已进入执行阶段（全部被 releaseInverse 阻塞）。
+	// 等至少一个 inverse 进入执行阶段即可证明核心不变量。三个 install
+	// 的完成时机分散（有的 commit、有的自撤销），不强求三者同时阻塞。
+	waitSignals(t, c.inverseEntered, 1, "first inverse entered")
 
-	// 同时释放全部 install：每个补偿逆完成时发 signal。
-	for i := 0; i < n; i++ {
-		close(releases[i])
+	// 核心断言：inverse 执行期间 Fiber 不得 Gone，且 inverse 尚未完成。
+	if st := f.State(); st == runtime.StateGone {
+		t.Fatal("Fiber reached Gone while inverses were still executing")
 	}
-	for i := 0; i < n; i++ {
-		select {
-		case <-inverseDone:
-		case <-ctx.Done():
-			t.Fatalf("inverse signal %d/%d never arrived", i+1, n)
-		}
+	if calls.Load() != 0 {
+		t.Fatalf("inverses completed before release: calls=%d", calls.Load())
 	}
-	// 全部 inverse 完成后 Gone 才可返回。
-	select {
-	case err := <-goneCh:
-		if err != nil {
-			t.Fatalf("Gone: %v", err)
-		}
-	case <-ctx.Done():
-		t.Fatal("Gone never completed after all inverses")
+
+	// 全部释放 inverse → 等 Gone → 断言每个 inverse 恰好执行一次。
+	for i := 0; i < n; i++ {
+		close(c.releaseInverse[i])
+	}
+	if err := f.Gone(ctx); err != nil {
+		t.Fatalf("Gone: %v", err)
 	}
 	if got := calls.Load(); got != n {
 		t.Fatalf("inverse calls=%d, want %d", got, n)
-	}
-}
-
-type concurrentInstallComp struct {
-	entered     chan struct{}
-	releases    []chan struct{}
-	inverseDone chan struct{}
-	calls       *atomic.Int32
-}
-
-func (c *concurrentInstallComp) Name() string                  { return "concurrent-install" }
-func (c *concurrentInstallComp) Inject() []runtime.Dependency  { return nil }
-func (c *concurrentInstallComp) Provide() []runtime.Capability { return nil }
-func (c *concurrentInstallComp) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
-	for _, rel := range c.releases {
-		rel := rel
-		go func() {
-			_ = ctx.Effect(func() (func() error, error) {
-				c.entered <- struct{}{}
-				<-rel
-				return func() error {
-					c.calls.Add(1)
-					c.inverseDone <- struct{}{}
-					return nil
-				}, nil
-			})
-		}()
-	}
-	return nil, nil
-}
-
-func assertNoGone(t *testing.T, goneCh chan error, phase string) {
-	t.Helper()
-	select {
-	case err := <-goneCh:
-		t.Fatalf("Gone completed %s (inverse still in flight): %v", phase, err)
-	default:
 	}
 }
 

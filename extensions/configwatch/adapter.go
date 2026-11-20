@@ -119,6 +119,22 @@ func WithReconcileTimeout(d time.Duration) Option {
 	return func(a *Adapter) { a.reconcileTimeout = d }
 }
 
+// TxGuard is an application-level serialization hook around the ENTIRE
+// config transaction: Read → Parse → controller.Reconcile → PostReconcile.
+// A lock taken only inside Parser.Parse leaves a window where a console
+// write can commit between Parse and Reconcile, so the runtime ends up with
+// a stale config while the overlay holds the newer one. Applications with a
+// second declaration entry point (console UI, API) MUST pass a guard that
+// serializes both entries (Iteration 9). The adapter's own worker already
+// serializes all source events; this guard coordinates with OUTSIDE writers.
+// It must call fn exactly once; its own lock is released by the app.
+type TxGuard func(ctx context.Context, fn func() error) error
+
+// WithTxGuard installs the full-transaction guard. nil means no guard.
+func WithTxGuard(g TxGuard) Option {
+	return func(a *Adapter) { a.txGuard = g }
+}
+
 // Stats is a minimal, non-authoritative observability counter set.
 type Stats struct {
 	ChangesReceived    uint64
@@ -163,6 +179,7 @@ type Adapter struct {
 	stats            Stats
 	postReconcile    func(ctx context.Context, cfg config.Config) error
 	reconcileTimeout time.Duration
+	txGuard          TxGuard
 }
 
 type syncRequest struct {
@@ -372,9 +389,20 @@ func (a *Adapter) worker() {
 	}
 }
 
-// process reads the latest source state and reconciles it. fromChange enables
-// adapter-level duplicate suppression by content hash.
+// process runs one config transaction under the application's TxGuard (when
+// installed). The guard covers Read, Parse, Reconcile and PostReconcile as a
+// single unit — no outside declaration write can interleave between Parse
+// and the Controller commit.
 func (a *Adapter) process(ctx context.Context, fromChange bool) error {
+	if a.txGuard != nil {
+		return a.txGuard(ctx, func() error { return a.processInner(ctx, fromChange) })
+	}
+	return a.processInner(ctx, fromChange)
+}
+
+// processInner reads the latest source state and reconciles it. fromChange enables
+// adapter-level duplicate suppression by content hash.
+func (a *Adapter) processInner(ctx context.Context, fromChange bool) error {
 	data, err := a.reader.Read(ctx, a.source)
 	if err != nil {
 		if errors.Is(err, ErrSourceNotFound) {

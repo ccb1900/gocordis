@@ -29,7 +29,6 @@ type Subscription struct {
 	stop     chan struct{}
 	wake     chan struct{}
 	stopOnce sync.Once
-	chOnce   sync.Once
 
 	mu       sync.Mutex
 	queue    []runtime.RuntimeEvent
@@ -86,11 +85,14 @@ func (s *Subscription) finish(cause error) {
 	s.halt()
 }
 
-// halt signals the pump to stop and closes the delivery channel, each exactly
-// once.
+// halt signals the pump to stop. It must NOT close the delivery channel
+// (EXT-01): the pump may be parked in `select { case s.ch <- ev: ... case
+// <-s.stop: }` and Go's select may pick the send branch even though stop is
+// closed — a send into a just-closed channel panics. The pump is the SOLE
+// closer of s.ch (via defer in pump), which makes send-to-closed structurally
+// impossible: the channel is only closed after the pump has stopped sending.
 func (s *Subscription) halt() {
 	s.stopOnce.Do(func() { close(s.stop) })
-	s.chOnce.Do(func() { close(s.ch) })
 }
 
 // wakeSignal nudges the pump (non-blocking).
@@ -102,23 +104,42 @@ func (s *Subscription) wakeSignal() {
 }
 
 // enqueue appends one event to the internal spool (never blocks the emitter).
-// Returns false when the subscription is closed.
+// Returns false when the subscription is closed or has overflowed. The
+// backlog limit is enforced HERE (EXT-01): the old pop-time-only check was
+// unreachable while the pump sat parked in the send, so a stopped consumer
+// made the spool grow without bound. On overflow the subscription terminates
+// with ErrSubscriptionOverflow (the pump — never holding the observer lock —
+// performs the unregistration when it wakes).
 func (s *Subscription) enqueue(ev runtime.RuntimeEvent) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
+	if s.closed || s.overflow != nil {
+		s.mu.Unlock()
+		return false
+	}
+	if len(s.queue) >= queueLimit {
+		s.overflow = ErrSubscriptionOverflow
+		s.mu.Unlock()
+		s.halt() // non-blocking: wakes the pump, which closes Events()
 		return false
 	}
 	s.queue = append(s.queue, ev)
+	s.mu.Unlock()
 	return true
 }
 
 // pump is the sole mover from the internal spool into Events(): FIFO order,
 // Sequence order, terminating on Close / overflow / Observer close.
 func (s *Subscription) pump() {
+	// EXT-01: the pump owns BOTH terminal duties. It is the sole closer of the
+	// delivery channel (deferred, covering every exit path), and it performs
+	// the unregistration itself (idempotent; Close() may have done it already).
+	// No send can observe a closed channel: the channel closes only after the
+	// pump has stopped sending.
+	defer close(s.ch)
+	defer func() { s.log.removeSubscriber(s) }()
 	for {
 		s.mu.Lock()
-		if s.closed {
+		if s.closed || s.overflow != nil {
 			s.mu.Unlock()
 			return
 		}
@@ -131,13 +152,11 @@ func (s *Subscription) pump() {
 			}
 			continue
 		}
-		// Backlog check at POP time: a consumer that stops reading drives the
-		// queue past the limit here (the pump may otherwise be blocked in the
-		// send below and never revisit the loop top).
+		// Defense in depth: the enqueue-side cap keeps the backlog within the
+		// limit, so this branch is unreachable in normal operation.
 		if len(s.queue) > queueLimit {
 			s.mu.Unlock()
 			s.terminate(ErrSubscriptionOverflow)
-			s.log.removeSubscriber(s)
 			return
 		}
 		ev := s.queue[0]

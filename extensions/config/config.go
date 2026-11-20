@@ -502,6 +502,13 @@ func (c *Controller) doReconcile(ctx context.Context, desired Config) error {
 	}
 
 	var errs []error
+	// replacementFailed records ids whose replacement-side removal did not
+	// reach Gone. The old fiber is still live and still in Applied, so its
+	// new spec must NOT be loaded this pass: overlaying c.applied would
+	// orphan the old fiber (its cleanup handle dropped) and the new Apply
+	// would race the old one's contributions. The next Reconcile retries
+	// the whole replacement (the diff sees the unchanged applied spec).
+	replacementFailed := make(map[string]bool)
 
 	// 1. Removals and replacements: unload the old Component first (Kernel
 	//    withdraw-then-load semantics), removing from Applied only once Gone.
@@ -513,12 +520,16 @@ func (c *Controller) doReconcile(ctx context.Context, desired Config) error {
 	for _, old := range replacedOld {
 		if err := c.removeOne(ctx, old.spec.id); err != nil {
 			errs = append(errs, err)
-			continue // keep old applied; do not overlay the new one
+			replacementFailed[old.spec.id] = true
 		}
 	}
 
-	// 2. Additions (and replacements' new side).
+	// 2. Additions (and replacements' new side — but never over a removal
+	//    that failed: the old fiber still owns the slot).
 	for _, spec := range added {
+		if replacementFailed[spec.id] {
+			continue
+		}
 		if err := c.addOne(ctx, spec); err != nil {
 			errs = append(errs, err)
 		}

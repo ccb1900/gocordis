@@ -702,3 +702,76 @@ func TestC20CloseContextTimeout(t *testing.T) {
 		t.Fatal("controller did not finish closing after stubborn cleanup returned")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// C21 — A replacement whose removal is not confirmed Gone must NOT load its
+// new side: overlaying c.applied would orphan the still-live old fiber (its
+// cleanup handle dropped) and lie about Applied. The error is surfaced, the
+// old fiber keeps the slot, and the next Reconcile retries the replacement
+// to completion (withdraw-then-load, once Gone is confirmed).
+// ---------------------------------------------------------------------------
+
+func TestC21ReplacementRemovalFailureNoOverlay(t *testing.T) {
+	e := newEnv(t)
+
+	release := make(chan struct{})
+	var v2Applied atomic.Int32
+	fac := &factory{}
+	fac.build = func(cc config.ComponentConfig) (runtime.Component, error) {
+		if v, _ := cc.Config["v"].(int); v == 2 {
+			return &testComponent{name: "X-v2", applyFn: func(*runtime.Context) error {
+				v2Applied.Add(1)
+				return nil
+			}}, nil
+		}
+		return &testComponent{name: "X-v1", cleanup: func() error {
+			<-release // blocks past the tight reconcile context
+			return nil
+		}}, nil
+	}
+	if err := e.reg.Register("stubborn", fac); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.ctrl.Reconcile(ctxT(t), cfg(cc("A", "stubborn", "v", 1))); err != nil {
+		t.Fatalf("Reconcile v1: %v", err)
+	}
+	old, _ := ownedByID(t, e.ctrl, "A")
+	if err := old.Fiber.Ready(ctxT(t)); err != nil {
+		t.Fatalf("v1 not active: %v", err)
+	}
+
+	tight, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := e.ctrl.Reconcile(tight, cfg(cc("A", "stubborn", "v", 2))); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Reconcile v2 = %v, want Gone timeout surfaced", err)
+	}
+	if n := v2Applied.Load(); n != 0 {
+		t.Fatalf("replacement addOne ran over a failed removal (applies=%d)", n)
+	}
+	after, ok := ownedByID(t, e.ctrl, "A")
+	if !ok || after.Fiber.ID() != old.Fiber.ID() {
+		t.Fatalf("A must still be applied with the OLD fiber, got %+v ok=%v", after, ok)
+	}
+
+	// Release the stuck cleanup: the old fiber finishes unwinding, and the
+	// next Reconcile completes the whole replacement.
+	close(release)
+	if err := old.Fiber.Gone(ctxT(t)); err != nil {
+		t.Fatalf("old fiber not gone after release: %v", err)
+	}
+	if err := e.ctrl.Reconcile(ctxT(t), cfg(cc("A", "stubborn", "v", 2))); err != nil {
+		t.Fatalf("retry Reconcile v2: %v", err)
+	}
+	fresh, _ := ownedByID(t, e.ctrl, "A")
+	if fresh.Fiber.ID() == old.Fiber.ID() {
+		t.Fatal("retry must load a NEW fiber")
+	}
+	if err := fresh.Fiber.Ready(ctxT(t)); err != nil {
+		t.Fatalf("v2 fiber not active: %v", err)
+	}
+	// Apply is async: assert only after the fiber is observably Active.
+	if n := v2Applied.Load(); n != 1 {
+		t.Fatalf("v2 applies = %d, want 1 after retry", n)
+	}
+}

@@ -51,8 +51,14 @@ type PluginLifecycle interface {
 
 // Server is the Web UI host: static assets + JSON Query/Command API + SSE.
 type Server struct {
-	adapter   *host.Host
-	assets    fs.FS
+	adapter *host.Host
+	assets  fs.FS
+
+	// cfgMu guards the pre-serve configuration setters below. They are
+	// documented as start-ServeHTTP-time configuration, but a data race between
+	// a late setter and an already-serving request goroutine is still a bug;
+	// the guards make late reconfiguration race-free (EXT-07).
+	cfgMu     sync.RWMutex
 	explorer  *explorer.ExplorerTransport
 	lifecycle PluginLifecycle
 	policy    AccessPolicy
@@ -82,11 +88,27 @@ func New(adapter *host.Host, assets fs.FS) *Server {
 // plugin-explorer component is active.
 // SetPluginLifecycle installs the desired-state editing boundary for the
 // console's uninstall/install actions.
+func (s *Server) currentExplorer() *explorer.ExplorerTransport {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.explorer
+}
+
+func (s *Server) currentLifecycle() PluginLifecycle {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.lifecycle
+}
+
 func (s *Server) SetPluginLifecycle(l PluginLifecycle) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
 	s.lifecycle = l
 }
 
 func (s *Server) SetExplorer(exp *explorer.ExplorerTransport) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
 	s.explorer = exp
 }
 
@@ -129,15 +151,22 @@ type AccessPolicy func(ctx context.Context, req AccessRequest) error
 
 // SetAccessPolicy installs the authorization seam. nil restores the default
 // allow-everything behavior.
-func (s *Server) SetAccessPolicy(p AccessPolicy) { s.policy = p }
+func (s *Server) SetAccessPolicy(p AccessPolicy) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	s.policy = p
+}
 
 // allowed runs the policy for one operation and writes the 403 itself on
 // denial; false means the caller must return immediately.
 func (s *Server) allowed(w http.ResponseWriter, r *http.Request, kind AccessKind, name string) bool {
-	if s.policy == nil {
+	s.cfgMu.RLock()
+	policy := s.policy
+	s.cfgMu.RUnlock()
+	if policy == nil {
 		return true
 	}
-	if err := s.policy(r.Context(), AccessRequest{Kind: kind, Name: name, Request: r}); err != nil {
+	if err := policy(r.Context(), AccessRequest{Kind: kind, Name: name, Request: r}); err != nil {
 		writeAPIError(w, http.StatusForbidden, "forbidden", err.Error())
 		return false
 	}
@@ -326,14 +355,14 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		s.writeResult(w, map[string]any{"modules": modules}, nil)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/plugins":
-		if s.explorer == nil {
+		if s.currentExplorer() == nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin explorer is not active")
 			return
 		}
-		data, ue := s.explorer.ListPlugins()
+		data, ue := s.currentExplorer().ListPlugins()
 		s.writeResult(w, data, explorerErr(ue))
 	case r.Method == http.MethodPost && r.URL.Path == "/api/plugins/control":
-		if s.explorer == nil {
+		if s.currentExplorer() == nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin explorer is not active")
 			return
 		}
@@ -345,10 +374,10 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		if !s.allowed(w, r, AccessLifecycle, req.PluginID) {
 			return
 		}
-		data, ue := s.explorer.ControlPluginContext(r.Context(), req)
+		data, ue := s.currentExplorer().ControlPluginContext(r.Context(), req)
 		s.writeResult(w, data, explorerErr(ue))
 	case r.Method == http.MethodPost && r.URL.Path == "/api/plugins/uninstall":
-		if s.lifecycle == nil {
+		if s.currentLifecycle() == nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin lifecycle not configured")
 			return
 		}
@@ -360,13 +389,13 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		if !s.allowed(w, r, AccessLifecycle, req.PluginID) {
 			return
 		}
-		if err := s.lifecycle.Uninstall(r.Context(), req.PluginID); err != nil {
+		if err := s.currentLifecycle().Uninstall(r.Context(), req.PluginID); err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
 		writeData(w, http.StatusAccepted, nil)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/plugins/install":
-		if s.lifecycle == nil {
+		if s.currentLifecycle() == nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin lifecycle not configured")
 			return
 		}
@@ -378,13 +407,13 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		if !s.allowed(w, r, AccessLifecycle, req2.PluginID) {
 			return
 		}
-		if err := s.lifecycle.Install(r.Context(), req2.PluginID); err != nil {
+		if err := s.currentLifecycle().Install(r.Context(), req2.PluginID); err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
 		writeData(w, http.StatusAccepted, nil)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/plugins/removed":
-		if s.lifecycle == nil {
+		if s.currentLifecycle() == nil {
 			writeData(w, http.StatusOK, []any{})
 			return
 		}
@@ -395,7 +424,7 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		writeData(w, http.StatusOK, removed)
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/config") && strings.HasPrefix(r.URL.Path, "/api/plugins/"):
-		if s.lifecycle == nil {
+		if s.currentLifecycle() == nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin lifecycle not configured")
 			return
 		}
@@ -410,7 +439,7 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		writeData(w, http.StatusOK, cfg)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/config") && strings.HasPrefix(r.URL.Path, "/api/plugins/"):
-		if s.lifecycle == nil {
+		if s.currentLifecycle() == nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin lifecycle not configured")
 			return
 		}

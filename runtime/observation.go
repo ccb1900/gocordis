@@ -243,7 +243,7 @@ func (o *orchestrator) readSnapshotFacts(fibers []*Fiber, rtState RuntimeState) 
 	ownerInfo := make(map[FiberID]fiberInfo, len(fibers))
 	realmByPtr := map[*realm]*realmSnap{r.rootRealm: {id: 0}}
 	for _, f := range fibers {
-		name := f.component.Name()
+		name := f.name // cached at creation (ENG-02): no user code on read paths
 		f.mu.RLock()
 		info := fiberInfo{
 			f:        f,

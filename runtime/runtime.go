@@ -151,8 +151,7 @@ func (r *Runtime) Load(component Component) (*Fiber, error) {
 	f := newFiber(r, component)
 	// Cache declarative metadata on the caller's goroutine so the orchestrator
 	// never runs Component code while making lifecycle decisions.
-	f.inject = component.Inject()
-	f.provide = component.Provide()
+	cacheDeclarations(f, component.Inject(), component.Provide())
 
 	r.mu.Lock()
 	if r.state != RuntimeRunning {

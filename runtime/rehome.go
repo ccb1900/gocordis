@@ -60,8 +60,13 @@ type rehomePending struct {
 // property this primitive exists for.
 //
 // The call blocks until the rehome completes (consumers of the old namespace
-// have detached) or ctx expires. Rehome must not race with Dispose; a
-// withdrawal started concurrently completes after the rehome.
+// have detached) or ctx expires. Cancellation semantics (ENG-06): an expired
+// ctx makes THIS call return ctx.Err(), but the rehome already admitted to the
+// orchestrator keeps running to completion server-side — a realm move is a
+// composite that must not be left half-applied. There is no "abort mid-rehome";
+// to observe the outcome, re-check the fiber's state or issue another Rehome
+// (which reports ErrRehomeBusy while one is in flight). Rehome must not race
+// with Dispose; a withdrawal started concurrently completes after the rehome.
 func (f *Fiber) Rehome(ctx context.Context, opts ...RehomeOption) error {
 	if ctx == nil {
 		ctx = context.Background()

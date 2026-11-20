@@ -61,6 +61,14 @@ type Backend struct {
 
 	rt wazero.Runtime
 
+	// modules tracks, per module ID, the compiled module the backend retained
+	// (EXT-05). Loader.Unload notifies UnloadModule so compilation resources
+	// are released with the registry entry instead of lingering until Close.
+	// Concurrent duplicate Loads share one compilation: a second compile of an
+	// already-tracked ID is closed and the tracked ref is returned (no
+	// double-retained CompiledModule leaks from the registry-commit loser).
+	modules map[string]*moduleRef
+
 	nextInstance atomic.Uint64
 }
 
@@ -81,6 +89,7 @@ func NewBackend(opts ...Option) *Backend {
 	}
 	return &Backend{
 		observer: o.observer,
+		modules:  make(map[string]*moduleRef),
 		// CloseOnContextDone: an in-flight guest call is aborted when its
 		// context expires, so a misbehaving guest cannot monopolize the
 		// activation goroutine indefinitely (paper §6.3: the sandbox must
@@ -148,6 +157,17 @@ func (b *Backend) loadModule(ctx context.Context, artifact loader.Artifact, data
 	if err := b.checkOpen(); err != nil {
 		return nil, err
 	}
+	// EXT-05: dedupe concurrent loads of the same module ID — the loader
+	// commits only one registry entry anyway, so two concurrent compiles would
+	// retain two CompiledModules with no owner for the loser. Share the
+	// tracked ref.
+	b.mu.Lock()
+	if existing, ok := b.modules[artifact.ID]; ok {
+		b.mu.Unlock()
+		return existing, nil
+	}
+	b.mu.Unlock()
+
 	compiled, err := b.rt.CompileModule(ctx, data)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -168,7 +188,43 @@ func (b *Backend) loadModule(ctx context.Context, artifact loader.Artifact, data
 		_ = compiled.Close(context.Background())
 		return nil, err
 	}
-	return &moduleRef{id: artifact.ID, version: artifact.Version, moduleType: moduleType, compiled: compiled}, nil
+	ref := &moduleRef{id: artifact.ID, version: artifact.Version, moduleType: moduleType, compiled: compiled}
+	// EXT-05: track the compiled module for UnloadModule. Another load may have
+	// raced us to the same ID; the loser closes its fresh compilation and
+	// returns the tracked one.
+	b.mu.Lock()
+	if existing, ok := b.modules[artifact.ID]; ok {
+		b.mu.Unlock()
+		_ = compiled.Close(context.Background())
+		return existing, nil
+	}
+	b.modules[artifact.ID] = ref
+	b.mu.Unlock()
+	return ref, nil
+}
+
+// UnloadModule releases the backend's compiled resources for id (EXT-05,
+// optional loader notification). The loader guarantees no module usage is
+// outstanding when it discards the registry entry, so closing the compiled
+// module here cannot strand a live activation.
+func (b *Backend) UnloadModule(id string) {
+	b.mu.Lock()
+	ref, ok := b.modules[id]
+	if ok {
+		delete(b.modules, id)
+	}
+	b.mu.Unlock()
+	if ok {
+		_ = ref.compiled.Close(context.Background())
+	}
+}
+
+// CompiledModules reports how many compiled modules the backend currently
+// retains (observability for lifecycle tests and diagnostics).
+func (b *Backend) CompiledModules() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.modules)
 }
 
 // manifestModuleType extracts the Logical Module Type from the wasm module's

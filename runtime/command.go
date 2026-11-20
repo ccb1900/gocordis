@@ -112,8 +112,7 @@ func (c *cmdReviseInsert) apply(o *orchestrator) {
 	}
 
 	child := newFiber(o.rt, c.component)
-	child.inject = c.inject
-	child.provide = c.provide
+	cacheDeclarations(child, c.inject, c.provide)
 	child.realm = c.realm
 	// RT-08: read the old fiber's FINAL per-key isolation table at insert time
 	// (on the orchestrator, under routeMu). The table of a Gone fiber is stable

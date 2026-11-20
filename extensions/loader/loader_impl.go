@@ -35,6 +35,12 @@ type BuiltinLoader struct {
 	builtins BuiltinRegistry
 	usage    ModuleUsage
 	backends map[BackendType]Backend
+
+	// moduleBackend tracks, per loaded module, the BackendType that produced it
+	// (EXT-05): Unload notifies that backend via the optional UnloadModule
+	// interface so retained resources (e.g. compiled WASM) are released with
+	// the registry entry, not at Backend.Close.
+	moduleBackend map[string]BackendType
 }
 
 // NewBuiltinLoader creates a running BuiltinLoader with an internal Builtin
@@ -42,11 +48,12 @@ type BuiltinLoader struct {
 // BackendType "builtin".
 func NewBuiltinLoader() *BuiltinLoader {
 	l := &BuiltinLoader{
-		modules:  make(map[string]*Module),
-		allIdle:  make(chan struct{}),
-		builtins: NewBuiltinRegistry(),
-		usage:    NewModuleUsage(),
-		backends: make(map[BackendType]Backend),
+		modules:       make(map[string]*Module),
+		allIdle:       make(chan struct{}),
+		builtins:      NewBuiltinRegistry(),
+		usage:         NewModuleUsage(),
+		backends:      make(map[BackendType]Backend),
+		moduleBackend: make(map[string]BackendType),
 	}
 	l.backends[BackendBuiltin] = &builtinBackend{l: l}
 	return l
@@ -170,6 +177,9 @@ func (l *BuiltinLoader) Load(ctx context.Context, artifact Artifact) (*Module, e
 		return nil, ErrModuleExists
 	}
 	l.modules[artifact.ID] = &mod
+	// EXT-05: remember WHICH backend produced this module so Unload can notify
+	// it (a Backend may retain per-module resources, e.g. compiled WASM).
+	l.moduleBackend[artifact.ID] = artifact.BackendType
 	return &mod, nil
 }
 
@@ -189,6 +199,18 @@ func (l *BuiltinLoader) Unload(ctx context.Context, id string) error {
 		return ErrModuleInUse
 	}
 	delete(l.modules, id)
+	// EXT-05: notify the producing Backend that the module left the registry so
+	// it can release its per-module resources. The optional interface keeps the
+	// Backend contract minimal (Load-only) for implementations without retained
+	// resources.
+	if bt, ok := l.moduleBackend[id]; ok {
+		if b, ok := l.backends[bt]; ok {
+			if u, ok := b.(interface{ UnloadModule(id string) }); ok {
+				u.UnloadModule(id)
+			}
+		}
+		delete(l.moduleBackend, id)
+	}
 	return nil
 }
 

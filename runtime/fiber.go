@@ -58,8 +58,16 @@ type Fiber struct {
 	parent   *Fiber
 	children map[FiberID]*Fiber
 
+	// name caches Component.Name() at fiber creation (ENG-02): observability
+	// and diagnostics read it from decision/read goroutines — user code runs
+	// exactly once, on the mounting goroutine.
+	name string
+
 	// inject/provide cache the Component declarations at fiber-creation time so
 	// the orchestrator never executes Component code on the decision goroutine.
+	// ENG-03: the slices are COPIES — a component returning a shared, later
+	// mutated slice would otherwise change a mounted fiber's declaration
+	// behind the runtime's back.
 	inject  []Dependency
 	provide []Capability
 
@@ -98,14 +106,30 @@ func newFiber(rt *Runtime, component Component) *Fiber {
 		state:     StatePending,
 		intent:    IntentMounted,
 		signal:    wait.New(),
+		// ENG-02: cache the component name at creation. Snapshot paths call it
+		// from the orchestrator's read paths; Name() is user code and must run
+		// once on the mounting goroutine, never on a decision/read path.
+		name: component.Name(),
 	}
 }
 
 // ID returns the Runtime-unique Fiber identity.
 func (f *Fiber) ID() FiberID { return f.id }
 
+// cacheDeclarations stores copies of the component's declared dependency and
+// capability slices (ENG-03): the runtime must not observe later mutations of
+// a slice the component returned from a shared backing array.
+func cacheDeclarations(f *Fiber, inject []Dependency, provide []Capability) {
+	if len(inject) > 0 {
+		f.inject = append([]Dependency(nil), inject...)
+	}
+	if len(provide) > 0 {
+		f.provide = append([]Capability(nil), provide...)
+	}
+}
+
 // Name returns the Component name (diagnostics only; never an identity).
-func (f *Fiber) Name() string { return f.component.Name() }
+func (f *Fiber) Name() string { return f.name }
 
 // Component returns the Component definition this Fiber instantiates.
 func (f *Fiber) Component() Component { return f.component }
@@ -317,6 +341,15 @@ func WithFreshIsolation() ReviseOption {
 // reinserted fiber is published; Ready the returned fiber to await its
 // activation. A revision of a Failed fiber is a sanctioned retry (a revision
 // reinserts without an outcome).
+//
+// Cancellation semantics (ENG-06): once the retire steps have begun, the
+// revision runs to completion server-side — the retire/reinsert composite is
+// either finished or explicitly refused at a gate (parent finalizing, cycle,
+// invalid key); it is never abandoned between retire and reinsert. An expired
+// ctx makes THIS call return ctx.Err() after the insert command was admitted;
+// the replacement fiber still appears (wait Ready on it via a fresh handle or
+// Snapshot). Calling Revise again on the same fiber while a revision is in
+// flight returns ErrReviseBusy, and a Gone fiber can never be revised again.
 //
 // testReviseHook is a test-only seam (never set in production) fired after the
 // revision snapshots the ownership position and before the retire steps, so

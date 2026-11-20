@@ -48,8 +48,7 @@ func (c *cmdSpawnChild) apply(o *orchestrator) {
 	}
 
 	child := newFiber(o.rt, c.component)
-	child.inject = c.inject
-	child.provide = c.provide
+	cacheDeclarations(child, c.inject, c.provide)
 	child.parent = parent
 
 	// RT-05: build the child's per-key isolation table HERE, on the

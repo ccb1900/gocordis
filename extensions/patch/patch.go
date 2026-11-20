@@ -49,8 +49,20 @@ type Doc struct {
 // converted — modified rows first, then removed rows — so an id present in
 // both stays uninstalled, exactly as the old map-based overlay behaved.
 func ParsePatchDoc(data []byte) ([]Patch, error) {
-	var doc Doc
-	if err := json.Unmarshal(data, &doc); err == nil && doc.Version == Version {
+	// EXT-06: a document that DECLARES a version must match the supported one.
+	// The old code fell through to the legacy parser for any mismatch, so
+	// {"version":2,...} parsed as an empty legacy overlay instead of failing.
+	var probe struct {
+		Version *int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &probe); err == nil && probe.Version != nil {
+		if *probe.Version != Version {
+			return nil, fmt.Errorf("patch file: unsupported format version %d (supported: %d)", *probe.Version, Version)
+		}
+		var doc Doc
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return nil, fmt.Errorf("patch file: %w", err)
+		}
 		for _, p := range doc.Patches {
 			if p.ID == "" {
 				return nil, fmt.Errorf("patch %q: missing component id", p.Op)
@@ -58,10 +70,16 @@ func ParsePatchDoc(data []byte) ([]Patch, error) {
 			if (p.Op == PatchReplace || p.Op == PatchInsert) && (p.Component == nil || p.Component.ID == "") {
 				return nil, fmt.Errorf("patch %s %q: missing component definition", p.Op, p.ID)
 			}
+			// EXT-06: a replace patch locates the row by p.ID — swapping in a
+			// row with a DIFFERENT id would rename the component instead of
+			// replacing it.
+			if p.Op == PatchReplace && p.Component.ID != p.ID {
+				return nil, fmt.Errorf("patch replace %q: component definition has mismatched id %q", p.ID, p.Component.ID)
+			}
 		}
 		return doc.Patches, nil
 	}
-	// Legacy console overlay (pre-patch format).
+	// Legacy console overlay (pre-patch format, no version marker).
 	var legacy struct {
 		Removed  []config.ComponentConfig `json:"removed"`
 		Modified []config.ComponentConfig `json:"modified"`
@@ -115,29 +133,61 @@ func indexOfComponent(components []config.ComponentConfig, id string) int {
 // idempotent; replacing an absent row and inserting a duplicate row are
 // errors, because both mean the base file and the patch disagree about the
 // composition's shape and the conflict must surface.
+// ApplyPatches applies patch layers in order over a deep copy of the base
+// composition and commits the result only on FULL success (EXT-06): a failing
+// layer leaves the caller's cfg untouched instead of half-applied.
 func ApplyPatches(cfg *config.Config, layers ...[]Patch) error {
+	if cfg == nil {
+		return fmt.Errorf("patch apply: nil config")
+	}
+	work := cloneConfig(cfg)
 	for _, layer := range layers {
 		for _, p := range layer {
 			switch p.Op {
 			case PatchRemove:
-				if idx := indexOfComponent(cfg.Components, p.ID); idx >= 0 {
-					cfg.Components = append(cfg.Components[:idx], cfg.Components[idx+1:]...)
+				if idx := indexOfComponent(work.Components, p.ID); idx >= 0 {
+					work.Components = append(work.Components[:idx], work.Components[idx+1:]...)
 				}
 			case PatchReplace:
-				idx := indexOfComponent(cfg.Components, p.ID)
+				// EXT-06: defense in depth for programmatically built patches.
+				if p.Component == nil || p.Component.ID != p.ID {
+					return fmt.Errorf("patch replace %q: component definition missing or has mismatched id", p.ID)
+				}
+				idx := indexOfComponent(work.Components, p.ID)
 				if idx < 0 {
 					return fmt.Errorf("patch replace %q: component not in base composition", p.ID)
 				}
-				cfg.Components[idx] = *p.Component
+				work.Components[idx] = *p.Component
 			case PatchInsert:
-				if indexOfComponent(cfg.Components, p.Component.ID) >= 0 {
+				if p.Component == nil {
+					return fmt.Errorf("patch insert %q: missing component definition", p.ID)
+				}
+				if indexOfComponent(work.Components, p.Component.ID) >= 0 {
 					return fmt.Errorf("patch insert %q: component already in composition", p.Component.ID)
 				}
-				cfg.Components = append(cfg.Components, *p.Component)
+				work.Components = append(work.Components, *p.Component)
 			default:
 				return fmt.Errorf("patch %q: unknown op %q", p.ID, p.Op)
 			}
 		}
 	}
+	*cfg = *work
 	return nil
+}
+
+// cloneConfig deep-copies a composition: rows and their Config maps are
+// duplicated so patch application can never alias caller-owned maps.
+func cloneConfig(cfg *config.Config) *config.Config {
+	out := &config.Config{Components: make([]config.ComponentConfig, 0, len(cfg.Components))}
+	for _, cc := range cfg.Components {
+		row := cc
+		if cc.Config != nil {
+			row.Config = make(map[string]any, len(cc.Config))
+			for k, v := range cc.Config {
+				row.Config[k] = v
+			}
+		}
+		out.Components = append(out.Components, row)
+	}
+	return out
 }

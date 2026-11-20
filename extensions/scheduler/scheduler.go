@@ -166,6 +166,10 @@ func (s *Scheduler) Add(job Job) error {
 		return ErrInvalidSchedule
 	}
 
+	// Admission checks first, then the Schedule.Next VALIDATION OUTSIDE the
+	// lock (EXT-04: Next is external code — a blocking, re-entering or
+	// panicking implementation must not hold up Remove/Close or crash the
+	// scheduler loop), then a re-check under the lock before committing.
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -175,6 +179,7 @@ func (s *Scheduler) Add(job Job) error {
 		s.mu.Unlock()
 		return ErrJobExists
 	}
+	s.mu.Unlock()
 
 	now := time.Now()
 	var sched Schedule
@@ -182,7 +187,6 @@ func (s *Scheduler) Add(job Job) error {
 	switch sc := job.Schedule.(type) {
 	case Once:
 		if sc.At.IsZero() {
-			s.mu.Unlock()
 			return ErrInvalidSchedule
 		}
 		sched = sc
@@ -194,7 +198,6 @@ func (s *Scheduler) Add(job Job) error {
 		}
 	case Interval:
 		if sc.Every <= 0 {
-			s.mu.Unlock()
 			return ErrInvalidSchedule
 		}
 		if sc.Start.IsZero() {
@@ -203,20 +206,28 @@ func (s *Scheduler) Add(job Job) error {
 		sched = sc
 		t, ok := sc.Next(now)
 		if !ok || !t.After(now) {
-			s.mu.Unlock()
 			return ErrInvalidSchedule
 		}
 		next = t
 	default:
-		t, ok := job.Schedule.Next(now)
-		if !ok || !t.After(now) {
-			s.mu.Unlock()
+		t, ok, nerr := callScheduleNext(job.Schedule, now)
+		if nerr != nil || !ok || !t.After(now) {
 			return ErrInvalidSchedule
 		}
 		sched = job.Schedule
 		next = t
 	}
 
+	s.mu.Lock()
+	// Re-validate: Close/Remove/Add may have raced the out-of-lock validation.
+	if s.closed {
+		s.mu.Unlock()
+		return ErrSchedulerClosed
+	}
+	if _, exists := s.jobs[job.ID]; exists {
+		s.mu.Unlock()
+		return ErrJobExists
+	}
 	s.jobs[job.ID] = &jobState{
 		id:       job.ID,
 		schedule: sched,
@@ -404,27 +415,36 @@ func (s *Scheduler) runTask(j *jobState, ctx context.Context, cancel context.Can
 }
 
 // finishExecution updates bookkeeping after a Task returns or panics.
+// Schedule.Next is external code: it is called OUTSIDE s.mu (EXT-04) and the
+// result is only committed after re-validating under the lock that the same
+// job instance is still scheduled and the scheduler is not closed.
 func (s *Scheduler) finishExecution(j *jobState, cancel context.CancelFunc) {
 	s.mu.Lock()
 	j.running = false
 	j.cancel = nil
-	if !s.closed {
-		if _, present := s.jobs[j.id]; present {
-			now := time.Now()
-			if t, ok := j.schedule.Next(now); ok {
-				j.next = t
-			} else {
-				j.next = time.Time{} // e.g. Once already fired: no more triggers
-			}
-		} else {
-			j.next = time.Time{} // Job removed while running
-		}
-	} else {
-		j.next = time.Time{}
+	stillScheduled := !s.closed && s.jobs[j.id] == j
+	var sched Schedule
+	if stillScheduled {
+		sched = j.schedule
 	}
 	s.active--
 	s.checkDrainedLocked()
 	wake := !s.closed
+	s.mu.Unlock()
+
+	next := time.Time{} // removed while running, or no more triggers
+	if stillScheduled {
+		if t, ok, _ := callScheduleNext(sched, time.Now()); ok {
+			next = t
+		}
+	}
+
+	s.mu.Lock()
+	// Commit only if the job instance is still the scheduled one (a
+	// Remove+re-Add in between created a fresh jobState).
+	if !s.closed && s.jobs[j.id] == j {
+		j.next = next
+	}
 	s.mu.Unlock()
 
 	cancel() // release the per-execution context after the Task returned
@@ -432,4 +452,17 @@ func (s *Scheduler) finishExecution(j *jobState, cancel context.CancelFunc) {
 	if wake {
 		s.wakeLoop()
 	}
+}
+
+// callScheduleNext invokes Schedule.Next with panic containment (EXT-04: the
+// implementation is external code; a panic must surface as a validation
+// failure, never terminate the scheduler loop or the Add caller).
+func callScheduleNext(sc Schedule, after time.Time) (t time.Time, ok bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			t, ok, err = time.Time{}, false, errors.New("schedule.Next panicked")
+		}
+	}()
+	t, ok = sc.Next(after)
+	return t, ok, nil
 }

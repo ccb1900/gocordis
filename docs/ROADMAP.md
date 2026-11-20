@@ -32,7 +32,7 @@ stc-go)自本文起停用,改用论文编号。
 | **Theorem 68** | Recovery exactness(episode 累加器 ≃ 未开始) | LIFO/恰好一次 + 基线等价 | thm68_recovery_test |
 | **Theorem 70** | Ordering(L-Begin 门控;provider episode 严格包住 consumer) | 依赖门控 + 撤离顺序 | thm70/c3 |
 | **Theorem 73** | Progress(paper p.49: ≺ 无环 + 有限 N + 有界 K + 每步为 lifecycle rule ⇒ no-deadlock + S(n)≤(K+3)(V(n)+1) ⇒ quiesce)。**"合作"不是论文前提**（仅 archived 验证假设）；quiescent=eq.49 "no transition left in progress"——Active+Installing/Undoing effect **不是** quiescent（effect barrier 后 conformance oracle 已同步） | deterministic step driver + 双 quiescence oracle(含 effect 状态) | thm73_thm80_test、obs_test/TestThm73QuiescenceSeesInstallingEffect |
-| **Theorem 80** | Confluence(规范形 + 合流;**排除 failed fiber**——与论文一致)。det-driver 交错 conformance:同一操作集的 ApplyDone/UnwindDone 不同提交顺序 → 终态在 ≃ 投影(忽略 Lemma 61 生成名重命名)下等价;Revise 的 UnwindDone guard 链把非法交错变成不可达 = Thm80(1) canonical form 的结构性保证 | 合流生成器 + 前置条件 + det 交错 + ≃ 投影 | thm73_thm80、thm80_det_interleaving_test、revision_thm80 |
+| **Theorem 80** | Confluence(规范形 + 合流;**排除 failed fiber**——与论文一致)。**deterministic interleaving conformance coverage（非完整定理证明）**:同一操作集的 ApplyDone/UnwindDone 不同提交顺序 → 终态在 ≃ 投影(忽略 Lemma 61 生成名重命名)下等价;明确断言 guard 链(consumer unwind 先于 provider unwind)与 Revise canonical order(旧 consumer unwind → 旧 provider unwind → 新 provider apply → consumer reattach);非法交错被 guard 变成不可达 = Thm80(1) canonical form 的结构性证据 | 合流生成器 + 前置条件 + det 交错 + ≃ 投影 | thm73_thm80、thm80_det_interleaving_test、revision_thm80 |
 | §4.4 Asynchrony | inertial host(L-Divert 只取 landing 替代)仍 quiesce | orchestrator 异步完成 + deterministic mode | det_admission、deterministic_close |
 | §4.4 Failure | raise → Unloading → Inactive,Installed nothing;outcome 阻止重入;**不向父传播**;failed 留在 registry | `finalizeActivation` Failed 分支 | TestApplyFailureEndsFailed、TestFailedDisposeLoadRetryCycle |
 | §4.4 Configuration | revision = 卸下→逆→移除(子先父后)→同名重插;re-enable 走复合而非改 τ | HMR/loader 的替换路径(partial) | hmr H1–H20 |
@@ -169,12 +169,20 @@ p.44)；T66/T73 是沿袭 stc-go 的旧编号，映射正确但勿与论文编�
 
 ## §4 语义复审记录（2026-11-20，论文 × JS Cordis）
 
-- **P0 已修**：`Fiber.Ready` 在 RUnlock 后读 `f.intent`（Load/Dispose 在锁内
-  写）→ 锁内快照，并发测试 `-race` 绿；`Context.Effect` 的 Installing slot
-  与 beginUnwind 竞态 → beginUnwind 等 in-flight install 归零后才快照
-  Committed，Gone 保证所有逆完成；late-install 自撤销统一走
-  `guardedInverse`，panic 不再逃逸。既有 late-commit 测试的断言已按新语义
-  更新（先释放 install，再等 Gone）。
+- **P0 已修（语义分两段，当前实现）**：
+  - `Fiber.Ready` 在 RUnlock 后读 `f.intent`（Load/Dispose 在锁内写）→ 锁内
+    快照，并发测试 `-race` 绿；
+  - **`Context.Effect` 屏障（Effect lifecycle barrier）**：`installing` 计数
+    覆盖安装 + 安装后补偿逆 + Effect 终态事件发布；`beginUnwind()` 只做非阻塞
+    状态翻转（Active→Unwinding + cancel），**绝不在 Orchestrator 决策线程
+    等待用户代码**；`collectInverses()` 在 unwind goroutine 等 `installing==0`
+    后才快照 Committed slots，LIFO 撤销由 `runInverses()` 执行。Gone 保证
+    所有逆及 EffectCommitted/EffectUndoing/EffectUndone 事件已发布（联合审查
+    P1）。late-install 自撤销统一走 `guardedInverse`，panic 不逃逸。
+  - conformance：`TestInstallingInverseCompletesBeforeGone`、
+    `TestPhaseOrchestratorStaysLiveDuringSlowInstall`（临时恢复旧阻塞实现会
+    10s 超时）、`TestPhaseEffectEventsOrderedBeforeGone` 与
+    `TestPhaseMultipleInstallingAllDoneBeforeLIFO`（严格 LIFO）。
 - **Isolation**：`runtime/providers.go` 注释曾写 "lookup walks own → parent"，
   与 `lookupOwn` 的实际逐 realm 无祖先回退语义相悖，已修正；**不得**为方便
   重新引入祖先回退（论文 Def 24/25、ADR-0001）。

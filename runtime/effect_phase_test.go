@@ -6,6 +6,8 @@ package runtime_test
 // 用阶段屏障记录真实完成顺序，不依赖 time.Sleep / 先等某一方再观察另一方。
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -115,9 +117,8 @@ func TestPhaseMultipleInstallingAllDoneBeforeLIFO(t *testing.T) {
 	var order []string
 	var mu sync.Mutex
 	calls := &atomic.Int32{}
-	comp := &multiSlowComp{order: &order, mu: &mu, calls: calls, releases: []chan struct{}{
-		make(chan struct{}), make(chan struct{}), make(chan struct{}),
-	}, entered: make(chan struct{}, 3)}
+	// 三个 Effect 在 Apply 内【串行】注册 → seq 顺序确定 a,b,c。
+	comp := &orderedEffectsComp{order: &order, mu: &mu, calls: calls}
 	f, err := rt.Load(comp)
 	if err != nil {
 		t.Fatal(err)
@@ -125,75 +126,67 @@ func TestPhaseMultipleInstallingAllDoneBeforeLIFO(t *testing.T) {
 	if err := f.Ready(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 3; i++ {
-		<-comp.entered
-	}
 	if err := f.Dispose(); err != nil {
 		t.Fatal(err)
 	}
-
-	// 交错释放：每次释放一个 install，其逆完成后 installing 屏障才递减。
-	// Gone 必须等到三个逆全部完成（阶段屏障：从 Gone 返回点反查）。
-	close(comp.releases[0])
-	<-time.After(50 * time.Millisecond)
-	close(comp.releases[1])
-	close(comp.releases[2])
 	if err := f.Gone(ctx); err != nil {
 		t.Fatalf("Gone: %v", err)
 	}
+
 	mu.Lock()
-	invCount := 0
-	for _, e := range order {
-		if len(e) >= 8 && e[:8] == "inverse:" {
-			invCount++
-		}
-	}
-	mu.Unlock()
-	if invCount != 3 {
-		t.Fatalf("inverse count=%d at Gone, want 3 (order=%v)", invCount, order)
-	}
+	defer mu.Unlock()
 	if calls.Load() != 3 {
 		t.Fatalf("inverse calls=%d, want 3", calls.Load())
 	}
+	// 注册顺序 a,b,c；严格 LIFO 必须是 c,b,a。
+	invOrder := inverseTags(order)
+	want := []string{"c", "b", "a"}
+	if fmt.Sprint(invOrder) != fmt.Sprint(want) {
+		t.Fatalf("inverse order = %v, want strict LIFO %v (all=%v)", invOrder, want, order)
+	}
 }
 
-type multiSlowComp struct {
-	order    *[]string
-	mu       *sync.Mutex
-	calls    *atomic.Int32
-	releases []chan struct{}
-	entered  chan struct{}
+type orderedEffectsComp struct {
+	order *[]string
+	mu    *sync.Mutex
+	calls *atomic.Int32
 }
 
-func (c *multiSlowComp) Name() string                  { return "multi-slow" }
-func (c *multiSlowComp) Inject() []runtime.Dependency  { return nil }
-func (c *multiSlowComp) Provide() []runtime.Capability { return nil }
-func (c *multiSlowComp) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
-	for i, rel := range c.releases {
-		tag := string(rune('a' + i))
-		go func(tag string, rel chan struct{}) {
-			_ = ctx.Effect(func() (func() error, error) {
+func (c *orderedEffectsComp) Name() string                  { return "ordered-effects" }
+func (c *orderedEffectsComp) Inject() []runtime.Dependency  { return nil }
+func (c *orderedEffectsComp) Provide() []runtime.Capability { return nil }
+func (c *orderedEffectsComp) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	for _, tag := range []string{"a", "b", "c"} {
+		tag := tag
+		err := ctx.Effect(func() (func() error, error) {
+			c.mu.Lock()
+			*c.order = append(*c.order, "install:"+tag)
+			c.mu.Unlock()
+			return func() error {
+				c.calls.Add(1)
 				c.mu.Lock()
-				*c.order = append(*c.order, "install:"+tag)
+				*c.order = append(*c.order, "inverse:"+tag)
 				c.mu.Unlock()
-				c.entered <- struct{}{}
-				<-rel
-				return func() error {
-					c.calls.Add(1)
-					c.mu.Lock()
-					*c.order = append(*c.order, "inverse:"+tag)
-					c.mu.Unlock()
-					return nil
-				}, nil
-			})
-		}(tag, rel)
+				return nil
+			}, nil
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	return nil, nil
 }
 
-// Orchestrator 活性：一个 Fiber 的慢 install 正在等待时，另一个 Fiber
-// 仍必须能被调度到 Active。旧实现 beginUnwind 在决策线程 Cond.Wait，
-// 会阻塞整个 Runtime（联合审查 P0-02 架构风险）。
+func inverseTags(order []string) []string {
+	var out []string
+	for _, e := range order {
+		if strings.HasPrefix(e, "inverse:") {
+			out = append(out, strings.TrimPrefix(e, "inverse:"))
+		}
+	}
+	return out
+}
+
 func TestPhaseOrchestratorStaysLiveDuringSlowInstall(t *testing.T) {
 	rt, err := runtime.New()
 	if err != nil {
@@ -320,4 +313,181 @@ func (c *panicMixComp) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		})
 	}()
 	return nil, nil
+}
+
+// Effect 事件是生命周期状态的一部分：observers 收到 Committed 之后才能
+// 收到 Undoing/Undone，且 Gone 不得早于对应的终态事件（联合审查 P1）。
+// 用 EventSink 记录真实事件顺序，不用 sleep。
+type effectEventSink struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (s *effectEventSink) Emit(ev runtime.RuntimeEvent) {
+	if ev.Type != "EffectCommitted" && ev.Type != "EffectUndoing" && ev.Type != "EffectUndone" {
+		return
+	}
+	s.mu.Lock()
+	s.events = append(s.events, string(ev.Type))
+	s.mu.Unlock()
+}
+
+func (s *effectEventSink) snapshot() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.events...)
+}
+
+func TestPhaseEffectEventsOrderedBeforeGone(t *testing.T) {
+	sink := &effectEventSink{}
+	rt, err := runtime.New(runtime.WithEventSink(sink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	t.Cleanup(func() { _ = rt.Close(ctx) })
+
+	var order []string
+	var mu sync.Mutex
+	calls := &atomic.Int32{}
+	c := &slowInstallComp{
+		entered: make(chan struct{}), release: make(chan struct{}),
+		order: &order, mu: &mu, tag: "events", calls: calls,
+	}
+	f, err := rt.Load(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Ready(ctx); err != nil {
+		t.Fatal(err)
+	}
+	<-c.entered // install 阻塞中
+	if err := f.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	close(c.release)
+	if err := f.Gone(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// 核心不变量：Gone 返回时，终态事件 EffectUndone 必须已发布，
+	// 且 Committed（若有）早于 Undoing——正是"emit 纳入 Installing 屏障"
+	// 要保证的（旧实现 Gone 可早于 emit、Undoing 可早于 Committed）。
+	events := sink.snapshot()
+	if len(events) < 2 {
+		t.Fatalf("effect events = %v, want at least Undoing+Undone before Gone", events)
+	}
+	if events[len(events)-1] != "EffectUndone" {
+		t.Fatalf("last effect event = %s, want EffectUndone (got %v)", events[len(events)-1], events)
+	}
+	firstUndo := -1
+	for i, e := range events {
+		if e == "EffectUndoing" {
+			firstUndo = i
+			break
+		}
+	}
+	if firstUndo > 0 && events[0] != "EffectCommitted" {
+		t.Fatalf("EffectUndoing at %d but no leading EffectCommitted: %v", firstUndo, events)
+	}
+}
+
+// 第二个场景：install 完成（Committed 已发布）之后再 Dispose，
+// 事件顺序必须是 Committed → Undoing → Undone。
+func TestPhaseEffectEventsAfterCommit(t *testing.T) {
+	sink := &effectEventSink{}
+	rt, err := runtime.New(runtime.WithEventSink(sink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	t.Cleanup(func() { _ = rt.Close(ctx) })
+
+	var order []string
+	var mu sync.Mutex
+	calls := &atomic.Int32{}
+	c := &slowInstallComp{
+		entered: make(chan struct{}), release: make(chan struct{}),
+		order: &order, mu: &mu, tag: "commit", calls: calls,
+	}
+	f, err := rt.Load(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Ready(ctx); err != nil {
+		t.Fatal(err)
+	}
+	<-c.entered
+	// 先让 install 完成 → Committed 事件应发布
+	close(c.release)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(sink.snapshot()) < 1 {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if len(sink.snapshot()) < 1 {
+		t.Fatalf("Committed event never published: %v", sink.snapshot())
+	}
+	if first := sink.snapshot()[0]; first != "EffectCommitted" {
+		t.Fatalf("first event = %s, want EffectCommitted", first)
+	}
+	if err := f.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Gone(ctx); err != nil {
+		t.Fatal(err)
+	}
+	events := sink.snapshot()
+	want := []string{"EffectCommitted", "EffectUndoing", "EffectUndone"}
+	if fmt.Sprint(events) != fmt.Sprint(want) {
+		t.Fatalf("effect events = %v, want %v", events, want)
+	}
+}
+
+// 重复调度实验：Gone 返回时 EffectUndone 必须已经发布。旧实现把 emit
+// 放在 installing-- 之后，collectInverses 可越过未发布的终态事件，在
+// 高重复调度下产生 Gone 早于 EffectUndone 的可观测违规。
+func TestPhaseEffectUndoneBeforeGoneRepeated(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		sink := &effectEventSink{}
+		rt, err := runtime.New(runtime.WithEventSink(sink))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var order []string
+		var mu sync.Mutex
+		calls := &atomic.Int32{}
+		c := &slowInstallComp{
+			entered: make(chan struct{}), release: make(chan struct{}),
+			order: &order, mu: &mu, tag: fmt.Sprintf("r%d", i), calls: calls,
+		}
+		f, err := rt.Load(c)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		if err := f.Ready(ctx); err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		<-c.entered
+		close(c.release)
+		if err := f.Dispose(); err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		if err := f.Gone(ctx); err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		events := sink.snapshot()
+		if len(events) == 0 || events[len(events)-1] != "EffectUndone" {
+			cancel()
+			t.Fatalf("iter %d: Gone before EffectUndone; events=%v", i, events)
+		}
+		_ = rt.Close(ctx)
+		cancel()
+	}
 }

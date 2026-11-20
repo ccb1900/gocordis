@@ -164,7 +164,7 @@ func TestThm80DetProviderWithdrawalInterleaving(t *testing.T) {
 	// provider+consumer 激活后 dispose provider：UnwindDone(C) 必须先于
 	// UnwindDone(P)。两种 completion 交错（consumer-first vs provider-first
 	// 尝试）最终都必须到达相同的 quiescent 终态（全 Gone）。
-	run := func(reverse bool) Observation {
+	run := func(reverse bool) (Observation, []string) {
 		rt := detNew(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -198,7 +198,8 @@ func TestThm80DetProviderWithdrawalInterleaving(t *testing.T) {
 		if err := pf.Dispose(); err != nil {
 			t.Fatal(err)
 		}
-		// unwind completions：按 reverse 选择顺序
+		// unwind completions：按 reverse 选择顺序，同时记录实际执行顺序。
+		var trace []string
 		for iter := 0; iter < 32; iter++ {
 			if !c2Wait(200, func() bool { return rt.detPending() >= 1 }) {
 				break
@@ -214,6 +215,13 @@ func TestThm80DetProviderWithdrawalInterleaving(t *testing.T) {
 			if reverse && len(en) > 1 {
 				s = en[len(en)-1]
 			}
+			if s.Kind == detStepUnwindDone {
+				who := "P"
+				if s.FiberID == cf.ID() {
+					who = "C"
+				}
+				trace = append(trace, "uw:"+who)
+			}
 			if err := rt.detExecute(s); err != nil {
 				if rt.detPending() == 0 {
 					break
@@ -227,13 +235,22 @@ func TestThm80DetProviderWithdrawalInterleaving(t *testing.T) {
 		if err := semanticQuiescent(rt); err != nil {
 			t.Fatalf("terminal not quiescent: %v", err)
 		}
-		return observe(rt)
+		return observe(rt), trace
 	}
 
-	a := run(false)
-	b := run(true)
+	a, ta := run(false)
+	b, tb := run(true)
 	if thm80DetCanonical(a) != thm80DetCanonical(b) {
 		t.Fatalf("thm80 withdrawal confluence diverged\nA=%s\nB=%s", thm80DetCanonical(a), thm80DetCanonical(b))
+	}
+	// 明确断言 guard 链顺序：consumer UnwindDone 必须先于 provider。
+	// reverse=true 试图抢先提交 provider step——但 guard 只允许 consumer，
+	// 因此两个策略的 unwind trace 必须相同且以 uw:C 开头。
+	if fmt.Sprint(ta) != fmt.Sprint(tb) {
+		t.Fatalf("thm80 withdrawal guard not enforced: traceA=%v traceB=%v", ta, tb)
+	}
+	if len(ta) < 2 || ta[0] != "uw:C" {
+		t.Fatalf("thm80 withdrawal guard order: trace=%v, want consumer UnwindDone first", ta)
 	}
 }
 
@@ -327,7 +344,17 @@ func TestThm80DetReviseInterleaving(t *testing.T) {
 			if newFirst && len(en) > 1 {
 				s = en[len(en)-1]
 			}
-			trace = append(trace, fmt.Sprintf("%v/%v", s.Kind, s.FiberID))
+			who := "P-new"
+			if s.FiberID == cf.ID() {
+				who = "C"
+			} else if s.FiberID == pf.ID() {
+				who = "P-old"
+			}
+			kind := "apply"
+			if s.Kind == detStepUnwindDone {
+				kind = "unwind"
+			}
+			trace = append(trace, who+":"+kind)
 			if err := rt.detExecute(s); err != nil {
 				continue
 			}
@@ -363,14 +390,34 @@ func TestThm80DetReviseInterleaving(t *testing.T) {
 	if a != b {
 		t.Fatalf("thm80 det revise confluence diverged\ntraceA=%v\ntraceB=%v\nA=%s\nB=%s", ta, tb, a, b)
 	}
-	// canonical form 的可观测特征：consumer(旧) UnwindDone 在 provider(旧)
-	// 之前（guard 链），新 provider ApplyDone 在 consumer 重挂之前。
-	if len(ta) < 2 {
-		t.Fatalf("revise trace too short: %v", ta)
+	// 明确断言 Thm80(1) canonical form 的两个顺序关系：
+	// (a) 旧 consumer 的 unwind 先于旧 provider 的 unwind（guard 链）；
+	// (b) 新 provider 的 apply 先于 consumer 的重挂 apply。
+	idxOldC, idxOldP, idxNewP, idxCApply := -1, -1, -1, -1
+	for i, e := range ta {
+		switch e {
+		case "C:unwind":
+			if idxOldC < 0 {
+				idxOldC = i
+			}
+		case "P-old:unwind":
+			if idxOldP < 0 {
+				idxOldP = i
+			}
+		case "P-new:apply":
+			if idxNewP < 0 {
+				idxNewP = i
+			}
+		case "C:apply":
+			if idxCApply < 0 {
+				idxCApply = i
+			}
+		}
 	}
-}
-
-func isDone(rr chan interface { /* placeholder */
-}) bool {
-	return false
+	if idxOldC < 0 || idxOldP < 0 || idxOldC > idxOldP {
+		t.Fatalf("revise guard order (a) violated: trace=%v", ta)
+	}
+	if idxNewP < 0 || idxCApply < 0 || idxNewP > idxCApply {
+		t.Fatalf("revise reattach order (b) violated: trace=%v", ta)
+	}
 }

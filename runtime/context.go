@@ -290,10 +290,17 @@ func (c *Context) effect(kind EffectKind, key CapabilityKey, install func() (fun
 	if c.state == contextActive {
 		s.inverse = inverse
 		s.state = effectCommitted
+		c.mu.Unlock()
+		// Publish the terminal event BEFORE releasing the Installing barrier:
+		// collectInverses must not observe installing==0 and start LIFO while
+		// this event is still pending — an observer could see Undo events
+		// before the matching Committed (observable lifecycle ordering,
+		// 联合审查 P1). No lock held while emitting (EventSink must not block).
+		c.emitEffectEvent(EventEffectCommitted, s)
+		c.mu.Lock()
 		c.installing--
 		c.broadcastInstallDone()
 		c.mu.Unlock()
-		c.emitEffectEvent(EventEffectCommitted, s)
 		return nil
 	}
 
@@ -311,10 +318,14 @@ func (c *Context) effect(kind EffectKind, key CapabilityKey, install func() (fun
 	c.mu.Lock()
 	s.state = effectUndone
 	c.unwindErr = errors.Join(c.unwindErr, invErr)
+	c.mu.Unlock()
+	// Same barrier rule as the commit path: the Undone event is part of the
+	// in-flight install work and must precede barrier release.
+	c.emitEffectEvent(EventEffectUndone, s)
+	c.mu.Lock()
 	c.installing--
 	c.broadcastInstallDone()
 	c.mu.Unlock()
-	c.emitEffectEvent(EventEffectUndone, s)
 	return nil
 }
 

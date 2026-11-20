@@ -1,7 +1,5 @@
 package runtime
 
-import "sort"
-
 // command is a serialized lifecycle decision request. All lifecycle-changing
 // operations (Load, Dispose, Replace, ApplyFinished, UnwindFinished,
 // DependencyChanged, Close) are expressed as commands and linearized by the
@@ -94,13 +92,15 @@ type cmdReviseInsert struct {
 	// (their own ρ still points there) — crossing namespaces requires their
 	// own revision, which is the paper-faithful reading.
 	freshIsolation bool
-	// resolvedRealms adopts the post-move namespace of the active provider
-	// currently satisfying each declared dependency (WithResolvedRealms — the
-	// "follows through its own revision" mechanism for a rehomed provider's
-	// old-namespace dependents). Applied in apply() AFTER the inherited table
-	// is built, so resolved entries override inherited ones.
+	// resolvedRealms follows the CAPTURED binding's provider through its
+	// realm move (WithResolvedRealms) — applied in apply() AFTER the
+	// inherited table is built, so resolved entries override inherited ones.
 	resolvedRealms bool
-	reply          chan reviseInsertReply
+	// captured is the old activation's dependency snapshot (the provider
+	// identity each key was bound to at gate time). WithResolvedRealms
+	// restores THESE bindings; it never scans for substitutes.
+	captured []DependencySnapshot
+	reply    chan reviseInsertReply
 }
 
 type reviseInsertReply struct {
@@ -153,44 +153,44 @@ func (c *cmdReviseInsert) apply(o *orchestrator) {
 			child.keyRealms[k] = fresh
 		}
 	}
-	// WithResolvedRealms: for every Inject key that currently resolves to a
-	// live, non-retiring provider record, fix the reinserted fiber's ρ(k) to
-	// that provider's EFFECTIVE realm (insertion-time resolution, made
-	// explicit by the revision). The scan is deterministic (fiber id order);
-	// resolved entries override inherited ones. This is a DECLARED realm
+	// WithResolvedRealms: follow the CAPTURED binding — for every Inject key,
+	// restore the realm of the exact provider identity the old activation was
+	// bound to (NEW-01: a global provider scan could SWITCH the dependency to
+	// a different legal provider of the same key in another isolated realm;
+	// a restore must never change the dependency object). If the captured
+	// provider is gone (replaced rather than rehomed), the key keeps its
+	// prior routing instead of guessing. This is a DECLARED realm
 	// reassignment carried by the revision (§4.4), not an implicit resolve
 	// walk — ordinary Require still resolves exactly one namespace (Def 24).
-	if c.resolvedRealms && !c.freshIsolation && len(child.inject) > 0 {
-		o.rt.mu.RLock()
-		existing := make([]*Fiber, 0, len(o.rt.fibers))
-		for _, x := range o.rt.fibers {
-			existing = append(existing, x)
+	if c.resolvedRealms && !c.freshIsolation && len(c.captured) > 0 {
+		captured := make(map[CapabilityKey]ProviderIdentity, len(c.captured))
+		for _, d := range c.captured {
+			captured[d.Key] = d.Provider
 		}
-		o.rt.mu.RUnlock()
-		sort.Slice(existing, func(i, j int) bool { return existing[i].id < existing[j].id })
 		for _, d := range child.inject {
-			for _, x := range existing {
-				x.mu.RLock()
-				live := x.state == StateActive && x.activation != nil
-				var actID ActivationID
-				if live {
-					actID = x.activation.id
-				}
-				x.mu.RUnlock()
-				if !live {
-					continue
-				}
-				eff := effectiveRealm(x, d.Key)
-				rec, ok := eff.lookupOwn(d.Key)
-				if !ok || rec.retiring || rec.identity.FiberID != x.id || rec.identity.ActivationID != actID {
-					continue
-				}
-				if child.keyRealms == nil {
-					child.keyRealms = make(map[CapabilityKey]*realm)
-				}
-				child.keyRealms[d.Key] = eff
-				break
+			pid, ok := captured[d.Key]
+			if !ok {
+				continue
 			}
+			owner := o.lookupFiber(pid.FiberID)
+			if owner == nil {
+				continue
+			}
+			owner.mu.RLock()
+			live := owner.state == StateActive && owner.activation != nil && owner.activation.id == pid.ActivationID
+			owner.mu.RUnlock()
+			if !live {
+				continue
+			}
+			eff := effectiveRealm(owner, d.Key)
+			rec, ok := eff.lookupOwn(d.Key)
+			if !ok || rec.retiring || rec.identity != pid {
+				continue
+			}
+			if child.keyRealms == nil {
+				child.keyRealms = make(map[CapabilityKey]*realm)
+			}
+			child.keyRealms[d.Key] = eff
 		}
 	}
 

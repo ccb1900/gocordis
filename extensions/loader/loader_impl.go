@@ -41,6 +41,12 @@ type BuiltinLoader struct {
 	// interface so retained resources (e.g. compiled WASM) are released with
 	// the registry entry, not at Backend.Close.
 	moduleBackend map[string]BackendType
+
+	// abandonedIDs (NEW-02): ids whose load attempt failed after the backend
+	// already produced resources. A later commit for the same id must NOT
+	// adopt a backend ref the failing attempt released — the id is poisoned
+	// until a fresh backend.Load re-runs cleanly.
+	abandonedIDs map[string]bool
 }
 
 // NewBuiltinLoader creates a running BuiltinLoader with an internal Builtin
@@ -54,6 +60,7 @@ func NewBuiltinLoader() *BuiltinLoader {
 		usage:         NewModuleUsage(),
 		backends:      make(map[BackendType]Backend),
 		moduleBackend: make(map[string]BackendType),
+		abandonedIDs:  make(map[string]bool),
 	}
 	l.backends[BackendBuiltin] = &builtinBackend{l: l}
 	return l
@@ -167,20 +174,68 @@ func (l *BuiltinLoader) Load(ctx context.Context, artifact Artifact) (*Module, e
 	}
 
 	// Phase 5: linearize the registry mutation. A conflict at commit time
-	// discards the freshly loaded result without disturbing anything.
+	// discards the freshly loaded result without disturbing anything. NEW-02:
+	// a failed commit must ALSO release the backend's resources for this
+	// attempt — the backend produced/retained them during Load, and no
+	// registry entry will ever own them. The abandon is poisoned for this
+	// generation (abandonedIDs) because concurrent same-ID Loads may SHARE one
+	// backend ref: the winner's commit must not adopt a ref the loser
+	// released. The next Load re-runs the whole backend path cleanly.
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
+		l.mu.Unlock()
+		l.abandonModuleAttempt(artifact.ID, artifact.BackendType)
 		return nil, ErrLoaderClosed
 	}
-	if existing := l.modules[artifact.ID]; existing != nil {
+	if l.abandonedIDs[artifact.ID] {
+		// NEW-02: a failed attempt released this id's backend resources — a
+		// commit adopting the (closed) ref must not happen. Retry the whole
+		// Load, which re-runs the backend path cleanly.
+		l.mu.Unlock()
 		return nil, ErrModuleExists
+	}
+	if existing := l.modules[artifact.ID]; existing != nil {
+		// Another attempt committed the SAME id: it owns the (possibly shared)
+		// backend ref — do NOT release it.
+		l.mu.Unlock()
+		return nil, ErrModuleExists
+	}
+	if err := ctx.Err(); err != nil {
+		l.mu.Unlock()
+		l.abandonModuleAttempt(artifact.ID, artifact.BackendType)
+		return nil, err
 	}
 	l.modules[artifact.ID] = &mod
 	// EXT-05: remember WHICH backend produced this module so Unload can notify
 	// it (a Backend may retain per-module resources, e.g. compiled WASM).
 	l.moduleBackend[artifact.ID] = artifact.BackendType
+	delete(l.abandonedIDs, artifact.ID)
+	l.mu.Unlock()
+	if c, ok := l.backends[artifact.BackendType].(interface{ CommitModule(id string) }); ok {
+		c.CommitModule(artifact.ID)
+	}
 	return &mod, nil
+}
+
+// abandonModuleAttempt records a failed commit for id and releases the
+// backend's resources when no registry entry owns them. Poisoning prevents a
+// later commit from adopting a ref this attempt released. Caller must NOT
+// hold l.mu (this takes the lock itself).
+func (l *BuiltinLoader) abandonModuleAttempt(id string, bt BackendType) {
+	l.mu.Lock()
+	if l.modules[id] != nil {
+		// Someone committed this id between our failure and our abandon: the
+		// ref is owned by the committed module — leave it alone.
+		l.mu.Unlock()
+		return
+	}
+	l.abandonedIDs[id] = true
+	l.mu.Unlock()
+	if b, ok := l.backends[bt]; ok {
+		if a, ok := b.(interface{ AbandonModule(id string) }); ok {
+			a.AbandonModule(id)
+		}
+	}
 }
 
 // Unload removes a Loaded Module (Loaded -> Absent). A Module that is still in
@@ -199,10 +254,18 @@ func (l *BuiltinLoader) Unload(ctx context.Context, id string) error {
 		return ErrModuleInUse
 	}
 	delete(l.modules, id)
-	// EXT-05: notify the producing Backend that the module left the registry so
-	// it can release its per-module resources. The optional interface keeps the
-	// Backend contract minimal (Load-only) for implementations without retained
-	// resources.
+	l.releaseBackendResourcesLocked(id)
+	return nil
+}
+
+// releaseBackendResourcesLocked notifies the producing Backend that a module
+// left the registry so it can release its per-module resources (NEW-02: BOTH
+// lifecycle exits — Unload and CloseContext's bulk eviction — must use the
+// same protocol; the old CloseContext deleted registry entries without
+// notifying, so a WASM Backend retained CompiledModules until Backend.Close).
+// The optional interface keeps the Backend contract minimal (Load-only) for
+// implementations without retained resources. Caller holds l.mu.
+func (l *BuiltinLoader) releaseBackendResourcesLocked(id string) {
 	if bt, ok := l.moduleBackend[id]; ok {
 		if b, ok := l.backends[bt]; ok {
 			if u, ok := b.(interface{ UnloadModule(id string) }); ok {
@@ -211,7 +274,6 @@ func (l *BuiltinLoader) Unload(ctx context.Context, id string) error {
 		}
 		delete(l.moduleBackend, id)
 	}
-	return nil
 }
 
 // Get returns a copy of the Loaded Module for id.
@@ -286,6 +348,10 @@ func (l *BuiltinLoader) CloseContext(ctx context.Context) error {
 	for id := range l.modules {
 		if !l.usage.InUse(id) {
 			delete(l.modules, id)
+			// NEW-02: the bulk eviction uses the SAME backend-release protocol
+			// as Unload — otherwise a WASM Backend retained its compiled
+			// modules until Backend.Close.
+			l.releaseBackendResourcesLocked(id)
 		} else {
 			inUse = append(inUse, id)
 		}

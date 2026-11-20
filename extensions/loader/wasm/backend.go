@@ -69,6 +69,12 @@ type Backend struct {
 	// double-retained CompiledModule leaks from the registry-commit loser).
 	modules map[string]*moduleRef
 
+	// committed marks the ids whose ref the Loader OWNS via a successful
+	// registry commit (NEW-02 resource-ownership protocol): AbandonModule may
+	// only release UNCOMMITTED refs — a failed load attempt must never close
+	// the shared ref another attempt committed.
+	committed map[string]bool
+
 	nextInstance atomic.Uint64
 }
 
@@ -88,8 +94,9 @@ func NewBackend(opts ...Option) *Backend {
 		}
 	}
 	return &Backend{
-		observer: o.observer,
-		modules:  make(map[string]*moduleRef),
+		observer:  o.observer,
+		modules:   make(map[string]*moduleRef),
+		committed: make(map[string]bool),
 		// CloseOnContextDone: an in-flight guest call is aborted when its
 		// context expires, so a misbehaving guest cannot monopolize the
 		// activation goroutine indefinitely (paper §6.3: the sandbox must
@@ -209,6 +216,34 @@ func (b *Backend) loadModule(ctx context.Context, artifact loader.Artifact, data
 // module here cannot strand a live activation.
 func (b *Backend) UnloadModule(id string) {
 	b.mu.Lock()
+	ref, ok := b.modules[id]
+	if ok {
+		delete(b.modules, id)
+	}
+	delete(b.committed, id)
+	b.mu.Unlock()
+	if ok {
+		_ = ref.compiled.Close(context.Background())
+	}
+}
+
+// CommitModule marks id's ref as OWNED by a successful registry commit
+// (NEW-02): from here on only UnloadModule may release it.
+func (b *Backend) CommitModule(id string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.committed[id] = true
+}
+
+// AbandonModule releases id's tracked ref ONLY when no commit owns it
+// (NEW-02): a failed load attempt sharing a ref with a committed module must
+// not close that ref out from under the committed module. Idempotent.
+func (b *Backend) AbandonModule(id string) {
+	b.mu.Lock()
+	if b.committed[id] {
+		b.mu.Unlock()
+		return
+	}
 	ref, ok := b.modules[id]
 	if ok {
 		delete(b.modules, id)

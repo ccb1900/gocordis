@@ -30,6 +30,13 @@ type Fiber struct {
 	// no rehome is pending). See rehome.go.
 	rehome *rehomePending
 
+	// lastCaptured preserves the dependency snapshot of the LAST activation
+	// after it ended (orchestrator-written at finishActivation): a rehome
+	// withdraws dependents to Pending BEFORE their revision, so at Revise time
+	// the activation is gone — WithResolvedRealms still needs to know WHICH
+	// provider each key was bound to in order to follow it (NEW-01).
+	lastCaptured []DependencySnapshot
+
 	// revising guards Revise against concurrent invocations on the SAME fiber
 	// (RT-06): two overlapping revisions would both dispose the old fiber and
 	// both insert a replacement, producing two fibers at one ownership
@@ -314,18 +321,23 @@ type reviseOptions struct {
 	resolvedRealms bool
 }
 
-// WithResolvedRealms makes the revision ADOPT the post-move namespace of
-// whatever active provider currently satisfies each declared dependency
-// (paper §5.2.1: after a provider's realm move, old-namespace dependents
-// "follow only through their own revision" — §4.4 allows a revision to carry
-// the new realm pairs). For every Inject key that currently resolves to a
-// live, non-retiring provider record, the reinserted fiber's ρ(k) is fixed to
-// that provider's EFFECTIVE realm for k — re-insertion-time resolution made
-// explicit. Unresolvable keys keep their prior routing. This is a declared
-// realm reassignment at the revision boundary, not an implicit ancestor walk:
-// ordinary Require keeps resolving exactly one namespace (Def 24). Without
-// it, a dependent's revision reinserts into the OLD namespace and can never
-// rebind to a rehomed provider (verified at composition level).
+// WithResolvedRealms makes the revision FOLLOW the provider the fiber was
+// actually BOUND to, through that provider's realm move (paper §5.2.1: after
+// a provider's realm move, old-namespace dependents "follow only through
+// their own revision" — §4.4 allows a revision to carry the new realm pairs).
+//
+// For every Inject key, the fiber's CAPTURED binding (the provider identity
+// its activation resolved at gate time) is looked up: if that exact provider
+// is still live on the same activation and still holds a non-retiring record,
+// the reinserted fiber's ρ(k) is fixed to that provider's EFFECTIVE realm —
+// the binding survives the move with the SAME dependency object.
+//
+// NEW-01 (audit): this deliberately does NOT scan the runtime for any active
+// provider of the key. Two isolated realms may legally provide the same key;
+// a fiber-id-ordered scan could switch the dependency to a DIFFERENT provider
+// than the one the fiber was bound to — a restore operation must never change
+// the dependency object. Keys whose captured provider is gone (replaced, not
+// rehomed) keep their prior routing rather than guessing a new target.
 func WithResolvedRealms() ReviseOption {
 	return func(o *reviseOptions) { o.resolvedRealms = true }
 }
@@ -415,10 +427,21 @@ func (f *Fiber) Revise(ctx context.Context, component Component, opts ...ReviseO
 		f.mu.Unlock()
 	}()
 
-	// Ownership position (parent/realm are immutable after creation).
+	// Ownership position (parent/realm are immutable after creation); the
+	// captured dependency snapshot travels with the revision so
+	// WithResolvedRealms can follow the provider the fiber was BOUND to
+	// (NEW-01: never a global provider scan). A live activation provides the
+	// current snapshot; otherwise the last ended activation's snapshot is
+	// used (the rehome window: withdrawn-to-Pending before the revision).
 	f.mu.RLock()
 	parent := f.parent
 	scope := f.realm
+	var captured []DependencySnapshot
+	if act := f.activation; act != nil {
+		captured = append([]DependencySnapshot(nil), act.deps...)
+	} else {
+		captured = append([]DependencySnapshot(nil), f.lastCaptured...)
+	}
 	f.mu.RUnlock()
 	if testReviseHook != nil {
 		testReviseHook()
@@ -447,6 +470,7 @@ func (f *Fiber) Revise(ctx context.Context, component Component, opts ...ReviseO
 		inject:         inject,
 		provide:        provide,
 		realm:          scope,
+		captured:       captured,
 		freshIsolation: o.freshIsolation,
 		resolvedRealms: o.resolvedRealms,
 		reply:          reply,

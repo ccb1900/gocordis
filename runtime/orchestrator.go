@@ -480,6 +480,12 @@ func (o *orchestrator) finishActivation(f *Fiber, act *activation, unwindErr err
 		o.rt.emitEvent(EventFailure, f.id, act.id, FailureEventData{Phase: "Cleanup", Err: unwindErr.Error()})
 	}
 
+	// Preserve the dependency snapshot for the fiber's next revision: after a
+	// realm move withdraws this fiber to Pending, its activation is gone —
+	// WithResolvedRealms must still know which provider each key was bound to
+	// (NEW-01: follow the captured binding, never a global scan).
+	f.lastCaptured = append([]DependencySnapshot(nil), act.deps...)
+
 	// Owned resources (children) must reach Gone before their owner finalizes.
 	if o.disposeChildren(f) {
 		// Defer the final state until every live child is Gone.

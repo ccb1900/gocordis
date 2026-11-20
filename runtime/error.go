@@ -26,6 +26,13 @@ var (
 	// ErrDuplicateProvider. The declaration is therefore unresolvable and is
 	// rejected deterministically where it is written.
 	ErrSelfDependency = errors.New("self dependency: component requires a key it also provides")
+	// ErrSnapshotUnstable is returned when a RuntimeSnapshot cannot anchor the
+	// event resume protocol: sustained event traffic kept every consistency
+	// window (RT-11) from stabilizing, so the facts read may not correspond to
+	// any event sequence. The caller re-obtains the snapshot when traffic
+	// subsides — returning a best-effort anchor would make Subscribe silently
+	// skip events (NEW-03).
+	ErrSnapshotUnstable = errors.New("snapshot unstable under sustained event traffic; re-observe")
 	// ErrInvalidKey is returned at the mount boundary when a component declares
 	// a zero-valued CapabilityKey (RT-13): such a key has no type identity and
 	// would collide across every type parameter.

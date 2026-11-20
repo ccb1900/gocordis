@@ -144,7 +144,8 @@ type cmdSnapshot struct {
 }
 
 func (c *cmdSnapshot) apply(o *orchestrator) {
-	c.reply <- snapshotReply{snap: o.buildSnapshot()}
+	snap, err := o.buildSnapshot()
+	c.reply <- snapshotReply{snap: snap, err: err}
 }
 
 func effectStateString(st effectSlotState) string {
@@ -197,7 +198,7 @@ type realmSnap struct {
 // goroutine: fiber state/intent/activation/children are orchestrator-published
 // and therefore stable here; realm records and effect slots are read under
 // their own locks because Apply/Unwind goroutines mutate them.
-func (o *orchestrator) buildSnapshot() RuntimeSnapshot {
+func (o *orchestrator) buildSnapshot() (RuntimeSnapshot, error) {
 	r := o.rt
 
 	r.mu.RLock()
@@ -223,14 +224,15 @@ func (o *orchestrator) buildSnapshot() RuntimeSnapshot {
 		snap := o.readSnapshotFacts(fibers, state)
 		if seqAfter := r.evSeq.current(); seqAfter == seqBefore {
 			snap.EventSequence = seqBefore
-			return snap
+			return snap, nil
 		}
 	}
-	// Give up on a perfectly stable window under sustained event traffic and
-	// return the best-effort cut (callers may re-snapshot).
-	snap := o.readSnapshotFacts(fibers, state)
-	snap.EventSequence = r.evSeq.current()
-	return snap
+	// Sustained event traffic: every retry window saw a sequence assignment.
+	// NEW-03: do NOT return the best-effort cut with a fresh sequence — a
+	// sequence assigned AFTER the last fact read would anchor consumers past
+	// an event whose effect they never saw (silent replay loss). Fail loudly:
+	// the caller re-obtains the snapshot when traffic subsides.
+	return RuntimeSnapshot{}, ErrSnapshotUnstable
 }
 
 // readSnapshotFacts reads every fiber fact, realm record and dependency

@@ -274,30 +274,30 @@ func (c *Context) effect(kind EffectKind, key CapabilityKey, install func() (fun
 	var installErr error
 	inverse, installErr = guardedInstall(install)
 
-	// Step 4: re-acquire the lock and commit or self-undo. In every path the
-	// Installing counter is released (with a broadcast) so beginUnwind can
-	// proceed once no install is in flight.
+	// Step 4a: decide commit vs self-undo UNDER the lock, but do NOT release
+	// the Installing barrier yet. The barrier covers install AND the
+	// compensating inverse (if the context already began unwinding), so
+	// collectInverses cannot observe installing==0 before that inverse has
+	// finished (paper Temporal Composability, 联合审查 P0).
 	c.mu.Lock()
-	c.installing--
-	if c.installDone != nil {
-		c.installDone.Broadcast()
-	}
 	if installErr != nil {
 		c.removeSlot(s)
+		c.installing--
+		c.broadcastInstallDone()
 		c.mu.Unlock()
 		return installErr
 	}
 	if c.state == contextActive {
 		s.inverse = inverse
 		s.state = effectCommitted
+		c.installing--
+		c.broadcastInstallDone()
 		c.mu.Unlock()
 		c.emitEffectEvent(EventEffectCommitted, s)
 		return nil
 	}
 
-	// The context is already unwinding/unwound: do not commit as a persistent
-	// effect; execute the returned inverse immediately (exactly once), with
-	// the SAME panic guard as the normal unwind path (P0-02).
+	// Context is unwinding/unwound: self-undo, then release the barrier.
 	s.inverse = inverse
 	s.state = effectUndoing
 	c.mu.Unlock()
@@ -311,9 +311,18 @@ func (c *Context) effect(kind EffectKind, key CapabilityKey, install func() (fun
 	c.mu.Lock()
 	s.state = effectUndone
 	c.unwindErr = errors.Join(c.unwindErr, invErr)
+	c.installing--
+	c.broadcastInstallDone()
 	c.mu.Unlock()
 	c.emitEffectEvent(EventEffectUndone, s)
 	return nil
+}
+
+// broadcastInstallDone wakes collectInverses. Caller holds c.mu.
+func (c *Context) broadcastInstallDone() {
+	if c.installDone != nil {
+		c.installDone.Broadcast()
+	}
 }
 
 // emitEffectEvent publishes one effect-lifecycle event for slot s. Called
@@ -650,30 +659,33 @@ func (c *Context) removeSlot(target *effectSlot) {
 	}
 }
 
-// beginUnwind marks the context as unwinding, cancels it, and snapshots the
-// committed effects (in registration order). The caller executes the returned
-// snapshot in reverse order outside the context lock.
-func (c *Context) beginUnwind() []*effectSlot {
+// beginUnwind marks the context as unwinding and cancels it. It is NON-
+// BLOCKING: the Orchestrator decision thread must never wait for user code
+// (a slow install could stall the whole runtime or deadlock if the install
+// itself needs an Orchestrator command). The committed-effect snapshot and
+// the wait for in-flight installs happen in collectInverses on the unwind
+// goroutine (联合审查 P0-02 / Orchestrator 活性).
+func (c *Context) beginUnwind() {
 	c.mu.Lock()
-	if c.state != contextActive {
-		c.mu.Unlock()
-		return nil
+	if c.state == contextActive {
+		c.state = contextUnwinding
+		c.cancel()
 	}
-	c.state = contextUnwinding
-	c.cancel()
+	c.mu.Unlock()
+}
 
-	// Wait for in-flight installs to finish. New Effect calls are refused
-	// once state != contextActive, so the counter can only decrease. Each
-	// completing install either commits (state already Unwinding → it will
-	// self-undo) or reports an error; its inverse is guarded. Only after all
-	// of them settle do we snapshot the committed effects for LIFO reversal.
-	if c.installing > 0 {
+// collectInverses waits for every in-flight install (and its compensating
+// inverse) to finish, then snapshots the committed effects in registration
+// order. Called ONLY from the unwind goroutine — never from the Orchestrator.
+// New Effect calls are refused once state != contextActive, so installing
+// can only decrease.
+func (c *Context) collectInverses() []*effectSlot {
+	c.mu.Lock()
+	for c.installing > 0 {
 		if c.installDone == nil {
 			c.installDone = sync.NewCond(&c.mu)
 		}
-		for c.installing > 0 {
-			c.installDone.Wait()
-		}
+		c.installDone.Wait()
 	}
 	var out []*effectSlot
 	for _, s := range c.effects {

@@ -209,8 +209,10 @@ func (c *cmdApplyDone) apply(o *orchestrator) {
 func (o *orchestrator) unwindAfterApply(f *Fiber, act *activation) {
 	o.transition(f, StateUnloading, nil)
 	o.rt.emitEvent(EventActivationUnloading, f.id, act.id, nil)
-	slots := act.ctx.beginUnwind()
-	go o.runUnwind(f, act, slots)
+	// Non-blocking state flip on the decision thread; the wait for in-flight
+	// installs and the LIFO reversal run on the unwind goroutine.
+	act.ctx.beginUnwind()
+	go o.runUnwind(f, act)
 }
 
 // cmdUnwindDone handles an Unwind completion. Stale completions are ignored.
@@ -405,7 +407,10 @@ func callComponentApply(comp Component, ctx *Context) (cleanup Cleanup, err erro
 
 // runUnwind executes the activation's committed effects in LIFO order on a
 // dedicated goroutine and reports the aggregated result.
-func (o *orchestrator) runUnwind(f *Fiber, act *activation, slots []*effectSlot) {
+func (o *orchestrator) runUnwind(f *Fiber, act *activation) {
+	// collectInverses waits OUTSIDE the Orchestrator thread — a slow user
+	// install never stalls global lifecycle scheduling.
+	slots := act.ctx.collectInverses()
 	err := act.ctx.runInverses(slots)
 	o.rt.admitCommand(&cmdUnwindDone{
 		fiberID:      f.id,

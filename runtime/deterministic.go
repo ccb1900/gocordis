@@ -110,10 +110,10 @@ func (r *Runtime) enqueueNonBlocking(cmd command) bool {
 	o := r.orch
 	o.sendMu.Lock()
 	defer o.sendMu.Unlock()
-	select {
-	case <-o.stop:
+	// Same admission gate as submit(): halt (not stop-close) is the authority,
+	// so a deterministic completion is admitted before the gate or rejected.
+	if o.halted {
 		return false
-	default:
 	}
 	select {
 	case o.commands <- cmd:

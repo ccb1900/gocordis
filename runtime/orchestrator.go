@@ -20,11 +20,18 @@ type orchestrator struct {
 	stop     chan struct{}
 	done     chan struct{}
 
-	// sendMu serializes submit() against orchestrator shutdown: stop is closed
-	// while holding sendMu, so once the orchestrator has stopped, submit()
-	// deterministically returns false (it can never win a race against a
-	// buffered command channel).
+	// sendMu serializes command ADMISSION against orchestrator shutdown:
+	// `halted` is read and written only under sendMu, so a command is either
+	// admitted before the halt gate (guaranteed to be applied by the shutdown
+	// drain) or deterministically rejected — never accepted and then dropped.
 	sendMu sync.Mutex
+
+	// halted is the admission gate (under sendMu). Set by run()'s shutdown
+	// terminal branch BEFORE draining the buffer; after it is set, submit()
+	// rejects every new command. Anything already admitted is applied by the
+	// drain, so "submit returned true" always implies "command will be applied
+	// (or explicitly rejected by a shutdown-aware handler)".
+	halted bool
 
 	// closing is the orchestrator-local view of Runtime shutdown. Once true,
 	// every Fiber is treated as wanting Intent = Unmounted and no new
@@ -53,8 +60,9 @@ func newOrchestrator(rt *Runtime) *orchestrator {
 }
 
 func (o *orchestrator) run() {
-	// done is closed after the loop exits; stop is closed (under sendMu)
-	// before that, so late submissions are deterministically dropped first.
+	// done is closed after the loop exits; stop is closed at the very end of
+	// the shutdown drain (after the admission gate), so late submissions are
+	// deterministically rejected by the halted gate.
 	defer close(o.done)
 	for {
 		select {
@@ -62,12 +70,49 @@ func (o *orchestrator) run() {
 			cmd.apply(o)
 			if o.closing && o.allFibersTerminal() {
 				o.markClosed()
-				o.sendMu.Lock()
-				close(o.stop)
-				o.sendMu.Unlock()
+				o.shutdownDrain()
 				return
 			}
 		case <-o.stop:
+			return
+		}
+	}
+}
+
+// shutdownDrain applies every command admitted before the halt gate, then
+// gates admission and publishes stop. Ordering is load-bearing:
+//
+//  1. The buffer is drained with admission still OPEN. A submitter parked in
+//     submit()'s slow path holds sendMu while waiting for a slot; the
+//     orchestrator only ever blocks on sendMu when the buffer is EMPTY (the
+//     re-check below), at which point the parked submitter can always complete
+//     its send. Gating first would deadlock: the orchestrator would wait for
+//     sendMu while the submitter waits for the orchestrator to receive.
+//  2. Once the buffer is observed empty, sendMu is taken and `halted` set.
+//     Admission needs sendMu for both the gate check and the send, so no
+//     command can arrive after the re-check observes an empty buffer: the
+//     halt is linearized against every submit.
+//  3. Only then is stop closed.
+//
+// Net invariant: submit()==true implies the command was applied (or explicitly
+// rejected by a shutdown-aware handler); submit()==false implies nothing was
+// enqueued.
+func (o *orchestrator) shutdownDrain() {
+	for {
+		select {
+		case cmd := <-o.commands:
+			cmd.apply(o)
+		default:
+			o.sendMu.Lock()
+			if len(o.commands) > 0 {
+				// A submission slipped in between the empty observation and the
+				// lock (it was admitted before the gate). Keep draining.
+				o.sendMu.Unlock()
+				continue
+			}
+			o.halted = true
+			o.sendMu.Unlock()
+			close(o.stop)
 			return
 		}
 	}

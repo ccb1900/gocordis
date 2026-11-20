@@ -77,12 +77,14 @@ type cmdClose struct {
 // parent Context exists. Runs on the orchestrator; lifecycle authority stays
 // with the Runtime.
 type cmdReviseInsert struct {
+	// old is the fiber being replaced; its final per-key isolation table is
+	// read at insert time (RT-08 — see apply).
+	old       *Fiber
 	parent    *Fiber // nil for a root-loaded fiber
 	component Component
 	inject    []Dependency
 	provide   []Capability
 	realm     *realm
-	keyRealms map[CapabilityKey]*realm
 	// freshIsolation reassigns the revised fiber's realm pairs (paper §4.4
 	// Configuration: a revision may carry "the new realm pairs"): the new
 	// fiber gets a FRESH namespace and all its declared keys are re-homed to
@@ -113,11 +115,20 @@ func (c *cmdReviseInsert) apply(o *orchestrator) {
 	child.inject = c.inject
 	child.provide = c.provide
 	child.realm = c.realm
-	if len(c.keyRealms) > 0 {
-		child.keyRealms = make(map[CapabilityKey]*realm, len(c.keyRealms))
-		for k, r := range c.keyRealms {
-			child.keyRealms[k] = r
+	// RT-08: read the old fiber's FINAL per-key isolation table at insert time
+	// (on the orchestrator, under routeMu). The table of a Gone fiber is stable
+	// — Rehome requires Active — so a rehome that completed during the retire
+	// window is inherited rather than lost (ρ fixed at the new fiber's
+	// insertion, paper Definition 24).
+	if c.old != nil && !c.freshIsolation {
+		c.old.routeMu.RLock()
+		if len(c.old.keyRealms) > 0 {
+			child.keyRealms = make(map[CapabilityKey]*realm, len(c.old.keyRealms))
+			for k, r := range c.old.keyRealms {
+				child.keyRealms[k] = r
+			}
 		}
+		c.old.routeMu.RUnlock()
 	}
 	if c.freshIsolation {
 		chainParent := c.realm
@@ -138,8 +149,13 @@ func (c *cmdReviseInsert) apply(o *orchestrator) {
 	if c.parent != nil {
 		c.parent.mu.RLock()
 		parentState := c.parent.state
+		parentFinalizing := c.parent.withdrawing
 		c.parent.mu.RUnlock()
-		if parentState == StateGone {
+		// RT-07: the parent must not be finalizing. Inserting a child under a
+		// Gone or withdrawing/unloading parent would orphan it (the owner's
+		// disposeChildren has run or is about to run); the revision is refused
+		// and the caller retries against a valid owner.
+		if parentState == StateGone || parentState == StateUnloading || parentFinalizing {
 			reply(nil, ErrInvalidState)
 			return
 		}

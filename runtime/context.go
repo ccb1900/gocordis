@@ -357,7 +357,6 @@ type ScopeOption func(*scopeOptions)
 type scopeOptions struct {
 	newRealm  bool
 	scopeKeys []CapabilityKey
-	keyRealms map[CapabilityKey]*realm
 }
 
 // WithScope makes Child create an explicit child realm (its own provider
@@ -385,26 +384,6 @@ func Isolate(keys ...Capability) ScopeOption {
 	}
 }
 
-// scopeRealms carries a per-key isolation table built by IsolateIn.
-func (o *scopeOptions) isolateIn(fiberRealm *realm, parentTable map[CapabilityKey]*realm, declared []Dependency, provide []Capability) {
-	if o.keyRealms == nil {
-		o.keyRealms = make(map[CapabilityKey]*realm)
-	}
-	for k, r := range parentTable {
-		o.keyRealms[k] = r
-	}
-	for _, d := range declared {
-		if _, ok := o.keyRealms[d.Key]; !ok {
-			o.keyRealms[d.Key] = fiberRealm
-		}
-	}
-	for _, k := range provide {
-		if _, ok := o.keyRealms[k]; !ok {
-			o.keyRealms[k] = fiberRealm
-		}
-	}
-}
-
 func (c *Context) Child(component Component, opts ...ScopeOption) (*Fiber, error) {
 	if component == nil {
 		return nil, ErrInvalidState
@@ -424,16 +403,18 @@ func (c *Context) Child(component Component, opts ...ScopeOption) (*Fiber, error
 	// present on this context's fiber, then default every declared key to this
 	// fiber's effective namespaces. WithScope re-homes all keys to the fresh
 	// child realm (built on the orchestrator at spawn).
-	// Snapshot the parent's route table under routeMu: a concurrent Rehome step
-	// 2 may be rewriting it while a child is being derived.
-	c.fiber.routeMu.RLock()
-	parentKeyRealms := c.fiber.keyRealms
-	c.fiber.routeMu.RUnlock()
-	if len(parentKeyRealms) > 0 || o.newRealm {
-		o.isolateIn(c.realm, parentKeyRealms, inject, provide)
-	}
+	// RT-05: the child's per-key isolation table is NOT built here. Building it
+	// from a caller-goroutine snapshot of the parent's table races with a
+	// concurrent Rehome phase 2: the child could be created after the rehome
+	// yet inherit the pre-move table (ρ must be fixed at INSERTION, paper
+	// Definition 24 — not at the caller's snapshot moment). cmdSpawnChild.apply
+	// builds the table on the orchestrator from the parent's CURRENT table,
+	// atomic with creation.
 
 	reply := make(chan spawnChildReply, 1)
+	if testChildSpawnHook != nil {
+		testChildSpawnHook()
+	}
 	if !c.rt.submit(&cmdSpawnChild{
 		ctx:       c,
 		component: component,
@@ -444,7 +425,6 @@ func (c *Context) Child(component Component, opts ...ScopeOption) (*Fiber, error
 		// fresh child realm re-homes ALL declared keys (WithScope behavior),
 		// silently breaking per-key isolation (paper Def 24/25).
 		scopeKeys: o.scopeKeys,
-		keyRealms: o.keyRealms,
 		reply:     reply,
 	}) {
 		return nil, ErrRuntimeClosed
@@ -452,6 +432,12 @@ func (c *Context) Child(component Component, opts ...ScopeOption) (*Fiber, error
 	resp := <-reply
 	return resp.fiber, resp.err
 }
+
+// testChildSpawnHook is a test-only seam (never set in production) that fires
+// at the boundary between the caller's route-table snapshot and the spawn
+// command submission, letting tests pause a child creation while a Rehome
+// completes.
+var testChildSpawnHook func()
 
 // testProvideHook is a test-only seam for deterministic interleaving of a
 // Provide install with a concurrent Rehome. Production code never sets it; the

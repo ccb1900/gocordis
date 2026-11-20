@@ -306,7 +306,9 @@ func replaceViaWrites(t *testing.T, adapter *configwatch.Adapter, path string, c
 		writeTOML(t, path, tomlComp(id, "camera", fmt.Sprintf("mode-%d", i)))
 		deadline := time.Now().Add(1500 * time.Millisecond)
 		for time.Now().Before(deadline) {
-			if got := fiberID(t, ctrl, id); got != old {
+			// Transient absence is part of the replacement gap: the old fiber
+			// detaches before the new one is owned. Keep waiting, don't Fatal.
+			if got, ok := ownedFiberID(ctrl, id); ok && got != old {
 				return
 			}
 			time.Sleep(5 * time.Millisecond)
@@ -324,7 +326,7 @@ func replaceViaWritesProv(t *testing.T, adapter *configwatch.Adapter, path strin
 		writeTOML(t, path, body)
 		deadline := time.Now().Add(1500 * time.Millisecond)
 		for time.Now().Before(deadline) {
-			if got := fiberID(t, ctrl, "prov"); got != old {
+			if got, ok := ownedFiberID(ctrl, "prov"); ok && got != old {
 				return
 			}
 			time.Sleep(5 * time.Millisecond)
@@ -333,13 +335,26 @@ func replaceViaWritesProv(t *testing.T, adapter *configwatch.Adapter, path strin
 	t.Fatalf("provider fiber was not replaced")
 }
 
-func fiberID(t *testing.T, ctrl *config.Controller, id string) runtime.FiberID {
-	t.Helper()
+// ownedFiberID reports the fiber id of component id owned by ctrl, or ok=false
+// when the component is transiently absent — during a replacement the old fiber
+// is disposed before the new one is owned, so callers that poll a replacement
+// MUST treat "absent" as "keep waiting", never as a fatal condition.
+func ownedFiberID(ctrl *config.Controller, id string) (runtime.FiberID, bool) {
 	for _, o := range ctrl.Owned() {
 		if o.ID == id {
-			return o.Fiber.ID()
+			return o.Fiber.ID(), true
 		}
 	}
-	t.Fatalf("component %q not owned", id)
-	return 0
+	return 0, false
+}
+
+// fiberID is ownedFiberID with a hard precondition: the component must already
+// be owned (used before any replacement starts).
+func fiberID(t *testing.T, ctrl *config.Controller, id string) runtime.FiberID {
+	t.Helper()
+	fid, ok := ownedFiberID(ctrl, id)
+	if !ok {
+		t.Fatalf("component %q not owned", id)
+	}
+	return fid
 }

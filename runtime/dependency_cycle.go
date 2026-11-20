@@ -12,8 +12,9 @@ import "fmt"
 // x's effective realm for that key — one namespace per (key, ρ) binding, no
 // ancestor walk. Two scoped siblings in separate realms therefore never form
 // an edge, so they cannot produce a false-positive cycle. Self loops (x
-// provides a key it also requires) are ignored: they are satisfiable within
-// the same fiber's activation and never by a second independent Fiber.
+// provides a key it also requires) are rejected outright as unresolvable
+// (see ErrSelfDependency): the gate cannot be satisfied by the fiber's own
+// provision, which does not exist before the activation starts.
 //
 // Policy: reject on Load/Child (ErrDependencyCycle), so a cyclic composition
 // fails deterministically at the mount boundary instead of hanging Pending.
@@ -31,6 +32,25 @@ func realmCanResolve(x *Fiber, y *Fiber, key CapabilityKey) bool {
 // adding candidate (with inject/provide) to fibers would create one. fibers
 // must not contain candidate itself.
 func findDeclaredCycle(candidate *Fiber, fibers []*Fiber) error {
+	// RT-09: a self-dependency (the candidate requires a key it also provides)
+	// is unresolvable — the gate cannot be satisfied by the fiber's own
+	// provision, which does not exist before the activation starts. Reject it
+	// here with the same actionable-diagnostic policy as cross-fiber cycles.
+	selfDep := make([]CapabilityKey, 0, len(candidate.inject))
+	for _, dep := range candidate.inject {
+		if yDeclaresProvide(candidate, dep.Key) {
+			selfDep = append(selfDep, dep.Key)
+		}
+	}
+	if len(selfDep) > 0 {
+		names := make([]string, 0, len(selfDep))
+		for _, k := range selfDep {
+			names = append(names, k.String())
+		}
+		return fmt.Errorf("%w: %q requires keys it also provides: %v",
+			ErrSelfDependency, candidate.Name(), names)
+	}
+
 	nodes := append([]*Fiber(nil), fibers...)
 	nodes = append(nodes, candidate)
 

@@ -63,8 +63,28 @@ jobs:
       - name: Windows vet
         run: GOOS=windows go vet ./...
 
-      - name: Windows test compile
-        run: GOOS=windows go test -run xxx -count=1 ./...
+      # Cross-compile the test binaries ONLY (`go test -c`). Plain `go test`
+      # would try to EXECUTE the windows .exe on the linux runner and die with
+      # "exec format error". Packages without test files are skipped because
+      # `go test -c` rejects them.
+      - name: Windows test compile (cross-compile only, never executed)
+        run: |
+          set -euo pipefail
+          pkgs=$(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
+          if [ -z "$pkgs" ]; then
+            echo "no test packages"; exit 0
+          fi
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          fail=0
+          i=0
+          for pkg in $pkgs; do
+            i=$((i+1))
+            if ! GOOS=windows go test -c -o "$tmpdir/t$i.test.exe" "$pkg"; then
+              echo "windows test compile failed: $pkg"; fail=1
+            fi
+          done
+          exit $fail
 
   console-web:
     # UI-01..03 的前端门面是插件 ABI：vitest + tsc 必须在 CI 执行，

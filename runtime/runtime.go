@@ -234,7 +234,11 @@ func (r *Runtime) Close(ctx context.Context) error {
 }
 
 // submit enqueues a command for the orchestrator. It returns false when the
-// orchestrator has already stopped, in which case the command is dropped.
+// orchestrator has halted admission (shutdown terminal reached), in which case
+// the command is dropped. A true return is a COMMITMENT: the drain in run()
+// applies every command admitted before the halt gate, so every caller that
+// submitted a reply-carrying command receives a response (the handler itself
+// may answer with an explicit shutdown error — never a silent hang).
 //
 // The command channel is intentionally never closed; shutdown is signaled via
 // the stop channel so late asynchronous completions can be safely dropped
@@ -242,30 +246,38 @@ func (r *Runtime) Close(ctx context.Context) error {
 func (r *Runtime) submit(cmd command) bool {
 	o := r.orch
 
-	// Fast path: while holding sendMu, stop cannot be closed concurrently, so
-	// a successful non-blocking send is authoritative.
+	// Admission is linearized with shutdown by sendMu: the halted gate is
+	// checked and the send performed while holding it, and run()'s terminal
+	// branch sets halted under the same mutex BEFORE draining. Either this
+	// command lands before the gate (and the drain applies it) or the gate is
+	// already closed (rejected here).
 	o.sendMu.Lock()
-	select {
-	case <-o.stop:
+	if o.halted {
 		o.sendMu.Unlock()
 		return false
-	default:
 	}
 	select {
 	case o.commands <- cmd:
 		o.sendMu.Unlock()
 		return true
 	default:
-		o.sendMu.Unlock()
 	}
 
-	// The command buffer is full: block until either a slot frees (orchestrator
-	// still draining) or the orchestrator stops. stop is closed under sendMu on
-	// shutdown, so this select cannot deadlock.
+	// Buffer full: block for a slot while still holding sendMu. This cannot
+	// deadlock: the orchestrator's normal loop only RECEIVES (never takes
+	// sendMu) until it has applied a command and decided to shut down, so a
+	// live orchestrator keeps freeing slots; the terminal branch cannot start
+	// while we hold sendMu, and by the time it runs, our send has either
+	// succeeded or we have released the lock.
 	select {
 	case o.commands <- cmd:
+		o.sendMu.Unlock()
 		return true
 	case <-o.stop:
+		// Defensive: stop closes only after halted (which we already checked
+		// under the same lock), so this branch is unreachable today. Kept as
+		// defense-in-depth for future shutdown paths.
+		o.sendMu.Unlock()
 		return false
 	}
 }

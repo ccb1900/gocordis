@@ -21,6 +21,7 @@ import (
 var (
 	ErrRehomeNotActive = errors.New("runtime: rehome requires an Active fiber")
 	ErrRehomeBusy      = errors.New("runtime: rehome already in progress")
+	ErrReviseBusy      = errors.New("runtime: a revision of this fiber is already in progress")
 )
 
 // RehomeOption configures Fiber.Rehome.
@@ -195,32 +196,33 @@ func (o *orchestrator) executeRehomeStep2(f *Fiber) {
 	}
 	id := ProviderIdentity{FiberID: f.id, ActivationID: act.id}
 
-	// Re-home the declared keys (inject + provide) to the fresh namespace.
-	declared := make(map[CapabilityKey]struct{}, len(f.inject)+len(f.provide))
-	for _, d := range f.inject {
-		declared[d.Key] = struct{}{}
+	// Re-home routing UNDER routeMu. RT-03/RT-04: the fresh table MERGES with
+	// the current table instead of replacing it, and only keys this fiber
+	// PROVIDES are re-homed. The short route moves the fiber's PROVISIONS —
+	// not its dependencies and not other fibers' routes:
+	//   - an inject-only key keeps resolving where its provider actually lives,
+	//     so the fiber stays Active on the same activation (RT-03; re-homing it
+	//     would strand the binding in the vacated namespace and force a
+	//     withdrawal, contradicting the short-route promise);
+	//   - inherited entries for keys this fiber does not declare are preserved
+	//     for future children (RT-04; paper Def 24/25: ρ is fixed at insertion,
+	//     and a realm move carries the provisions, not the whole table);
+	//   - a key that is both injected and provided follows its provision into
+	//     the fresh namespace, keeping the per-key realm identity consistent.
+	var moved []CapabilityKey
+	// The migration scans the phase-1 snapshot (NOT fiberNamespaces(f): the
+	// table was just re-merged, so the current namespaces may no longer include
+	// the per-key isolation realms that hold the provisions). Events are
+	// collected and emitted after unlocking — a sink must never run while the
+	// route lock is held.
+	f.routeMu.Lock()
+	freshTable := make(map[CapabilityKey]*realm, len(f.keyRealms)+len(f.provide))
+	for k, r := range f.keyRealms {
+		freshTable[k] = r
 	}
 	for _, k := range f.provide {
-		declared[k] = struct{}{}
-	}
-	freshTable := make(map[CapabilityKey]*realm, len(declared))
-	for k := range declared {
 		freshTable[k] = plan.fresh
 	}
-
-	// Replace the table and move the provision records UNDER routeMu. This is
-	// the write side of the linearization shared with Provide: a concurrent
-	// async Provide either registered before we took the lock (its record is in
-	// plan.oldRealms and is moved below) or registers after we release it (it
-	// derives the fresh table). No record can slip into a stale realm after the
-	// scan. Migrate out of the phase-1 snapshot, NOT fiberNamespaces(f): the
-	// table was just replaced, so the current namespaces no longer include the
-	// per-key isolation realms that actually hold the provisions.
-	//
-	// Events are collected and emitted after unlocking — a sink must never run
-	// while the route lock is held.
-	var moved []CapabilityKey
-	f.routeMu.Lock()
 	f.keyRealms = freshTable
 	for _, rr := range plan.oldRealms {
 		if rr == plan.fresh {
@@ -257,4 +259,17 @@ func (o *orchestrator) executeRehomeStep2(f *Fiber) {
 	// reconcile is idempotent: a normal rehome with no intent change is a
 	// no-op, and an already-withdrawing fiber is not re-entered.
 	o.reconcile(f)
+
+	// RT-02: a Dispose that PRECEDED the rehome had already set withdrawing=true
+	// (gates pending). notifyGateWaiters dispatches to the rehome branch first,
+	// and reconcile's beginWithdrawal defers to the withdrawing flag — so the
+	// pending unload would never resume and the fiber would stay Active
+	// forever. The rehome guard is gone and the gates are clear, so resume the
+	// unload here (maybeStartUnload re-checks state, rehome and gates itself).
+	f.mu.RLock()
+	pendingUnload := f.withdrawing && f.state == StateActive
+	f.mu.RUnlock()
+	if pendingUnload {
+		o.maybeStartUnload(f)
+	}
 }

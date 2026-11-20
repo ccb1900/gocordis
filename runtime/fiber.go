@@ -30,6 +30,14 @@ type Fiber struct {
 	// no rehome is pending). See rehome.go.
 	rehome *rehomePending
 
+	// revising guards Revise against concurrent invocations on the SAME fiber
+	// (RT-06): two overlapping revisions would both dispose the old fiber and
+	// both insert a replacement, producing two fibers at one ownership
+	// position. CAS'd under mu by Fiber.Revise; cleared when the revision
+	// returns (success, error, or ctx cancellation) unless the fiber reached
+	// Gone during its own revision (it must never be revised again).
+	revising bool
+
 	// keyRealms is the fiber's per-key isolation table (paper Definition 24,
 	// the realm table ρ): a key present here resolves and provides against the
 	// named namespace instead of the fiber's scope realm. Entries are fixed at
@@ -310,6 +318,11 @@ func WithFreshIsolation() ReviseOption {
 // activation. A revision of a Failed fiber is a sanctioned retry (a revision
 // reinserts without an outcome).
 //
+// testReviseHook is a test-only seam (never set in production) fired after the
+// revision snapshots the ownership position and before the retire steps, so
+// tests can interleave a Rehome into the revision window.
+var testReviseHook func()
+
 // Contract: Revise must not be called from the revising fiber's own activation
 // (it waits for that activation to end — a self-revision would deadlock). The
 // revision composite is a loader/orchestrator-level operation, not a component
@@ -327,23 +340,37 @@ func (f *Fiber) Revise(ctx context.Context, component Component, opts ...ReviseO
 			opt(&o)
 		}
 	}
-	// Snapshot the ownership position and the per-key isolation table before
-	// retiring (the table is fixed at insertion, paper Definition 24).
+	// RT-06: at most one revision in flight per fiber, and never revise a Gone
+	// fiber (reinserting would resurrect the position). The guard is taken
+	// BEFORE any retire step: two overlapping revisions would both dispose the
+	// old fiber and both insert a replacement at the same ownership position.
+	f.mu.Lock()
+	if f.state == StateGone {
+		f.mu.Unlock()
+		return nil, ErrInvalidState
+	}
+	if f.revising {
+		f.mu.Unlock()
+		return nil, ErrReviseBusy
+	}
+	f.revising = true
+	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		if f.state != StateGone {
+			f.revising = false
+		}
+		f.mu.Unlock()
+	}()
+
+	// Ownership position (parent/realm are immutable after creation).
 	f.mu.RLock()
 	parent := f.parent
 	scope := f.realm
 	f.mu.RUnlock()
-	// keyRealms can be rewritten by Rehome step 2; snapshot it under routeMu
-	// (separate from mu) so the copy cannot race with a concurrent move.
-	f.routeMu.RLock()
-	var keyRealms map[CapabilityKey]*realm
-	for k, r := range f.keyRealms {
-		if keyRealms == nil {
-			keyRealms = make(map[CapabilityKey]*realm, len(f.keyRealms))
-		}
-		keyRealms[k] = r
+	if testReviseHook != nil {
+		testReviseHook()
 	}
-	f.routeMu.RUnlock()
 
 	// Retire + deactivate + remove (children first). Dispose is idempotent;
 	// Gone waits for the entry's removal with the deferred-finalization gate.
@@ -357,13 +384,17 @@ func (f *Fiber) Revise(ctx context.Context, component Component, opts ...ReviseO
 	inject := component.Inject()
 	provide := component.Provide()
 	reply := make(chan reviseInsertReply, 1)
+	// RT-08: the per-key isolation table is read at INSERT time on the
+	// orchestrator from the old fiber (its table is final once Gone — no
+	// rehome can touch a non-Active fiber), so a rehome that completed during
+	// the retire window is inherited, not lost.
 	if !f.rt.submit(&cmdReviseInsert{
+		old:            f,
 		parent:         parent,
 		component:      component,
 		inject:         inject,
 		provide:        provide,
 		realm:          scope,
-		keyRealms:      keyRealms,
 		freshIsolation: o.freshIsolation,
 		reply:          reply,
 	}) {

@@ -524,6 +524,24 @@ func rehomeOrchestratorBarrier(t *testing.T, rt *Runtime) {
 	}
 }
 
+// rehomeWaitInFlight blocks until the fiber's rehome phase 1 has run
+// (f.rehome != nil), polling with the same deadline pattern as the other
+// helpers (no fixed sleeps — the fact itself is the synchronization point).
+func rehomeWaitInFlight(t *testing.T, f *Fiber) {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		f.mu.RLock()
+		inFlight := f.rehome != nil
+		f.mu.RUnlock()
+		if inFlight {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("rehome never reached phase 1")
+}
+
 func rehomeAwaitGone(t *testing.T, ctx context.Context, f *Fiber, phase string) {
 	t.Helper()
 	deadline := time.Now().Add(8 * time.Second)
@@ -1533,4 +1551,435 @@ func TestRehomeConsecutiveWithMidFlightBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNoResidue(t, pf, lateKey.Capability())
+}
+
+// TestRehomeAfterDisposeConverges — RT-02: Dispose FIRST, Rehome SECOND.
+// The Dispose leaves the fiber Active + withdrawing, gated on its consumer.
+// Rehome is accepted because the fiber is nominally Active; when the last
+// gate clears, phase 2 runs and its final reconcile must RESUME the pending
+// unload — otherwise the fiber stays Active forever and Runtime.Close hangs
+// (notifyGateWaiters dispatches to the rehome branch, so the withdrawing
+// branch never fires).
+func TestRehomeAfterDisposeConverges(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+
+	pf, err := rt.Load(&rehomeProvider{tag: "v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, pf)
+	bc := &rehomeBlockingConsumer{
+		cleanupEntered: make(chan struct{}),
+		releaseCleanup: make(chan struct{}),
+	}
+	var once sync.Once
+	releaseConsumer := func() { once.Do(func() { close(bc.releaseCleanup) }) }
+	defer releaseConsumer()
+	cf, err := rt.Load(bc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, cf)
+
+	// 1. Dispose first: pf stays Active (gates pending), consumer withdraws.
+	if err := pf.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-bc.cleanupEntered:
+	case <-ctx.Done():
+		t.Fatal("consumer Cleanup never entered after Dispose")
+	}
+
+	// 2. Rehome second: accepted because pf is nominally Active.
+	rehomeDone := make(chan error, 1)
+	go func() { rehomeDone <- pf.Rehome(ctx, RehomeWithFreshIsolation()) }()
+	// Wait until phase 1 has actually run (f.rehome set) before releasing the
+	// consumer — otherwise the consumer's completion could reach
+	// notifyGateWaiters while pf.rehome is still nil and legitimately unload
+	// the withdrawing fiber before the rehome even starts.
+	rehomeWaitInFlight(t, pf)
+
+	// 3. Release the consumer: the last gate clears. Phase 2 must complete AND
+	// the recorded Unmounted intent must finally unload the fiber.
+	releaseConsumer()
+	select {
+	case err := <-rehomeDone:
+		if err != nil {
+			t.Fatalf("rehome: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("rehome never completed after the gate cleared")
+	}
+	rehomeAwaitGone(t, ctx, pf, "dispose-first rehome-second")
+
+	// 4. Runtime.Close must finish: nothing may be stuck Active.
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- rt.Close(ctx) }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Runtime.Close never completed after dispose-first rehome (RT-02)")
+	}
+}
+
+var rehomeUpstreamKey = NewKey[rehomeKeyVal]("rehome.upstream")
+var rehomeThirdKey = NewKey[rehomeKeyVal]("rehome.third")
+
+// rehomeUpstream provides rehomeUpstreamKey in the root realm.
+type rehomeUpstream struct{ tag string }
+
+func (c *rehomeUpstream) Name() string          { return "rehome-upstream" }
+func (c *rehomeUpstream) Inject() []Dependency  { return nil }
+func (c *rehomeUpstream) Provide() []Capability { return []Capability{rehomeUpstreamKey.Capability()} }
+func (c *rehomeUpstream) Apply(ctx *Context) (Cleanup, error) {
+	return nil, Provide(ctx, rehomeUpstreamKey, rehomeKeyVal{tag: c.tag})
+}
+
+// rehomeInjectingProvider requires rehomeUpstreamKey and provides rehomeKey:
+// re-homing its INJECT route would strand the upstream binding in the vacated
+// namespace and force a withdrawal, contradicting the short-route promise.
+type rehomeInjectingProvider struct{}
+
+func (c *rehomeInjectingProvider) Name() string { return "rehome-injecting-provider" }
+func (c *rehomeInjectingProvider) Inject() []Dependency {
+	return []Dependency{Requires(rehomeUpstreamKey)}
+}
+func (c *rehomeInjectingProvider) Provide() []Capability {
+	return []Capability{rehomeKey.Capability()}
+}
+func (c *rehomeInjectingProvider) Apply(ctx *Context) (Cleanup, error) {
+	v, err := Require(ctx, rehomeUpstreamKey)
+	if err != nil {
+		return nil, err
+	}
+	return nil, Provide(ctx, rehomeKey, rehomeKeyVal{tag: v.tag})
+}
+
+// TestRehomeKeepsInjectRoutingShortRoute — RT-03: Rehome moves the fiber's
+// PROVISIONS, not its dependencies. The fiber must stay Active on the SAME
+// activation with its inject binding intact; only the provided key's route
+// moves to the fresh namespace.
+func TestRehomeKeepsInjectRoutingShortRoute(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	up, err := rt.Load(&rehomeUpstream{tag: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, up)
+	pf, err := rt.Load(&rehomeInjectingProvider{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, pf)
+	pf.mu.RLock()
+	actID := pf.activation.id
+	pf.mu.RUnlock()
+
+	if err := pf.Rehome(ctx, RehomeWithFreshIsolation()); err != nil {
+		t.Fatalf("rehome: %v", err)
+	}
+
+	// Short route: still Active on the SAME activation.
+	pf.mu.RLock()
+	st, actID2 := pf.state, pf.activation.id
+	pf.mu.RUnlock()
+	if st != StateActive || actID2 != actID {
+		t.Fatalf("short route broken: state=%v activation %v -> %v", st, actID, actID2)
+	}
+	// Inject dependency still resolved (route kept where the provider lives).
+	if r := rehomeResolveAs(t, rt, pf, rehomeUpstreamKey.Capability()); !r.ok {
+		t.Fatalf("inject dependency lost across rehome: %+v", r)
+	}
+	// Provision moved to the fresh namespace, live (not retiring).
+	rec, ok := effectiveRealm(pf, rehomeKey.Capability()).lookupOwn(rehomeKey.Capability())
+	if !ok || rec == nil || rec.retiring {
+		t.Fatalf("provision not live in the fresh namespace: %+v/%v", rec, ok)
+	}
+}
+
+// rehomeRouteHost spawns the triple-key parent under an explicit scope and
+// forwards the parent's spawn-control channels to the test.
+type rehomeRouteHost struct {
+	pCh    chan *Fiber
+	startC chan struct{}
+	cCh    chan *Fiber
+}
+
+func (c *rehomeRouteHost) Name() string          { return "rehome-route-host" }
+func (c *rehomeRouteHost) Inject() []Dependency  { return nil }
+func (c *rehomeRouteHost) Provide() []Capability { return nil }
+func (c *rehomeRouteHost) Apply(ctx *Context) (Cleanup, error) {
+	p, err := ctx.Child(&rehomeRouteParent{startC: c.startC, cCh: c.cCh}, WithScope())
+	if err != nil {
+		return nil, err
+	}
+	if c.pCh != nil {
+		c.pCh <- p
+	}
+	return nil, nil
+}
+
+// rehomeRouteParent provides three keys under its own scope realm and spawns
+// an injecting child on demand. The child's inherited table therefore contains
+// an entry (rehomeThirdKey) the child itself never declares — re-homing must
+// not drop it (RT-04).
+type rehomeRouteParent struct {
+	cCh    chan *Fiber
+	startC chan struct{}
+}
+
+func (c *rehomeRouteParent) Name() string         { return "rehome-route-parent" }
+func (c *rehomeRouteParent) Inject() []Dependency { return nil }
+func (c *rehomeRouteParent) Provide() []Capability {
+	return []Capability{rehomeKey.Capability(), rehomeOtherKey.Capability(), rehomeThirdKey.Capability()}
+}
+func (c *rehomeRouteParent) Apply(ctx *Context) (Cleanup, error) {
+	for _, k := range []struct {
+		key Key[rehomeKeyVal]
+		tag string
+	}{{rehomeKey, "p-main"}, {rehomeOtherKey, "p-other"}, {rehomeThirdKey, "p-third"}} {
+		if err := Provide(ctx, k.key, rehomeKeyVal{tag: k.tag}); err != nil {
+			return nil, err
+		}
+	}
+	go func() {
+		<-c.startC
+		child, err := ctx.Child(&rehomeRouteChild{}, Isolate(rehomeKey.Capability()))
+		if err == nil && c.cCh != nil {
+			c.cCh <- child
+		}
+	}()
+	return nil, nil
+}
+
+// rehomeRouteChild injects rehomeOtherKey (binding to the parent's provision
+// in the PARENT's realm) and provides rehomeKey (isolated into its own realm).
+type rehomeRouteChild struct{}
+
+func (c *rehomeRouteChild) Name() string { return "rehome-route-child" }
+func (c *rehomeRouteChild) Inject() []Dependency {
+	return []Dependency{Requires(rehomeOtherKey)}
+}
+func (c *rehomeRouteChild) Provide() []Capability {
+	return []Capability{rehomeKey.Capability()}
+}
+func (c *rehomeRouteChild) Apply(ctx *Context) (Cleanup, error) {
+	if _, err := Require(ctx, rehomeOtherKey); err != nil {
+		return nil, err
+	}
+	return nil, Provide(ctx, rehomeKey, rehomeKeyVal{tag: "c"})
+}
+
+// TestRehomePreservesInheritedRoutes — RT-04: the fresh table merges with the
+// current one. Inherited entries for keys the rehomed fiber does not declare
+// survive the move (they may be inherited by future children), and inject-only
+// entries keep pointing at the realm where the provider lives.
+func TestRehomePreservesInheritedRoutes(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	// H spawns the triple-key parent P under an explicit scope: P's table maps
+	// all three of ITS declared keys to P's own scope realm.
+	pCh := make(chan *Fiber, 1)
+	startC := make(chan struct{})
+	cCh := make(chan *Fiber, 1)
+	host, err := rt.Load(&rehomeRouteHost{pCh: pCh, startC: startC, cCh: cCh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, host)
+	p := <-pCh
+	rehomeWaitState(t, p, StateActive)
+
+	// P spawns C: C's inherited table = P's table; C declares only rehomeKey
+	// (provide, isolated into C's fresh realm) and rehomeOtherKey (inject).
+	close(startC)
+	var cf *Fiber
+	select {
+	case cf = <-cCh:
+	case <-ctx.Done():
+		t.Fatal("child never spawned")
+	}
+	rehomeWaitState(t, cf, StateActive)
+
+	// Pre-rehome: the child's inherited table holds rehomeThirdKey even though
+	// the child never declares it.
+	cf.routeMu.RLock()
+	thirdBefore := cf.keyRealms[rehomeThirdKey.Capability()]
+	otherBefore := cf.keyRealms[rehomeOtherKey.Capability()]
+	cf.routeMu.RUnlock()
+	if thirdBefore == nil {
+		t.Fatal("inherited non-declared route entry missing before rehome")
+	}
+
+	if err := cf.Rehome(ctx, RehomeWithFreshIsolation()); err != nil {
+		t.Fatalf("rehome: %v", err)
+	}
+
+	cf.mu.RLock()
+	st := cf.state
+	cf.mu.RUnlock()
+	if st != StateActive {
+		t.Fatalf("rehomed child left Active: %v", st)
+	}
+	cf.routeMu.RLock()
+	thirdAfter := cf.keyRealms[rehomeThirdKey.Capability()]
+	otherAfter := cf.keyRealms[rehomeOtherKey.Capability()]
+	mainAfter := cf.keyRealms[rehomeKey.Capability()]
+	cf.routeMu.RUnlock()
+	if thirdAfter != thirdBefore {
+		t.Fatalf("inherited non-declared route dropped/rewritten by rehome: %v -> %v", thirdBefore, thirdAfter)
+	}
+	if otherAfter != otherBefore {
+		t.Fatalf("inject-only route rewritten by rehome: %v -> %v", otherBefore, otherAfter)
+	}
+	if mainAfter == nil || mainAfter == otherAfter {
+		t.Fatalf("provided key was not re-homed to a fresh namespace: %v", mainAfter)
+	}
+	// The child's provision is live in the fresh namespace.
+	if rec, ok := mainAfter.lookupOwn(rehomeKey.Capability()); !ok || rec.retiring {
+		t.Fatalf("child provision not live after rehome: %+v/%v", rec, ok)
+	}
+	// The inject binding still resolves.
+	if r := rehomeResolveAs(t, rt, cf, rehomeOtherKey.Capability()); !r.ok {
+		t.Fatalf("inject binding lost across rehome: %+v", r)
+	}
+}
+
+var rehomeChildRouteKey = NewKey[rehomeKeyVal]("rehome.child-route")
+
+// rehomeChildRouteHost spawns the parent under an explicit scope so the parent
+// has a non-empty route table.
+type rehomeChildRouteHost struct {
+	pCh    chan *Fiber
+	startC chan struct{}
+	cCh    chan *Fiber
+}
+
+func (c *rehomeChildRouteHost) Name() string          { return "rehome-child-route-host" }
+func (c *rehomeChildRouteHost) Inject() []Dependency  { return nil }
+func (c *rehomeChildRouteHost) Provide() []Capability { return nil }
+func (c *rehomeChildRouteHost) Apply(ctx *Context) (Cleanup, error) {
+	p, err := ctx.Child(&rehomeChildRouteParent{startC: c.startC, cCh: c.cCh}, WithScope())
+	if err != nil {
+		return nil, err
+	}
+	if c.pCh != nil {
+		c.pCh <- p
+	}
+	return nil, nil
+}
+
+// rehomeChildRouteParent provides the key under its own scope realm and spawns
+// an injecting child on demand.
+type rehomeChildRouteParent struct {
+	cCh    chan *Fiber
+	startC chan struct{}
+}
+
+func (c *rehomeChildRouteParent) Name() string         { return "rehome-child-route-parent" }
+func (c *rehomeChildRouteParent) Inject() []Dependency { return nil }
+func (c *rehomeChildRouteParent) Provide() []Capability {
+	return []Capability{rehomeChildRouteKey.Capability()}
+}
+func (c *rehomeChildRouteParent) Apply(ctx *Context) (Cleanup, error) {
+	if err := Provide(ctx, rehomeChildRouteKey, rehomeKeyVal{tag: "p"}); err != nil {
+		return nil, err
+	}
+	go func() {
+		<-c.startC
+		child, err := ctx.Child(&rehomeChildRouteChild{})
+		if err == nil && c.cCh != nil {
+			c.cCh <- child
+		}
+	}()
+	return nil, nil
+}
+
+type rehomeChildRouteChild struct{}
+
+func (c *rehomeChildRouteChild) Name() string { return "rehome-child-route-child" }
+func (c *rehomeChildRouteChild) Inject() []Dependency {
+	return []Dependency{Requires(rehomeChildRouteKey)}
+}
+func (c *rehomeChildRouteChild) Provide() []Capability {
+	return nil
+}
+func (c *rehomeChildRouteChild) Apply(ctx *Context) (Cleanup, error) {
+	if _, err := Require(ctx, rehomeChildRouteKey); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+// TestRehomeChildInsertionUsesCurrentRoute — RT-05: the child's per-key
+// isolation table must be built at INSERTION time on the orchestrator, not
+// from a caller-goroutine snapshot. A child created after a concurrent Rehome
+// completes must inherit the CURRENT table and bind in the fresh namespace.
+func TestRehomeChildInsertionUsesCurrentRoute(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	pCh := make(chan *Fiber, 1)
+	startC := make(chan struct{})
+	cCh := make(chan *Fiber, 1)
+	host, err := rt.Load(&rehomeChildRouteHost{pCh: pCh, startC: startC, cCh: cCh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, host)
+	p := <-pCh
+	rehomeWaitState(t, p, StateActive)
+
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	prev := testChildSpawnHook
+	defer func() { testChildSpawnHook = prev }()
+	testChildSpawnHook = func() {
+		close(entered)
+		<-resume
+	}
+
+	close(startC)
+
+	// The child creation is paused right before the spawn command submission.
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("child spawn never reached the hook")
+	}
+
+	// Rehome the parent while the child is parked between snapshot and insert.
+	if err := p.Rehome(ctx, RehomeWithFreshIsolation()); err != nil {
+		t.Fatalf("rehome: %v", err)
+	}
+
+	close(resume)
+	var cf *Fiber
+	select {
+	case cf = <-cCh:
+	case <-ctx.Done():
+		t.Fatal("child never created")
+	}
+	rehomeWaitState(t, cf, StateActive)
+
+	// The child must have inherited the CURRENT table (fresh realm) and bound
+	// to the provision that now lives there.
+	cf.routeMu.RLock()
+	childRealm := cf.keyRealms[rehomeChildRouteKey.Capability()]
+	cf.routeMu.RUnlock()
+	if childRealm == nil || childRealm != effectiveRealm(p, rehomeChildRouteKey.Capability()) {
+		t.Fatalf("child inherited a stale route snapshot: childRealm=%v want %v",
+			childRealm, effectiveRealm(p, rehomeChildRouteKey.Capability()))
+	}
 }

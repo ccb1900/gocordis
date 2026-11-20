@@ -18,6 +18,14 @@ var (
 	// ErrDependencyCycle is returned when registering a dependency would
 	// create a strong dependency cycle.
 	ErrDependencyCycle = errors.New("dependency cycle")
+	// ErrSelfDependency is returned at the mount boundary when a component
+	// declares it both REQUIRES and PROVIDES the same key. Before its
+	// activation the fiber's own provision does not exist, so the dependency
+	// gate can never be satisfied by it: with no other provider the fiber
+	// hangs Pending forever; with one, the Apply-time Provide fails with
+	// ErrDuplicateProvider. The declaration is therefore unresolvable and is
+	// rejected deterministically where it is written.
+	ErrSelfDependency = errors.New("self dependency: component requires a key it also provides")
 	// ErrInvalidState is returned when an operation is illegal in the
 	// current Fiber state.
 	ErrInvalidState = errors.New("invalid fiber state")

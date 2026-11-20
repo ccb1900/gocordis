@@ -51,6 +51,33 @@ func (c *cmdSpawnChild) apply(o *orchestrator) {
 	child.inject = c.inject
 	child.provide = c.provide
 	child.parent = parent
+
+	// RT-05: build the child's per-key isolation table HERE, on the
+	// orchestrator, from the parent's CURRENT route table — atomic with
+	// creation. cmdSpawnChild and Rehome phase 2 both run on this goroutine, so
+	// the table a child inherits is always the one in effect at insertion
+	// (paper Definition 24: ρ is fixed at INSERTION, never at a caller's
+	// snapshot moment).
+	if c.newScope || len(parent.keyRealms) > 0 {
+		parent.routeMu.RLock()
+		table := make(map[CapabilityKey]*realm, len(parent.keyRealms)+len(c.inject)+len(c.provide))
+		for k, r := range parent.keyRealms {
+			table[k] = r
+		}
+		parent.routeMu.RUnlock()
+		for _, d := range c.inject {
+			if _, ok := table[d.Key]; !ok {
+				table[d.Key] = parent.realm
+			}
+		}
+		for _, k := range c.provide {
+			if _, ok := table[k]; !ok {
+				table[k] = parent.realm
+			}
+		}
+		c.keyRealms = table
+	}
+
 	// Default ctx.Child inherits the parent's scope/realm. An explicit scope
 	// (WithScope) derives a fresh namespace for the keys the child declares.
 	// Paper ADR-0001 (Definition 24): isolation is a per-key realm table fixed

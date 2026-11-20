@@ -71,7 +71,12 @@ type PluginPage struct {
 func DiscoverPlugins(dir string) ([]config.ComponentConfig, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, nil // no plugin directory: the convention has nothing to offer
+		if os.IsNotExist(err) {
+			return nil, nil // no plugin directory: the convention has nothing to offer
+		}
+		// 目录存在但不可读 / I/O 故障不能静默当成"没有插件"——那会让
+		// 下一次调和把本插件的全部组件当成卸载撤销（联合审查 P2-8）。
+		return nil, fmt.Errorf("plugin directory %q unreadable: %w", dir, err)
 	}
 	var names []string
 	for _, entry := range entries {

@@ -149,3 +149,45 @@ func TestPluginsDirForConfig(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// 插件根目录存在但不可读不能静默变成"没有插件"：调和会据此撤销既有组件。
+func TestDiscoverPluginsUnreadableDirErrors(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permission bits")
+	}
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "locked")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sub, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
+	rows, err := DiscoverPlugins(dir)
+	if err != nil {
+		return // surfaced as an error — also an acceptable loud outcome
+	}
+	// Or the unreadable dir is expanded into a plugin-error row (inner
+	// ReadFile failure) — never omitted from the desired composition.
+	found := false
+	for _, r := range rows {
+		if r.ID == "locked" && r.Type == "plugin-error" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("unreadable plugin dir must surface (error row or returned error), rows=%+v", rows)
+	}
+}
+
+// 目录存在但就是普通文件：ReadDir 返回 ENOTDIR，同样不能静默。
+func TestDiscoverPluginsDirIsFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notdir"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DiscoverPlugins(filepath.Join(dir, "notdir")); err == nil {
+		t.Fatal("ENOTDIR must be reported")
+	}
+}

@@ -177,12 +177,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.serveStatic(w, r)
 }
 
-// serveClientModule serves one plugin's frontend module and the static
-// assets of its plugin directory, mounted at /client-modules/<name>/.
-// The entry file (ui.js) is the module URL; everything under the plugin
-// directory resolves relatively — vendored libraries included. The URL is
-// split into <name>/<relative file>, the file side is cleaned, and any
-// escape from the plugin directory is a 404.
+// serveClientModule serves one plugin's frontend module and its PUBLIC
+// assets, mounted at /client-modules/<name>/. A plugin directory may hold
+// a backend executable and manifest.toml — those are NOT web assets. When a
+// public/ subdirectory exists it is the mount root; otherwise the entry
+// file's directory is used (backward compatibility with vendored relative
+// imports). The URL is split into <name>/<relative file>; the file side is
+// cleaned, checked against the resolved mount root, and non-web files are
+// refused.
 func (s *Server) serveClientModule(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "invalid_request", "GET only")
@@ -197,6 +199,13 @@ func (s *Server) serveClientModule(w http.ResponseWriter, r *http.Request) {
 		if m.Name != seg {
 			continue
 		}
+		// Public root: an explicit public/ subdirectory when present, else
+		// the entry file's directory. The backend binary and manifest live
+		// beside ui.js but must never be reachable over HTTP.
+		root := filepath.Dir(m.Path)
+		if cand := filepath.Join(root, "public"); isDir(cand) {
+			root = cand
+		}
 		target := m.Path
 		if file != "" {
 			rel := filepath.Clean(filepath.FromSlash(file))
@@ -204,12 +213,18 @@ func (s *Server) serveClientModule(w http.ResponseWriter, r *http.Request) {
 				http.NotFound(w, r)
 				return
 			}
-			target = filepath.Join(filepath.Dir(m.Path), rel)
+			target = filepath.Join(root, rel)
+		} else if root != filepath.Dir(m.Path) {
+			// entry URL with a public/ root: serve <public>/<basename(entry)>
+			target = filepath.Join(root, filepath.Base(m.Path))
 		}
-		// Symlinks must not extend the mount outside the plugin directory:
-		// resolve the real path and re-check the prefix against the resolved
-		// plugin directory (EvalSymlinks on both sides).
-		resolved, err := withinDir(filepath.Dir(target), target)
+		if !publicWebFile(target) {
+			http.NotFound(w, r)
+			return
+		}
+		// Symlinks must not extend the mount outside the PUBLIC root:
+		// resolve the real path and re-check the prefix on both sides.
+		resolved, err := withinDir(root, target)
 		if err != nil || !resolved {
 			http.NotFound(w, r)
 			return
@@ -568,4 +583,31 @@ func absOf(p string) string {
 		return p
 	}
 	return abs
+}
+
+// isDir reports whether path is an existing directory.
+func isDir(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// publicWebFile refuses files that are not frontend assets: manifests,
+// executables and dotfiles. Backends are often extensionless executables,
+// so the manifest name is the explicit deny-list entry that matters most.
+func publicWebFile(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	if base == "manifest.toml" || strings.HasPrefix(base, ".") {
+		return false
+	}
+	// Extensionless files in a plugin directory are typically the backend
+	// executable (manifest backend = "./alarm-demo"). Web assets have a
+	// recognizable extension — require one.
+	ext := strings.ToLower(filepath.Ext(base))
+	switch ext {
+	case ".js", ".mjs", ".cjs", ".css", ".json", ".html", ".svg", ".png",
+		".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf",
+		".map", ".txt", ".wasm", ".mp3", ".mp4":
+		return true
+	}
+	return false
 }

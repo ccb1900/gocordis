@@ -282,3 +282,33 @@ func TestClientModuleComponentDefaults(t *testing.T) {
 		t.Fatal("separated follows must be rejected")
 	}
 }
+
+// 插件目录同时含后端与 manifest：它们不是 Web 资产，不能通过
+// /client-modules/<name>/ 读取（联合审查 P2-9）。
+func TestClientModuleDoesNotServeManifestOrBackend(t *testing.T) {
+	s, dir, _ := newModuleServer(t)
+	// 目录里的 manifest.toml 与一个模拟后端二进制
+	if err := os.WriteFile(filepath.Join(dir, "manifest.toml"), []byte("name = \"demo-ui\""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "demo-ui"), []byte("ELF binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/client-modules/demo-ui/manifest.toml",
+		"/client-modules/demo-ui/demo-ui",
+		"/client-modules/demo-ui/.env",
+	} {
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s = %d, want 404 (non-web file must not be served)", path, rec.Code)
+		}
+	}
+	// 真实前端入口仍可访问
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/client-modules/demo-ui/ui.js", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ui.js = %d, want 200", rec.Code)
+	}
+}

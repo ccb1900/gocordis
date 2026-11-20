@@ -9,6 +9,7 @@ package procplugin
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -131,4 +132,45 @@ func waitProcActive(t *testing.T, f *runtime.Fiber) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("fiber never became Active (state %v err %v)", f.State(), f.Err())
+}
+
+// 后端启动失败时 Hub 词汇仍注册，且诚实报 plugin_error（不是 not_found）。
+func TestFailedBackendRegistersErrorVocabulary(t *testing.T) {
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	t.Cleanup(func() { _ = rt.Close(ctx) })
+
+	hc, err := consolehost.NewConsole(config.ComponentConfig{ID: "console-host"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Load(hc); err != nil {
+		t.Fatal(err)
+	}
+	// backend 指向不存在的二进制 → Start 失败降级
+	comp, err := NewComponent(config.ComponentConfig{
+		ID: "broken", Type: "proc-plugin",
+		Config: map[string]any{"backend": filepath.Join(t.TempDir(), "no-such-backend"), "queries": []any{"broken.q"}, "commands": []any{"broken.c"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := rt.Load(comp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitProcState(t, f, runtime.StateActive)
+
+	h := hc.HostAdapter()
+	_, ue := h.Query("broken.q", nil)
+	if ue == nil || ue.Code != "plugin_error" {
+		t.Fatalf("degraded query = %+v, want plugin_error", ue)
+	}
+	if ue := h.Command("broken.c", nil); ue == nil || ue.Code != "plugin_error" {
+		t.Fatalf("degraded command = %+v, want plugin_error", ue)
+	}
 }

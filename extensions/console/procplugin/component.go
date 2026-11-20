@@ -141,10 +141,10 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		// 通过控制台禁用/卸载该插件，或修复后热加载恢复。
 		c.logger.Warn("proc-plugin backend failed to start; running in degraded mode",
 			"plugin", c.id, "backend", c.backend, "error", err)
-		_ = ctx.Effect(func() (func() error, error) {
-			return func() error { return nil }, nil
-		})
-		return nil, nil
+		// UI 保留可见（声明激活语义），但 Hub 词汇照常注册：handler 里
+		// client==nil → 统一 plugin_error，而不是 not_found。这样前端得到
+		// 可诊断的"后端降级"而不是"这个命令不存在"（联合审查 P2-7）。
+		return c.registerDegradedVocabulary(ctx, hubReg)
 	}
 	c.mu.Lock()
 	c.client = client
@@ -239,4 +239,53 @@ func (c *Component) Running() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.client != nil && c.client.cmd.ProcessState == nil
+}
+
+// registerDegradedVocabulary installs the plugin's declared query/command
+// names as Effect-owned handlers that report plugin_error because the backend
+// never started. The UI follows the declaration (Provide marker above), so
+// the names must exist with an honest error rather than vanishing into
+// not_found. Recovery = fix + re-enable (铁律 5), never a silent no-op.
+func (c *Component) registerDegradedVocabulary(ctx *runtime.Context, hubReg *hub.Registry) (runtime.Cleanup, error) {
+	owner := fmt.Sprintf("proc-plugin:%s", c.id)
+	reason := fmt.Sprintf("plugin %q backend is not running (degraded)", c.id)
+	var unregisters []func() error
+	for _, name := range c.queries {
+		un, err := hubReg.RegisterQuery(name, owner, func(context.Context, url.Values) (any, *hub.Error) {
+			return nil, &hub.Error{Code: "plugin_error", Message: reason}
+		})
+		if err != nil {
+			for i := len(unregisters) - 1; i >= 0; i-- {
+				_ = unregisters[i]()
+			}
+			return nil, err
+		}
+		unregisters = append(unregisters, un)
+	}
+	for _, name := range c.commands {
+		un, err := hubReg.RegisterCommand(name, owner, func(context.Context, json.RawMessage) error {
+			return &hub.Error{Code: "plugin_error", Message: reason}
+		})
+		if err != nil {
+			for i := len(unregisters) - 1; i >= 0; i-- {
+				_ = unregisters[i]()
+			}
+			return nil, err
+		}
+		unregisters = append(unregisters, un)
+	}
+	if err := ctx.Effect(func() (func() error, error) {
+		return func() error {
+			for i := len(unregisters) - 1; i >= 0; i-- {
+				_ = unregisters[i]()
+			}
+			return nil
+		}, nil
+	}); err != nil {
+		for i := len(unregisters) - 1; i >= 0; i-- {
+			_ = unregisters[i]()
+		}
+		return nil, err
+	}
+	return nil, nil
 }

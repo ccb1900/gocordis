@@ -5,6 +5,7 @@
 // Widget/Action/Settings registries follow the same semantics.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  getPageRenderer,
   getSettings,
   getWidget,
   listActions,
@@ -104,5 +105,59 @@ describe("settings registry", () => {
     dispose();
     expect(getSettings("alarm")).toBeUndefined();
     expect(getSettings("alarm:client")).toBeUndefined();
+  });
+});
+
+// P1 regression (2026-11 audit): a module overriding another ACTIVE module's
+// key shadows it; disabling only the SHADOWING module must RESTORE the
+// shadowed contribution. The old set/delete pair deleted the key outright,
+// leaving the still-active earlier module unregistered for the session.
+describe("shadow-stack restore on override disposal", () => {
+  it("restores the shadowed page renderer when the overriding module disposes", () => {
+    const before = rendererRegistryVersion();
+    const disposeA = registerPageRenderer("shared-page", () => null);
+    const disposeB = registerPageRenderer("shared-page", () => null);
+
+    // B shadows A.
+    expect(getPageRenderer("shared-page")).not.toBeUndefined();
+
+    disposeB(); // only the LATER module is disabled
+    expect(rendererRegistryVersion()).toBe(before + 3);
+    expect(getPageRenderer("shared-page")).not.toBeUndefined(); // A restored
+
+    disposeA(); // A's own dispose then frees the key
+    expect(rendererRegistryVersion()).toBe(before + 4);
+    expect(getPageRenderer("shared-page")).toBeUndefined();
+  });
+
+  it("keeps stale-dispose semantics: a shadowed (non-top) dispose is a no-op", () => {
+    const before = rendererRegistryVersion();
+    const disposeA = registerWidget("shared-widget", () => null);
+    const disposeB = registerWidget("shared-widget", () => null);
+
+    disposeA(); // A is shadowed by B: no-op, B stays active
+    expect(rendererRegistryVersion()).toBe(before + 2);
+    expect(getWidget("shared-widget")).not.toBeUndefined();
+
+    disposeB();
+    expect(rendererRegistryVersion()).toBe(before + 3);
+    expect(getWidget("shared-widget")).toBeUndefined();
+  });
+
+  it("restores shadowed actions and settings the same way", () => {
+    const disposeA = registerAction({ id: "shared-action", title: "A", run: () => undefined });
+    const disposeB = registerAction({ id: "shared-action", title: "B", run: () => undefined });
+    expect(listActions().find((a) => a.id === "shared-action")?.title).toBe("B");
+    disposeB();
+    expect(listActions().find((a) => a.id === "shared-action")?.title).toBe("A");
+    disposeA();
+    expect(listActions().find((a) => a.id === "shared-action")).toBeUndefined();
+
+    const disposeSA = registerSettings("shared-plugin", () => null);
+    const disposeSB = registerSettings("shared-plugin", () => null);
+    disposeSB();
+    expect(getSettings("shared-plugin")).not.toBeUndefined();
+    disposeSA();
+    expect(getSettings("shared-plugin")).toBeUndefined();
   });
 });

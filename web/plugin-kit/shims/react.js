@@ -6,11 +6,14 @@ if (!F) throw new Error("gocordis plugin: console facade missing — a bundled p
 const R = F.React;
 
 export default R;
+// Note: useOptimistic (React 19) is deliberately NOT re-exported — the
+// console pins React ^18.3.1, where the binding would be `undefined`, and a
+// plugin calling it would crash. Re-add only with a facade version bump.
 export const {
   Children, Component, Fragment, PureComponent, StrictMode, Suspense,
   createContext, createElement, cloneElement, createRef, forwardRef,
   isValidElement, lazy, memo, startTransition, useCallback, useContext,
   useDebugValue, useDeferredValue, useEffect, useId, useImperativeHandle,
-  useInsertionEffect, useLayoutEffect, useMemo, useOptimistic, useReducer,
+  useInsertionEffect, useLayoutEffect, useMemo, useReducer,
   useRef, useState, useSyncExternalStore, useTransition,
 } = R;

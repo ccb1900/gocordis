@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -138,6 +139,27 @@ func TestE2E17ConcurrentConfigChanges(t *testing.T) {
 		}
 		return false
 	})
+	// P2-7 (audit): the final-state oracle must be cardinality-aware. The old
+	// existence-only check (fiberOf silently returns the FIRST matching owned
+	// entry) let duplicate-generation divergence pass. Exactly one owned
+	// entry, one live fiber, tag E, and a clean preservation walk.
+	owned := e.ctrl.Owned()
+	if len(owned) != 1 {
+		t.Fatalf("owned entries after convergence = %d, want exactly 1", len(owned))
+	}
+	if tag, _ := owned[0].Config["tag"].(string); tag != "e" {
+		t.Fatalf("applied tag = %q, want e", tag)
+	}
+	if owned[0].Fiber == nil || owned[0].Fiber.State() != runtime.StateActive {
+		t.Fatalf("applied fiber not Active: %+v", owned[0].Fiber)
+	}
+	snap, err := e.rt.Snapshot(ctxT(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg := pcThm64Check(snap); msg != "" {
+		t.Fatalf("preservation violated after concurrent churn: %s", msg)
+	}
 }
 
 // E2E-21 — Close during Config Reconcile: no panic/deadlock/leak.
@@ -154,6 +176,11 @@ func TestE2E21CloseDuringConfigReconcile(t *testing.T) {
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
+	// P2-5 (audit): the old fixed 10ms sleep let a loaded runner finish ZERO
+	// reconcile iterations before Close — degenerating "close during
+	// reconcile" into "close on an idle runtime". Gate Close on applied
+	// operations actually happening.
+	var reconciles atomic.Int64
 	for g := 0; g < 4; g++ {
 		wg.Add(1)
 		go func(g int) {
@@ -169,11 +196,18 @@ func TestE2E21CloseDuringConfigReconcile(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_ = ctrl.Reconcile(ctx, config.Config{Components: []config.ComponentConfig{{ID: id, Type: "independent"}}})
 				cancel()
+				reconciles.Add(1)
 				i++
 			}
 		}(g)
 	}
-	time.Sleep(10 * time.Millisecond)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && reconciles.Load() < 8 {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if reconciles.Load() < 8 {
+		t.Fatal("reconcile churn never started — the close-race premise did not occur")
+	}
 	cl, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := rt.Close(cl); err != nil {
 		t.Fatalf("runtime Close: %v", err)
@@ -210,6 +244,8 @@ func TestE2E23CloseDuringWatchStorm(t *testing.T) {
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
+	// P2-5 (audit): gate the storm on actual writes, not a fixed sleep.
+	var writes atomic.Int64
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -222,11 +258,18 @@ func TestE2E23CloseDuringWatchStorm(t *testing.T) {
 			}
 			body := tomlOf(config.ComponentConfig{ID: "p", Type: "independent", Config: map[string]any{"tag": fmt.Sprintf("t%d", i)}})
 			_ = os.WriteFile(path, []byte(body), 0o644)
+			writes.Add(1)
 			i++
 		}
 	}()
 
-	time.Sleep(30 * time.Millisecond)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && writes.Load() < 10 {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if writes.Load() < 10 {
+		t.Fatal("watch storm never started — the close-race premise did not occur")
+	}
 	_ = adapter.CloseContext(ctxT(t))
 	runCancel()
 	_ = fw.Close()

@@ -26,9 +26,16 @@ export type BlockRenderer = ComponentType<{ block: ViewBlock; ctx: ViewContext }
 export type PageRenderer = ComponentType<{ page: UIPage; ctx: ViewContext }>;
 export type PanelRenderer = ComponentType<{ panel: UIPanel; ctx: ViewContext; generation: number }>;
 
-const blockRenderers = new Map<string, BlockRenderer>();
-const pageRenderers = new Map<string, PageRenderer>();
-const panelRenderers = new Map<string, PanelRenderer>();
+// Every keyed registry holds a SHADOW STACK per key (P1 fix, 2026-11 audit):
+// a later module registering the same key shadows the earlier one instead of
+// replacing it, and disposing the shadowing module pops the stack — the
+// shadowed contribution is restored automatically. With plain set/delete, a
+// module overriding another's key and then being disabled destroyed the
+// STILL-ACTIVE earlier module's contribution, leaving it "active" but
+// unregistered for the whole session.
+const blockRenderers = new Map<string, BlockRenderer[]>();
+const pageRenderers = new Map<string, PageRenderer[]>();
+const panelRenderers = new Map<string, PanelRenderer[]>();
 
 // Registry reactivity: the Maps are module-global (not React state), so a
 // renderer registered AFTER the first render (client module import finishing
@@ -57,52 +64,84 @@ export function rendererRegistryVersion(): number {
   return registryVersion;
 }
 
-/** registerBlockRenderer adds (or overrides) the renderer for one view kind. */
+// pushShadow pushes one contribution onto a key's shadow stack.
+function pushShadow<T>(m: Map<string, T[]>, key: string, value: T): void {
+  let stack = m.get(key);
+  if (!stack) {
+    stack = [];
+    m.set(key, stack);
+  }
+  stack.push(value);
+}
+
+// disposeShadow removes `value` from the key's stack WHEREVER it sits and
+// reports whether the ACTIVE top changed. Disposing the top pops it — the
+// shadowed contribution below is restored. Disposing a SHADOWED entry removes
+// it silently (top unchanged, no observable change): the owning module is
+// gone, and leaving it in the stack would resurrect a dead module's
+// contribution when the entries above it pop. Callers bump only when this
+// returns true — the observable registry state changed.
+function disposeShadow<T>(m: Map<string, T[]>, key: string, value: T): boolean {
+  const stack = m.get(key);
+  if (!stack) return false;
+  const idx = stack.lastIndexOf(value);
+  if (idx < 0) return false;
+  stack.splice(idx, 1);
+  const wasTop = idx === stack.length; // after removal, top changed iff it was the last
+  if (stack.length === 0) {
+    m.delete(key);
+  }
+  return wasTop;
+}
+
+function topShadow<T>(m: Map<string, T[]>, key: string): T | undefined {
+  const stack = m.get(key);
+  return stack ? stack[stack.length - 1] : undefined;
+}
+
+/** registerBlockRenderer adds (or shadows) the renderer for one view kind. */
 export function registerBlockRenderer(kind: string, renderer: BlockRenderer): () => void {
-  blockRenderers.set(kind, renderer);
+  pushShadow(blockRenderers, kind, renderer);
   bump();
   return () => {
-    if (blockRenderers.get(kind) === renderer) {
-      blockRenderers.delete(kind);
+    if (disposeShadow(blockRenderers, kind, renderer)) {
       bump();
     }
   };
 }
 
-/** registerPageRenderer adds (or overrides) a page-level renderer by name. */
+/** registerPageRenderer adds (or shadows) a page-level renderer by name. */
 export function registerPageRenderer(name: string, renderer: PageRenderer): () => void {
-  pageRenderers.set(name, renderer);
+  pushShadow(pageRenderers, name, renderer);
   bump();
   return () => {
-    if (pageRenderers.get(name) === renderer) {
-      pageRenderers.delete(name);
+    if (disposeShadow(pageRenderers, name, renderer)) {
       bump();
     }
   };
 }
 
-/** registerPanelRenderer adds (or overrides) a panel-level renderer by name. */
+/** registerPanelRenderer adds (or shadows) a panel-level renderer by name. */
 export function registerPanelRenderer(name: string, renderer: PanelRenderer): () => void {
-  panelRenderers.set(name, renderer);
+  pushShadow(panelRenderers, name, renderer);
   bump();
   return () => {
-    if (panelRenderers.get(name) === renderer) {
-      panelRenderers.delete(name);
+    if (disposeShadow(panelRenderers, name, renderer)) {
       bump();
     }
   };
 }
 
 export function getBlockRenderer(kind: string): BlockRenderer | undefined {
-  return blockRenderers.get(kind);
+  return topShadow(blockRenderers, kind);
 }
 
 export function getPageRenderer(name: string): PageRenderer | undefined {
-  return pageRenderers.get(name);
+  return topShadow(pageRenderers, name);
 }
 
 export function getPanelRenderer(name: string): PanelRenderer | undefined {
-  return panelRenderers.get(name);
+  return topShadow(panelRenderers, name);
 }
 
 /** registeredBlockKinds lists every renderable kind (built-ins included). */
@@ -123,22 +162,22 @@ export interface WidgetProps {
 }
 export type WidgetComponent = ComponentType<WidgetProps>;
 
-const widgets = new Map<string, WidgetComponent>();
+const widgets = new Map<string, WidgetComponent[]>();
 
-/** registerWidget contributes one composable component under a name. */
+/** registerWidget contributes one composable component under a name
+ * (shadow-stack semantics — see the registry header). */
 export function registerWidget(name: string, component: WidgetComponent): () => void {
-  widgets.set(name, component);
+  pushShadow(widgets, name, component);
   bump();
   return () => {
-    if (widgets.get(name) === component) {
-      widgets.delete(name);
+    if (disposeShadow(widgets, name, component)) {
       bump();
     }
   };
 }
 
 export function getWidget(name: string): WidgetComponent | undefined {
-  return widgets.get(name);
+  return topShadow(widgets, name);
 }
 
 export function registeredWidgets(): string[] {
@@ -166,23 +205,27 @@ export interface ActionDefinition {
   run: (cx: ActionContext) => void | Promise<void>;
 }
 
-const actions = new Map<string, ActionDefinition>();
+const actions = new Map<string, ActionDefinition[]>();
 
 /** registerAction contributes one context action; re-registering the same id
- * overrides in place (insertion order preserved). */
+ * shadows in place (key insertion order preserved, shadow-stack semantics). */
 export function registerAction(def: ActionDefinition): () => void {
-  actions.set(def.id, def);
+  pushShadow(actions, def.id, def);
   bump();
   return () => {
-    if (actions.get(def.id) === def) {
-      actions.delete(def.id);
+    if (disposeShadow(actions, def.id, def)) {
       bump();
     }
   };
 }
 
 export function listActions(): ActionDefinition[] {
-  return Array.from(actions.values());
+  const out: ActionDefinition[] = [];
+  for (const stack of actions.values()) {
+    const top = stack[stack.length - 1];
+    if (top) out.push(top);
+  }
+  return out;
 }
 
 // ---- Settings extension point ----------------------------------------------
@@ -200,24 +243,24 @@ export interface SettingsProps {
 }
 export type SettingsComponent = ComponentType<SettingsProps>;
 
-const settings = new Map<string, SettingsComponent>();
+const settings = new Map<string, SettingsComponent[]>();
 
-/** registerSettings contributes the settings UI for one plugin id. */
+/** registerSettings contributes the settings UI for one plugin id
+ * (shadow-stack semantics — see the registry header). */
 export function registerSettings(name: string, component: SettingsComponent): () => void {
-  settings.set(name, component);
+  pushShadow(settings, name, component);
   bump();
   return () => {
-    if (settings.get(name) === component) {
-      settings.delete(name);
+    if (disposeShadow(settings, name, component)) {
       bump();
     }
   };
 }
 
 export function getSettings(pluginId: string): SettingsComponent | undefined {
-  const direct = settings.get(pluginId);
+  const direct = topShadow(settings, pluginId);
   if (direct) return direct;
   // The explorer lists the ui-client row as "<plugin>:client"; settings bind
   // to the plugin's module name — tolerate both spellings.
-  return settings.get(pluginId.replace(/:client$/, ""));
+  return topShadow(settings, pluginId.replace(/:client$/, ""));
 }

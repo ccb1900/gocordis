@@ -342,9 +342,22 @@ export function createModuleManager(deps: ModuleManagerDeps = {}): ModuleManager
     }
     const activation: ModuleActivation = { name: m.name, url: m.url, disposables: [] };
     try {
-      const returned = (register as (api: ClientModuleAPI) => unknown)(
+      let returned = (register as (api: ClientModuleAPI) => unknown)(
         activationFacade(activation, m.name)
       );
+      // P2 fix (2026-11 audit): an async `register` used to LAND the
+      // activation immediately and drop both its returned dispose and its
+      // rollback — a throw after the first `await` rejected outside this try,
+      // leaving partial registrations live. A returned Promise is now awaited
+      // INSIDE the guarded window: the activation lands only when the module
+      // body has settled, and a rejection rolls back exactly like a sync
+      // throw. (The reconcile's `reconciling` flag honestly covers the await.)
+      if (
+        returned
+        && typeof (returned as { then?: unknown }).then === "function"
+      ) {
+        returned = await (returned as Promise<unknown>);
+      }
       if (typeof returned === "function") activation.moduleDispose = returned as () => void;
     } catch (e) {
       // Partial registration rolls back: everything registered so far
@@ -381,7 +394,13 @@ export function createModuleManager(deps: ModuleManagerDeps = {}): ModuleManager
     for (const m of desired) {
       const current = activations.get(m.name);
       if (current && current.url === m.url) continue; // already active, same content
-      if (current) disposeModule(m.name); // URL changed → content revision changed
+      if (current) {
+        disposeModule(m.name); // URL changed → content revision changed
+        // P3 fix (2026-11 audit): evict the superseded generation from the
+        // module cache — the cache never deleted, so a long-lived operator
+        // session retained every dead ?v= namespace forever.
+        if (current.url !== m.url) moduleCache.delete(current.url);
+      }
       await activate(m);
     }
     const desiredNames = new Set(desired.map((m) => m.name));

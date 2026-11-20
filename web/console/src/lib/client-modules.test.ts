@@ -494,3 +494,65 @@ describe("client module manager", () => {
     expect(warn.mock.calls.filter((c) => String(c[0]).includes("overrides")).length).toBe(0);
   });
 });
+
+// P2 regression (2026-11 audit): an async `register` used to land the
+// activation immediately, drop its returned dispose, and skip rollback when a
+// throw happened after the first await. The promise is now awaited INSIDE the
+// guarded window.
+describe("async register contract", () => {
+  it("awaits an async register, stores its dispose, and lands only after settle", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let disposed = 0;
+    const asyncRegister = vi.fn(async (api: ClientModuleAPI) => {
+      await Promise.resolve(); // the body settles AFTER the sync return
+      api.registerPageRenderer("async-page", () => null);
+      return () => {
+        disposed++;
+      };
+    });
+    vi.stubGlobal("fetch", okManifest([{ name: "a", url: "/cm/a.js" }]));
+    const mgr = createModuleManager({
+      manifestUrl: "/x",
+      importer: async () => ({ default: asyncRegister }),
+    });
+    await mgr.reconcile();
+    expect(asyncRegister).toHaveBeenCalledTimes(1);
+    expect(disposed).toBe(0);
+    expect(mgr.activeNames()).toContain("a");
+
+    // Disposing (module leaves the manifest) runs the module's returned dispose.
+    vi.stubGlobal("fetch", okManifest([]));
+    await mgr.reconcile();
+    expect(disposed).toBe(1);
+    warn.mockRestore();
+  });
+
+  it("rolls back partial registrations when an async register rejects after awaiting", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const disposed: string[] = [];
+    const asyncRegister = vi.fn(async (api: ClientModuleAPI) => {
+      api.registerPageRenderer("boom-page", () => null);
+      const d = api.registerBlockRenderer("boom-block", () => null);
+      disposed.push("block-registered");
+      void d;
+      await Promise.reject(new Error("late failure"));
+      return () => disposed.push("never");
+    });
+    vi.stubGlobal("fetch", okManifest([{ name: "a", url: "/cm/a.js" }]));
+    const mgr = createModuleManager({
+      manifestUrl: "/x",
+      importer: async () => ({ default: asyncRegister }),
+    });
+    await mgr.reconcile();
+    expect(mgr.activeNames()).not.toContain("a"); // the activation never lands
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("failed to register"))).toBe(true);
+
+    // Partial registrations are rolled back: re-registering the same keys is
+    // not an override (no override warning would fire for a fresh module).
+    warn.mockClear();
+    vi.stubGlobal("fetch", okManifest([]));
+    await mgr.reconcile();
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes("overrides")).length).toBe(0);
+    warn.mockRestore();
+  });
+});

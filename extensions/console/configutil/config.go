@@ -3,6 +3,7 @@ package configutil
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"dynamic-runtime/extensions/config"
 )
@@ -59,7 +60,10 @@ func OptionalBool(cc config.ComponentConfig, key string, def bool) bool {
 	case bool:
 		return b
 	case string:
-		return b == "true"
+		// Case-insensitive: JSON/TOML authors write "TRUE"/"True"/"true" —
+		// a case-sensitive comparison silently turned "True" into the default
+		// (P3, 2026-11 audit).
+		return strings.EqualFold(b, "true")
 	}
 	return def
 }

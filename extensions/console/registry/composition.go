@@ -353,12 +353,37 @@ func (r *registry) Snapshot() CompositionSnapshot {
 		Panels: make([]PanelDefinition, 0, len(panelEntries)),
 	}
 	for _, entry := range pageEntries {
-		out.Pages = append(out.Pages, entry.def)
+		out.Pages = append(out.Pages, copyPageDef(entry.def))
 	}
 	for _, entry := range panelEntries {
-		out.Panels = append(out.Panels, entry.def)
+		out.Panels = append(out.Panels, copyPanelDef(entry.def))
 	}
 	return out
+}
+
+// copyRawMessage clones a json.RawMessage so a snapshot consumer mutating the
+// bytes cannot reach into registry-owned state (json.RawMessage aliases its
+// backing array — the struct copy alone is shallow).
+func copyRawMessage(raw json.RawMessage) json.RawMessage {
+	if raw == nil {
+		return nil
+	}
+	out := make(json.RawMessage, len(raw))
+	copy(out, raw)
+	return out
+}
+
+func copyPageDef(def PageDefinition) PageDefinition {
+	def.Views = copyRawMessage(def.Views)
+	def.View = copyRawMessage(def.View)
+	def.Actions = copyRawMessage(def.Actions)
+	return def
+}
+
+func copyPanelDef(def PanelDefinition) PanelDefinition {
+	def.Views = copyRawMessage(def.Views)
+	def.Pages = append([]string(nil), def.Pages...)
+	return def
 }
 
 func (r *registry) Contributions() []Contribution {

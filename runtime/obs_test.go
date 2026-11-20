@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // Phase A (theorem-infra v0.2): Semantic Observation + Quiescence Oracle +
@@ -229,9 +230,33 @@ func (p Preconditions) String() string {
 		p.AcyclicPrecedence, p.ProviderUnique, p.PairwiseIndependent, p.ComponentTotal)
 }
 
+// quiescenceError checks the paper eq.(49) "no transition left in progress"
+// over one fiber's semantic state. An Installing / Undoing effect is a
+// transition in progress even when the Fiber itself is Active — the effect
+// barrier guarantees Gone only after every inverse, so a quiescence oracle
+// that ignores effects would certify an activation whose resources are still
+// being installed/undone (Theorem 73 Progress misjudged).
+func quiescenceError(name string, st FiberState, withdrawing bool, gates int, effects []EffectView) error {
+	if st == StateLoading || st == StateUnloading {
+		return fmt.Errorf("transitional fiber %s (%s)", name, st)
+	}
+	if withdrawing && gates > 0 {
+		return fmt.Errorf("unresolved withdrawal gate on %s", name)
+	}
+	for _, e := range effects {
+		if e.State == "Installing" || e.State == "Undoing" {
+			return fmt.Errorf("transitional effect %s/%d (%s)", name, e.Seq, e.State)
+		}
+	}
+	return nil
+}
+
 // semanticQuiescent is a pure (non-time-based) quiescence oracle over the
 // semantic state: no transitional fiber, no withdrawal-in-progress with
-// pending gates, and no Pending fiber whose dependencies are satisfied.
+// pending gates, no Pending fiber whose dependencies are satisfied, and no
+// in-flight effect (paper eq.49). It reads runtime state directly (not via
+// rt.Snapshot) so it cannot perturb transitional-state tests that call it
+// mid-activation (c2_thm64_every_step_test.go).
 func semanticQuiescent(rt *Runtime) error {
 	rt.mu.RLock()
 	fs := make([]*Fiber, 0, len(rt.fibers))
@@ -244,12 +269,21 @@ func semanticQuiescent(rt *Runtime) error {
 		st := f.state
 		withdrawing := f.withdrawing
 		gates := len(f.waitGates)
-		f.mu.RUnlock()
-		if st == StateLoading || st == StateUnloading {
-			return fmt.Errorf("transitional fiber %s (%s)", f.Name(), st)
+		installing := false
+		if f.activation != nil && f.activation.ctx != nil {
+			for _, e := range f.activation.ctx.effects {
+				if e.state == effectInstalling || e.state == effectUndoing {
+					installing = true
+					break
+				}
+			}
 		}
-		if withdrawing && gates > 0 {
-			return fmt.Errorf("unresolved withdrawal gate on %s", f.Name())
+		f.mu.RUnlock()
+		if err := quiescenceError(f.Name(), st, withdrawing, gates, nil); err != nil {
+			return err
+		}
+		if installing {
+			return fmt.Errorf("in-flight effect on %s (paper eq.49)", f.Name())
 		}
 		if st == StatePending {
 			for _, dep := range f.inject {
@@ -313,5 +347,74 @@ func TestPreconditionsAll(t *testing.T) {
 	bad := Preconditions{AcyclicPrecedence: false, ProviderUnique: true, PairwiseIndependent: true, ComponentTotal: true}
 	if bad.All() {
 		t.Fatal("missing acyclic precedence must fail precondition")
+	}
+}
+
+// 论文 eq.(49) quiescent = "every fiber has settled at its target view, no
+// transition left in progress"。Active + in-flight Installing effect 属于
+// "transition in progress"，quiescence oracle 必须报非 quiescent。
+// 上一轮 effect barrier 改了运行时，但 conformance oracle 没跟上——
+// Theorem 73 (Progress) 的 "ends in a quiescent state" 判定因此失真。
+type thm73InstallingComp struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *thm73InstallingComp) Name() string          { return "thm73-installing" }
+func (c *thm73InstallingComp) Inject() []Dependency  { return nil }
+func (c *thm73InstallingComp) Provide() []Capability { return nil }
+func (c *thm73InstallingComp) Apply(ctx *Context) (Cleanup, error) {
+	go func() {
+		_ = ctx.Effect(func() (func() error, error) {
+			close(c.entered)
+			<-c.release
+			return func() error { return nil }, nil
+		})
+	}()
+	return nil, nil
+}
+
+func TestThm73QuiescenceSeesInstallingEffect(t *testing.T) {
+	rt, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	t.Cleanup(func() { _ = rt.Close(ctx) })
+
+	c := &thm73InstallingComp{entered: make(chan struct{}), release: make(chan struct{})}
+	f, err := rt.Load(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Ready(ctx); err != nil {
+		t.Fatal(err)
+	}
+	<-c.entered // install 阻塞中；fiber 状态 Active，effect 处于 Installing
+
+	snap, err := rt.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installing := 0
+	for _, fb := range snap.Fibers {
+		for _, e := range fb.Effects {
+			if e.State == "Installing" {
+				installing++
+			}
+		}
+	}
+	if installing != 1 {
+		t.Fatalf("expected 1 Installing effect in Snapshot, got %d", installing)
+	}
+	// 核心断言：conformance oracle 必须拒绝把这个状态判为 quiescent。
+	if err := semanticQuiescent(rt); err == nil {
+		t.Fatal("Active fiber with Installing effect must NOT be quiescent (paper eq.49)")
+	}
+	close(c.release)
+	_ = f.Dispose()
+	if err := f.Gone(ctx); err != nil {
+		t.Fatal(err)
 	}
 }

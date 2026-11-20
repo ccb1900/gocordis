@@ -31,7 +31,7 @@ stc-go)自本文起停用,改用论文编号。
 | **Theorem 64** | Preservation(良构性 4 条款) | P1..P5 不变量(on-orchestrator) | proof_invariants_test、thm64_preservation_test |
 | **Theorem 68** | Recovery exactness(episode 累加器 ≃ 未开始) | LIFO/恰好一次 + 基线等价 | thm68_recovery_test |
 | **Theorem 70** | Ordering(L-Begin 门控;provider episode 严格包住 consumer) | 依赖门控 + 撤离顺序 | thm70/c3 |
-| **Theorem 73** | Progress(≺ 无环 + 有限 + 合作 ⇒ quiesce,含终止界) | deterministic step driver | thm73_thm80_test |
+| **Theorem 73** | Progress(paper p.49: ≺ 无环 + 有限 N + 有界 K + 每步为 lifecycle rule ⇒ no-deadlock + S(n)≤(K+3)(V(n)+1) ⇒ quiesce)。**"合作"不是论文前提**（仅 archived 验证假设）；quiescent=eq.49 "no transition left in progress"——Active+Installing/Undoing effect **不是** quiescent（effect barrier 后 conformance oracle 已同步） | deterministic step driver + 双 quiescence oracle(含 effect 状态) | thm73_thm80_test、obs_test/TestThm73QuiescenceSeesInstallingEffect |
 | **Theorem 80** | Confluence(规范形 + 合流;**排除 failed fiber**——与论文一致) | 合流生成器 + 前置条件 | thm73_thm80 |
 | §4.4 Asynchrony | inertial host(L-Divert 只取 landing 替代)仍 quiesce | orchestrator 异步完成 + deterministic mode | det_admission、deterministic_close |
 | §4.4 Failure | raise → Unloading → Inactive,Installed nothing;outcome 阻止重入;**不向父传播**;failed 留在 registry | `finalizeActivation` Failed 分支 | TestApplyFailureEndsFailed、TestFailedDisposeLoadRetryCycle |
@@ -163,6 +163,9 @@ R4 评审(2026-09-09)按"是否服务论文实现"将扩展定类:
 | T63 | Theorem 70(Ordering) |
 | T66 | Theorem 73(Progress) |
 | T73 | Theorem 80(Confluence)⚠ 注意:论文 Theorem 73 是 Progress,勿混淆 |
+
+**编号澄清**：论文无 Theorem 66——第 66 条是 Lemma 66(Pairwise independence,
+p.44)；T66/T73 是沿袭 stc-go 的旧编号，映射正确但勿与论文编号混用。
 
 ## §4 语义复审记录（2026-11-20，论文 × JS Cordis）
 

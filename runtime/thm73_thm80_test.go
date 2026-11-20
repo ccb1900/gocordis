@@ -72,6 +72,21 @@ func (p *thm73ScanProbe) apply(o *orchestrator) {
 				}
 			}
 		}
+		// Paper eq.(49): an Installing/Undoing effect is a transition in
+		// progress even when the Fiber is Active. The effect barrier makes
+		// Gone wait for every inverse, so the Progress drain must not
+		// declare quiescence while effects are in flight.
+		if f.activation != nil && f.activation.ctx != nil {
+			for _, e := range f.activation.ctx.effects {
+				if e.state == effectInstalling || e.state == effectUndoing {
+					p.inFlight = true
+					if p.waiterID == 0 {
+						p.waiterID = f.id
+					}
+					break
+				}
+			}
+		}
 	}
 	close(p.done)
 }

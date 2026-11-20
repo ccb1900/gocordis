@@ -29,18 +29,23 @@ function ThemedRoot() {
 
 const root = document.getElementById("root");
 if (root) {
-  // Plugin client modules register renderers; reconcile them before first
-  // render so custom pages resolve on first paint. One broken module — or
-  // the whole manifest being absent — never blocks the console.
-  reconcileClientModules()
-    .catch(() => undefined)
-    .finally(() => {
-      createRoot(root).render(
-        <React.StrictMode>
-          <ThemeProvider>
-            <ThemedRoot />
-          </ThemeProvider>
-        </React.StrictMode>
-      );
-    });
+  // Bootstrap order (P3 fix, 2026-11 audit): the first reconcile is STARTED
+  // before React mounts — reconcile() bumps its inflight counter
+  // synchronously, so the shell's FIRST paint observes the honest
+  // "plugins loading" state instead of the settled "not registered" errors.
+  // The old order mounted React only in .finally, serializing first paint
+  // behind the manifest fetch and EVERY module import (slow manifest or one
+  // large ui.js = blank page). Custom pages still resolve correctly: the
+  // reactive registry version re-renders them the moment their renderer
+  // registers. One broken module — or the whole manifest being absent —
+  // never blocks the console.
+  const boot = reconcileClientModules();
+  createRoot(root).render(
+    <React.StrictMode>
+      <ThemeProvider>
+        <ThemedRoot />
+      </ThemeProvider>
+    </React.StrictMode>
+  );
+  boot.catch(() => undefined);
 }

@@ -2,6 +2,7 @@ package configutil
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -42,6 +43,12 @@ func OptionalInt(cc config.ComponentConfig, key string, def int) int {
 	case uint64:
 		return int(n)
 	case float64:
+		// P3 (2026-11 audit): converting an out-of-range or NaN float64 to int
+		// is implementation-defined. Guard it: anything that cannot faithfully
+		// round-trip falls back to the declared default.
+		if math.IsNaN(n) || n < math.MinInt || n > math.MaxInt {
+			return def
+		}
 		return int(n)
 	case string:
 		if i, err := strconv.Atoi(n); err == nil {

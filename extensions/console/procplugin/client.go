@@ -127,6 +127,12 @@ func Start(ctx context.Context, cmd *exec.Cmd, handshakeWait time.Duration) (*Cl
 		}
 	case <-c.exited:
 		return nil, fmt.Errorf("%w: during handshake", ErrHandshake)
+	case <-ctx.Done():
+		// P3-3 (2026-11 audit): the ctx parameter was accepted but ignored —
+		// the signature suggested cancellation support the handshake never
+		// honored. Honor it: kill the half-started plugin and fail.
+		_ = cmd.Process.Kill()
+		return nil, fmt.Errorf("%w: handshake canceled: %v", ErrHandshake, ctx.Err())
 	case <-time.After(handshakeWait):
 		_ = cmd.Process.Kill()
 		return nil, fmt.Errorf("%w: timeout", ErrHandshake)

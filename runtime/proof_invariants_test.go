@@ -87,17 +87,31 @@ func (rt *Runtime) checkPreservationInvariants() error {
 		}
 	}
 
-	// Active consumers have all declared deps satisfiable on their realm path.
+	// Active consumers have all declared deps satisfiable on their realm path,
+	// AND resolving to exactly the provider identity the activation captured
+	// (Preservation: a live binding must keep pointing at its generation —
+	// a same-key substitute provider must never silently satisfy a captured
+	// binding).
 	for _, f := range fibers {
 		f.mu.RLock()
 		st := f.state
+		act := f.activation
+		var deps []DependencySnapshot
+		if act != nil {
+			deps = act.deps
+		}
 		f.mu.RUnlock()
-		if st != StateActive {
+		if st != StateActive || act == nil {
 			continue
 		}
-		for _, dep := range f.inject {
-			if _, ok := rt.orch.resolveDependency(f, dep.Key); !ok {
+		for _, dep := range deps {
+			id, ok := rt.orch.resolveDependency(f, dep.Key)
+			if !ok {
 				return fmt.Errorf("invariant: Active fiber %d dependency %s unsatisfiable", f.id, dep.Key)
+			}
+			if id != dep.Provider {
+				return fmt.Errorf("invariant: Active fiber %d dependency %s resolved to %+v but captured %+v (Preservation)",
+					f.id, dep.Key, id, dep.Provider)
 			}
 		}
 	}
@@ -119,10 +133,15 @@ func (rt *Runtime) collectProviderRecords() []*providerRecord {
 	for _, f := range rt.fibersSnapshot() {
 		ids[f.id] = true
 	}
+	// RT-10: scan EVERY namespace the fiber routes through (per-key isolation
+	// realms, including a Rehome's fresh realm), not just the scope-realm
+	// parent chain — records in a fresh namespace were invisible here.
 	seenKey := map[*realm]bool{}
 	for _, f := range rt.fibersSnapshot() {
-		r := f.realm
-		for r != nil && !seenKey[r] {
+		for _, r := range fiberNamespaces(f) {
+			if seenKey[r] {
+				continue
+			}
 			seenKey[r] = true
 			r.mu.RLock()
 			for _, rec := range r.own {
@@ -131,7 +150,6 @@ func (rt *Runtime) collectProviderRecords() []*providerRecord {
 				}
 			}
 			r.mu.RUnlock()
-			r = r.parent
 		}
 	}
 	return out

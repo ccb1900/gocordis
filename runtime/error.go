@@ -26,6 +26,10 @@ var (
 	// ErrDuplicateProvider. The declaration is therefore unresolvable and is
 	// rejected deterministically where it is written.
 	ErrSelfDependency = errors.New("self dependency: component requires a key it also provides")
+	// ErrInvalidKey is returned at the mount boundary when a component declares
+	// a zero-valued CapabilityKey (RT-13): such a key has no type identity and
+	// would collide across every type parameter.
+	ErrInvalidKey = errors.New("invalid capability key")
 	// ErrInvalidState is returned when an operation is illegal in the
 	// current Fiber state.
 	ErrInvalidState = errors.New("invalid fiber state")

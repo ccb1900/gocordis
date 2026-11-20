@@ -93,8 +93,14 @@ func (r *realm) removeMeta(e *metaEntry) {
 // Rightmost (most recent / most derived) installment wins on conflicts.
 // Returns false when no installment exists (ι = εₖ).
 func (r *realm) metaForKey(key CapabilityKey) (any, bool) {
-	var cur any
-	found := false
+	// Collect the chain entries UNDER the realm locks, combine OUTSIDE them
+	// (RT-12): combine is user code — re-entering a metadata install while
+	// holding a realm read lock would deadlock (addMeta needs the write lock).
+	type link struct {
+		combine func(any, any) any
+		nu      any
+	}
+	var links []link
 	var walk func(x *realm)
 	walk = func(x *realm) {
 		if x == nil {
@@ -102,18 +108,23 @@ func (r *realm) metaForKey(key CapabilityKey) (any, bool) {
 		}
 		walk(x.parent)
 		x.mu.RLock()
-		chain := x.meta[key]
-		for _, e := range chain {
-			if found {
-				cur = e.combine(cur, e.nu)
-			} else {
-				cur = e.nu
-				found = true
-			}
+		for _, e := range x.meta[key] {
+			links = append(links, link{combine: e.combine, nu: e.nu})
 		}
 		x.mu.RUnlock()
 	}
 	walk(r)
+
+	var cur any
+	found := false
+	for _, l := range links {
+		if found {
+			cur = l.combine(cur, l.nu)
+		} else {
+			cur = l.nu
+			found = true
+		}
+	}
 	return cur, found
 }
 

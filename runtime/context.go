@@ -447,11 +447,20 @@ var testChildSpawnHook func()
 var testProvideHook func(key CapabilityKey, id ProviderIdentity)
 
 func (c *Context) provideCap(key CapabilityKey, value any) error {
+	if !key.valid() {
+		return errors.New("runtime: invalid (zero) capability key")
+	}
 	if _, ok := c.declaredProvide[key]; !ok {
 		return fmt.Errorf("%w: %s is not declared in this activation's Provide set", ErrUndeclaredProvide, key)
 	}
 	id := ProviderIdentity{FiberID: c.fiberID, ActivationID: c.activationID}
 	f := c.fiber
+	// RT-14: the Published event means "the provision is live and bindable".
+	// Two registrations must NOT publish: (a) a record registered as retiring
+	// mid-rehome (it is not bindable until the migration re-publishes it), and
+	// (b) a record whose effect self-undid because the context began unwinding
+	// during the install (the record no longer exists).
+	registeredRetiring := false
 	err := c.effect(EffectKindProvider, key, func() (func() error, error) {
 		if testProvideHook != nil {
 			testProvideHook(key, id)
@@ -468,6 +477,7 @@ func (c *Context) provideCap(key CapabilityKey, value any) error {
 		eff := effectiveRealmLocked(f, key)
 		var regErr error
 		if f.rehome != nil {
+			registeredRetiring = true
 			// Mid-rehome: the namespace is being vacated and its consumers are
 			// already gated. Registering a normal (live) record here would let
 			// a new dependent bind to the old namespace AFTER phase 1's
@@ -500,7 +510,14 @@ func (c *Context) provideCap(key CapabilityKey, value any) error {
 	if err != nil {
 		return err
 	}
-	c.rt.emitEvent(EventProviderPublished, c.fiberID, c.activationID, ProviderEventData{Key: key.String()})
+	// RT-14: a context that began unwinding during the install self-undid the
+	// slot — the provision is gone, so publishing it would lie.
+	c.mu.Lock()
+	unwound := c.state != contextActive
+	c.mu.Unlock()
+	if !registeredRetiring && !unwound {
+		c.rt.emitEvent(EventProviderPublished, c.fiberID, c.activationID, ProviderEventData{Key: key.String()})
+	}
 	return nil
 }
 
@@ -529,9 +546,11 @@ func ProvideMeta[T, M any](c *Context, key MetaKey[T, M], provider func(M) T) er
 // by interceptors (ancestor realms first, install order; rightmost wins).
 // Interception affects only how the binding is USED — it never changes what
 // the key resolves to and cannot gate activation (paper §6.3).
-func RequireMeta[T, M any](c *Context, key MetaKey[T, M]) (T, error) {
-	var zero T
+func RequireMeta[T, M any](c *Context, key MetaKey[T, M]) (zero T, err error) {
 	cap := key.Capability()
+	if !cap.valid() {
+		return zero, errors.New("runtime: invalid (zero) capability key")
+	}
 	if _, ok := c.declaredInject[cap]; !ok {
 		return zero, fmt.Errorf("%w: %s is not declared in this activation's Inject set", ErrUndeclaredRequire, cap)
 	}
@@ -543,8 +562,17 @@ func RequireMeta[T, M any](c *Context, key MetaKey[T, M]) (T, error) {
 	if !ok {
 		return zero, errors.New("runtime: provider value type mismatch")
 	}
-	// Declared metadata d(k).
-	var mu M
+	// Combine and the provider call are USER code (RT-12): panics are contained
+	// and returned as errors, never crash the caller's goroutine.
+	defer func() {
+		if r := recover(); r != nil {
+			zero = *new(T)
+			err = fmt.Errorf("runtime: metadata combine/provider panicked for %s: %v", cap, r)
+		}
+	}()
+	// Declared metadata d(k): fold onto the monoid IDENTITY (key.zero), not
+	// the Go zero value — they differ for non-trivial monoids (RT-12).
+	mu := key.zero
 	if dep, ok := c.declaredMeta[cap]; ok {
 		dm, ok := dep.(M)
 		if !ok {
@@ -612,6 +640,9 @@ func InterceptMeta[T, M any](c *Context, key MetaKey[T, M], nu M) error {
 // dependency. It returns ErrDependencyMissing when no provider is registered.
 func Require[T any](c *Context, key Key[T]) (T, error) {
 	var zero T
+	if !key.Capability().valid() {
+		return zero, errors.New("runtime: invalid (zero) capability key")
+	}
 	if _, ok := c.declaredInject[key.Capability()]; !ok {
 		return zero, fmt.Errorf("%w: %s is not declared in this activation's Inject set", ErrUndeclaredRequire, key.Capability())
 	}

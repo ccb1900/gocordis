@@ -32,6 +32,20 @@ func realmCanResolve(x *Fiber, y *Fiber, key CapabilityKey) bool {
 // adding candidate (with inject/provide) to fibers would create one. fibers
 // must not contain candidate itself.
 func findDeclaredCycle(candidate *Fiber, fibers []*Fiber) error {
+	// RT-13: a zero-valued capability key (never built by NewKey/NewMetaKey)
+	// would collide across every type parameter; reject the declaration at the
+	// mount boundary.
+	for _, k := range candidate.provide {
+		if !k.valid() {
+			return fmt.Errorf("%w: %q declares an invalid (zero) capability in its Provide set", ErrInvalidKey, candidate.Name())
+		}
+	}
+	for _, d := range candidate.inject {
+		if !d.Key.valid() {
+			return fmt.Errorf("%w: %q declares an invalid (zero) capability in its Inject set", ErrInvalidKey, candidate.Name())
+		}
+	}
+
 	// RT-09: a self-dependency (the candidate requires a key it also provides)
 	// is unresolvable — the gate cannot be satisfied by the fiber's own
 	// provision, which does not exist before the activation starts. Reject it

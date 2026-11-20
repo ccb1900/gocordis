@@ -1983,3 +1983,44 @@ func TestRehomeChildInsertionUsesCurrentRoute(t *testing.T) {
 			childRealm, effectiveRealm(p, rehomeChildRouteKey.Capability()))
 	}
 }
+
+// TestRehomeProvisionsVisibleInSnapshot — RT-10: a Rehome's fresh namespace is
+// reachable only through keyRealms, never as a fiber's scope realm. The
+// snapshot and the preservation-invariant scanners must therefore walk every
+// routed namespace, or provisions living in the fresh namespace vanish from
+// observability.
+func TestRehomeProvisionsVisibleInSnapshot(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	pf, err := rt.Load(&rehomeProvider{tag: "v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehomeAdmit(t, rt, pf)
+	if err := pf.Rehome(ctx, RehomeWithFreshIsolation()); err != nil {
+		t.Fatalf("rehome: %v", err)
+	}
+
+	snap, err := rt.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, pv := range snap.Providers {
+		if pv.Key == rehomeKey.Capability().String() &&
+			pv.OwnerFiberID == pf.ID() && !pv.Retiring {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("rehomed provision invisible in snapshot (RT-10): %d provider rows", len(snap.Providers))
+	}
+
+	// The preservation-invariant scanner (fiberNamespaces walk) must also see
+	// the record and resolve its live owner.
+	if err := rt.checkPreservationInvariants(); err != nil {
+		t.Fatalf("preservation invariants after rehome: %v", err)
+	}
+}

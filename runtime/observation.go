@@ -208,7 +208,35 @@ func (o *orchestrator) buildSnapshot() RuntimeSnapshot {
 	}
 	r.mu.RUnlock()
 
-	seq := r.evSeq.current()
+	// RT-11: the EventSequence watermark and the fact reads must be one
+	// consistent cut. Events are emitted by Apply/Unwind goroutines outside the
+	// orchestrator, so a naive "read seq, then facts" can include an event's
+	// EFFECT while returning the pre-event sequence — an observer resuming from
+	// that watermark would replay the event. Bounded retry: re-read facts
+	// whenever the sequence moved during the read; a stable window
+	// (seqBefore == seqAfter) contains no sequence assignments at all. (The
+	// residual hole — an emitter between its state write and its sequence
+	// assignment spanning both reads — is a single-instruction window and is
+	// documented here rather than closed with a global lock.)
+	for attempt := 0; attempt < 8; attempt++ {
+		seqBefore := r.evSeq.current()
+		snap := o.readSnapshotFacts(fibers, state)
+		if seqAfter := r.evSeq.current(); seqAfter == seqBefore {
+			snap.EventSequence = seqBefore
+			return snap
+		}
+	}
+	// Give up on a perfectly stable window under sustained event traffic and
+	// return the best-effort cut (callers may re-snapshot).
+	snap := o.readSnapshotFacts(fibers, state)
+	snap.EventSequence = r.evSeq.current()
+	return snap
+}
+
+// readSnapshotFacts reads every fiber fact, realm record and dependency
+// binding. Called only from buildSnapshot (RT-11 retry window).
+func (o *orchestrator) readSnapshotFacts(fibers []*Fiber, rtState RuntimeState) RuntimeSnapshot {
+	r := o.rt
 
 	// Pass 1: per-fiber facts (one f.mu read per fiber).
 	infos := make([]fiberInfo, 0, len(fibers))
@@ -255,8 +283,17 @@ func (o *orchestrator) buildSnapshot() RuntimeSnapshot {
 		}
 		f.mu.RUnlock()
 		if info.state != StateGone {
+			// RT-10: register EVERY namespace the fiber routes through — the
+			// per-key isolation realms (including a Rehome's fresh realm) are
+			// reachable only via keyRealms, not via f.realm. Without this the
+			// snapshot misses provisions that live in a fresh namespace.
 			if _, ok := realmByPtr[realm]; !ok {
 				realmByPtr[realm] = &realmSnap{id: realm.id, byKey: make(map[CapabilityKey]recordSnap)}
+			}
+			for _, kr := range fiberNamespaces(f) {
+				if _, ok := realmByPtr[kr]; !ok {
+					realmByPtr[kr] = &realmSnap{id: kr.id, byKey: make(map[CapabilityKey]recordSnap)}
+				}
 			}
 		}
 		infos = append(infos, info)
@@ -294,8 +331,11 @@ func (o *orchestrator) buildSnapshot() RuntimeSnapshot {
 		if info.state == StateGone {
 			continue
 		}
-		if rs, ok := realmByPtr[info.f.realm]; ok {
-			rs.fibers = append(rs.fibers, info.f.id)
+		// RT-10: a fiber "lives in" every namespace it routes through.
+		for _, kr := range fiberNamespaces(info.f) {
+			if rs, ok := realmByPtr[kr]; ok {
+				rs.fibers = append(rs.fibers, info.f.id)
+			}
 		}
 	}
 	var provs []ProviderView
@@ -400,8 +440,8 @@ func (o *orchestrator) buildSnapshot() RuntimeSnapshot {
 
 	snap := RuntimeSnapshot{
 		RuntimeID:     r.runtimeID,
-		State:         state,
-		EventSequence: seq,
+		State:         rtState,
+		EventSequence: 0, // watermark set by buildSnapshot (RT-11)
 		Providers:     provs,
 		Dependencies:  deps,
 		Scopes:        scopeList,

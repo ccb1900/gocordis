@@ -2,19 +2,32 @@ package runtime
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 )
 
 var revRaceKey = NewKey[rehomeKeyVal]("rev-race.service")
 
-type revRaceProvider struct{ tag string }
+type revRaceProvider struct {
+	tag string
+	key Key[rehomeKeyVal] // zero → revRaceKey
+}
 
-func (c *revRaceProvider) Name() string          { return "rev-race-provider" }
-func (c *revRaceProvider) Inject() []Dependency  { return nil }
-func (c *revRaceProvider) Provide() []Capability { return []Capability{revRaceKey.Capability()} }
+func (c *revRaceProvider) Name() string         { return "rev-race-provider" }
+func (c *revRaceProvider) Inject() []Dependency { return nil }
+func (c *revRaceProvider) Provide() []Capability {
+	if c.key != (Key[rehomeKeyVal]{}) {
+		return []Capability{c.key.Capability()}
+	}
+	return []Capability{revRaceKey.Capability()}
+}
 func (c *revRaceProvider) Apply(ctx *Context) (Cleanup, error) {
-	return nil, Provide(ctx, revRaceKey, rehomeKeyVal{tag: c.tag})
+	key := c.key
+	if key == (Key[rehomeKeyVal]{}) {
+		key = revRaceKey
+	}
+	return nil, Provide(ctx, key, rehomeKeyVal{tag: c.tag})
 }
 
 // TestReviseConcurrentSingleInsert — RT-06: two concurrent Revise calls on the
@@ -332,4 +345,39 @@ func (c *selfDepChildHost) Apply(ctx *Context) (Cleanup, error) {
 		c.errOut <- err
 	}
 	return nil, err
+}
+
+// NEW-05 race regression: lastCaptured is written at finishActivation and read
+// by Revise's snapshot (under f.mu on both sides after the fix). A concurrent
+// Dispose/finishActivation racing a Revise must not data-race under -race.
+func TestReviseReadsLastCapturedWithoutRacingActivationEnd(t *testing.T) {
+	rt := rehomeNewRT(t)
+	ctx := ctxBG(t)
+	defer rt.Close(ctx)
+
+	const rounds = 12
+	var wg sync.WaitGroup
+	for i := 0; i < rounds; i++ {
+		// Per-round key: rounds must not collide on the exclusive capability.
+		prov := &revRaceProvider{tag: "gen", key: NewKey[rehomeKeyVal](fmt.Sprintf("race-gen-%d", i))}
+		pf, err := rt.Load(prov)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rehomeWaitState(t, pf, StateActive)
+		wg.Add(2)
+		// goroutine A: dispose (finishActivation writes lastCaptured).
+		go func() {
+			defer wg.Done()
+			_ = pf.Dispose()
+		}()
+		// goroutine B: revise (reads lastCaptured under f.mu.RLock).
+		go func() {
+			defer wg.Done()
+			_, _ = pf.Revise(ctx, prov)
+		}()
+		// Both may win; either outcome is legal — the assertion is the absence
+		// of a data race (this test runs under -race in CI).
+	}
+	wg.Wait()
 }

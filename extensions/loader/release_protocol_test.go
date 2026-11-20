@@ -3,6 +3,7 @@ package loader_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -130,4 +131,51 @@ func TestLoaderCommitFailureAbandonsAndPoisons(t *testing.T) {
 	if _, err := l.Load(context.Background(), art); err != nil {
 		t.Fatalf("clean re-load after abandon failed: %v", err)
 	}
+}
+
+// NEW-04 race regression: RegisterBackend writes l.backends under l.mu while
+// Load's commit/abandon paths READ it. Before the fix, the commit path read
+// the map AFTER releasing l.mu — a data race with a concurrent registration.
+func TestLoaderBackendMapRaceWithRegister(t *testing.T) {
+	l := loader.NewBuiltinLoader()
+	ctx := context.Background()
+
+	stop := make(chan struct{})
+	var registrar sync.WaitGroup
+	registrar.Add(1)
+	go func() {
+		defer registrar.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			// Distinct types: duplicates are rejected (ErrBackendExists), and
+			// the growing set is bounded by the short test duration.
+			_ = l.RegisterBackend(loader.BackendType(fmt.Sprintf("aux-%d-%d", i%64, i)), &countingBackend{})
+		}
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			art := loader.Artifact{ID: fmt.Sprintf("m-a-%d", i), BackendType: "counting", Type: "x", Version: "1", Source: "mem://fake"}
+			_, _ = l.Load(ctx, art)
+			_ = l.Unload(ctx, fmt.Sprintf("m-a-%d", i))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			art := loader.Artifact{ID: fmt.Sprintf("m-b-%d", i), BackendType: "counting", Type: "x", Version: "1", Source: "mem://fake"}
+			_, _ = l.Load(ctx, art)
+			_ = l.Unload(ctx, fmt.Sprintf("m-b-%d", i))
+		}
+	}()
+	wg.Wait()
+	close(stop)
+	registrar.Wait()
 }

@@ -228,10 +228,17 @@ func (b *Backend) UnloadModule(id string) {
 }
 
 // CommitModule marks id's ref as OWNED by a successful registry commit
-// (NEW-02): from here on only UnloadModule may release it.
+// (NEW-02): from here on only UnloadModule may release it. If the id is no
+// longer tracked, an Unload already released it BETWEEN the loader's registry
+// write and this call — marking would leave a stale committed flag that makes
+// a later Abandon refuse to release the id's NEXT resources, so the mark is
+// skipped.
 func (b *Backend) CommitModule(id string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if _, tracked := b.modules[id]; !tracked {
+		return
+	}
 	b.committed[id] = true
 }
 

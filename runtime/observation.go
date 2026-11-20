@@ -209,16 +209,27 @@ func (o *orchestrator) buildSnapshot() (RuntimeSnapshot, error) {
 	}
 	r.mu.RUnlock()
 
-	// RT-11: the EventSequence watermark and the fact reads must be one
-	// consistent cut. Events are emitted by Apply/Unwind goroutines outside the
-	// orchestrator, so a naive "read seq, then facts" can include an event's
-	// EFFECT while returning the pre-event sequence — an observer resuming from
-	// that watermark would replay the event. Bounded retry: re-read facts
-	// whenever the sequence moved during the read; a stable window
-	// (seqBefore == seqAfter) contains no sequence assignments at all. (The
-	// residual hole — an emitter between its state write and its sequence
-	// assignment spanning both reads — is a single-instruction window and is
-	// documented here rather than closed with a global lock.)
+	// RT-11 + NEW-03: the EventSequence watermark and the fact reads must be
+	// one consistent cut. Events are emitted by Apply/Unwind goroutines outside
+	// the orchestrator, and an emitter writes its state BEFORE assigning its
+	// sequence — so the guarantee a stable window (seqBefore == seqAfter)
+	// provides is exactly:
+	//
+	//	COVERAGE: every event with Sequence <= anchor is reflected in the
+	//	snapshot facts (its state write precedes its sequence assignment, which
+	//	precedes the window open).
+	//
+	//	RESIDUAL: a duplicate is possible — an emitter whose state write landed
+	//	during the fact reads but whose sequence assignment lands after
+	//	seqAfter is reflected yet replays once. Closing it would require
+	//	emitting before the state write (misses are worse than duplicates) or
+	//	a global lock; both are rejected. Misses are IMPOSSIBLE for stable
+	//	windows. When traffic is so sustained that no window stabilizes, the
+	//	call fails with ErrSnapshotUnstable instead of fabricating an anchor
+	//	(NEW-03: a fabricated anchor SKIPS events — the worse failure).
+	//
+	// Consumers resume by re-observing; duplicates are tolerated (the runtime
+	// protocol is re-query, not re-apply).
 	for attempt := 0; attempt < 8; attempt++ {
 		seqBefore := r.evSeq.current()
 		snap := o.readSnapshotFacts(fibers, state)

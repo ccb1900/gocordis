@@ -359,3 +359,36 @@ func TestV09TypeGuardRejected(t *testing.T) {
 		t.Fatalf("unexpected error text: %v", err)
 	}
 }
+
+// NEW-02 residual: CommitModule must NOT mark an id whose ref is no longer
+// tracked. If an Unload released the ref between the loader's registry write
+// and the CommitModule call, a stale committed flag would make a later
+// AbandonModule refuse to release the id's NEXT resources (leak).
+func TestBackendCommitModuleSkipsUntrackedID(t *testing.T) {
+	b := newTestBackend()
+	art := wasmArtifact("c1", "file://"+fixturePath("valid.wasm"))
+	art.BackendType = loader.BackendWASM
+	art.Source = "file://" + absFixture(t, "valid.wasm")
+	if _, err := b.Load(context.Background(), art); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	// Loader lifecycle: commit → unload (release) → a STALE commit attempt.
+	b.CommitModule("c1")
+	b.UnloadModule("c1") // releases + clears ownership
+	b.CommitModule("c1") // stale: the id is untracked — must be a no-op
+	if b.CompiledModules() != 0 {
+		t.Fatalf("untracked id resurrected in the backend map")
+	}
+	// The stale mark must not block a later abandon of NEW resources for the
+	// same id: reload, fail the commit (abandon) — the ref must be released.
+	if _, err := b.Load(context.Background(), art); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if b.CompiledModules() != 1 {
+		t.Fatalf("reload did not track a fresh ref")
+	}
+	b.AbandonModule("c1")
+	if b.CompiledModules() != 0 {
+		t.Fatalf("Abandon refused to release the NEW ref (stale committed flag) — NEW-02 leak")
+	}
+}

@@ -471,6 +471,10 @@ func (o *orchestrator) finishActivation(f *Fiber, act *activation, unwindErr err
 	f.mu.Lock()
 	f.activation = nil
 	f.signal.Broadcast()
+	// NEW-05: stash the dependency snapshot INSIDE the same critical section —
+	// Revise reads lastCaptured under f.mu.RLock, so an unlocked write here is
+	// a data race with a concurrent revision of the next fiber generation.
+	f.lastCaptured = append([]DependencySnapshot(nil), act.deps...)
 	f.mu.Unlock()
 	o.clearWaitGates(f)
 	f.withdrawing = false
@@ -479,12 +483,6 @@ func (o *orchestrator) finishActivation(f *Fiber, act *activation, unwindErr err
 	if unwindErr != nil {
 		o.rt.emitEvent(EventFailure, f.id, act.id, FailureEventData{Phase: "Cleanup", Err: unwindErr.Error()})
 	}
-
-	// Preserve the dependency snapshot for the fiber's next revision: after a
-	// realm move withdraws this fiber to Pending, its activation is gone —
-	// WithResolvedRealms must still know which provider each key was bound to
-	// (NEW-01: follow the captured binding, never a global scan).
-	f.lastCaptured = append([]DependencySnapshot(nil), act.deps...)
 
 	// Owned resources (children) must reach Gone before their owner finalizes.
 	if o.disposeChildren(f) {

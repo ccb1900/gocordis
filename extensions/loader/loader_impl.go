@@ -211,7 +211,10 @@ func (l *BuiltinLoader) Load(ctx context.Context, artifact Artifact) (*Module, e
 	l.moduleBackend[artifact.ID] = artifact.BackendType
 	delete(l.abandonedIDs, artifact.ID)
 	l.mu.Unlock()
-	if c, ok := l.backends[artifact.BackendType].(interface{ CommitModule(id string) }); ok {
+	// NEW-04: notify through the backend captured under l.mu earlier in this
+	// Load — an unlocked l.backends read here races RegisterBackend. The
+	// callback runs OUTSIDE the loader lock.
+	if c, ok := backend.(interface{ CommitModule(id string) }); ok {
 		c.CommitModule(artifact.ID)
 	}
 	return &mod, nil
@@ -229,12 +232,16 @@ func (l *BuiltinLoader) abandonModuleAttempt(id string, bt BackendType) {
 		l.mu.Unlock()
 		return
 	}
-	l.abandonedIDs[id] = true
-	l.mu.Unlock()
+	// NEW-04: capture the backend interface UNDER l.mu (map lookup only — the
+	// AbandonModule call itself runs outside the lock, never holding the
+	// loader lock across backend code).
+	var abandon interface{ AbandonModule(id string) }
 	if b, ok := l.backends[bt]; ok {
-		if a, ok := b.(interface{ AbandonModule(id string) }); ok {
-			a.AbandonModule(id)
-		}
+		abandon, _ = b.(interface{ AbandonModule(id string) })
+	}
+	l.mu.Unlock()
+	if abandon != nil {
+		abandon.AbandonModule(id)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	stdruntime "runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"dynamic-runtime/extensions/config"
@@ -119,6 +120,14 @@ func (c *Component) resolveExecutable() string {
 	return p
 }
 
+// activationSeq generates a process-unique activation label for hub owners
+// (P3-8: same pattern as the host's ClientModule ContributionOwner).
+var activationSeq atomic.Int64
+
+func activationLabel() string {
+	return fmt.Sprintf("activation:%d", activationSeq.Add(1))
+}
+
 func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	hubReg, err := runtime.Require(ctx, consolehost.HubKey)
 	if err != nil {
@@ -144,13 +153,31 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		// UI 保留可见（声明激活语义），但 Hub 词汇照常注册：handler 里
 		// client==nil → 统一 plugin_error，而不是 not_found。这样前端得到
 		// 可诊断的"后端降级"而不是"这个命令不存在"（联合审查 P2-7）。
-		return c.registerDegradedVocabulary(ctx, hubReg)
+		cleanup, derr := c.registerDegradedVocabulary(ctx, hubReg)
+		if derr != nil {
+			return cleanup, derr
+		}
+		// P2-2: the degraded branch previously only logged — the comments here
+		// and at the top of Apply promised "观察流汇报失败" while nothing was
+		// published, unlike the unexpected-exit path. Operators watching the
+		// observation stream now see the degraded start too.
+		hubReg.Publish(hub.Observation{
+			Type:      "plugin.degraded",
+			SourceID:  c.id,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Message:   fmt.Sprintf("backend failed to start: %v — plugin runs in degraded mode", err),
+		})
+		return cleanup, nil
 	}
 	c.mu.Lock()
 	c.client = client
 	c.mu.Unlock()
 
-	owner := fmt.Sprintf("proc-plugin:%s", c.id)
+	// P3-8: the owner carries the activation sequence (like ClientModule's
+	// ContributionOwner) so a stale cleanup can never delete a newer
+	// activation's hub entry — the constant pre-fix owner made that guarantee
+	// hold only by kernel sequencing, not by the hub's own owner check.
+	owner := fmt.Sprintf("proc-plugin:%s@%s", c.id, activationLabel())
 	deadline := 10 * time.Second
 	var cleanups []func() error
 	fail := func(err error) (runtime.Cleanup, error) {
@@ -237,8 +264,12 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 // Running reports whether the plugin process is alive (diagnostics/tests).
 func (c *Component) Running() bool {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.client != nil && c.client.cmd.ProcessState == nil
+	client := c.client
+	c.mu.Unlock()
+	// P3-4: read liveness via the exited channel — cmd.ProcessState is
+	// written by the Wait goroutine with no shared lock and must not be read
+	// from other goroutines.
+	return client != nil && client.Alive()
 }
 
 // registerDegradedVocabulary installs the plugin's declared query/command

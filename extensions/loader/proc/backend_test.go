@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -21,9 +22,18 @@ import (
 
 const helperEnv = "GORIDIS_PROC_PLUGIN_HELPER"
 
+// shutdownMarkerEnv names a file the helper writes when the graceful shutdown
+// request is RECEIVED — the receipt proof for graceful-then-kill teardown.
+const shutdownMarkerEnv = "GORIDIS_PROC_PLUGIN_SHUTDOWN_MARKER"
+
 func TestProcPluginHelper(t *testing.T) {
 	if os.Getenv(helperEnv) == "" {
 		return
+	}
+	if p := os.Getenv(shutdownMarkerEnv); p != "" {
+		proc.SetShutdownHook(func() {
+			_ = os.WriteFile(p, []byte("graceful"), 0o644)
+		})
 	}
 	methods := map[string]proc.Handler{
 		"echo": func(_ context.Context, params json.RawMessage) (any, error) {
@@ -377,4 +387,48 @@ func TestProcConfigSwitchIntegration(t *testing.T) {
 	if len(snap.Fibers) != 1 {
 		t.Fatalf("enabled plugin fibers = %d, want 1", len(snap.Fibers))
 	}
+}
+
+// P2-1 regression — graceful shutdown must be DELIVERED on a runtime-driven
+// unload. beginWithdrawal cancels the activation context before the unwind
+// runs stop(); the old bare-Kill Cancel therefore killed the plugin BEFORE
+// the shutdown request was written (graceful teardown was dead code). The
+// helper records shutdown receipt in a marker file; after Dispose the marker
+// must exist.
+func TestProcGracefulShutdownDeliveredOnDispose(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "shutdown-received")
+	b := proc.NewBackend(codecKey, bindCodec,
+		proc.WithArgs("-test.run=TestProcPluginHelper", "-test.timeout=60s"),
+		proc.WithEnv(helperEnv+"=1", shutdownMarkerEnv+"="+marker),
+		proc.WithHandshakeWait(10*time.Second),
+	)
+	ld := loader.NewBuiltinLoader()
+	if err := ld.RegisterBackend(proc.BackendType, b); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := ctxT(t)
+	defer func() { _ = rt.Close(ctx) }()
+
+	f := mountAndReady(t, rt, ld, "graceful-proc")
+	if err := f.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	for f.State() != runtime.StateGone {
+		time.Sleep(5 * time.Millisecond)
+		if time.Now().After(time.Now().Add(0)) {
+			break
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			return // receipt recorded: the graceful request was delivered
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("graceful shutdown request never delivered before exit (bare-kill regression)")
 }

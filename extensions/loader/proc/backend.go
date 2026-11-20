@@ -368,12 +368,30 @@ func (b *Backend) spawn(exe, id string, actCtx context.Context) (*pluginClient, 
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		// P3-6: without Start(), exec's failure cleanup never runs — close the
+		// stdin write-end we already own or the fd leaks.
+		_ = stdin.Close()
 		return nil, fmt.Errorf("%w: stdout: %v", ErrProcStart, err)
 	}
+	// The client struct is built BEFORE Start so the context-cancel hook can
+	// reference it (exec fires Cancel as soon as the context is done).
+	p := &pluginClient{
+		id:      b.nextPID.Add(1),
+		cmd:     cmd,
+		stdin:   stdin,
+		exited:  make(chan struct{}),
+		hsLine:  make(chan string, 1),
+		pending: make(map[int]chan callResult),
+	}
 	cmd.Cancel = func() error {
-		// Force-kill on cancellation: a wedged plugin must not outlive the
-		// activation (graceful stop has its own bounded path in stop()).
-		return cmd.Process.Kill()
+		// P2-1 graceful-then-kill: the old bare-Kill fired on context
+		// cancellation BEFORE the unwind's stop() could speak, so the shutdown
+		// request landed on a dead process — graceful teardown was dead code
+		// on every runtime-driven unload. Cancel now issues the BOUNDED
+		// shutdown request (the plugin flushes); WaitDelay below remains the
+		// kill backstop. stop() stays idempotent for the normal path.
+		p.cancelShutdown()
+		return nil
 	}
 	// WaitDelay bounds the Wait hang when the plugin spawns children that
 	// inherit stdout/stderr: without it, cmd.Wait blocks forever even after
@@ -384,14 +402,6 @@ func (b *Backend) spawn(exe, id string, actCtx context.Context) (*pluginClient, 
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrProcStart, err)
-	}
-	p := &pluginClient{
-		id:      b.nextPID.Add(1),
-		cmd:     cmd,
-		stdin:   stdin,
-		exited:  make(chan struct{}),
-		hsLine:  make(chan string, 1),
-		pending: make(map[int]chan callResult),
 	}
 	go func() {
 		_ = cmd.Wait() // exit error surfaced via dead/pending failures
@@ -575,6 +585,21 @@ func (p *pluginClient) Notify(method string, params any) error {
 	return p.write(map[string]any{
 		"jsonrpc": "2.0", "method": method, "params": params,
 	})
+}
+
+// cancelShutdown issues the bounded shutdown request. It runs on exec's
+// context watcher — must return quickly; WaitDelay applies the kill backstop
+// if the plugin does not exit (P2-1).
+func (p *pluginClient) cancelShutdown() {
+	done := make(chan struct{})
+	go func() {
+		_ = p.Notify(MethodShutdown, struct{}{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+	}
 }
 
 // stop gracefully stops the plugin exactly once: shutdown request (best

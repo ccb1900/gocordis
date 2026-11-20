@@ -58,6 +58,12 @@ type Client struct {
 	mu      sync.Mutex
 	pending map[int]chan callResult
 	closed  atomic.Bool
+
+	// writeMu serializes ALL stdin writes (P3-3): it must never be held while
+	// blocked on a full pipe, otherwise failPending/Close would deadlock
+	// behind a wedged-but-alive plugin — the same regression loader/proc
+	// already fixed with its dedicated writeMu (R12 P1-2).
+	writeMu sync.Mutex
 }
 
 // Start wires pipes onto cmd, starts the process, and performs the
@@ -74,6 +80,9 @@ func Start(ctx context.Context, cmd *exec.Cmd, handshakeWait time.Duration) (*Cl
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		// P3-6: without Start(), exec's failure cleanup never runs — close the
+		// stdin write-end we already own or the fd leaks.
+		_ = stdin.Close()
 		return nil, err
 	}
 	cmd.Stderr = os.Stderr
@@ -85,6 +94,15 @@ func Start(ctx context.Context, cmd *exec.Cmd, handshakeWait time.Duration) (*Cl
 		exited:  make(chan struct{}),
 		stdin:   stdin,
 		pending: make(map[int]chan callResult),
+	}
+	// P2-1 graceful-then-kill: a bare-Kill Cancel default (CommandContext)
+	// fired on context cancellation BEFORE the fiber's Close() could send the
+	// shutdown request, making graceful teardown dead code on every
+	// runtime-driven unload. Cancel now issues the BOUNDED shutdown request
+	// (the plugin flushes); WaitDelay on the command remains the kill backstop.
+	cmd.Cancel = func() error {
+		c.cancelShutdown()
+		return nil
 	}
 	hs := make(chan string, 1)
 	go func() {
@@ -177,15 +195,25 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 		return errors.New("procplugin: duplicate call id")
 	}
 	c.pending[id] = ch
+	c.mu.Unlock()
+
+	// P3-3: the stdin write runs under the dedicated writeMu — never under
+	// c.mu. c.mu guards the pending map and must stay free while this write
+	// can block on a full pipe (failPending/Close run on other goroutines);
+	// holding it here wedged failPending behind a alive-but-not-reading
+	// plugin.
+	c.writeMu.Lock()
 	req, _ := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "id": id, "method": method, "params": json.RawMessage(raw),
 	})
 	if _, werr := c.stdin.Write(append(req, '\n')); werr != nil {
+		c.writeMu.Unlock()
+		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
 		return werr
 	}
-	c.mu.Unlock()
+	c.writeMu.Unlock()
 
 	select {
 	case res := <-ch:
@@ -206,20 +234,55 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 	}
 }
 
+// cancelShutdown issues the bounded shutdown request. It runs on exec's
+// context watcher — must return quickly; the command's WaitDelay applies the
+// kill backstop (P2-1).
+func (c *Client) cancelShutdown() {
+	done := make(chan struct{})
+	go func() {
+		c.mu.Lock()
+		req, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": int(c.nextID.Add(1)), "method": MethodShutdown})
+		_, _ = c.stdin.Write(append(req, '\n'))
+		c.mu.Unlock()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(1500 * time.Millisecond):
+	}
+}
+
 // Close asks the plugin to shut down and reverts the process.
 func (c *Client) Close() error {
 	if c.closed.Swap(true) {
 		return nil
 	}
-	c.mu.Lock()
-	req, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": int(c.nextID.Add(1)), "method": MethodShutdown})
-	_, _ = c.stdin.Write(append(req, '\n'))
-	c.mu.Unlock()
+	c.cancelShutdown()
 	select {
 	case <-c.exited:
 		return nil
 	case <-time.After(2 * time.Second):
-		return c.cmd.Process.Kill()
+		_ = c.cmd.Process.Kill()
+		// P3-5: "fiber Gone" must imply "plugin process exited" — wait for the
+		// reaped exit (the command's WaitDelay bounds cmd.Wait, so this cannot
+		// hang indefinitely) instead of returning while the process is dying.
+		select {
+		case <-c.exited:
+		case <-time.After(5 * time.Second):
+		}
+		return nil
+	}
+}
+
+// Alive reports whether the plugin process is still running (P3-4: reads only
+// the exited channel — ProcessState is written by the Wait goroutine with no
+// shared lock and must not be read from other goroutines).
+func (c *Client) Alive() bool {
+	select {
+	case <-c.exited:
+		return false
+	default:
+		return true
 	}
 }
 

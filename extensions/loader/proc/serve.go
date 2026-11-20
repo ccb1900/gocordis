@@ -104,6 +104,12 @@ func ServeContext(ctx context.Context, methods map[string]Handler) error {
 			continue
 		}
 		if msg.Method == MethodShutdown {
+			// shutdownHook is a test-only seam (nil in production): it records
+			// that the graceful request was DELIVERED before the process
+			// exits — the regression proof for graceful-then-kill teardown.
+			if shutdownHook != nil {
+				shutdownHook()
+			}
 			_ = writeResult(w, enc, msg.ID, struct{}{})
 			return nil
 		}
@@ -195,3 +201,12 @@ func asErr(err error, target **RPCError) bool {
 	}
 	return false
 }
+
+// shutdownHook is a test-only seam (nil in production): fired when the
+// "shutdown" method is received, before the serve loop stops. Lets tests
+// prove the graceful request was delivered (not a bare kill).
+var shutdownHook func()
+
+// SetShutdownHook installs a callback fired when the "shutdown" method is
+// received (test seam; production passes nil).
+func SetShutdownHook(fn func()) { shutdownHook = fn }

@@ -186,17 +186,6 @@ func toAnySlice(list []string) []any {
 	return out
 }
 
-// PluginDirFor returns the conventional plugin directory relative to the
-// configuration file's directory's parent (the application root). Configs
-// live in configs/; plugins/ is the sibling deployment directory.
-func PluginDirFor(configPath string) string {
-	dir := filepath.Dir(configPath)
-	if strings.HasSuffix(filepath.Clean(dir), "configs") {
-		dir = filepath.Dir(dir)
-	}
-	return filepath.Join(dir, "plugins")
-}
-
 // PluginsDirForConfig derives the conventional plugin directory from an
 // application configuration path: configs live in configs/, plugins are the
 // sibling deployment directory.

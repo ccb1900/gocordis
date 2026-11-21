@@ -135,9 +135,18 @@ type Context struct {
 	// realm is the provider scope of this activation (the owning fiber's
 	// realm). Provide writes here; Require resolves through this realm path.
 	realm *realm
+
+	// metaView is the Coeffect context view — the context-carried metadata ι(k)
+	// installed by InterceptMeta (paper Def 26/27). It is DERIVED per Context:
+	// an activation inherits a snapshot from its parent Context at Child() time,
+	// and installs affect only THIS view, never a shared realm. Paper §3.2.3
+	// Def 27 requires Derived realization for Interception; mutating a shared
+	// realm leaks metadata to independent roots (audit P-CO-01).
+	metaMu   sync.RWMutex
+	metaView []*metaEntry
 }
 
-func newContext(rt *Runtime, fiberID FiberID, activationID ActivationID, inject []Dependency, provide []Capability, r *realm) *Context {
+func newContext(rt *Runtime, fiberID FiberID, activationID ActivationID, inject []Dependency, provide []Capability, r *realm, inheritedMeta []*metaEntry) *Context {
 	base, cancel := context.WithCancel(context.Background())
 	c := &Context{
 		rt:              rt,
@@ -147,6 +156,7 @@ func newContext(rt *Runtime, fiberID FiberID, activationID ActivationID, inject 
 		base:            base,
 		state:           contextActive,
 		realm:           r,
+		metaView:        append([]*metaEntry(nil), inheritedMeta...),
 		declaredInject:  make(map[CapabilityKey]struct{}, len(inject)),
 		declaredMeta:    make(map[CapabilityKey]any),
 		declaredProvide: make(map[CapabilityKey]struct{}, len(provide)),
@@ -411,6 +421,13 @@ func (c *Context) Child(component Component, opts ...ScopeOption) (*Fiber, error
 	// builds the table on the orchestrator from the parent's CURRENT table,
 	// atomic with creation.
 
+	// Snapshot THIS Context's derived Coeffect view at derivation time (paper
+	// Def 27 Derived realization, audit P-CO-01): the child inherits the
+	// metadata installed by its parent, but an independent root never sees it.
+	c.metaMu.RLock()
+	inheritedMeta := append([]*metaEntry(nil), c.metaView...)
+	c.metaMu.RUnlock()
+
 	reply := make(chan spawnChildReply, 1)
 	if testChildSpawnHook != nil {
 		testChildSpawnHook()
@@ -424,8 +441,9 @@ func (c *Context) Child(component Component, opts ...ScopeOption) (*Fiber, error
 		// Isolate(keys) must reach the orchestrator: without scopeKeys the
 		// fresh child realm re-homes ALL declared keys (WithScope behavior),
 		// silently breaking per-key isolation (paper Def 24/25).
-		scopeKeys: o.scopeKeys,
-		reply:     reply,
+		scopeKeys:     o.scopeKeys,
+		inheritedMeta: inheritedMeta,
+		reply:         reply,
 	}) {
 		return nil, ErrRuntimeClosed
 	}
@@ -580,9 +598,10 @@ func RequireMeta[T, M any](c *Context, key MetaKey[T, M]) (zero T, err error) {
 		}
 		mu = key.merge(mu, dm)
 	}
-	// Context-carried metadata ι(k): ancestor installments first, install
-	// order; each ν folds onto the inherited value (rightmost wins).
-	if iota, found := c.realm.metaForKey(cap); found {
+	// Context-carried metadata ι(k): installments inherited from the parent
+	// Context first, then this context's installs (rightmost wins). Scoped to
+	// THIS derived Context — never a shared realm (audit P-CO-01).
+	if iota, found := c.metaForKey(cap); found {
 		im, ok := iota.(M)
 		if !ok {
 			return zero, errors.New("runtime: context metadata type mismatch")
@@ -590,6 +609,29 @@ func RequireMeta[T, M any](c *Context, key MetaKey[T, M]) (zero T, err error) {
 		mu = key.merge(mu, im)
 	}
 	return fn(mu), nil
+}
+
+// metaForKey folds this Context's metadata installments for key in install
+// order (inherited first, local last). Entries are snapshotted under the lock
+// and combined OUTSIDE it (RT-12: combine is user code that may re-enter).
+func (c *Context) metaForKey(key CapabilityKey) (any, bool) {
+	c.metaMu.RLock()
+	chain := append([]*metaEntry(nil), c.metaView...)
+	c.metaMu.RUnlock()
+	var cur any
+	found := false
+	for _, e := range chain {
+		if e.key != key {
+			continue
+		}
+		if found {
+			cur = e.combine(cur, e.nu)
+		} else {
+			cur = e.nu
+			found = true
+		}
+	}
+	return cur, found
 }
 
 // InterceptMeta installs context-carried metadata ν for key (paper Definition
@@ -625,9 +667,19 @@ func InterceptMeta[T, M any](c *Context, key MetaKey[T, M], nu M) error {
 	}
 	entry := &metaEntry{key: cap, nu: nu, combine: combineAny}
 	if err := c.effect(EffectKindIntercept, cap, func() (func() error, error) {
-		c.realm.addMeta(entry)
+		// Install into THIS Context's derived view — not the shared realm.
+		c.metaMu.Lock()
+		c.metaView = append(c.metaView, entry)
+		c.metaMu.Unlock()
 		return func() error {
-			c.realm.removeMeta(entry)
+			c.metaMu.Lock()
+			defer c.metaMu.Unlock()
+			for i, e := range c.metaView {
+				if e == entry {
+					c.metaView = append(c.metaView[:i], c.metaView[i+1:]...)
+					break
+				}
+			}
 			return nil
 		}, nil
 	}); err != nil {

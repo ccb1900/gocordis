@@ -57,7 +57,10 @@ type cmdSpawnChild struct {
 	// keyRealms assigns per-key isolation realms for the new fiber (nil when
 	// the child has no isolated key; WithScope-derived entry is pre-built).
 	keyRealms map[CapabilityKey]*realm
-	reply     chan spawnChildReply
+	// inheritedMeta is the snapshot of the parent Context's Coeffect metadata
+	// view at derivation time (paper Def 27 Derived realization, P-CO-01).
+	inheritedMeta []*metaEntry
+	reply         chan spawnChildReply
 }
 
 type spawnChildReply struct {

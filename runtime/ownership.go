@@ -50,6 +50,9 @@ func (c *cmdSpawnChild) apply(o *orchestrator) {
 	child := newFiber(o.rt, c.component)
 	cacheDeclarations(child, c.inject, c.provide)
 	child.parent = parent
+	// Paper Def 27 Derived realization (audit P-CO-01): the child's Context
+	// inherits the parent's Coeffect metadata view at derivation time.
+	child.initialMetaView = append([]*metaEntry(nil), c.inheritedMeta...)
 
 	// RT-05: build the child's per-key isolation table HERE, on the
 	// orchestrator, from the parent's CURRENT route table — atomic with

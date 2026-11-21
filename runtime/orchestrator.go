@@ -295,7 +295,7 @@ func (o *orchestrator) startActivation(f *Fiber) {
 		return
 	}
 	actID := ActivationID(o.rt.nextActivationID.Add(1))
-	ctx := newContext(o.rt, f.id, actID, f.inject, f.provide, f.realm)
+	ctx := newContext(o.rt, f.id, actID, f.inject, f.provide, f.realm, f.initialMetaView)
 	ctx.fiber = f
 	act := &activation{
 		id:     actID,

@@ -386,3 +386,55 @@ func (c *metaBadConsumer) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	_, err := runtime.RequireMeta(ctx, fsKey)
 	return nil, err
 }
+
+// TestMetaInterceptDoesNotLeakAcrossIndependentRoots — audit P-CO-01:
+// InterceptMeta must have DERIVED-CONTEXT scope (paper §3.2.3 Def 27). A
+// metadata installment by one root component must reach only its own derived
+// Context (and children spawned from it), NOT an independent root Fiber that
+// merely shares the runtime's rootRealm.
+//
+// Current implementation writes meta into c.realm (the shared rootRealm), so
+// the independent consumer below reads the host's ν and this test FAILS.
+func TestMetaInterceptDoesNotLeakAcrossIndependentRoots(t *testing.T) {
+	rt := newTestRuntime(t)
+	hostOut := make(chan string, 4)
+	indepOut := make(chan string, 4)
+
+	// Provider of the interpreted capability.
+	if _, err := rt.Load(&fsProv{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Host root installs metadata ν (tag "host-only", path /secret) and mounts
+	// a child consumer that SHOULD see it.
+	host, err := rt.Load(&fsInterceptHost{
+		nu:  fsMeta{paths: map[string]bool{"/secret": true}, tag: "host-only"},
+		out: hostOut,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaWait(t, host, runtime.StateActive)
+	if got := metaRecv(t, hostOut); got != "host-only:[/secret]" {
+		t.Fatalf("host child interpreted = %q, want host metadata view", got)
+	}
+
+	// Independent root consumer: declares its OWN metadata, never derived from
+	// the host. It must read ONLY its declared view — not the host's ν.
+	indep, err := rt.Load(&fsCons{
+		declared: fsDeclared("independent", "/public"),
+		seen:     indepOut,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaWait(t, indep, runtime.StateActive)
+	if got := metaRecv(t, indepOut); got != "independent:[/public]" {
+		t.Fatalf("independent root read host's metadata (scope leak): %q, want declared-only view", got)
+	}
+
+	_ = host.Dispose()
+	_ = indep.Dispose()
+	_ = host.Gone(testTimeout(t))
+	_ = indep.Gone(testTimeout(t))
+}

@@ -78,6 +78,13 @@ type Fiber struct {
 	inject  []Dependency
 	provide []Capability
 
+	// initialMetaView is the Coeffect metadata snapshot inherited from the
+	// parent Context at this Fiber's creation (paper Def 27 Derived
+	// realization, audit P-CO-01). Orchestrator-owned, set by cmdSpawnChild
+	// before the first activation; startActivation copies it into the fresh
+	// Context. Root Fibers have none — independent roots never share metadata.
+	initialMetaView []*metaEntry
+
 	// mu guards the externally observable decision state for concurrent
 	// readers (State, Err, waiters). Mutations are performed by the
 	// orchestrator goroutine while holding mu, which makes every published

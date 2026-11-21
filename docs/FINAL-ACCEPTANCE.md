@@ -23,7 +23,8 @@ Authority: [`论文.pdf`](./论文.pdf) 为语义唯一裁决来源;JS Cordis �
 | §3.1 Revertible effects | 槽位状态机 + Effect iterator | `runtime/context.go`、`runtime/component.go:IterComponent` | `effect_phase_test.go`、`iterator_test.go` | ✅ |
 | §3.1.3 L-Iter / L-Divert | 逐 yield 激活 + 迭代边界 divert | `orchestrator.runApplyIter` | `iterator_test.go`(中途 Dispose / 依赖消失 / step raise) | ✅ |
 | Def 24/25 Isolation | 逐 key realm 表 ρ,插入时固定,无祖先回退 | `runtime/providers.go:lookupOwn`、`fiber.keyRealms` | `def24_isolation_test.go`、`gap01_retiring_shadow_test.go` | ✅(ADR-0001 Accepted) |
-| Def 26/27 Interception | 元数据 monoid d(k) ⊕ ι(k),provider 解释 | `MetaKey`、`ProvideMeta`、`RequireMeta`、`InterceptMeta` | `meta_intercept_test.go`、`metakey_semantics_test.go` | ✅(ADR-0002 Accepted) |
+| Def 26/27 Interception | 元数据 monoid d(k) ⊕ ι(k),provider 解释 | `MetaKey`、`ProvideMeta`、`RequireMeta`、`InterceptMeta`(ι 存于派生 `Context.metaView`,非共享 realm) | `meta_intercept_test.go`、`metakey_semantics_test.go` | ✅(ADR-0002 Accepted + 2026-11-21 Derived realization 修订) |
+| Def 27 Derived realization | 拦截派生新 context,不原地改共享上下文 | `Context.Child` 快照继承 + `cmdSpawnChild.inheritedMeta` → `newContext`;独立根无继承 | `TestMetaInterceptDoesNotLeakAcrossIndependentRoots` + 变异验证 | ✅(审计 P-CO-01 已修复) |
 | §6.3 Access Control | 按元数据裁决,拦截可逆且不触发 reload | `Context.InterceptMeta` 经 Effect 安装 | `meta_intercept_test.go` | ✅ |
 | §4.4 Asynchrony | inertial host,L-Divert 取 landing 替代 | orchestrator 异步完成 | `det_admission`、`iterator_test.go` | ✅ |
 | §4.4 Failure | raise → Unloading,outcome 阻止重入,不向父传播 | `finalizeActivation` | `TestApplyFailureEndsFailed` | ✅ |
@@ -200,6 +201,8 @@ windows-build(build/vet/test 交叉编译)、console-web(npm/vitest/tsc/build)�
 | G-06 | Windows 原生运行测试 | 当前交叉编译已守住编译兼容;工业 PC 原生运行测试归入产品发布验收,不属框架冻结条件 |
 | P7 | WASM 沙箱能力面 = 声明集的形式化 | 属产品安全验收;Loader 生命周期协议已冻结,沙箱形式化不重开生命周期 |
 | P7 | 依赖类型/版本(§6.6) | Key 元数据演进的自然延伸,待真实应用出现多版本依赖需求再启动 |
+| P-CO-03 | 通用论文语义观察等价模型(每种 Capability 自有 ≃ₖ、Coeffect 投影) | 现有 `ObservationsEquivalent`(canonical 字符串)与 `thm80DetCanonical`(生成名投影)已覆盖 conformance 测试所需;建立通用 ≃ₖ 模型是语义基础设施扩张,当前无对应失败测试。属证据不足而非已证明违反定理,不因设计偏好新增 Kernel 抽象 |
+| P-CO-05 | Unified Context(Def 32)的递归整体证明 | 组合已逐项验证(Effect accumulator / Coeffect view / Ownership / Revise / P-CO-01 派生作用域);形式化递归等价证明属研究性工作,不影响可复现正确性,Feature Freeze 后按需开展 |
 
 ---
 

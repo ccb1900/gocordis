@@ -63,13 +63,39 @@ per-realm 安装链的存放方式不同。
 - `RequireMeta(ctx, key)`:读取 = `provider(d(k) ⊕ₖ ι(k))`;ι 为 context 携带元数据。
 - `InterceptMeta(ctx, key, ν)`:向 context 合并 ν(ι ⊕ₖ ν,右偏、context 优先),经
   ctx.Effect 可逆;安装/调整/卸除不触发 reload;combine panic 受控返回错误。
-- ι 存储于 realm 的 per-key meta 表,沿 context 链继承(祖先先装、安装序折叠)——与
-  既有 Intercept 同位;与论文"derives a context"的偏差同 P2 §context 链说明。
-- 一致性测试:`runtime/meta_intercept_test.go` 六项(声明单独生效、context 右偏覆盖
-  声明、monoid 折叠序、不触发 reload、可逆恢复、未声明拒绝)。
+- ~~ι 存储于 realm 的 per-key meta 表,沿 context 链继承~~ **已于 2026-11-21 修订**:
+  初版把 ι 存入共享 realm,导致同 Runtime 的独立根 Fiber 互相读到对方的元数据
+  (审计 P-CO-01,论文 Def 27 要求 Derived realization)。现 ι 存储于 **Context 的
+  派生 metaView**(`Context.metaView`),`Child()` 在派生时快照父视图,`newContext`
+  注入;独立根无继承。见本文件「修订记录 (2026-11-21)」。
+- 一致性测试:`runtime/meta_intercept_test.go`(声明单独生效、context 右偏覆盖
+  声明、monoid 折叠序、不触发 reload、可逆恢复、未声明拒绝,以及
+  `TestMetaInterceptDoesNotLeakAcrossIndependentRoots` 防跨根泄漏)。
 - 旧 `Intercept[T]` 函数链保留为适配层(内建"值为函数"monoid 的特例),P6 复审去留。
 - **P6 复审决定 (2026-09-08):保留。** 无生产扩展消费它,但它是"值变换"这一合法
   用例的最短表达,且 scoped_realm 套件持续约束其可逆/panic 受控语义;裁撤的收益
   (API 面 -1)低于迁移成本。与 MetaKey 的边界:改值用 Intercept,策略/访问控制
   用 InterceptMeta(§6.3)。
 - 门禁:`go test -count=1 ./...`、`go test -race -count=1 ./runtime/`、vet、gofmt 全绿。
+
+---
+
+## 修订记录 (2026-11-21, Derived realization 作用域)
+
+审计 P-CO-01 确认初版实现违反论文 §3.2.3 Def 27 的 **Derived realization**:
+拦截应派生新 context 而非原地修改共享上下文。具体缺陷:初版 `InterceptMeta`
+经 `realm.addMeta` 写入 Runtime 的 `rootRealm`,而所有未显式隔离的根 Fiber 共享
+该 realm —— 一个根组件安装的元数据会泄漏给完全独立的另一个根组件及其消费者。
+反例测试 `TestMetaInterceptDoesNotLeakAcrossIndependentRoots` 修复前失败
+(`host-only:[/public,/secret]`)。
+
+**修订(不改变 ADR-0002 已接受的语义决策,仅改正实现作用域)**:
+- `Context` 持有 `metaView []*metaEntry`(Coeffect 派生视图,metaMu 保护);
+- `InterceptMeta` 安装/撤销只改当前 Context 的派生视图,不再触碰 realm;
+- `RequireMeta` 从当前 Context 读取 ι,combine 在锁外执行(RT-12 保持);
+- `Context.Child` 在派生时快照父 Context 的视图,经 `cmdSpawnChild.inheritedMeta`
+  → `Fiber.initialMetaView` → `newContext` 注入子 Context;
+- 独立根 Fiber 无 initialMetaView,不继承任何其他根的元数据。
+
+这使拦截的作用域等于论文的 derived context:安装可逆、不触发 reload、不进依赖图
+的语义不变,同时消除了跨根泄漏。变异验证:恢复 realm 写入后防泄漏测试立即变红。

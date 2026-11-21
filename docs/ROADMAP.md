@@ -33,6 +33,7 @@ stc-go)自本文起停用,改用论文编号。
 | **Theorem 70** | Ordering(L-Begin 门控;provider episode 严格包住 consumer) | 依赖门控 + 撤离顺序 | thm70/c3 |
 | **Theorem 73** | Progress(paper p.49: ≺ 无环 + 有限 N + 有界 K + 每步为 lifecycle rule ⇒ no-deadlock + S(n)≤(K+3)(V(n)+1) ⇒ quiesce)。**"合作"不是论文前提**（仅 archived 验证假设）；quiescent=eq.49 "no transition left in progress"——Active+Installing/Undoing effect **不是** quiescent（effect barrier 后 conformance oracle 已同步） | deterministic step driver + 双 quiescence oracle(含 effect 状态) | thm73_thm80_test、obs_test/TestThm73QuiescenceSeesInstallingEffect |
 | **Theorem 80** | Confluence(规范形 + 合流;**排除 failed fiber**——与论文一致)。**deterministic interleaving conformance coverage（非完整定理证明）**:同一操作集的 ApplyDone/UnwindDone 不同提交顺序 → 终态在 ≃ 投影(忽略 Lemma 61 生成名重命名)下等价;明确断言 guard 链(consumer unwind 先于 provider unwind)与 Revise canonical order(旧 consumer unwind → 旧 provider unwind → 新 provider apply → consumer reattach);非法交错被 guard 变成不可达 = Thm80(1) canonical form 的结构性证据 | 合流生成器 + 前置条件 + det 交错 + ≃ 投影 | thm73_thm80、thm80_det_interleaving_test、revision_thm80 |
+| **Def 27 (Derived realization)** | Interception 必须派生新 context;不得原地修改共享上下文,否则元数据跨根泄漏 | `Context.metaView` + `Child()` 派生快照 + `newContext` 注入;独立根无继承(ADR-0002 修订 2026-11-21) | `meta_intercept_test.go:TestMetaInterceptDoesNotLeakAcrossIndependentRoots` |
 | §4.4 Asynchrony | inertial host(L-Divert 只取 landing 替代)仍 quiesce | orchestrator 异步完成 + deterministic mode | det_admission、deterministic_close |
 | §4.4 Failure | raise → Unloading → Inactive,Installed nothing;outcome 阻止重入;**不向父传播**;failed 留在 registry | `finalizeActivation` Failed 分支 | TestApplyFailureEndsFailed、TestFailedDisposeLoadRetryCycle |
 | §4.4 Configuration | revision = 卸下→逆→移除(子先父后)→同名重插;re-enable 走复合而非改 τ | `runtime/revise.go`/`fiber.go:Revise` + HMR/loader 替换路径 | thm80_revision、revise_race_test、hmr H1–H20 |
@@ -202,6 +203,10 @@ p.44)；T66/T73 是沿袭 stc-go 的旧编号，映射正确但勿与论文编�
 - **Interception 分层**：`InterceptMeta` 按元数据 monoid 合并由 provider 解释，
   是论文 Def 26/27（§6.3 capability 访问控制）的正式实现；`Intercept` 是
   读值变换链，属 Go Runtime 附加能力，不应与论文机制混为一谈。
+- **Interception 作用域 (2026-11-21,审计 P-CO-01)**：`InterceptMeta` 初版把 ι 写入共享
+  `rootRealm`,违反 Def 27 的 Derived realization —— 独立根 Fiber 互相读到对方元数据。
+  现 ι 存于 `Context.metaView`(派生视图),`Child()` 派生时快照继承,`RequireMeta` 从当前
+  Context 读取;独立根无继承。ADR-0002 已记录该修订,防泄漏测试 + 变异验证双绿。
 - **事件边界**：Kernel 只保留事件注册（可逆 effect）与 EventBindings 读模型；
   emit/serial/parallel/bail/waterfall 派发在 extensions/event；observe 层
   负责 Runtime 观察事件的订阅/重放。Kernel 不演化为大型事件总线。

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 )
 
 // ErrEventHandlerPanic wraps a panic raised inside an Event handler. The panic
@@ -48,10 +49,14 @@ type eventRegistry struct {
 
 // eventReg is one handler registration.
 type eventReg struct {
-	key     eventKeyID
-	realm   *realm // HR: the registration realm used for emitter-path matching
-	seq     uint64 // global registration order
-	owner   ProviderIdentity
+	key   eventKeyID
+	realm *realm // HR: the registration realm used for emitter-path matching
+	seq   uint64 // global registration order
+	owner ProviderIdentity
+	// removed is guarded by the owning eventRegistry's mu. A dispatch snapshot
+	// keeps registration pointers, so every dispatch checks Active() immediately
+	// before invoking a handler (JS events.ts:110-112 parity).
+	removed bool
 	handler func(context.Context, any) error
 	// chain is non-nil only for chain-aware registrations (OnWaterfall, P1.4):
 	// a handler that receives a real Next continuation. Waterfall dispatch
@@ -79,15 +84,16 @@ func (g *eventRegistry) register(owner ProviderIdentity, realm *realm, key event
 	return reg
 }
 
-// unregister removes exactly reg (idempotent). Called only from an Effect
-// inverse; the Effect exactly-once machinery guarantees one physical removal
-// per registration.
+// unregister removes exactly reg (idempotent). Called from an Effect inverse
+// or from an EventRegistration.Dispose handle; both paths are idempotent, and
+// the removed flag is set even if the physical entry is already gone.
 func (g *eventRegistry) unregister(reg *eventReg) {
 	if reg == nil {
 		return
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	reg.removed = true
 	chain := g.byKey[reg.key]
 	for i, x := range chain {
 		if x == reg {
@@ -166,16 +172,74 @@ func (r *Runtime) eventSnapshot(key eventKeyID, emitterRealm *realm) []*eventReg
 	return out
 }
 
-// onEvent installs one Event registration as an Effect on ctx (shared by On
-// and OnWaterfall). handler is the projection used by Emit/Serial/Parallel;
-// chain is the chain-aware variant used by Waterfall (nil for plain On).
-func onEvent(c *Context, key eventKeyID, handler func(context.Context, any) error, chain func(context.Context, any, Next) error) error {
+// registrationIsActive reports whether a snapshotted registration still exists.
+// Dispatch checks it immediately before invoking the handler; a registration
+// removed mid-batch is skipped, one added mid-batch waits for the next snapshot.
+func (g *eventRegistry) registrationIsActive(reg *eventReg) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return !reg.removed
+}
+
+// EventRegistration is the idempotent, caller-visible handle of one Event
+// registration. Disposing it early removes just this handler; the owning
+// activation's Effect inverse still runs at unwind and is a no-op by then.
+// No Fiber, registry or orchestrator authority is exposed through the handle.
+type EventRegistration struct {
+	mu       sync.Mutex
+	rt       *Runtime
+	reg      *eventReg
+	disposed bool
+}
+
+// Dispose removes the registration exactly once. It is safe to call at any
+// time (including before the install ran or after the activation unwound).
+func (h *EventRegistration) Dispose() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.disposed {
+		h.mu.Unlock()
+		return
+	}
+	h.disposed = true
+	// Keep the handle lock across unregister: same h.mu -> registry.mu order as
+	// install, so manual disposal and the Effect inverse cannot interleave into
+	// two removals. Active() reads reg.removed under registry.mu; a dispatch
+	// that already passed its check may still run once (same as JS).
+	if rt, reg := h.rt, h.reg; rt != nil && rt.eventReg != nil {
+		rt.eventReg.unregister(reg)
+	}
+	h.mu.Unlock()
+}
+
+// Disposed reports whether this registration has been retired.
+func (h *EventRegistration) Disposed() bool {
+	if h == nil {
+		return true
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.disposed
+}
+
+// onEventWith installs one Event registration as an Effect on ctx, optionally
+// exposing a manual handle. handler is the projection used by Emit/Serial/
+// Parallel; chain is the chain-aware variant used by Waterfall (nil for plain
+// On). Registration and removal remain ordinary Effect install/inverse work.
+func onEventWith(c *Context, key eventKeyID, handler func(context.Context, any) error, chain func(context.Context, any, Next) error, h *EventRegistration) error {
 	return c.effect(EffectKindEvent, CapabilityKey{}, func() (func() error, error) {
 		if c.rt == nil || c.rt.eventReg == nil {
 			return nil, errors.New("runtime: event registry unavailable")
 		}
 		if c.realm == nil {
 			return nil, errors.New("runtime: activation has no realm")
+		}
+		h.mu.Lock()
+		if h.disposed {
+			h.mu.Unlock()
+			return func() error { return nil }, nil
 		}
 		reg := c.rt.eventReg.register(
 			ProviderIdentity{FiberID: c.fiberID, ActivationID: c.activationID},
@@ -184,11 +248,17 @@ func onEvent(c *Context, key eventKeyID, handler func(context.Context, any) erro
 			handler,
 			chain,
 		)
+		h.rt, h.reg = c.rt, reg
+		h.mu.Unlock()
 		return func() error {
-			c.rt.eventReg.unregister(reg)
+			h.Dispose()
 			return nil
 		}, nil
 	})
+}
+
+func onEvent(c *Context, key eventKeyID, handler func(context.Context, any) error, chain func(context.Context, any, Next) error) error {
+	return onEventWith(c, key, handler, chain, &EventRegistration{})
 }
 
 // On registers handler for key on ctx's current activation (Decision Record
@@ -220,6 +290,74 @@ func On[T any](c *Context, key EventKey[T], handler EventHandler[T]) error {
 		return handler(ctx, payload.(T))
 	}
 	return onEvent(c, key.id(), typed, nil)
+}
+
+// OnWithHandle is On plus an idempotent manual disposer (JS events.ts:185-198:
+// ctx.on() returns a callable Disposable). The handler is still installed as a
+// reversible Effect of the owner activation; early disposal only retires this
+// one registration and leaves the activation's inverse harmless.
+func OnWithHandle[T any](c *Context, key EventKey[T], handler EventHandler[T]) (*EventRegistration, error) {
+	if c == nil {
+		return nil, errors.New("runtime: nil context")
+	}
+	if !key.valid() {
+		return nil, errors.New("runtime: zero-value EventKey (use NewEventKey)")
+	}
+	if handler == nil {
+		return nil, errors.New("runtime: nil event handler")
+	}
+	h := &EventRegistration{}
+	typed := func(ctx context.Context, payload any) error {
+		return handler(ctx, payload.(T))
+	}
+	if err := onEventWith(c, key.id(), typed, nil, h); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+// onOnceWithHandle builds a one-shot registration. The atomic claim makes the
+// handler exactly-once even when two dispatches pass the registry's Active
+// check concurrently (JS is single-threaded here; Go must not rely on it).
+// Disposal still happens BEFORE the user callback so reentrant dispatch and
+// binding observation see no registration.
+func onOnceWithHandle[T any](c *Context, key EventKey[T], handler EventHandler[T]) (*EventRegistration, error) {
+	if c == nil {
+		return nil, errors.New("runtime: nil context")
+	}
+	if !key.valid() {
+		return nil, errors.New("runtime: zero-value EventKey (use NewEventKey)")
+	}
+	if handler == nil {
+		return nil, errors.New("runtime: nil event handler")
+	}
+	h := &EventRegistration{}
+	var fired atomic.Bool
+	typed := func(ctx context.Context, payload any) error {
+		if !fired.CompareAndSwap(false, true) {
+			return nil
+		}
+		h.Dispose()
+		return handler(ctx, payload.(T))
+	}
+	if err := onEventWith(c, key.id(), typed, nil, h); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+// OnOnce registers a one-shot handler: the registration is retired BEFORE the
+// handler runs (JS events.ts:200-206), so recursive or concurrent dispatch
+// cannot invoke it twice and its binding disappears immediately.
+func OnOnce[T any](c *Context, key EventKey[T], handler EventHandler[T]) error {
+	_, err := onOnceWithHandle(c, key, handler)
+	return err
+}
+
+// OnOnceWithHandle is OnOnce plus a cancellable handle, so a caller can retire
+// a pending one-shot listener before it fires.
+func OnOnceWithHandle[T any](c *Context, key EventKey[T], handler EventHandler[T]) (*EventRegistration, error) {
+	return onOnceWithHandle(c, key, handler)
 }
 
 // OnWaterfall registers a chain-aware handler for key on ctx's current
@@ -259,6 +397,31 @@ func OnWaterfall[T any](c *Context, key EventKey[T], handler WaterfallHandler[T]
 	return onEvent(c, key.id(), plain, chain)
 }
 
+// OnWaterfallWithHandle is OnWaterfall plus an idempotent manual disposer
+// (JS events.ts:185-198: every on() registration returns a Disposable).
+func OnWaterfallWithHandle[T any](c *Context, key EventKey[T], handler WaterfallHandler[T]) (*EventRegistration, error) {
+	if c == nil {
+		return nil, errors.New("runtime: nil context")
+	}
+	if !key.valid() {
+		return nil, errors.New("runtime: zero-value EventKey (use NewEventKey)")
+	}
+	if handler == nil {
+		return nil, errors.New("runtime: nil event handler")
+	}
+	chain := func(ctx context.Context, payload any, next Next) error {
+		return handler(ctx, payload.(T), next)
+	}
+	plain := func(ctx context.Context, payload any) error {
+		return handler(ctx, payload.(T), func() error { return nil })
+	}
+	h := &EventRegistration{}
+	if err := onEventWith(c, key.id(), plain, chain, h); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
 // Emit synchronously broadcasts payload to every handler of key visible from
 // ctx's realm path (ancestor registrations + current-scope registrations;
 // additive, no shadowing, sibling-isolated) in deterministic registration
@@ -269,8 +432,9 @@ func OnWaterfall[T any](c *Context, key EventKey[T], handler WaterfallHandler[T]
 //     channel+goroutine delivery. When Emit returns, every handler it invoked
 //     has already completed.
 //   - A dispatch snapshot is captured before any handler runs; registrations
-//     and unregistrations during handler execution do not change the current
-//     batch and only affect the next Emit.
+//     added during handler execution wait for the next Emit. A registration
+//     retired during the batch is skipped (live Active check before invoke),
+//     matching JS events.ts:110-112.
 //   - Every matching handler is invoked on the caller goroutine; one
 //     handler's error does not stop later handlers. Handler errors (and
 //     contained handler panics) are aggregated with errors.Join.
@@ -292,6 +456,11 @@ type EventBinding struct {
 	Order   uint64
 	Handler func(context.Context, any) error
 	Chain   func(context.Context, any, Next) error
+	// Active is a live check of this binding's registration. It stays valid
+	// after the snapshot is taken; dispatch modes MUST call it immediately
+	// before invoking Handler/Chain so a listener disposed earlier in the
+	// same batch is skipped instead of being called from a stale snapshot.
+	Active func() bool
 }
 
 // EventBindings returns the handlers visible from this activation's context
@@ -304,11 +473,13 @@ func (c *Context) EventBindings(id EventKeyID) []EventBinding {
 	snap := c.rt.eventSnapshot(id, c.realm)
 	out := make([]EventBinding, 0, len(snap))
 	for _, reg := range snap {
+		reg, g := reg, c.rt.eventReg
 		out = append(out, EventBinding{
 			Owner:   reg.owner,
 			Order:   reg.seq,
 			Handler: reg.handler,
 			Chain:   reg.chain,
+			Active:  func() bool { return g.registrationIsActive(reg) },
 		})
 	}
 	return out

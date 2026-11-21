@@ -13,9 +13,13 @@
 //
 // All modes share the kernel's guarantees per dispatch: one snapshot of the
 // visible bindings (emitter realm path already resolved, deterministic
-// registration order), owner-validity at snapshot time, cooperative
+// registration order), owner-validity at snapshot time, a live Active check
+// immediately before each invocation (a handler retired before its check is
+// skipped; one added mid-batch waits for the next snapshot), cooperative
 // cancellation before each handler starts, and unified panic containment via
-// runtime.GuardEventHandler.
+// runtime.GuardEventHandler. Parallel checks Active when starting each
+// goroutine, so a removal by a concurrently running handler is
+// scheduling-dependent — unlike the ordered modes.
 package event
 
 import (
@@ -65,6 +69,9 @@ func Emit[T any](c *runtime.Context, key runtime.EventKey[T], payload T) error {
 	snap := c.EventBindings(key.ID())
 	var errs []error
 	for _, b := range snap {
+		if b.Active != nil && !b.Active() {
+			continue
+		}
 		if err := dispatchCancelErr(nil, c); err != nil {
 			return errors.Join(append(errs, err)...)
 		}
@@ -95,6 +102,9 @@ func Serial[T any](ctx context.Context, c *runtime.Context, key runtime.EventKey
 	snap := c.EventBindings(key.ID())
 	var errs []error
 	for _, b := range snap {
+		if b.Active != nil && !b.Active() {
+			continue
+		}
 		if err := dispatchCancelErr(ctx, c); err != nil {
 			return errors.Join(append(errs, err)...)
 		}
@@ -132,6 +142,9 @@ func Bail[T any](ctx context.Context, c *runtime.Context, key runtime.EventKey[T
 	}
 	snap := c.EventBindings(key.ID())
 	for _, b := range snap {
+		if b.Active != nil && !b.Active() {
+			continue
+		}
 		if err := dispatchCancelErr(ctx, c); err != nil {
 			return err
 		}
@@ -165,6 +178,9 @@ func Parallel[T any](ctx context.Context, c *runtime.Context, key runtime.EventK
 	var wg sync.WaitGroup
 	started := 0
 	for i := range snap {
+		if snap[i].Active != nil && !snap[i].Active() {
+			continue
+		}
 		if err := dispatchCancelErr(ctx, c); err != nil {
 			break
 		}
@@ -227,6 +243,11 @@ func Waterfall[T any](ctx context.Context, c *runtime.Context, key runtime.Event
 // lives on this call stack: nested/reentrant dispatches capture their own
 // snapshots and never touch an outer chain's next or index.
 func runWaterfallChain(ctx context.Context, c *runtime.Context, snap []runtime.EventBinding, i int, payload any) error {
+	// A node disposed earlier in this batch is skipped, and the chain advances
+	// to the next still-live node (JS events.spec.ts:200).
+	for i < len(snap) && snap[i].Active != nil && !snap[i].Active() {
+		i++
+	}
 	if i >= len(snap) {
 		return nil
 	}

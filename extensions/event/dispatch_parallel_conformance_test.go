@@ -366,8 +366,10 @@ func TestP1ParallelSnapshotRegistration(t *testing.T) {
 	}
 }
 
-// P-11: unregistration during a dispatch (owner disposed mid-dispatch) never
-// changes the current snapshot; the handler is gone from the next Parallel.
+// P-11 (JS 5e2e6c1 parity): a handler removed before its own goroutine starts
+// is skipped by the live Active check. Parallel starts goroutines concurrently,
+// so whether the concurrently-disposed victim already started is scheduling
+// dependent; only the next dispatch's membership is deterministic.
 func TestP1ParallelSnapshotUnregistration(t *testing.T) {
 	rt := p1Runtime(t)
 	rec := &p1Rec{}
@@ -385,13 +387,24 @@ func TestP1ParallelSnapshotUnregistration(t *testing.T) {
 	killer.victim = f3
 	c := p1Ctx(f2)
 
-	// Parallel #1: kill disposes the victim fiber concurrently; the victim
-	// handler is in the snapshot (already started) and still completes.
+	// Parallel #1: the killer always runs; the victim may or may not have
+	// started before its disposal, so both outcomes are legal here.
 	if err := Parallel(context.Background(), c, p1IntKey, 1); err != nil {
 		t.Fatalf("Parallel #1: %v", err)
 	}
-	if got := p1Set(rec.got()); got != "kill,victim" {
-		t.Fatalf("dispatch #1 membership = %s, want kill,victim", got)
+	hasKill := false
+	for _, tag := range rec.got() {
+		switch tag {
+		case "kill":
+			hasKill = true
+		case "victim":
+			// raced into its goroutine before removal — legal.
+		default:
+			t.Fatalf("unexpected handler %q in dispatch #1", tag)
+		}
+	}
+	if !hasKill {
+		t.Fatalf("dispatch #1 did not run the killer: %v", rec.got())
 	}
 	rec.calls = nil
 	if err := Parallel(context.Background(), c, p1IntKey, 2); err != nil {

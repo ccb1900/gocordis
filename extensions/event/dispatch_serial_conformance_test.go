@@ -284,9 +284,9 @@ func TestP1SerialSnapshotRegistration(t *testing.T) {
 	}
 }
 
-// S-09: unregistration during a dispatch (owner disposed mid-dispatch) never
-// changes the current snapshot — the snapshot handler still runs — and the
-// handler is gone from the next Serial.
+// S-09 (JS 5e2e6c1 parity): unregistration during a dispatch removes the
+// handler from that same batch. The killer waits for the victim's Gone before
+// continuing, so the live Active check skips the victim deterministically.
 func TestP1SerialSnapshotUnregistration(t *testing.T) {
 	rt := p1Runtime(t)
 	rec := &p1Rec{}
@@ -305,13 +305,12 @@ func TestP1SerialSnapshotUnregistration(t *testing.T) {
 	c := p1Ctx(f2)
 
 	// First Serial: kill disposes the victim fiber and waits for its Gone
-	// (registration physically removed mid-dispatch); the victim handler is in
-	// the dispatch snapshot and still executes.
+	// mid-dispatch; the live Active check skips the victim in this same batch.
 	if err := Serial(context.Background(), c, p1IntKey, 1); err != nil {
 		t.Fatalf("Serial #1: %v", err)
 	}
-	if got := p1Join(rec.got()); got != "kill,victim" {
-		t.Fatalf("dispatch #1 calls = %q, want kill,victim", got)
+	if got := p1Join(rec.got()); got != "kill" {
+		t.Fatalf("dispatch #1 calls = %q, want kill only", got)
 	}
 	rec.calls = nil
 

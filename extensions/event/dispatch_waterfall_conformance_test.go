@@ -509,9 +509,8 @@ func TestP1WaterfallSnapshotRegistration(t *testing.T) {
 	}
 }
 
-// W-12: unregistration during a dispatch never changes the current snapshot —
-// B (owner disposed mid-chain) still executes — and B is gone from the next
-// Waterfall.
+// W-12 (JS 5e2e6c1 parity): a chain node disposed mid-chain is skipped and the
+// chain continues; the victim is gone from the next Waterfall as well.
 func TestP1WaterfallSnapshotUnregistration(t *testing.T) {
 	rt := p1Runtime(t)
 	rec := &p1Rec{}
@@ -528,13 +527,12 @@ func TestP1WaterfallSnapshotUnregistration(t *testing.T) {
 	c := p1Ctx(f2)
 
 	// First Waterfall: kill disposes the victim fiber and waits for Gone
-	// mid-dispatch; the victim handler is in the dispatch snapshot and still
-	// executes.
+	// mid-chain; the live Active check skips that node and continues.
 	if err := Waterfall(context.Background(), c, p1IntKey, 1); err != nil {
 		t.Fatalf("Waterfall #1: %v", err)
 	}
-	if got := p1Join(rec.got()); got != "kill,victim" {
-		t.Fatalf("dispatch #1 calls = %q, want kill,victim", got)
+	if got := p1Join(rec.got()); got != "kill" {
+		t.Fatalf("dispatch #1 calls = %q, want kill only", got)
 	}
 	rec.calls = nil
 

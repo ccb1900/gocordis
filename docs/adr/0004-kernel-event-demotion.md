@@ -73,3 +73,15 @@ Kernel 公开面含非论文语义,违反 ROADMAP P6 的"kernel 公开 API 逐�
   RuntimeMode/WithRuntimeMode 等)原为导出但消费方全部是 `package runtime` 内部
   测试——全部改为非导出(detStep/runtimeMode/...),kernel 公开面进一步收缩,
   定理驱动器(定理基础设施)功能不变。
+
+### 2026-11-21 修订（JS 5e2e6c1 对照，不改变派发边界）
+
+原 P1 套件的快照断言是「派发中注销的处理器仍在当前批次执行」。按 JS Core
+`packages/core/src/events.ts:110-112` 对齐后，注册带实时 `Active` 检查：调用前
+已注销的处理器被跳过，派发中新增的处理器仍等到下一批次。`EventRegistration`
+（手动幂等 disposer）、`OnOnce`（调用前先注销 + 原子一次性领取）也在此修订中加入，
+仍是 Kernel 的「注册 = 可逆 effect」形态，不产生第二生命周期权威。
+
+`Parallel` 在启动 goroutine 时做 Active 检查；同批并发注销是否跳过取决于调度，
+这是 Go goroutine 与 JS 同步 map 启动顺序的必然差异，已由测试固定，不伪造顺序。
+P-11/S-09/W-12 三个 conformance 用例随之更新；详见 `docs/JS-CORDIS-ALIGNMENT.md`。

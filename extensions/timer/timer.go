@@ -12,7 +12,9 @@
 package timer
 
 import (
+	"context"
 	"errors"
+	"iter"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -170,6 +172,135 @@ func throttleOwned(c *runtime.Context, fn func(), d time.Duration, trailing bool
 	trigger, h := s.throttleWithHandle(fn, d, trailing)
 	installOwnedEffect(c, h)
 	return trigger
+}
+
+// ---- async forms (JS @cordisjs/timer timeout(delay)/interval(delay)/Scheduled<F>) ----
+//
+// These helpers are the Go-native counterpart of the JS APIs that take no
+// user callback. They still go through the service's joiner-backed handle: the
+// entry is installed as an effect of the calling fiber, so a consumer reaching
+// Gone waits for admitted callbacks and no callback can fire afterwards.
+
+// TimeoutWait is the Go form of `await ctx.timeout(delay)`. It resolves when
+// the timer fires and returns the owner's cancellation error if the consumer is
+// disposed/withdrawn first. The signaling callback is fully tracked: nothing
+// is left running when the caller returns.
+func TimeoutWait(c *runtime.Context, d time.Duration) error {
+	s, err := requireService(c)
+	if err != nil {
+		return err
+	}
+	fired := make(chan struct{})
+	h := s.Timeout(func() { close(fired) }, d).(*handle)
+	installOwnedEffect(c, h)
+	select {
+	case <-fired:
+		return nil
+	case <-c.Done():
+		// A fire that already committed before disposal resolves the wait:
+		// the "promise" won the race, so do not report a spurious error.
+		select {
+		case <-fired:
+			return nil
+		default:
+		}
+		return c.Err()
+	}
+}
+
+// Ticks is the Go form of `ctx.interval(delay)` as an async iterable. Ranging
+// over the sequence consumes ticks; breaking out (or the owner's disposal)
+// stops the interval and joins the dispatcher and any admitted callback before
+// the range statement completes.
+func Ticks(c *runtime.Context, d time.Duration) iter.Seq[time.Time] {
+	return func(yield func(time.Time) bool) {
+		s, err := requireService(c)
+		if err != nil {
+			return
+		}
+		ticks := make(chan time.Time, 1)
+		h := s.Interval(func() {
+			// Never block a tracked callback: a slow consumer drops ticks
+			// instead of delaying disposal's join.
+			select {
+			case ticks <- time.Now():
+			default:
+			}
+		}, d).(*handle)
+		installOwnedEffect(c, h)
+		defer h.stopAndWait() // break/return: stop and join before range ends
+		for {
+			select {
+			case t := <-ticks:
+				if !yield(t) {
+					return
+				}
+			case <-c.Done():
+				return
+			}
+		}
+	}
+}
+
+// TimeoutContext is the context-shaped form of `ctx.timeout(delay)`: the
+// returned context is cancelled when the timer fires, when the owner fires, or
+// when the caller invokes the CancelFunc. Its inverse (cancel + join) is an
+// effect of c, so no part of it outlives the consumer.
+func TimeoutContext(c *runtime.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	base := context.Background()
+	if c != nil {
+		base = c.Context()
+	}
+	ctx, cancelTimer := context.WithCancel(base)
+	s, err := requireService(c)
+	if err != nil {
+		cancelTimer()
+		return ctx, func() {}
+	}
+	h := s.Timeout(func() { cancelTimer() }, d).(*handle)
+	inverse := func() error {
+		cancelTimer()
+		return h.stopAndWait()
+	}
+	if err := c.Effect(func() (func() error, error) { return inverse, nil }); err != nil {
+		inverse() // refused effect: compensate now, nothing may outlive c
+	}
+	var once sync.Once
+	cancel := func() {
+		once.Do(func() {
+			cancelTimer()
+			_ = h.stopAndWait()
+		})
+	}
+	return ctx, cancel
+}
+
+// TimeoutArgs is the Scheduled<F> form whose callback receives arg (the JS
+// `callback(...args)` forwarding convention). Like TimeoutOwned, it is bound to
+// c's activation at creation time.
+func TimeoutArgs[A any](c *runtime.Context, fn func(A), d time.Duration, arg A) Handle {
+	if fn == nil {
+		return TimeoutOwned(c, nil, d)
+	}
+	return TimeoutOwned(c, func() { fn(arg) }, d)
+}
+
+// IntervalArgs forwards arg to a repeating callback, bound to c's activation.
+func IntervalArgs[A any](c *runtime.Context, fn func(A), d time.Duration, arg A) Handle {
+	if fn == nil {
+		return IntervalOwned(c, nil, d)
+	}
+	return IntervalOwned(c, func() { fn(arg) }, d)
+}
+
+// TimeoutArgsOwned/IntervalArgsOwned are explicit aliases for the argument
+// forwarding forms; TimeoutArgs/IntervalArgs already bind c automatically.
+func TimeoutArgsOwned[A any](c *runtime.Context, fn func(A), d time.Duration, arg A) Handle {
+	return TimeoutArgs(c, fn, d, arg)
+}
+
+func IntervalArgsOwned[A any](c *runtime.Context, fn func(A), d time.Duration, arg A) Handle {
+	return IntervalArgs(c, fn, d, arg)
 }
 
 // noopHandle is returned when the capability could not be resolved; it keeps

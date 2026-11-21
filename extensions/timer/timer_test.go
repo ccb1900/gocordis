@@ -677,3 +677,211 @@ func TestDebounceCallbackCanStopItselfWithoutDeadlock(t *testing.T) {
 		t.Fatalf("debounce self-stop deadlocked during Gone: %v", err)
 	}
 }
+
+// ---- async-form parity: timeout(delay) / interval(delay) / Scheduled<F> ----
+
+// ctxConsumer hands its live activation Context to the test so the async-form
+// helpers can be exercised from a goroutine while the fiber stays Active. It
+// still declares the capability: no back door into the service.
+type ctxConsumer struct {
+	ch chan *runtime.Context
+}
+
+func (c *ctxConsumer) Name() string { return "ctx-consumer" }
+func (c *ctxConsumer) Inject() []runtime.Dependency {
+	return []runtime.Dependency{runtime.Requires(timer.ServiceKey)}
+}
+func (c *ctxConsumer) Provide() []runtime.Capability { return nil }
+func (c *ctxConsumer) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	c.ch <- ctx
+	return nil, nil
+}
+
+func loadContext(t *testing.T) (*runtime.Fiber, *runtime.Context) {
+	t.Helper()
+	ctx := testCtx(t)
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatalf("runtime.New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(testCtx(t)) })
+
+	if _, err := rt.Load(&timer.Component{}); err != nil {
+		t.Fatalf("load provider: %v", err)
+	}
+	c := &ctxConsumer{ch: make(chan *runtime.Context, 1)}
+	cf, err := rt.Load(c)
+	if err != nil {
+		t.Fatalf("load consumer: %v", err)
+	}
+	if err := cf.Ready(ctx); err != nil {
+		t.Fatalf("consumer Ready: %v", err)
+	}
+	return cf, mustRecv(t, c.ch, time.Second)
+}
+
+func drain[T any](ch <-chan T) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
+	}
+}
+
+func TestTimeoutWaitResolvesWhenTimerFires(t *testing.T) {
+	f, cctx := loadContext(t)
+	defer dispose(t, f)
+
+	done := make(chan error, 1)
+	go func() { done <- timer.TimeoutWait(cctx, 10*time.Millisecond) }()
+	if err := mustRecv(t, done, time.Second); err != nil {
+		t.Fatalf("TimeoutWait returned %v, want nil (resolved)", err)
+	}
+}
+
+func TestTimeoutWaitReturnsCtxErrOnDispose(t *testing.T) {
+	f, cctx := loadContext(t)
+
+	done := make(chan error, 1)
+	go func() { done <- timer.TimeoutWait(cctx, time.Hour) }()
+	if err := f.Dispose(); err != nil {
+		t.Fatalf("Dispose: %v", err)
+	}
+	if err := mustRecv(t, done, time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("TimeoutWait returned %v, want context.Canceled", err)
+	}
+	if err := f.Gone(testCtx(t)); err != nil {
+		t.Fatalf("Gone after dispose: %v", err)
+	}
+}
+
+func TestTicksYieldsThenStopsOnBreak(t *testing.T) {
+	f, cctx := loadContext(t)
+	defer dispose(t, f)
+
+	got := make(chan time.Time, 16)
+	done := make(chan struct{})
+	go func() {
+		n := 0
+		for ts := range timer.Ticks(cctx, 5*time.Millisecond) {
+			n++
+			select {
+			case got <- ts:
+			default:
+			}
+			if n == 3 {
+				break
+			}
+		}
+		close(done) // iterator returned: internal goroutine must be joined
+	}()
+	for i := 0; i < 3; i++ {
+		mustRecv(t, got, time.Second)
+	}
+	mustRecv(t, done, time.Second)
+	drain(got)
+	assertNoRecv(t, got, 40*time.Millisecond) // no tick can escape after break
+}
+
+func TestTicksStopsOnContextDispose(t *testing.T) {
+	f, cctx := loadContext(t)
+
+	got := make(chan time.Time, 16)
+	done := make(chan struct{})
+	go func() {
+		for ts := range timer.Ticks(cctx, 5*time.Millisecond) {
+			select {
+			case got <- ts:
+			default:
+			}
+		}
+		close(done)
+	}()
+	mustRecv(t, got, time.Second)
+	if err := f.Dispose(); err != nil {
+		t.Fatalf("Dispose: %v", err)
+	}
+	mustRecv(t, done, time.Second)
+	if err := f.Gone(testCtx(t)); err != nil {
+		t.Fatalf("Gone: %v", err)
+	}
+	drain(got)
+	assertNoRecv(t, got, 40*time.Millisecond)
+}
+
+func TestTimeoutContextFiresAndCancelFunc(t *testing.T) {
+	f, cctx := loadContext(t)
+	defer dispose(t, f)
+
+	fired, cancelFired := timer.TimeoutContext(cctx, 10*time.Millisecond)
+	defer cancelFired()
+	select {
+	case <-fired.Done():
+		if !errors.Is(fired.Err(), context.Canceled) {
+			t.Fatalf("timer context err = %v, want context.Canceled", fired.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timer context was not cancelled when the timer fired")
+	}
+
+	manual, cancelManual := timer.TimeoutContext(cctx, time.Hour)
+	cancelManual()
+	if !errors.Is(manual.Err(), context.Canceled) {
+		t.Fatalf("manually cancelled context err = %v, want context.Canceled", manual.Err())
+	}
+}
+
+func TestTimeoutContextCancelledByOwner(t *testing.T) {
+	f, cctx := loadContext(t)
+	derived, cancel := timer.TimeoutContext(cctx, time.Hour)
+	defer cancel()
+	dispose(t, f)
+	if !errors.Is(derived.Err(), context.Canceled) {
+		t.Fatalf("owner disposal did not cancel derived context: %v", derived.Err())
+	}
+}
+
+func TestTimeoutArgsForwardsArg(t *testing.T) {
+	f, cctx := loadContext(t)
+	defer dispose(t, f)
+
+	got := make(chan string, 1)
+	timer.TimeoutArgs(cctx, func(s string) { got <- s }, 10*time.Millisecond, "payload")
+	if v := mustRecv(t, got, time.Second); v != "payload" {
+		t.Fatalf("forwarded arg = %q, want %q", v, "payload")
+	}
+}
+
+func TestIntervalArgsForwardsArgAndIsOwned(t *testing.T) {
+	f, cctx := loadContext(t)
+
+	got := make(chan int, 32)
+	h := timer.IntervalArgs(cctx, func(n int) {
+		select {
+		case got <- n:
+		default:
+		}
+	}, 5*time.Millisecond, 42)
+	for i := 0; i < 2; i++ {
+		if v := mustRecv(t, got, time.Second); v != 42 {
+			t.Fatalf("forwarded arg = %d, want 42", v)
+		}
+	}
+	if !h.Stop() {
+		t.Fatal("Stop on live interval should report true")
+	}
+	// Owned semantics: a fresh interval must be gone with its consumer.
+	got2 := make(chan struct{}, 32)
+	timer.IntervalArgsOwned(cctx, func(int) {
+		select {
+		case got2 <- struct{}{}:
+		default:
+		}
+	}, 5*time.Millisecond, 0)
+	mustRecv(t, got2, time.Second)
+	dispose(t, f)
+	drain(got2)
+	assertNoRecv(t, got2, 40*time.Millisecond)
+}

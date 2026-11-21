@@ -33,6 +33,10 @@ export const api = {
   hubQuery: <T = unknown>(name: string, params?: Record<string, string | number>) =>
     get<T>(`/api/query/${name}${qs(params) ? `?${qs(params)}` : ""}`),
   hubCommand: (name: string, body?: unknown) => post<void>(`/api/command/${name}`, body),
+  // Typed market catalog read. The catalog renderer uses ViewContext.hubQuery
+  // (same endpoint) so it stays composable; this helper is the direct surface
+  // for callers that do not go through a view block.
+  marketCatalog: () => get<import("./types").MarketCatalogQuery>("/api/query/market/catalog"),
   // List endpoints coerce null → []: Go marshals a nil slice as null, and a
   // nil return from an application PluginLifecycle is idiomatic — the
   // boundary normalizes so consumers never see null arrays.

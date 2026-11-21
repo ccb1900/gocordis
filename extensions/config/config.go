@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 
 	"dynamic-runtime/runtime"
@@ -53,6 +54,10 @@ var (
 	// ErrInvalidFactory is returned when registering an empty type or nil
 	// factory.
 	ErrInvalidFactory = errors.New("invalid factory")
+	// ErrSchemaValidation is returned when a component Config fails the JSON
+	// Schema declared by its factory. It also wraps ErrInvalidConfig so callers
+	// that already treat validation failures as invalid config keep working.
+	ErrSchemaValidation = errors.New("config schema validation failed")
 )
 
 // ComponentConfig describes one desired Component.
@@ -82,6 +87,14 @@ type Config struct {
 // Factory creates a Kernel Component from a ComponentConfig.
 type Factory interface {
 	Create(ComponentConfig) (runtime.Component, error)
+}
+
+// SchemaFactory is an OPTIONAL extension of Factory. A factory implements it to
+// describe (and thereby enable validation of) the Config map it accepts. It is
+// purely additive: FactoryFunc and every existing factory keep their unvalidated
+// map[string]any behavior without implementing it.
+type SchemaFactory interface {
+	ConfigSchema() *Schema
 }
 
 // FactoryFunc adapts a plain function to Factory — the form most applications
@@ -144,6 +157,19 @@ func (r *factoryRegistry) Lookup(typeName string) (Factory, bool) {
 	return f, ok
 }
 
+// All returns a copy of the registered factories keyed by Type. Controller uses
+// it through an optional interface, so a custom FactoryRegistry implementation
+// does not have to provide it.
+func (r *factoryRegistry) All() map[string]Factory {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]Factory, len(r.factories))
+	for typ, f := range r.factories {
+		out[typ] = f
+	}
+	return out
+}
+
 // OwnedComponent is a read-only snapshot of one Controller-owned Component.
 type OwnedComponent struct {
 	ID     string
@@ -171,6 +197,27 @@ func (s componentSpec) equal(o componentSpec) bool {
 type ownedEntry struct {
 	spec  componentSpec
 	fiber *runtime.Fiber // nil while the entry is disabled
+
+	// Declarative surface captured from the factory-created component. Kept
+	// here so inspection never calls component code on a read path and disabled
+	// entries (no fiber) still expose their Requires/Provides.
+	name     string
+	requires []string
+	provides []string
+}
+
+// Declaration is the read-only declarative surface of one applied declaration
+// as known to the Config Controller. Requires/Provides are the canonical
+// capability-key strings declared by the component (no runtime resolution is
+// performed here). It is the declaration-side input for the Console insight
+// graph.
+type Declaration struct {
+	ID       string
+	Name     string
+	Type     string
+	Requires []string
+	Provides []string
+	Enabled  bool
 }
 
 // Controller reconciles a Runtime toward desired Configs and owns the
@@ -249,6 +296,51 @@ func (c *Controller) Owned() []OwnedComponent {
 			Fiber:  e.fiber,
 		})
 	}
+	return out
+}
+
+// Schemas returns the JSON Schemas declared by registered factories, keyed by
+// component Type. Factories that do not implement SchemaFactory — including
+// plain FactoryFunc — are absent, so legacy map[string]any configurations are
+// unaffected. The returned map is a snapshot; editing it does not affect the
+// registry.
+func (c *Controller) Schemas() map[string]*Schema {
+	out := make(map[string]*Schema)
+	enumerator, ok := c.factories.(interface{ All() map[string]Factory })
+	if !ok {
+		return out
+	}
+	for typ, f := range enumerator.All() {
+		sf, ok := f.(SchemaFactory)
+		if !ok || sf == nil {
+			continue
+		}
+		if s := sf.ConfigSchema(); s != nil {
+			out[typ] = s
+		}
+	}
+	return out
+}
+
+// Declarations returns a deterministic snapshot of the declarations the
+// Controller currently owns (its applied desired set). It is read-only
+// inspection data: no Runtime state is read or mutated and no dependency
+// resolution is performed.
+func (c *Controller) Declarations() []Declaration {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	out := make([]Declaration, 0, len(c.applied))
+	for _, e := range c.applied {
+		out = append(out, Declaration{
+			ID:       e.spec.id,
+			Name:     e.name,
+			Type:     e.spec.typ,
+			Requires: append([]string(nil), e.requires...),
+			Provides: append([]string(nil), e.provides...),
+			Enabled:  e.spec.enabled,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 
@@ -583,6 +675,11 @@ func (c *Controller) addOne(ctx context.Context, spec componentSpec) error {
 		return fmt.Errorf("%w: factory %q returned a nil component", ErrInvalidConfig, spec.typ)
 	}
 
+	// Capture the declarative surface once (the factory-created component is
+	// the authority on Name/Inject/Provide). This keeps inspection read-only
+	// and lets disabled entries — which own no fiber — still be described.
+	name, requires, provides := declarativeSurface(comp)
+
 	// Disabled entry (paper §4.4 Configuration: disable = retire): the
 	// declaration is applied and its definition kept valid (the factory ran),
 	// but no fiber exists — "the entry is the surviving identity, the fiber
@@ -594,7 +691,9 @@ func (c *Controller) addOne(ctx context.Context, spec componentSpec) error {
 			c.stateMu.Unlock()
 			return ErrControllerClosed
 		}
-		c.applied[spec.id] = &ownedEntry{spec: spec, fiber: nil}
+		c.applied[spec.id] = &ownedEntry{
+			spec: spec, fiber: nil, name: name, requires: requires, provides: provides,
+		}
 		c.stateMu.Unlock()
 		return nil
 	}
@@ -614,9 +713,28 @@ func (c *Controller) addOne(ctx context.Context, spec componentSpec) error {
 		_ = fiber.Gone(context.Background())
 		return ErrControllerClosed
 	}
-	c.applied[spec.id] = &ownedEntry{spec: spec, fiber: fiber}
+	c.applied[spec.id] = &ownedEntry{
+		spec: spec, fiber: fiber, name: name, requires: requires, provides: provides,
+	}
 	c.stateMu.Unlock()
 	return nil
+}
+
+// declarativeSurface reads the component's declarations once at creation time.
+// The strings are the same canonical CapabilityKey.String() forms the Runtime
+// snapshot uses, so declared and runtime graphs share one key vocabulary.
+func declarativeSurface(comp runtime.Component) (name string, requires, provides []string) {
+	inject, provide := comp.Inject(), comp.Provide()
+	name = comp.Name()
+	requires = make([]string, 0, len(inject))
+	for _, d := range inject {
+		requires = append(requires, d.Key.String())
+	}
+	provides = make([]string, 0, len(provide))
+	for _, cap := range provide {
+		provides = append(provides, cap.String())
+	}
+	return name, requires, provides
 }
 
 // createSafely calls Factory.Create and converts a panic into
@@ -650,8 +768,19 @@ func validateAndCanonicalize(desired Config, factories FactoryRegistry) ([]compo
 		}
 		seen[cc.ID] = struct{}{}
 
-		if _, ok := factories.Lookup(cc.Type); !ok {
+		factory, ok := factories.Lookup(cc.Type)
+		if !ok {
 			return nil, fmt.Errorf("%w: %q", ErrUnknownComponentType, cc.Type)
+		}
+		// Validation is opt-in: only factories that declare a JSON Schema are
+		// checked. Existing map[string]any configs stay byte-for-byte valid.
+		if sf, ok := factory.(SchemaFactory); ok && sf != nil {
+			if schema := sf.ConfigSchema(); schema != nil {
+				if err := schema.Validate(cc.Config); err != nil {
+					return nil, fmt.Errorf("%w: %w: component %q (type %q) failed schema validation: %v",
+						ErrInvalidConfig, ErrSchemaValidation, cc.ID, cc.Type, err)
+				}
+			}
 		}
 		out = append(out, componentSpec{
 			id:      cc.ID,

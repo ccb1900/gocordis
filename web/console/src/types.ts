@@ -70,3 +70,23 @@ export interface ExplorerControlResult {
    * reconcile overrides it. */
   transient?: boolean;
 }
+
+// Market catalog: payload of the `market/catalog` named query. The console
+// only renders it; install/upgrade/remove (when wired) are hub commands.
+export interface MarketCatalogEntry {
+  id: string;
+  name: string;
+  version: string;
+  backend: string;
+  moduleType: string;
+  description: string;
+  source: string;
+  trust: string;
+  installed: boolean;
+  compatible: boolean;
+}
+
+export interface MarketCatalogQuery {
+  entries: MarketCatalogEntry[];
+  sequence: number;
+}

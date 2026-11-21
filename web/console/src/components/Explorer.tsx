@@ -267,7 +267,7 @@ export function PluginExplorer() {
                   </Descriptions.Item>
                 )}
               </Descriptions>
-              <SettingsSlot key={selected.id} pluginId={selected.id} />
+              <SettingsSlot key={selected.id} pluginId={selected.id} componentType={selected.type} />
               {removed.length > 0 && (
                 <>
                   <Typography.Text type="secondary">已卸载 — 安装可恢复</Typography.Text>

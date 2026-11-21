@@ -15,6 +15,8 @@ import {
 } from "./registry";
 import { formatRow, matchFilter, needsFocus, resolveParams, type Focus, type ViewBlock } from "./schema";
 import { TrendChart, type TrendPoint } from "./TrendChart";
+import { InsightGraphBlock } from "./InsightGraphBlock";
+import { MarketCatalogBlock } from "./MarketCatalog";
 
 export type { ViewBlock, ViewContext, BlockRenderer };
 
@@ -567,6 +569,10 @@ registerBlockRenderer("kv", KVBlock);
 registerBlockRenderer("list", ListBlock);
 registerBlockRenderer("stats", StatsBlock);
 registerBlockRenderer("trend", TrendBlock);
+registerBlockRenderer("insight-graph", InsightGraphBlock);
+// Market catalog: domain-aware table over `market/catalog`; mutations are
+// declarative hub commands, native rows are build-time only / read-only.
+registerBlockRenderer("market-catalog", MarketCatalogBlock);
 
 // MasterDetail: the operator's home view for one dimension (sources). The
 // list selects a row; the nested detail views render beside it with the

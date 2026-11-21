@@ -7,63 +7,17 @@ import { DeleteOutlined, ArrowUpOutlined, ArrowDownOutlined, PlusOutlined } from
 import React, { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { registeredBlockKinds } from "../views/registry";
+import { FieldControl, SchemaForm } from "./SchemaForm";
+import {
+  fieldSpecsFor, inferFieldSpecs, schemaForType,
+  type ConfigSchemaDTO, type FieldSpec,
+} from "../lib/schema-form";
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 type Row = Record<string, unknown>;
 
 // ---------------------------------------------------------------- row editor
-
-interface FieldSpec {
-  key: string;
-  label: string;
-  type?: "text" | "number" | "bool" | "select";
-  options?: string[];
-  width?: number | "flex";
-}
-
-function FieldControl({ spec, value, onChange }: {
-  spec: FieldSpec;
-  value: unknown;
-  onChange: (v: unknown) => void;
-}) {
-  if (spec.type === "bool") {
-    return <Switch size="small" checked={Boolean(value)} onChange={(c) => onChange(c)} />;
-  }
-  if (spec.type === "number") {
-    return (
-      <InputNumber
-        size="small"
-        style={{ width: "100%" }}
-        value={value === undefined || value === null ? null : Number(value)}
-        onChange={(n) => onChange(n ?? null)}
-        placeholder={spec.label}
-      />
-    );
-  }
-  if (spec.type === "select") {
-    return (
-      <Select
-        size="small"
-        style={{ width: "100%" }}
-        allowClear
-        value={value === undefined || value === null || value === "" ? undefined : String(value)}
-        onChange={(v) => onChange(v ?? "")}
-        options={(spec.options ?? []).map((o) => ({ value: o, label: o }))}
-        placeholder={spec.label}
-      />
-    );
-  }
-  return (
-    <Input
-      size="small"
-      value={value === undefined || value === null ? "" : String(value)}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={spec.label}
-      allowClear
-    />
-  );
-}
 
 function ArrayEditor({ items, spec, addTemplate, addLabel, onChange }: {
   items: Row[];
@@ -368,7 +322,7 @@ function ViewsEditor({ views, onChange }: { views: Row[]; onChange: (v: Row[]) =
 
 // ---------------------------------------------------------------- main editor
 
-export function ConfigEditor({ pluginId }: { pluginId: string }) {
+export function ConfigEditor({ pluginId, componentType }: { pluginId: string; componentType?: string }) {
   const [draft, setDraft] = useState<Record<string, unknown> | null>(null);
   const [raw, setRaw] = useState("");
   const [tab, setTab] = useState("form");
@@ -376,6 +330,7 @@ export function ConfigEditor({ pluginId }: { pluginId: string }) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [schemas, setSchemas] = useState<ConfigSchemaDTO | null>(null);
 
   useEffect(() => {
     setDraft(null); setRaw(""); setTab("form"); setSavedAt(null); setSaveError(null); setLoadError(null);
@@ -387,6 +342,24 @@ export function ConfigEditor({ pluginId }: { pluginId: string }) {
       })
       .catch((e) => setLoadError(errText(e)));
   }, [pluginId]);
+
+  // Schema is advisory: an application that does not publish config/schema
+  // (or a failing query) simply keeps the legacy value-typed form.
+  useEffect(() => {
+    let alive = true;
+    api.hubQuery<ConfigSchemaDTO>("config/schema")
+      .then((d) => alive && setSchemas(d ?? null))
+      .catch(() => alive && setSchemas(null));
+    return () => { alive = false; };
+  }, []);
+
+  const type = componentType || pluginId;
+  const declaredSchema = schemaForType(schemas, type);
+  const scalarSpecs = useMemo(
+    () => fieldSpecsFor(schemas, type, inferFieldSpecs(draft), draft ?? {}),
+    [schemas, type, draft]
+  );
+  const coveredKeys = useMemo(() => new Set(scalarSpecs.map((s) => s.key)), [scalarSpecs]);
 
   const setField = (k: string, v: unknown) => setDraft((d) => ({ ...d!, [k]: v }));
   const setViews = (k: "views" | "actions") => (v: Row[]) => setDraft((d) => ({ ...d!, [k]: v }));
@@ -417,41 +390,14 @@ export function ConfigEditor({ pluginId }: { pluginId: string }) {
   const isComposition = /(^|:)(ui-page|ui-panel|ui-contribution)/.test(pluginId) ||
     (draft !== null && ("views" in draft || "actions" in draft));
 
-  const scalarField = (k: string, v: unknown) => {
-    if (typeof v === "boolean") {
-      return (
-        <Space size={6} key={k}>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{k}</Typography.Text>
-          <Switch size="small" checked={v} onChange={(c) => setField(k, c)} />
-        </Space>
-      );
-    }
-    if (typeof v === "number") {
-      return (
-        <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{k}</Typography.Text>
-          <InputNumber size="small" style={{ width: 100 }} value={v} onChange={(n) => setField(k, n ?? 0)} />
-        </span>
-      );
-    }
-    return (
-      <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>{k}</Typography.Text>
-        <Input size="small" style={{ width: 220 }} value={String(v)} onChange={(e) => setField(k, e.target.value)} allowClear />
-      </span>
-    );
-  };
-
   const body = useMemo(() => {
     if (!draft) return null;
-    const scalars = Object.keys(draft).filter((k) => {
-      const v = draft[k];
-      if (k === "views" || k === "actions") return false;
-      return typeof v !== "object" || v === null;
-    }).sort();
     return (
       <Space direction="vertical" style={{ width: "100%" }} size={10}>
-        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>{scalars.map((k) => scalarField(k, draft[k]))}</div>
+        {declaredSchema && (
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>字段由声明 schema 驱动</Typography.Text>
+        )}
+        <SchemaForm specs={scalarSpecs} value={draft} onChange={setField} />
         {Array.isArray(draft.actions) && (
           <div>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>页面动作</Typography.Text>
@@ -472,13 +418,15 @@ export function ConfigEditor({ pluginId }: { pluginId: string }) {
         )}
         {Object.keys(draft).filter((k) => {
           const v = draft[k];
-          return k !== "views" && k !== "actions" && v !== null && typeof v === "object";
+          // A schema-driven json field already renders this key — do not
+          // duplicate it as a second generic JSON textarea.
+          return k !== "views" && k !== "actions" && !coveredKeys.has(k) && v !== null && typeof v === "object";
         }).map((k) => (
           <JsonField key={k} label={k} value={draft[k]} onChange={(v) => setField(k, v)} />
         ))}
       </Space>
     );
-  }, [draft]);
+  }, [draft, scalarSpecs, coveredKeys, declaredSchema]);
 
   return (
     <>

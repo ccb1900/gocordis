@@ -8,7 +8,7 @@ import { api } from "../api";
 import { getSettings, rendererRegistryVersion, subscribeRenderers } from "../views/registry";
 import { ConfigEditor } from "./ConfigEditor";
 
-export function SettingsSlot({ pluginId }: { pluginId: string }) {
+export function SettingsSlot({ pluginId, componentType }: { pluginId: string; componentType?: string }) {
   // A settings UI registered after this slot mounted (late module import,
   // freshly enabled plugin) must swap in reactively, same as renderers.
   const settingsVersion = useSyncExternalStore(subscribeRenderers, rendererRegistryVersion);
@@ -47,6 +47,6 @@ export function SettingsSlot({ pluginId }: { pluginId: string }) {
     [pluginId]
   );
 
-  if (!Component) return <ConfigEditor key={pluginId} pluginId={pluginId} />;
+  if (!Component) return <ConfigEditor key={pluginId} pluginId={pluginId} componentType={componentType} />;
   return loaded ? <Component key={pluginId} pluginId={pluginId} config={config} onSaved={onSaved} /> : null;
 }

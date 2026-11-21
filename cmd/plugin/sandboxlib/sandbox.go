@@ -3,8 +3,10 @@
 // A pluginmeta.Manifest is descriptive metadata: it cannot build a Go
 // component. The host must supply a config.Factory at build time. Sandbox
 // creates a fresh Runtime and Controller, registers that factory under the
-// manifest ID, reconciles exactly one declaration, prints a Runtime.Snapshot
-// summary to out and closes everything cleanly. It never writes a file.
+// manifest's logical ModuleType (falling back to the ID when empty), reconciles
+// exactly one declaration whose Type is that same key and whose instance ID is
+// the manifest ID, prints a Runtime.Snapshot summary to out and closes
+// everything cleanly. It never writes a file.
 package sandboxlib
 
 import (
@@ -12,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/extensions/pluginmeta"
@@ -40,9 +43,18 @@ func Sandbox(ctx context.Context, m pluginmeta.Manifest, factory config.Factory,
 		return fmt.Errorf("sandboxlib: invalid manifest: %w", verr)
 	}
 
+	// A plugin's logical ModuleType (e.g. "industrial.camera") is the stable
+	// factory/type key; the ID is only the instance identity. Hosts look their
+	// factories up by ModuleType, so registering/typing by ID breaks Native
+	// plugins whose ModuleType differs from their ID (P1-5). Empty ModuleType
+	// falls back to the ID for backwards compatibility.
+	typeKey := m.ID
+	if strings.TrimSpace(m.ModuleType) != "" {
+		typeKey = m.ModuleType
+	}
 	reg := config.NewFactoryRegistry()
-	if rerr := reg.Register(m.ID, factory); rerr != nil {
-		return fmt.Errorf("sandboxlib: register factory for %q: %w", m.ID, rerr)
+	if rerr := reg.Register(typeKey, factory); rerr != nil {
+		return fmt.Errorf("sandboxlib: register factory for %q: %w", typeKey, rerr)
 	}
 	rt, nerr := runtime.New()
 	if nerr != nil {
@@ -63,7 +75,7 @@ func Sandbox(ctx context.Context, m pluginmeta.Manifest, factory config.Factory,
 	enabled := true
 	desired := config.Config{Components: []config.ComponentConfig{{
 		ID:      m.ID,
-		Type:    m.ID,
+		Type:    typeKey,
 		Config:  m.Config,
 		Enabled: &enabled,
 	}}}

@@ -4,6 +4,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,8 +15,12 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"dynamic-runtime/extensions/config"
+	"dynamic-runtime/extensions/market"
 	"dynamic-runtime/extensions/pluginmeta"
+	"dynamic-runtime/runtime"
 )
 
 func writePluginDir(t *testing.T) string {
@@ -67,7 +75,7 @@ func readBundle(t *testing.T, path string) ([]string, map[string]string) {
 	return names, contents
 }
 
-func checksumOf(t *testing.T, dir string) string {
+func packagedManifest(t *testing.T, dir string) pluginmeta.Manifest {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, "plugin.toml"))
 	if err != nil {
@@ -80,7 +88,16 @@ func checksumOf(t *testing.T, dir string) string {
 	if err := pluginmeta.Validate(m); err != nil {
 		t.Fatalf("packaged manifest is invalid: %v", err)
 	}
-	return m.Source.Checksum
+	return m
+}
+
+func checksumOf(t *testing.T, dir string) string {
+	t.Helper()
+	m := packagedManifest(t, dir)
+	if m.Package == nil {
+		t.Fatal("packaged manifest has no package checksum")
+	}
+	return m.Package.Checksum
 }
 
 func TestPackageBundleContentsAndChecksum(t *testing.T) {
@@ -282,4 +299,156 @@ func TestPackageCommandRejectsBadArgs(t *testing.T) {
 	if code := run([]string{"package", "a", "b"}, &out, &errOut); code == 0 {
 		t.Error("package with two directories was accepted")
 	}
+}
+
+// --- unified checksum contract -------------------------------------------
+// source.checksum = sha256 of the ONE artifact at source.location.
+// package.checksum = deterministic aggregate over all packaged artifacts.
+
+const packageManifest = `id = "camera"
+name = "Camera Plugin"
+version = "1.0.0"
+backend = "wasm"
+module_type = "industrial.camera"
+[compatibility]
+runtime = ">=1.0.0"
+api = ">=1.0.0"
+[source]
+kind = "wasm"
+location = "module.wasm"
+`
+
+func writePluginDirWithArtifact(t *testing.T, module string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "camera")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"plugin.toml":  packageManifest,
+		"module.wasm":  module,
+		"component.go": "package plugin\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func sha256Hex(data string) string {
+	sum := sha256.Sum256([]byte(data))
+	return hex.EncodeToString(sum[:])
+}
+
+func TestPackageWritesSourceAndPackageChecksums(t *testing.T) {
+	dir := writePluginDirWithArtifact(t, "wasm-bytes")
+	out := filepath.Join(t.TempDir(), "camera.tar.gz")
+	if _, err := Package(dir, out); err != nil {
+		t.Fatal(err)
+	}
+
+	m := packagedManifest(t, dir)
+	wantSource := sha256Hex("wasm-bytes")
+	if m.Source.Checksum != wantSource {
+		t.Fatalf("source.checksum = %q, want single-artifact digest %q", m.Source.Checksum, wantSource)
+	}
+
+	// The aggregate is length-framed over sorted artifact names+contents.
+	h := sha256.New()
+	for _, f := range []struct{ name, body string }{
+		{"component.go", "package plugin\n"},
+		{"module.wasm", "wasm-bytes"},
+	} {
+		fmt.Fprintf(h, "%d:%s\x00", len(f.name), f.name)
+		h.Write([]byte(f.body))
+	}
+	wantPackage := hex.EncodeToString(h.Sum(nil))
+	if m.Package == nil || m.Package.Checksum != wantPackage {
+		t.Fatalf("package.checksum = %+v, want aggregate %q", m.Package, wantPackage)
+	}
+	if m.Package.Checksum == m.Source.Checksum {
+		t.Fatal("source and package checksums must not be the same digest")
+	}
+}
+
+// Real end-to-end path: plugin dir -> Package() -> Market Scan -> Market Install.
+// A market install verifies source.checksum against the single artifact, so a
+// successful install proves the package tool wrote the right field/value.
+func TestPackageToMarketInstallEndToEnd(t *testing.T) {
+	dir := writePluginDirWithArtifact(t, "real-wasm-module")
+	out := filepath.Join(t.TempDir(), "camera.tar.gz")
+	if _, err := Package(dir, out); err != nil {
+		t.Fatalf("Package: %v", err)
+	}
+
+	inner, err := runtime.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = inner.Close(context.Background()) })
+	reg := config.NewFactoryRegistry()
+	if err := reg.Register("industrial.camera", config.FactoryFunc(func(config.ComponentConfig) (runtime.Component, error) {
+		return &e2eMarker{}, nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	ctrl := config.NewController(inner, reg)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = ctrl.CloseContext(ctx)
+	})
+	svc, err := market.NewService(market.Options{
+		Controller:     ctrl,
+		CatalogDirs:    []string{dir},
+		RuntimeVersion: "1.0.0",
+		APIVersion:     "1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	scan, err := market.Scan([]string{dir}, "1.0.0", "1.0.0", "local")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(scan.Entries) != 1 || scan.Entries[0].ID != "camera" || !scan.Entries[0].Compatible {
+		t.Fatalf("Scan entries = %+v", scan.Entries)
+	}
+	cat, err := svc.Catalog(ctx)
+	if err != nil || len(cat.Entries) != 1 || cat.Entries[0].Installed {
+		t.Fatalf("Catalog before install = %+v, err %v", cat, err)
+	}
+	if err := svc.Install(ctx, "camera"); err != nil {
+		t.Fatalf("Install with generated manifest/checksum: %v", err)
+	}
+	cat, err = svc.Catalog(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cat.Entries) != 1 || !cat.Entries[0].Installed {
+		t.Fatalf("camera should be installed: %+v", cat.Entries)
+	}
+	found := false
+	for _, owned := range ctrl.Owned() {
+		if owned.ID == "camera" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("Install did not produce a controller declaration for camera")
+	}
+}
+
+type e2eMarker struct{}
+
+func (*e2eMarker) Name() string                  { return "camera" }
+func (*e2eMarker) Inject() []runtime.Dependency  { return nil }
+func (*e2eMarker) Provide() []runtime.Capability { return nil }
+func (*e2eMarker) Apply(*runtime.Context) (runtime.Cleanup, error) {
+	return nil, nil
 }

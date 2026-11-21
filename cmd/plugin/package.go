@@ -31,13 +31,21 @@ type bundleFile struct {
 	path string
 }
 
-// Package verifies a plugin manifest, computes a SHA-256 digest over the
-// plugin's artifacts (every regular file except plugin.toml and the output
-// bundle), writes that digest to Source.Checksum via go-toml/v2, and produces
-// a deterministic tar.gz bundle containing the updated manifest plus all
-// artifacts. The default output is <id>.tar.gz inside the plugin directory.
-// It refuses invalid manifests, symlinks and any path that could escape the
-// bundle root.
+// Package verifies a plugin manifest and writes BOTH checksums of the unified
+// contract (see pluginmeta's checksum contract):
+//
+//   - Source.Checksum = sha256 of the SINGLE artifact at Source.Location, when
+//     that location resolves to a local regular file. Locations that are URIs
+//     or do not name a local file leave the field unset (nothing to digest).
+//   - Package.Checksum = deterministic aggregate digest over all artifacts
+//     (every regular file except plugin.toml and the output bundle).
+//
+// The two digests are computed from different inputs and must never be
+// interchanged: extensions/market verifies Source.Checksum against the single
+// artifact. Package then produces a deterministic tar.gz bundle containing the
+// updated manifest plus all artifacts. The default output is <id>.tar.gz inside
+// the plugin directory. It refuses invalid manifests, symlinks and any path
+// that could escape the bundle root.
 func Package(dir, out string) (string, error) {
 	if strings.TrimSpace(dir) == "" {
 		return "", errors.New("plugin: empty plugin directory")
@@ -67,14 +75,13 @@ func Package(dir, out string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("plugin: parse manifest: %w", err)
 	}
-	// A stale (or malformed) checksum is exactly what packaging replaces, so
-	// validate the declaration with that field blanked.
-	previousChecksum := m.Source.Checksum
+	// Stale (or malformed) checksums are exactly what packaging replaces, so
+	// validate the declaration with both checksum fields blanked.
 	m.Source.Checksum = ""
+	m.Package = nil
 	if err := pluginmeta.Validate(m); err != nil {
 		return "", fmt.Errorf("plugin: invalid manifest: %w", err)
 	}
-	m.Source.Checksum = previousChecksum
 
 	if out == "" {
 		out = filepath.Join(dir, packageName(m.ID)+".tar.gz")
@@ -88,11 +95,16 @@ func Package(dir, out string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sum, err := checksumArtifacts(files)
+	aggregate, err := checksumArtifacts(files)
 	if err != nil {
 		return "", err
 	}
-	m.Source.Checksum = sum
+	source, err := checksumSourceArtifact(root, m.Source.Location)
+	if err != nil {
+		return "", err
+	}
+	m.Source.Checksum = source                               // digest of the single artifact at source.location
+	m.Package = &pluginmeta.PackageInfo{Checksum: aggregate} // digest of the whole package
 	updated, err := toml.Marshal(m)
 	if err != nil {
 		return "", fmt.Errorf("plugin: encode manifest: %w", err)
@@ -192,6 +204,34 @@ func checksumArtifacts(files []bundleFile) (string, error) {
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// checksumSourceArtifact computes source.checksum: the digest of exactly ONE
+// file — the artifact at source.location, resolved the same way the Loader and
+// extensions/market resolve it (relative locations against the plugin
+// directory root, absolute locations as-is). A location that is not a local
+// regular file (a URI, a missing path, a directory or a symlink) has no single
+// artifact to digest and leaves source.checksum empty; the bundle is still
+// identified by package.checksum.
+func checksumSourceArtifact(root, location string) (string, error) {
+	loc := strings.TrimSpace(location)
+	if loc == "" || strings.Contains(loc, "://") {
+		return "", nil
+	}
+	path := loc
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, filepath.FromSlash(path))
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("plugin: hash source artifact %q: %w", loc, err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // writeBundle writes manifest + artifacts as a reproducible tar.gz. The

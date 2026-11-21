@@ -88,6 +88,54 @@ func TestSandboxPublicAPIReconcilesAndClosesCleanly(t *testing.T) {
 	}
 }
 
+// TestSandboxUsesModuleTypeAsRegistrationAndTypeKey is the P1-5 regression:
+// a Native plugin whose logical ModuleType differs from its instance ID must
+// have its factory registered under (and its declaration typed by) ModuleType,
+// while the component instance keeps the ID. With the old ID-as-type behavior
+// config.Lookup("my-factory-type") fails and no fiber ever activates.
+func TestSandboxUsesModuleTypeAsRegistrationAndTypeKey(t *testing.T) {
+	key := runtime.NewKey[string]("plugin.module-type")
+	var cleanups atomic.Int64
+	var gotType, gotID string
+	factory := config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
+		gotType, gotID = cc.Type, cc.ID
+		return &integrationComponent{key: key, cleanups: &cleanups}, nil
+	})
+
+	m := testManifest("my-plugin-id")
+	m.ModuleType = "my-factory-type"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	if err := sandboxlib.Sandbox(ctx, m, factory, &out); err != nil {
+		t.Fatalf("Sandbox returned error: %v\n%s", err, out.String())
+	}
+
+	// The factory is found by config under ModuleType, and the instance keeps ID.
+	if gotType != "my-factory-type" {
+		t.Errorf("factory received ComponentConfig.Type = %q, want %q", gotType, "my-factory-type")
+	}
+	if gotID != "my-plugin-id" {
+		t.Errorf("factory received ComponentConfig.ID = %q, want %q", gotID, "my-plugin-id")
+	}
+
+	text := out.String()
+	for _, want := range []string{
+		"fibers: 1",
+		"providers: 1",
+		"state=" + runtime.StateActive.String(),
+		"provider string(\"plugin.module-type\")",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("snapshot summary missing %q:\n%s", want, text)
+		}
+	}
+	if got := cleanups.Load(); got != 1 {
+		t.Fatalf("effect inverse ran %d times, want exactly 1 (clean close, no leftover effects)", got)
+	}
+}
+
 func TestSandboxPublicAPIErrorPaths(t *testing.T) {
 	ctx := context.Background()
 	var out bytes.Buffer

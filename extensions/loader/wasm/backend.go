@@ -69,10 +69,17 @@ type Backend struct {
 	// double-retained CompiledModule leaks from the registry-commit loser).
 	modules map[string]*moduleRef
 
+	// holders counts the in-flight Load attempts sharing each tracked ref
+	// (NEW-06/NEW-02 ownership protocol). Every attempt that receives a ref
+	// holds it and ends in exactly one CommitModule (ownership transfer to the
+	// registry) or AbandonModule (holder release); a ref is closed when its
+	// LAST holder releases without a commit, or by UnloadModule. This makes
+	// concurrent same-ID loads safe: a failed attempt can never close the
+	// shared ref out from under a committed module, and a committed module
+	// keeps its ref alive regardless of other attempts abandoning.
+	holders map[string]int
 	// committed marks the ids whose ref the Loader OWNS via a successful
-	// registry commit (NEW-02 resource-ownership protocol): AbandonModule may
-	// only release UNCOMMITTED refs — a failed load attempt must never close
-	// the shared ref another attempt committed.
+	// registry commit.
 	committed map[string]bool
 
 	nextInstance atomic.Uint64
@@ -96,6 +103,7 @@ func NewBackend(opts ...Option) *Backend {
 	return &Backend{
 		observer:  o.observer,
 		modules:   make(map[string]*moduleRef),
+		holders:   make(map[string]int),
 		committed: make(map[string]bool),
 		// CloseOnContextDone: an in-flight guest call is aborted when its
 		// context expires, so a misbehaving guest cannot monopolize the
@@ -170,6 +178,7 @@ func (b *Backend) loadModule(ctx context.Context, artifact loader.Artifact, data
 	// tracked ref.
 	b.mu.Lock()
 	if existing, ok := b.modules[artifact.ID]; ok {
+		b.holders[artifact.ID]++
 		b.mu.Unlock()
 		return existing, nil
 	}
@@ -201,11 +210,13 @@ func (b *Backend) loadModule(ctx context.Context, artifact loader.Artifact, data
 	// returns the tracked one.
 	b.mu.Lock()
 	if existing, ok := b.modules[artifact.ID]; ok {
+		b.holders[artifact.ID]++
 		b.mu.Unlock()
 		_ = compiled.Close(context.Background())
 		return existing, nil
 	}
 	b.modules[artifact.ID] = ref
+	b.holders[artifact.ID] = 1
 	b.mu.Unlock()
 	return ref, nil
 }
@@ -221,30 +232,33 @@ func (b *Backend) UnloadModule(id string) {
 		delete(b.modules, id)
 	}
 	delete(b.committed, id)
+	delete(b.holders, id)
 	b.mu.Unlock()
 	if ok {
 		_ = ref.compiled.Close(context.Background())
 	}
 }
 
-// CommitModule marks id's ref as OWNED by a successful registry commit
-// (NEW-02): from here on only UnloadModule may release it. If the id is no
-// longer tracked, an Unload already released it BETWEEN the loader's registry
-// write and this call — marking would leave a stale committed flag that makes
-// a later Abandon refuse to release the id's NEXT resources, so the mark is
-// skipped.
+// CommitModule transfers ownership of id's ref to the registry (NEW-02):
+// from here on only UnloadModule may release it. The attempt releases its
+// holder slot; if the id is no longer tracked, an Unload already released it
+// between the loader's registry write and this call — nothing to mark.
 func (b *Backend) CommitModule(id string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if _, tracked := b.modules[id]; !tracked {
 		return
 	}
+	if b.holders[id] > 0 {
+		b.holders[id]--
+	}
 	b.committed[id] = true
 }
 
-// AbandonModule releases id's tracked ref ONLY when no commit owns it
-// (NEW-02): a failed load attempt sharing a ref with a committed module must
-// not close that ref out from under the committed module. Idempotent.
+// AbandonModule releases one holder's claim on id's ref (NEW-02): the ref is
+// closed and untracked only when the LAST holder abandons without a commit —
+// a failed attempt sharing a ref with a committed (or still in-flight)
+// attempt never closes it out from under them. Idempotent.
 func (b *Backend) AbandonModule(id string) {
 	b.mu.Lock()
 	if b.committed[id] {
@@ -252,13 +266,22 @@ func (b *Backend) AbandonModule(id string) {
 		return
 	}
 	ref, ok := b.modules[id]
-	if ok {
-		delete(b.modules, id)
+	if !ok {
+		b.mu.Unlock()
+		return
 	}
+	if b.holders[id] > 0 {
+		b.holders[id]--
+	}
+	if b.holders[id] > 0 {
+		// Another attempt still holds the shared ref: keep it alive.
+		b.mu.Unlock()
+		return
+	}
+	delete(b.modules, id)
+	delete(b.holders, id)
 	b.mu.Unlock()
-	if ok {
-		_ = ref.compiled.Close(context.Background())
-	}
+	_ = ref.compiled.Close(context.Background())
 }
 
 // CompiledModules reports how many compiled modules the backend currently

@@ -179,3 +179,149 @@ func TestLoaderBackendMapRaceWithRegister(t *testing.T) {
 	close(stop)
 	registrar.Wait()
 }
+
+// NEW-08: deterministic same-ID concurrent loads. Attempt 1 fails AT THE
+// COMMIT PHASE (its ctx is canceled while parked in the backend gate) and
+// must abandon exactly once; attempt 2 succeeds and must commit exactly once —
+// the loader must not poison the id (the old abandonedIDs design rejected the
+// winner's commit; under holder-based ownership the winner legitimately
+// commits while the loser releases its holder slot).
+type gatingBackend struct {
+	loader.Backend
+	mu       sync.Mutex
+	entered  int
+	gate     chan struct{}
+	commits  int
+	abandons int
+	unloads  int
+}
+
+func (b *gatingBackend) Load(ctx context.Context, artifact loader.Artifact) (loader.Module, error) {
+	b.mu.Lock()
+	b.entered++
+	gate := b.gate
+	me := b.entered
+	b.mu.Unlock()
+	if gate != nil && me == 1 {
+		// Attempt 1 parks until its ctx is canceled: the backend returns
+		// SUCCESS with a canceled ctx, so the loader's commit phase sees
+		// ctx.Err() and must abandon (while NO commit exists — attempt 2 is
+		// still gated behind the test's release).
+		<-ctx.Done()
+	}
+	if gate != nil && me == 2 {
+		// Attempt 2 parks until the test opens the gate (after attempt 1's
+		// abandon completed) — making the commit-vs-abandon ordering
+		// deterministic.
+		<-gate
+	}
+	return loader.Module{
+		ID:   artifact.ID,
+		Type: "gating",
+		Factory: config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
+			return nil, errors.New("unused")
+		}),
+	}, nil
+}
+func (b *gatingBackend) CommitModule(id string)  { b.mu.Lock(); b.commits++; b.mu.Unlock() }
+func (b *gatingBackend) AbandonModule(id string) { b.mu.Lock(); b.abandons++; b.mu.Unlock() }
+func (b *gatingBackend) UnloadModule(id string)  { b.mu.Lock(); b.unloads++; b.mu.Unlock() }
+
+func TestLoaderSameIDConcurrentCommitAndAbandon(t *testing.T) {
+	l := loader.NewBuiltinLoader()
+	b := &gatingBackend{gate: make(chan struct{})}
+	if err := l.RegisterBackend("gating", b); err != nil {
+		t.Fatal(err)
+	}
+	art := loader.Artifact{ID: "m", BackendType: "gating", Type: "x", Version: "1", Source: "mem://fake"}
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	type res struct {
+		mod *loader.Module
+		err error
+	}
+	r1 := make(chan res, 1)
+	go func() {
+		mod, err := l.Load(ctx1, art)
+		r1 <- res{mod, err}
+	}()
+
+	// Wait until attempt 1 is parked inside the backend gate, then start
+	// attempt 2 with a healthy context and open the gate for both.
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		b.mu.Lock()
+		n := b.entered
+		b.mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("attempt 1 never entered the backend")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	r2 := make(chan res, 1)
+	go func() {
+		mod, err := l.Load(context.Background(), art)
+		r2 <- res{mod, err}
+	}()
+	deadline = time.Now().Add(8 * time.Second)
+	for {
+		b.mu.Lock()
+		n := b.entered
+		b.mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("attempt 2 never entered the backend")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	// Attempt 1 is parked in the backend gate with healthy early checks done.
+	// Cancel it NOW, before the gate opens: the backend returns success, so
+	// attempt 1 reaches its commit phase and must abandon there.
+	// Attempt 1 is parked in the backend with healthy early checks done.
+	// Cancel it: the backend returns success, so attempt 1 reaches its commit
+	// phase and must abandon there — BEFORE attempt 2 is allowed to commit.
+	cancel1()
+	select {
+	case r := <-r1:
+		if r.err == nil {
+			t.Fatal("attempt 1 (canceled ctx) should have failed")
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("attempt 1 never returned")
+	}
+	// Release attempt 2: its commit must succeed on the SAME id (holder-based
+	// ownership — the old poison design rejected it here).
+	close(b.gate)
+	select {
+	case r := <-r2:
+		if r.err != nil {
+			t.Fatalf("attempt 2 failed: %v (the loser's abandon must not poison the winner)", r.err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("attempt 2 never returned")
+	}
+
+	b.mu.Lock()
+	commits, abandons := b.commits, b.abandons
+	b.mu.Unlock()
+	if commits != 1 || abandons != 1 {
+		t.Fatalf("protocol counts wrong: commits=%d abandons=%d, want 1/1", commits, abandons)
+	}
+
+	// The winner's module is live; unloading notifies exactly once.
+	if err := l.Unload(context.Background(), "m"); err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	unloads := b.unloads
+	b.mu.Unlock()
+	if unloads != 1 {
+		t.Fatalf("unload notification = %d, want 1", unloads)
+	}
+}

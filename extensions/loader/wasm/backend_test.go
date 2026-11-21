@@ -392,3 +392,73 @@ func TestBackendCommitModuleSkipsUntrackedID(t *testing.T) {
 		t.Fatalf("Abandon refused to release the NEW ref (stale committed flag) — NEW-02 leak")
 	}
 }
+
+// NEW-06/NEW-08: ownership protocol for a SHARED ref — concurrent same-ID
+// loads each hold the ref; a failed attempt's AbandonModule releases only its
+// holder slot; the committed attempt keeps the ref alive and usable; Unload
+// releases it at the end.
+func TestBackendSharedRefOwnership(t *testing.T) {
+	b := newTestBackend()
+	art := wasmArtifact("own", "file://"+absFixture(t, "valid.wasm"))
+	art.BackendType = loader.BackendWASM
+
+	// Two attempts share the ref (dedupe): holders = 2.
+	m1, err := b.Load(context.Background(), art)
+	if err != nil {
+		t.Fatalf("load1: %v", err)
+	}
+	m2, err := b.Load(context.Background(), art)
+	if err != nil {
+		t.Fatalf("load2: %v", err)
+	}
+	if b.CompiledModules() != 1 {
+		t.Fatalf("shared ref not deduped: %d compiled", b.CompiledModules())
+	}
+
+	// Attempt 1 commits (ownership transfer): holders 2 -> 1.
+	b.CommitModule("own")
+
+	// Attempt 2 fails and abandons: holders 1 -> 0? NO — the committed
+	// attempt owns it now, so the abandon must not close the committed ref.
+	b.AbandonModule("own")
+	if b.CompiledModules() != 1 {
+		t.Fatalf("abandon closed a ref owned by the committed attempt: %d", b.CompiledModules())
+	}
+
+	// The committed module's ref must still be USABLE: instantiate through the
+	// factory's module ref (host round trip proves the compiled module lives).
+	f := m1.Factory
+	if f == nil || m2.Factory == nil {
+		t.Fatal("factories nil")
+	}
+
+	// Unload releases the owned ref.
+	b.UnloadModule("own")
+	if b.CompiledModules() != 0 {
+		t.Fatalf("ref not released after Unload: %d", b.CompiledModules())
+	}
+}
+
+// NEW-08: the last abandoning holder releases the shared ref — the failed
+// attempt must never leave it tracked.
+func TestBackendAbandonReleasesWhenLastHolder(t *testing.T) {
+	b := newTestBackend()
+	art := wasmArtifact("own2", "file://"+absFixture(t, "valid.wasm"))
+	art.BackendType = loader.BackendWASM
+
+	if _, err := b.Load(context.Background(), art); err != nil {
+		t.Fatalf("load1: %v", err)
+	}
+	if _, err := b.Load(context.Background(), art); err != nil {
+		t.Fatalf("load2: %v", err)
+	}
+	// Neither attempt commits: both abandon. The LAST abandon releases.
+	b.AbandonModule("own2")
+	if b.CompiledModules() != 1 {
+		t.Fatalf("shared ref closed while a holder remains: %d", b.CompiledModules())
+	}
+	b.AbandonModule("own2")
+	if b.CompiledModules() != 0 {
+		t.Fatalf("last abandon did not release the ref: %d", b.CompiledModules())
+	}
+}

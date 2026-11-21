@@ -41,12 +41,6 @@ type BuiltinLoader struct {
 	// interface so retained resources (e.g. compiled WASM) are released with
 	// the registry entry, not at Backend.Close.
 	moduleBackend map[string]BackendType
-
-	// abandonedIDs (NEW-02): ids whose load attempt failed after the backend
-	// already produced resources. A later commit for the same id must NOT
-	// adopt a backend ref the failing attempt released — the id is poisoned
-	// until a fresh backend.Load re-runs cleanly.
-	abandonedIDs map[string]bool
 }
 
 // NewBuiltinLoader creates a running BuiltinLoader with an internal Builtin
@@ -60,7 +54,6 @@ func NewBuiltinLoader() *BuiltinLoader {
 		usage:         NewModuleUsage(),
 		backends:      make(map[BackendType]Backend),
 		moduleBackend: make(map[string]BackendType),
-		abandonedIDs:  make(map[string]bool),
 	}
 	l.backends[BackendBuiltin] = &builtinBackend{l: l}
 	return l
@@ -161,38 +154,42 @@ func (l *BuiltinLoader) Load(ctx context.Context, artifact Artifact) (*Module, e
 	}
 	mod, err := callBackendLoad(backend, ctx, artifact)
 	if err != nil {
+		// Backend.Load failed: the backend contract owns cleaning up anything
+		// it created internally (the WASM backend closes its compiled module
+		// on every internal error path).
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
+		// NEW-07: the backend SUCCEEDED — its produced resources exist with no
+		// registry owner. Abandon them (poison + release).
+		l.abandonModuleAttempt(artifact.ID, artifact.BackendType)
 		return nil, err
 	}
 	if mod.Factory == nil {
+		l.abandonModuleAttempt(artifact.ID, artifact.BackendType)
 		return nil, fmt.Errorf("%w: backend %q returned a nil factory", ErrInvalidModule, artifact.BackendType)
 	}
 	if err := validateModule(mod); err != nil {
+		// NEW-07: same ownership rule — validate failure abandons the
+		// backend-produced resources.
+		l.abandonModuleAttempt(artifact.ID, artifact.BackendType)
 		return nil, err
 	}
 
 	// Phase 5: linearize the registry mutation. A conflict at commit time
 	// discards the freshly loaded result without disturbing anything. NEW-02:
 	// a failed commit must ALSO release the backend's resources for this
-	// attempt — the backend produced/retained them during Load, and no
-	// registry entry will ever own them. The abandon is poisoned for this
-	// generation (abandonedIDs) because concurrent same-ID Loads may SHARE one
-	// backend ref: the winner's commit must not adopt a ref the loser
-	// released. The next Load re-runs the whole backend path cleanly.
+	// attempt (abandonModuleAttempt below). Concurrent same-ID Loads SHARE one
+	// backend ref: ownership is enforced by the backend's holder counting —
+	// every attempt ends in exactly one CommitModule (ownership transfer to
+	// the registry) or AbandonModule (holder release), so a shared ref stays
+	// alive while ANY attempt holds it and is released when the last one
+	// without a commit lets go.
 	l.mu.Lock()
 	if l.closed {
 		l.mu.Unlock()
 		l.abandonModuleAttempt(artifact.ID, artifact.BackendType)
 		return nil, ErrLoaderClosed
-	}
-	if l.abandonedIDs[artifact.ID] {
-		// NEW-02: a failed attempt released this id's backend resources — a
-		// commit adopting the (closed) ref must not happen. Retry the whole
-		// Load, which re-runs the backend path cleanly.
-		l.mu.Unlock()
-		return nil, ErrModuleExists
 	}
 	if existing := l.modules[artifact.ID]; existing != nil {
 		// Another attempt committed the SAME id: it owns the (possibly shared)
@@ -209,7 +206,6 @@ func (l *BuiltinLoader) Load(ctx context.Context, artifact Artifact) (*Module, e
 	// EXT-05: remember WHICH backend produced this module so Unload can notify
 	// it (a Backend may retain per-module resources, e.g. compiled WASM).
 	l.moduleBackend[artifact.ID] = artifact.BackendType
-	delete(l.abandonedIDs, artifact.ID)
 	l.mu.Unlock()
 	// NEW-04: notify through the backend captured under l.mu earlier in this
 	// Load — an unlocked l.backends read here races RegisterBackend. The
@@ -232,9 +228,9 @@ func (l *BuiltinLoader) abandonModuleAttempt(id string, bt BackendType) {
 		l.mu.Unlock()
 		return
 	}
-	// NEW-04: capture the backend interface UNDER l.mu (map lookup only — the
-	// AbandonModule call itself runs outside the lock, never holding the
-	// loader lock across backend code).
+	// NEW-04: capture the backend interface UNDER l.mu (map lookup only —
+	// the AbandonModule call itself runs outside the lock, never holding
+	// the loader lock across backend code).
 	var abandon interface{ AbandonModule(id string) }
 	if b, ok := l.backends[bt]; ok {
 		abandon, _ = b.(interface{ AbandonModule(id string) })

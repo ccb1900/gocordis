@@ -19,7 +19,6 @@
 | CLI 输入形态 | shell 风格完整 token/参数 schema | 命令文本 tokenizer（Windows 路径保留反斜杠）+ 组合旗标/引号 | Go CLI 输入来自应用参数而非 shell；不引入完整 shell 解析器 |
 | HTTP `file:` / `data:` URL | 内置 fetch 拦截器支持本地/内联资源 | 不实现；HTTP Service只处理 http/https 与代理 | Go 的文件访问由 FS Service 提供，职责边界清晰；不构成运行时能力缺失 |
 | loader / hmr 模块模型 | ES module 图 + 原位 Fiber 替换 | Go 静态链接 + `Revise` 退役重插 | 语言运行时差异；能力已由 loader/HMR/Revision 覆盖，模块身份不作逐条对齐 |
-| `server-acl` / `server-proxy` | JS 授权与转发语义的公开契约 | 本地行为已测，未逐条对照 JS 语义 | r1 标记为"需要验证"；保持部分等价并冻结，不宣称完整等价 |
 | WS 回调自关闭 | JS 单线程内回调可安全 dispose 自身 | 公开 `Close`/disposer 会 join 回调 goroutine；回调内不得调用自身所在注册的关闭 | Go goroutine 模型的自等待边界；由 API 注释固定，正常逆撤销仍保证 Gone 后无 socket |
 | `fs-conformance` 包 | JS 私有测试 workspace | Go 以同仓 conformance 测试文件覆盖 Local/Memory Provider | 测试包形态差异，不影响能力 |
 | Loader/WASM 资源协议 | — | 保持冻结，仅因可复现正确性缺陷重开 | `FINAL-ACCEPTANCE.md` 已冻结；r1 未发现需要重开的缺陷 |
@@ -29,8 +28,12 @@
 
 - Timer 调用方生命周期：`*Owned` API + `TimeoutWait`/`Ticks`/`TimeoutContext`/`*Args` 已实现。
 - FS 操作面：Range/Stream/Lstat/Mkdir/Rename/Copy/Access/Symlink 元数据 + 递归 Watch 已实现。
-- HTTP：StreamResponse/Decoder/BaseURL/Params/Extend + 身份代理 + 活动请求关闭已实现。
-- Server：catch-all 路由 + WebSocket（gorilla/websocket）已实现。
+- HTTP：StreamResponse/Decoder/BaseURL/Params/Extend + 身份代理 + 活动请求关闭 +
+  方法族（PUT/PATCH/DELETE/HEAD）+ WS 客户端已实现。
+- Server：catch-all 路由 + WebSocket（gorilla/websocket）+ RouteCheck 已实现。
+- Server ACL：loopback/点前缀/空列表/路由覆写/404 拒绝已按 JS 5e2e6c1 对齐。
+- Server Proxy：路径与查询透传/状态透传/头过滤/双向 WS 代理已按 JS 5e2e6c1 对齐。
 - Event 值短路：`OnValue`/`BailValue` 已实现。
 
-本账本为终版：除明确标注的部分等价外，不再以"延期"名义保留待办。
+本账本为终版：仅 loader/hmr 模块模型保留部分等价（语言运行时差异），其余不再以
+"延期"名义保留待办。

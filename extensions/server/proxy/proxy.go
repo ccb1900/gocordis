@@ -1,12 +1,19 @@
 // Package proxy contributes forwarding routes to a server.Service, using the
 // http extension's Service for outbound HTTP requests and gorilla/websocket for
-// outbound WebSocket connections.
+// outbound WebSocket connections. HTTP forwarding uses the standard library's
+// httputil.ReverseProxy; its Transport is a thin adapter over the HTTP
+// service's additive RoundTrip, so all proxy traffic still goes through that
+// service's ownership, interceptor chains and identity proxy routing.
 package proxy
 
 import (
+	"compress/flate"
+	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
@@ -170,6 +177,90 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	return nil, nil
 }
 
+// serviceTransport is the only bridge from httputil.ReverseProxy to the HTTP
+// capability. It implements net/http.RoundTripper by delegating to the
+// service's additive RoundTrip; no raw *http.Transport is ever handed out.
+type serviceTransport struct{ svc exthttp.Service }
+
+func (t serviceTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt, ok := t.svc.(exthttp.RoundTripService)
+	if !ok {
+		return nil, errors.New("proxy: HTTP service has no RoundTrip capability")
+	}
+	resp, err := rt.RoundTrip(r.Context(), r)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeResponse(resp), nil
+}
+
+// chainedReadCloser closes a streaming decoder and the live body it wraps.
+type chainedReadCloser struct {
+	io.Reader
+	closers []io.Closer
+}
+
+func (c *chainedReadCloser) Close() error {
+	var first error
+	for _, cl := range c.closers {
+		if err := cl.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// normalizeResponse keeps the verified proxy behavior: the body seen by the
+// client is decoded, so Content-Encoding/Content-Length no longer describe it
+// and are stripped, and the live body stays streamable (ContentLength -1).
+func normalizeResponse(resp *http.Response) *http.Response {
+	if resp == nil {
+		return nil
+	}
+	enc := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
+	if !resp.Uncompressed && resp.Body != nil {
+		switch enc {
+		case "gzip":
+			if gz, err := gzip.NewReader(resp.Body); err == nil {
+				resp.Body = &chainedReadCloser{Reader: gz, closers: []io.Closer{gz, resp.Body}}
+				resp.Uncompressed = true
+			}
+		case "deflate":
+			fl := flate.NewReader(resp.Body)
+			resp.Body = &chainedReadCloser{Reader: fl, closers: []io.Closer{fl, resp.Body}}
+			resp.Uncompressed = true
+		}
+	}
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Del("Content-Length")
+	resp.ContentLength = -1
+	return resp
+}
+
+// rewriteToContained pins the outbound URL to the already-contained target.
+// SetURL would join the incoming path onto the target a second time, so the
+// stdlib-documented Out.URL escape hatch is used instead. The String/Parse
+// round trip keeps the exact wire encoding produced by locate().
+func rewriteToContained(pr *httputil.ProxyRequest, located *url.URL) {
+	u, err := url.Parse(located.String())
+	if err != nil {
+		u = located
+	}
+	pr.Out.URL = u
+	pr.Out.Host = u.Host // match the old client Do behavior, not the inbound Host
+
+	// The JS plugin forwards a payload only for body-bearing verbs. ReverseProxy
+	// otherwise clones the inbound Body for every method, so drop it explicitly.
+	switch pr.In.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+	default:
+		pr.Out.Body = nil
+		pr.Out.ContentLength = 0
+		pr.Out.GetBody = nil
+		pr.Out.Header.Del("Content-Length")
+	}
+}
+
 func (c *Component) forward(hc exthttp.Service, target *url.URL, w http.ResponseWriter, r *http.Request) error {
 	located := locate(target, r.PathValue("path"))
 	if located == nil {
@@ -178,39 +269,19 @@ func (c *Component) forward(hc exthttp.Service, target *url.URL, w http.Response
 	}
 	located.RawQuery = r.URL.RawQuery // forward the raw query string verbatim
 
-	var body []byte
-	if r.Body != nil && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch) {
-		var err error
-		body, err = io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-			return nil
-		}
+	rp := &httputil.ReverseProxy{
+		Transport: serviceTransport{svc: hc},
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			rewriteToContained(pr, located)
+		},
+		ErrorHandler: func(dst http.ResponseWriter, _ *http.Request, _ error) {
+			// A transport failure (including a closed HTTP service) is the only
+			// proxy failure; upstream 4xx/5xx are passed through verbatim.
+			http.Error(dst, "Bad Gateway", http.StatusBadGateway)
+		},
 	}
-	resp, err := hc.Do(r.Context(), exthttp.Request{
-		Method: r.Method,
-		URL:    located.String(),
-		Header: r.Header,
-		Body:   body,
-		// JS http/undici accepts every status: upstream 4xx/5xx pass through.
-		ExpectStatus: func(int) bool { return true },
-	})
-	if err != nil {
-		// Do only errors here on transport failure (or a closed service).
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
-		return nil
-	}
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
-	// The transport already decoded the body; these no longer describe it.
-	w.Header().Del("Content-Encoding")
-	w.Header().Del("Content-Length")
-	w.WriteHeader(resp.StatusCode)
-	_, err = w.Write(resp.Body)
-	return err
+	rp.ServeHTTP(w, r)
+	return nil
 }
 
 // proxyWS dials the upstream WebSocket and pumps text/binary frames in both

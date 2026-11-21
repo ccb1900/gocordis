@@ -1,6 +1,7 @@
 package static
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -117,6 +118,55 @@ func TestStaticServesMountedFileAnd404(t *testing.T) {
 	}
 }
 
+// TestStaticRangeRequestStreamsLargeFile requires stdlib Range handling: the
+// old ReadFile handler always answered 200 with the whole file, while a
+// seekable io/fs.File lets http.FileServerFS answer 206 with just the slice.
+func TestStaticRangeRequestStreamsLargeFile(t *testing.T) {
+	dir := t.TempDir()
+	const size = 1 << 20 // 1 MiB, far larger than a single Range response
+	data := make([]byte, size)
+	for i := range data {
+		data[i] = byte(i % 251)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "large.bin"), data, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	root := "file://" + dir
+	rt, svc, fsSvc := loadHarness(t)
+	if err := fsSvc.Mount(root, fs.NewLocalProvider(dir)); err != nil {
+		t.Fatalf("Mount: %v", err)
+	}
+	t.Cleanup(func() { _ = fsSvc.Unmount(root) })
+
+	ctx := testCtx(t)
+	comp, err := rt.Load(&Component{Route: "/static", Root: root})
+	if err != nil {
+		t.Fatalf("load static: %v", err)
+	}
+	if err := comp.Ready(ctx); err != nil {
+		t.Fatalf("static Ready: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/static/large.bin", nil)
+	req.Header.Set("Range", "bytes=1024-1151")
+	rec := httptest.NewRecorder()
+	svc.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("Range request: code=%d, want 206 (body len=%d)", rec.Code, rec.Body.Len())
+	}
+	if got, want := rec.Header().Get("Content-Range"), "bytes 1024-1151/1048576"; got != want {
+		t.Fatalf("Content-Range = %q, want %q", got, want)
+	}
+	if got, want := rec.Body.Bytes(), data[1024:1152]; !bytes.Equal(got, want) {
+		t.Fatalf("partial body = %d bytes, want the requested 128-byte slice", len(got))
+	}
+	if rec.Body.Len() != 128 {
+		t.Fatalf("partial body len = %d, want 128", rec.Body.Len())
+	}
+}
+
 func TestStaticServesNestedPathsEncodedAndEmpty(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
@@ -217,11 +267,76 @@ func TestStaticRejectsTraversal(t *testing.T) {
 		t.Fatalf("static Ready: %v", err)
 	}
 	// %2e%2e decodes to ".." and is captured by the {path...} segment.
-	if rec := serve(svc, "/s/%2e%2e"); rec.Code != http.StatusNotFound {
-		t.Fatalf("traversal: code=%d, want 404", rec.Code)
+	for _, target := range []string{
+		"/s/%2e%2e",
+		"/s/%2e%2e%2foutside-secret.txt",
+		"/s/%2Fetc/passwd",            // absolute path
+		"/s/dir%5Cfile.txt",           // backslash separator
+		"/s/http:%2F%2Fexample.com/a", // foreign URL scheme
+	} {
+		if rec := serve(svc, target); rec.Code != http.StatusNotFound {
+			t.Fatalf("rejected path %s: code=%d, want 404", target, rec.Code)
+		}
 	}
-	if rec := serve(svc, "/s/%2e%2e%2foutside-secret.txt"); rec.Code != http.StatusNotFound {
-		t.Fatalf("encoded slash traversal: code=%d, want 404", rec.Code)
+}
+
+// TestStaticBareRootMountPrefix guards the "file:///" / "memory:///" form:
+// trimming every trailing slash would turn Root into "memory:" and the joined
+// name into "memory:/nested/...", which no longer resolves through the mount.
+func TestStaticBareRootMountPrefix(t *testing.T) {
+	const root = "memory:///"
+	rt, svc, fsSvc := loadHarness(t)
+	if _, err := fsSvc.MountMemory(root); err != nil {
+		t.Fatalf("MountMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = fsSvc.Unmount(root) })
+
+	ctx := testCtx(t)
+	if err := fsSvc.WriteFile(ctx, root+"nested/deep/file.txt", []byte("bare-root-ok")); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	comp, err := rt.Load(&Component{Route: "/static", Root: root})
+	if err != nil {
+		t.Fatalf("load static: %v", err)
+	}
+	if err := comp.Ready(ctx); err != nil {
+		t.Fatalf("static Ready: %v", err)
+	}
+	rec := serve(svc, "/static/nested/deep/file.txt")
+	if rec.Code != http.StatusOK || rec.Body.String() != "bare-root-ok" {
+		t.Fatalf("bare-root nested file: code=%d body=%q, want 200 bare-root-ok", rec.Code, rec.Body.String())
+	}
+}
+
+// TestStaticDirectoryIndexIsStdlib verifies that a trailing slash reaches the
+// stdlib file server (which serves index.html) instead of being redirected.
+func TestStaticDirectoryIndexIsStdlib(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docs", "index.html"), []byte("<h1>docs</h1>"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	root := "file://" + dir
+	rt, svc, fsSvc := loadHarness(t)
+	if err := fsSvc.Mount(root, fs.NewLocalProvider(dir)); err != nil {
+		t.Fatalf("Mount: %v", err)
+	}
+	t.Cleanup(func() { _ = fsSvc.Unmount(root) })
+
+	ctx := testCtx(t)
+	comp, err := rt.Load(&Component{Route: "/static", Root: root})
+	if err != nil {
+		t.Fatalf("load static: %v", err)
+	}
+	if err := comp.Ready(ctx); err != nil {
+		t.Fatalf("static Ready: %v", err)
+	}
+	rec := serve(svc, "/static/docs/")
+	if rec.Code != http.StatusOK || rec.Body.String() != "<h1>docs</h1>" {
+		t.Fatalf("directory index: code=%d body=%q, want 200 index body", rec.Code, rec.Body.String())
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -541,5 +542,115 @@ func TestProxyReEncodesPathSegmentsOnTheWire(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("backend never saw the request")
+	}
+}
+
+// The ReverseProxy transport must be built from the HTTP service's additive
+// RoundTrip, so requests still flow through the service's interceptor chain
+// instead of bypassing it with the raw transport.
+func TestProxyRunsThroughHTTPServiceBoundary(t *testing.T) {
+	seen := make(chan string, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get("X-Service-Hop")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer backend.Close()
+
+	rt, svc, hc := loadHarness(t)
+	rtSvc, ok := hc.(exthttp.RoundTripService)
+	if !ok {
+		t.Fatalf("HTTP service %T does not implement RoundTripService", hc)
+	}
+	_ = rtSvc
+	if _, err := hc.(exthttp.StreamService).AddInterceptor(func(ctx context.Context, req *exthttp.Request, next func(context.Context, *exthttp.Request) (*exthttp.Response, error)) (*exthttp.Response, error) {
+		req.Header.Set("X-Service-Hop", "yes")
+		return next(ctx, req)
+	}); err != nil {
+		t.Fatalf("AddInterceptor: %v", err)
+	}
+	comp, err := rt.Load(&Component{Route: "/p", Target: backend.URL})
+	if err != nil {
+		t.Fatalf("load proxy: %v", err)
+	}
+	if err := comp.Ready(testCtx(t)); err != nil {
+		t.Fatalf("proxy Ready: %v", err)
+	}
+	if rec := serve(svc, http.MethodGet, "/p", "", nil); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", rec.Code, rec.Body.String())
+	}
+	select {
+	case v := <-seen:
+		if v != "yes" {
+			t.Fatalf("backend saw X-Service-Hop = %q, want yes", v)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("backend never saw the request")
+	}
+}
+
+// ReverseProxy must not materialize the upstream body: the downstream client
+// reads the first chunk while the backend is still blocked.
+func TestProxyStreamsResponseWithoutMaterializing(t *testing.T) {
+	const chunkSize = 64 * 1024
+	chunk := strings.Repeat("s", chunkSize)
+	wroteFirst := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, chunk)
+		w.(http.Flusher).Flush()
+		close(wroteFirst)
+		<-release
+	}))
+	defer backend.Close()
+
+	rt, svc, _ := loadHarness(t)
+	front := httptest.NewServer(svc)
+	defer front.Close()
+	comp, err := rt.Load(&Component{Route: "/p", Target: backend.URL})
+	if err != nil {
+		t.Fatalf("load proxy: %v", err)
+	}
+	if err := comp.Ready(testCtx(t)); err != nil {
+		t.Fatalf("proxy Ready: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(testCtx(t), http.MethodGet, front.URL+"/p", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	first := make([]byte, chunkSize)
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(resp.Body, first)
+		readErr <- err
+	}()
+	if err := mustRecvProxy(t, readErr, 2*time.Second); err != nil {
+		t.Fatalf("first chunk did not stream through proxy: %v", err)
+	}
+	unblock()
+}
+
+func mustRecvProxy[T any](t *testing.T, ch <-chan T, d time.Duration) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(d):
+		t.Fatalf("timed out after %v", d)
+		var zero T
+		return zero
 	}
 }

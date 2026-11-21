@@ -5,9 +5,13 @@ import (
 	"dynamic-runtime/runtime"
 )
 
-// Component installs one SOCKS proxy agent on the HTTP service. The proxy is a
-// reversible effect: unwinding clears it, so the service never keeps a proxy
-// that outlives this activation.
+// schemes are the request URL schemes a SOCKS proxy tunnels. A SOCKS agent
+// carries both HTTP and HTTPS traffic.
+var schemes = []string{"http", "https"}
+
+// Component installs one identity-bearing SOCKS proxy registration on the HTTP
+// service. The inverse removes ONLY this registration (restoring whichever
+// registration previously won), so a peer's proxy is never cleared.
 type Component struct {
 	Scheme string
 	Addr   string
@@ -26,17 +30,18 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	if err != nil {
 		return nil, err
 	}
-	url, err := ProxyURL(c.Scheme, c.Addr)
+	proxyURL, err := ProxyURL(c.Scheme, c.Addr)
 	if err != nil {
 		return nil, err
 	}
-	// Mutate inside the Effect install so a failed install (or a context that
-	// began unwinding mid-install) cannot leave the proxy set without an inverse.
+	// Register inside the Effect install: a failed install (or an unwinding
+	// context) cannot leave a proxy contribution without its own inverse.
 	if err := ctx.Effect(func() (func() error, error) {
-		if err := svc.SetProxy(url); err != nil {
+		remove, err := svc.RegisterProxy(schemes, proxyURL)
+		if err != nil {
 			return nil, err
 		}
-		return func() error { return svc.SetProxy("") }, nil
+		return remove, nil
 	}); err != nil {
 		return nil, err
 	}

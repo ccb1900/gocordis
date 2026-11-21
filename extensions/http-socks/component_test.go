@@ -2,6 +2,8 @@ package socks
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,11 +11,18 @@ import (
 	"dynamic-runtime/runtime"
 )
 
-// fakeService records every SetProxy call so tests can observe the component's
-// reversible effect without a live HTTP server. It is provided under the real
-// exthttp.ServiceKey so the socks component's declaration resolves normally.
+// fakeService records every registration call so tests can observe the
+// component's reversible effect without a live HTTP server. It also tracks
+// which proxy URLs are currently registered, so a test can prove that
+// disposing one component never removes another component's contribution.
 type fakeService struct {
-	calls chan string
+	calls  chan string
+	mu     sync.Mutex
+	active map[string]bool
+}
+
+func newFakeService() *fakeService {
+	return &fakeService{calls: make(chan string, 16), active: map[string]bool{}}
 }
 
 func (f *fakeService) Do(context.Context, exthttp.Request) (*exthttp.Response, error) {
@@ -29,8 +38,38 @@ func (f *fakeService) AddInterceptor(exthttp.Interceptor) (func() error, error) 
 	return func() error { return nil }, nil
 }
 func (f *fakeService) SetProxy(raw string) error {
-	f.calls <- raw
+	f.calls <- "setproxy:" + raw
 	return nil
+}
+func (f *fakeService) Close() error { return nil }
+func (f *fakeService) RegisterProxy(schemes []string, proxyURL string) (func() error, error) {
+	f.calls <- "register:" + proxyURL
+	f.mu.Lock()
+	f.active[proxyURL] = true
+	f.mu.Unlock()
+	var once sync.Once
+	return func() error {
+		once.Do(func() {
+			f.calls <- "remove:" + proxyURL
+			f.mu.Lock()
+			delete(f.active, proxyURL)
+			f.mu.Unlock()
+		})
+		return nil
+	}, nil
+}
+func (f *fakeService) RegisterProxyDialer(schemes []string, dial exthttp.ProxyDialer) (func() error, error) {
+	f.calls <- "register:dialer"
+	var once sync.Once
+	return func() error {
+		once.Do(func() { f.calls <- "remove:dialer" })
+		return nil
+	}, nil
+}
+func (f *fakeService) isActive(url string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.active[url]
 }
 
 type httpProvider struct{ svc exthttp.Service }
@@ -73,9 +112,21 @@ func mustRecv(t *testing.T, ch <-chan string, ctx context.Context) string {
 	case v := <-ch:
 		return v
 	case <-ctx.Done():
-		t.Fatalf("timed out waiting for SetProxy call: %v", ctx.Err())
+		t.Fatalf("timed out waiting for registration call: %v", ctx.Err())
 		return ""
 	}
+}
+
+func registerProvider(t *testing.T, rt *runtime.Runtime, fake *fakeService) *runtime.Fiber {
+	t.Helper()
+	pf, err := rt.Load(&httpProvider{svc: fake})
+	if err != nil {
+		t.Fatalf("load http provider: %v", err)
+	}
+	if err := pf.Ready(testCtx(t)); err != nil {
+		t.Fatalf("provider Ready: %v", err)
+	}
+	return pf
 }
 
 func TestComponentDeclarations(t *testing.T) {
@@ -92,19 +143,13 @@ func TestComponentDeclarations(t *testing.T) {
 	}
 }
 
-func TestComponentApplyAndDisposeRestoresProxy(t *testing.T) {
+func TestComponentApplyAndDisposeRemovesOwnRegistration(t *testing.T) {
 	ctx := testCtx(t)
 	rt := newRT(t)
-	fake := &fakeService{calls: make(chan string, 8)}
+	fake := newFakeService()
+	registerProvider(t, rt, fake)
 
-	pf, err := rt.Load(&httpProvider{svc: fake})
-	if err != nil {
-		t.Fatalf("load http provider: %v", err)
-	}
-	if err := pf.Ready(ctx); err != nil {
-		t.Fatalf("provider Ready: %v", err)
-	}
-
+	want := "socks5://proxy.example:1080"
 	c := &Component{Scheme: "socks5h", Addr: "proxy.example:1080"}
 	sf, err := rt.Load(c)
 	if err != nil {
@@ -114,8 +159,11 @@ func TestComponentApplyAndDisposeRestoresProxy(t *testing.T) {
 		t.Fatalf("socks Ready: %v", err)
 	}
 
-	if got := mustRecv(t, fake.calls, ctx); got != "socks5://proxy.example:1080" {
-		t.Fatalf("SetProxy on Apply = %q, want socks5://proxy.example:1080", got)
+	if got := mustRecv(t, fake.calls, ctx); got != "register:"+want {
+		t.Fatalf("RegisterProxy on Apply = %q, want register:%s", got, want)
+	}
+	if !fake.isActive(want) {
+		t.Fatalf("%s not active after Apply", want)
 	}
 
 	if err := sf.Dispose(); err != nil {
@@ -124,26 +172,126 @@ func TestComponentApplyAndDisposeRestoresProxy(t *testing.T) {
 	if err := sf.Gone(ctx); err != nil {
 		t.Fatalf("Gone: %v", err)
 	}
-	if got := mustRecv(t, fake.calls, ctx); got != "" {
-		t.Fatalf("SetProxy on Dispose = %q, want empty string", got)
+	if got := mustRecv(t, fake.calls, ctx); got != "remove:"+want {
+		t.Fatalf("inverse call = %q, want remove:%s", got, want)
+	}
+	if fake.isActive(want) {
+		t.Fatalf("%s still active after Dispose", want)
+	}
+	// The inverse must never use the legacy global clear.
+	select {
+	case got := <-fake.calls:
+		t.Fatalf("unexpected extra call %q (SetProxy clear?)", got)
+	default:
+	}
+}
+
+// Component.Apply must register socks4a://, not socks4://: collapsing the two
+// would select the wrong h12.io/socks protocol.
+func TestComponentRegistersSocks4aURL(t *testing.T) {
+	ctx := testCtx(t)
+	rt := newRT(t)
+	fake := newFakeService()
+	registerProvider(t, rt, fake)
+
+	want := "socks4a://proxy.example:1080"
+	sf, err := rt.Load(&Component{Scheme: "socks4a", Addr: "proxy.example:1080"})
+	if err != nil {
+		t.Fatalf("load socks4a component: %v", err)
+	}
+	if err := sf.Ready(ctx); err != nil {
+		t.Fatalf("socks4a Ready: %v", err)
+	}
+	if got := mustRecv(t, fake.calls, ctx); got != "register:"+want {
+		t.Fatalf("registered URL = %q, want register:%s", got, want)
+	}
+	if !fake.isActive(want) {
+		t.Fatalf("%s not active after Apply", want)
+	}
+}
+
+func TestComponentAcceptsSocksAlias(t *testing.T) {
+	ctx := testCtx(t)
+	rt := newRT(t)
+	fake := newFakeService()
+	registerProvider(t, rt, fake)
+
+	want := "socks5://proxy.example:1080"
+	sf, err := rt.Load(&Component{Scheme: "socks", Addr: "proxy.example:1080"})
+	if err != nil {
+		t.Fatalf("load socks component: %v", err)
+	}
+	if err := sf.Ready(ctx); err != nil {
+		t.Fatalf("socks Ready: %v", err)
+	}
+	if got := mustRecv(t, fake.calls, ctx); got != "register:"+want {
+		t.Fatalf("registered URL = %q, want register:%s", got, want)
+	}
+}
+
+// P1-03: disposing one SOCKS component must not clear a peer's proxy.
+func TestDisposeOneKeepsOtherProxyRegistration(t *testing.T) {
+	ctx := testCtx(t)
+	rt := newRT(t)
+	fake := newFakeService()
+	registerProvider(t, rt, fake)
+
+	aURL := "socks5://a.example:1080"
+	bURL := "socks4://b.example:1080"
+	a, err := rt.Load(&Component{Scheme: "socks5", Addr: "a.example:1080"})
+	if err != nil {
+		t.Fatalf("load A: %v", err)
+	}
+	if err := a.Ready(ctx); err != nil {
+		t.Fatalf("A Ready: %v", err)
+	}
+	if got := mustRecv(t, fake.calls, ctx); got != "register:"+aURL {
+		t.Fatalf("A registration = %q", got)
+	}
+	b, err := rt.Load(&Component{Scheme: "socks4", Addr: "b.example:1080"})
+	if err != nil {
+		t.Fatalf("load B: %v", err)
+	}
+	if err := b.Ready(ctx); err != nil {
+		t.Fatalf("B Ready: %v", err)
+	}
+	if got := mustRecv(t, fake.calls, ctx); got != "register:"+bURL {
+		t.Fatalf("B registration = %q", got)
+	}
+
+	if err := b.Dispose(); err != nil {
+		t.Fatalf("dispose B: %v", err)
+	}
+	if err := b.Gone(ctx); err != nil {
+		t.Fatalf("B Gone: %v", err)
+	}
+	if got := mustRecv(t, fake.calls, ctx); got != "remove:"+bURL {
+		t.Fatalf("B inverse = %q", got)
+	}
+	if fake.isActive(bURL) {
+		t.Fatalf("%s still active after B disposal", bURL)
+	}
+	if !fake.isActive(aURL) {
+		t.Fatalf("A's proxy %s was cleared by B's disposal", aURL)
+	}
+	if err := a.Dispose(); err != nil {
+		t.Fatalf("dispose A: %v", err)
+	}
+	if err := a.Gone(ctx); err != nil {
+		t.Fatalf("A Gone: %v", err)
 	}
 }
 
 // Dependency loss is a withdraw to Pending (not a failure) and the reversible
 // effect is unwound while the dependency is still readable; restoring the
-// provider reactivates the component and reinstalls the proxy.
+// provider reactivates the component and reinstalls its own registration.
 func TestDependencyLossWithdrawsAndRecoveryReactivates(t *testing.T) {
 	ctx := testCtx(t)
 	rt := newRT(t)
-	fake := &fakeService{calls: make(chan string, 8)}
+	fake := newFakeService()
+	pf := registerProvider(t, rt, fake)
 
-	pf, err := rt.Load(&httpProvider{svc: fake})
-	if err != nil {
-		t.Fatalf("load http provider: %v", err)
-	}
-	if err := pf.Ready(ctx); err != nil {
-		t.Fatalf("provider Ready: %v", err)
-	}
+	want := "socks4a://proxy.example:1080"
 	sf, err := rt.Load(&Component{Scheme: "socks4a", Addr: "proxy.example:1080"})
 	if err != nil {
 		t.Fatalf("load socks component: %v", err)
@@ -151,8 +299,8 @@ func TestDependencyLossWithdrawsAndRecoveryReactivates(t *testing.T) {
 	if err := sf.Ready(ctx); err != nil {
 		t.Fatalf("socks Ready: %v", err)
 	}
-	if got := mustRecv(t, fake.calls, ctx); got != "socks4://proxy.example:1080" {
-		t.Fatalf("SetProxy on Apply = %q", got)
+	if got := mustRecv(t, fake.calls, ctx); got != "register:"+want {
+		t.Fatalf("RegisterProxy on Apply = %q", got)
 	}
 
 	if err := pf.Dispose(); err != nil {
@@ -164,24 +312,32 @@ func TestDependencyLossWithdrawsAndRecoveryReactivates(t *testing.T) {
 	if err := sf.WaitInactive(ctx); err != nil {
 		t.Fatalf("socks WaitInactive: %v", err)
 	}
-	if got := mustRecv(t, fake.calls, ctx); got != "" {
-		t.Fatalf("SetProxy on withdraw = %q, want empty string", got)
+	if got := mustRecv(t, fake.calls, ctx); got != "remove:"+want {
+		t.Fatalf("inverse on withdraw = %q", got)
 	}
 	if st := sf.State(); st != runtime.StatePending {
 		t.Fatalf("socks state after dependency loss = %v, want Pending", st)
 	}
 
-	pf2, err := rt.Load(&httpProvider{svc: fake})
-	if err != nil {
-		t.Fatalf("reload http provider: %v", err)
-	}
-	if err := pf2.Ready(ctx); err != nil {
-		t.Fatalf("reloaded provider Ready: %v", err)
-	}
+	registerProvider(t, rt, fake)
 	if err := sf.Ready(ctx); err != nil {
 		t.Fatalf("socks reactivation Ready: %v", err)
 	}
-	if got := mustRecv(t, fake.calls, ctx); got != "socks4://proxy.example:1080" {
-		t.Fatalf("SetProxy on reactivation = %q", got)
+	if got := mustRecv(t, fake.calls, ctx); got != "register:"+want {
+		t.Fatalf("RegisterProxy on reactivation = %q", got)
+	}
+}
+
+func TestComponentRejectsUnknownScheme(t *testing.T) {
+	rt := newRT(t)
+	fake := newFakeService()
+	registerProvider(t, rt, fake)
+
+	sf, err := rt.Load(&Component{Scheme: strings.ToUpper("http"), Addr: "proxy.example:8080"})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := sf.Ready(testCtx(t)); err == nil {
+		t.Fatal("Ready with unknown scheme should fail")
 	}
 }

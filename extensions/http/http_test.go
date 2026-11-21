@@ -44,6 +44,11 @@ func testCtx(t *testing.T) context.Context {
 
 func loadService(t *testing.T) (exthttp.Service, *runtime.Fiber) {
 	t.Helper()
+	return loadServiceWithConfig(t, exthttp.Config{})
+}
+
+func loadServiceWithConfig(t *testing.T, cfg exthttp.Config) (exthttp.Service, *runtime.Fiber) {
+	t.Helper()
 	ctx := testCtx(t)
 	rt, err := runtime.New()
 	if err != nil {
@@ -52,7 +57,7 @@ func loadService(t *testing.T) (exthttp.Service, *runtime.Fiber) {
 	t.Cleanup(func() { _ = rt.Close(testCtx(t)) })
 
 	cap := &capture{ch: make(chan exthttp.Service, 1)}
-	f, err := rt.Load(&exthttp.Component{})
+	f, err := rt.Load(&exthttp.Component{Config: cfg})
 	if err != nil {
 		t.Fatalf("load provider: %v", err)
 	}
@@ -569,5 +574,289 @@ func TestStatusValidationAndTypedErrors(t *testing.T) {
 	}
 	if accepted.StatusCode != stdhttp.StatusNotFound {
 		t.Fatalf("status = %d, want 404", accepted.StatusCode)
+	}
+}
+
+func TestRegisterProxyIdentityRestoresPrevious(t *testing.T) {
+	p1 := newProxyProbe(t, "p1", false)
+	p2 := newProxyProbe(t, "p2", false)
+	direct := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		_, _ = w.Write([]byte("direct"))
+	}))
+	defer direct.Close()
+
+	svc, f := loadService(t)
+	defer dispose(t, f)
+	ctx := testCtx(t)
+	get := func(path string) string {
+		t.Helper()
+		resp, err := svc.Get(ctx, "http://example.invalid/"+path)
+		if err != nil {
+			t.Fatalf("Get %s: %v", path, err)
+		}
+		return string(resp.Body)
+	}
+
+	remove1, err := svc.RegisterProxy([]string{"http:"}, p1.srv.URL)
+	if err != nil {
+		t.Fatalf("RegisterProxy p1: %v", err)
+	}
+	if got := get("one"); got != "p1" {
+		t.Fatalf("body = %q, want p1", got)
+	}
+	remove2, err := svc.RegisterProxy([]string{"http"}, p2.srv.URL)
+	if err != nil {
+		t.Fatalf("RegisterProxy p2: %v", err)
+	}
+	if got := get("two"); got != "p2" {
+		t.Fatalf("latest registration did not win: body = %q", got)
+	}
+	if err := remove2(); err != nil {
+		t.Fatalf("remove p2: %v", err)
+	}
+	if err := remove2(); err != nil {
+		t.Fatalf("remove p2 must be idempotent: %v", err)
+	}
+	if got := get("three"); got != "p1" {
+		t.Fatalf("previous registration not restored: body = %q", got)
+	}
+
+	// A registration for a different scheme must not change http routing.
+	removeHTTPS, err := svc.RegisterProxy([]string{"https"}, p2.srv.URL)
+	if err != nil {
+		t.Fatalf("RegisterProxy https: %v", err)
+	}
+	if got := get("four"); got != "p1" {
+		t.Fatalf("https registration affected http: body = %q", got)
+	}
+	if err := removeHTTPS(); err != nil {
+		t.Fatalf("remove https: %v", err)
+	}
+
+	if err := remove1(); err != nil {
+		t.Fatalf("remove p1: %v", err)
+	}
+	resp, err := svc.Get(ctx, direct.URL)
+	if err != nil {
+		t.Fatalf("Get direct: %v", err)
+	}
+	if string(resp.Body) != "direct" {
+		t.Fatalf("direct body = %q", resp.Body)
+	}
+}
+
+func TestSetProxySentinelIsIndependentOfRegistrations(t *testing.T) {
+	p1 := newProxyProbe(t, "p1", false)
+	p2 := newProxyProbe(t, "p2", false)
+	svc, f := loadService(t)
+	defer dispose(t, f)
+	ctx := testCtx(t)
+	get := func() string {
+		t.Helper()
+		resp, err := svc.Get(ctx, "http://example.invalid/probe")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		return string(resp.Body)
+	}
+
+	remove, err := svc.RegisterProxy([]string{"http"}, p1.srv.URL)
+	if err != nil {
+		t.Fatalf("RegisterProxy p1: %v", err)
+	}
+	if got := get(); got != "p1" {
+		t.Fatalf("body = %q, want p1", got)
+	}
+	if err := svc.SetProxy(p2.srv.URL); err != nil {
+		t.Fatalf("SetProxy p2: %v", err)
+	}
+	if got := get(); got != "p2" {
+		t.Fatalf("sentinel did not win: body = %q", got)
+	}
+	if err := svc.SetProxy(""); err != nil {
+		t.Fatalf("SetProxy clear: %v", err)
+	}
+	if got := get(); got != "p1" {
+		t.Fatalf("clearing sentinel lost registration: body = %q", got)
+	}
+	if err := remove(); err != nil {
+		t.Fatalf("remove p1: %v", err)
+	}
+}
+
+// P1-06: Close must wait for an in-flight request (tracked by the service
+// WaitGroup) before returning, and must refuse new requests immediately.
+func TestCloseWaitsForInFlightAndRejectsNew(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	svc, f := loadService(t)
+	_, err := svc.AddInterceptor(func(ctx context.Context, req *exthttp.Request, next func(context.Context, *exthttp.Request) (*exthttp.Response, error)) (*exthttp.Response, error) {
+		close(entered)
+		<-release // deliberately ignores ctx: only the test releases it
+		return next(ctx, req)
+	})
+	if err != nil {
+		t.Fatalf("AddInterceptor: %v", err)
+	}
+
+	doDone := make(chan struct{})
+	go func() {
+		defer close(doDone)
+		// Close cancels the service context, so the request may finish with
+		// context.Canceled after the interceptor is released; what matters is
+		// that Close does not return until this call has finished.
+		_, _ = svc.Get(testCtx(t), srv.URL)
+	}()
+	mustRecv(t, entered, time.Second)
+
+	closeCalled := make(chan struct{})
+	closeDone := make(chan struct{})
+	go func() {
+		close(closeCalled)
+		_ = svc.Close()
+		close(closeDone)
+	}()
+	<-closeCalled
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned while a request was still in flight")
+	default:
+	}
+	if _, err := svc.Get(testCtx(t), srv.URL); !errors.Is(err, exthttp.ErrClosed) {
+		t.Fatalf("new Do after Close = %v, want ErrClosed", err)
+	}
+
+	close(release)
+	mustRecv(t, doDone, time.Second)
+	mustRecv(t, closeDone, time.Second)
+	dispose(t, f)
+}
+
+// Close cancels active requests via the service context, so the blocked
+// handler observes r.Context().Done() and the request finishes deterministically.
+func TestCloseCancelsActiveRequests(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	svc, f := loadServiceWithConfig(t, exthttp.Config{CloseTimeout: 2 * time.Second})
+	doDone := make(chan error, 1)
+	go func() {
+		_, err := svc.Get(testCtx(t), srv.URL)
+		doDone <- err
+	}()
+	mustRecv(t, entered, time.Second)
+
+	closeDone := make(chan struct{})
+	go func() {
+		_ = svc.Close()
+		close(closeDone)
+	}()
+	if err := mustRecv(t, doDone, time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled request error = %v, want context.Canceled", err)
+	}
+	mustRecv(t, closeDone, time.Second)
+	if _, err := svc.Get(testCtx(t), srv.URL); !errors.Is(err, exthttp.ErrClosed) {
+		t.Fatalf("new Do after Close = %v, want ErrClosed", err)
+	}
+	dispose(t, f)
+}
+
+func TestCloseTimeoutBoundsGracefulWait(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	svc, f := loadServiceWithConfig(t, exthttp.Config{CloseTimeout: 50 * time.Millisecond})
+	_, err := svc.AddInterceptor(func(ctx context.Context, req *exthttp.Request, next func(context.Context, *exthttp.Request) (*exthttp.Response, error)) (*exthttp.Response, error) {
+		close(entered)
+		<-release // ignores ctx, so Close can only wait for the timeout
+		return next(ctx, req)
+	})
+	if err != nil {
+		t.Fatalf("AddInterceptor: %v", err)
+	}
+	doDone := make(chan struct{})
+	go func() {
+		defer close(doDone)
+		_, _ = svc.Get(testCtx(t), "http://example.invalid/never")
+	}()
+	mustRecv(t, entered, time.Second)
+
+	closeDone := make(chan struct{})
+	go func() {
+		_ = svc.Close()
+		close(closeDone)
+	}()
+	mustRecv(t, closeDone, 2*time.Second) // bounded by Config.CloseTimeout
+	close(release)
+	mustRecv(t, doDone, time.Second)
+	dispose(t, f)
+}
+
+// A dialer-based registration must override the request destination through
+// the transport's DialContext, and removing it must restore direct dialing.
+func TestRegisterProxyDialerRoutesAndRemoves(t *testing.T) {
+	target := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		_, _ = w.Write([]byte("via-dialer"))
+	}))
+	defer target.Close()
+	direct := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		_, _ = w.Write([]byte("direct"))
+	}))
+	defer direct.Close()
+
+	svc, f := loadService(t)
+	defer dispose(t, f)
+	ctx := testCtx(t)
+
+	targetAddr := strings.TrimPrefix(target.URL, "http://")
+	dial := func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, targetAddr)
+	}
+	remove, err := svc.RegisterProxyDialer([]string{"http"}, dial)
+	if err != nil {
+		t.Fatalf("RegisterProxyDialer: %v", err)
+	}
+	resp, err := svc.Get(ctx, "http://example.invalid/routed")
+	if err != nil {
+		t.Fatalf("Get via dialer: %v", err)
+	}
+	if string(resp.Body) != "via-dialer" {
+		t.Fatalf("body = %q, want via-dialer", resp.Body)
+	}
+	if err := remove(); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	resp, err = svc.Get(ctx, direct.URL)
+	if err != nil {
+		t.Fatalf("Get direct: %v", err)
+	}
+	if string(resp.Body) != "direct" {
+		t.Fatalf("body = %q, want direct", resp.Body)
+	}
+}
+
+func TestRegisterProxyAcceptsSocksAliases(t *testing.T) {
+	svc, f := loadService(t)
+	defer dispose(t, f)
+	for _, raw := range []string{"socks://127.0.0.1:1080", "socks4a://127.0.0.1:1080"} {
+		remove, err := svc.RegisterProxy([]string{"http"}, raw)
+		if err != nil {
+			t.Errorf("RegisterProxy(%q): %v", raw, err)
+			continue
+		}
+		if err := remove(); err != nil {
+			t.Errorf("remove(%q): %v", raw, err)
+		}
 	}
 }

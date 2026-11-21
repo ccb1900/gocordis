@@ -16,7 +16,7 @@ go 1.24.0
 
 require (
 	dynamic-runtime v0.0.0
-	github.com/go-toml/v2 v2.4.3
+	github.com/pelletier/go-toml/v2 v2.4.3
 )
 
 replace dynamic-runtime => github.com/ccb1900/gocordis v0.0.0
@@ -39,7 +39,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/go-toml/v2"
+	"github.com/pelletier/go-toml/v2"
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/runtime"
 
@@ -108,7 +108,40 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 }
 `
 
+// postWriteHook is a test seam for simulating a failure part-way through
+// generation. Production code leaves it nil.
+var postWriteHook func(name string) error
+
+// mkdirAllTracked creates dir and records the ancestors it had to create, so
+// a failed generation can remove them again (in reverse order).
+func mkdirAllTracked(dir string, created *[]string) error {
+	var missing []string
+	p := filepath.Clean(dir)
+	for {
+		if _, err := os.Stat(p); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		missing = append(missing, p)
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		*created = append(*created, missing[i])
+	}
+	return nil
+}
+
 // Generate writes a minimal, config-driven GoCordis application into dir.
+// The target must be empty (or not exist yet); every created file and
+// directory is removed if any step fails.
 func Generate(dir, module string) error {
 	if strings.TrimSpace(module) == "" || strings.ContainsAny(module, " \t\r\n@\"'\\") || strings.Contains(module, "..") {
 		return fmt.Errorf("create-cordis: invalid module path %q", module)
@@ -116,6 +149,17 @@ func Generate(dir, module string) error {
 	if dir == "" {
 		return fmt.Errorf("create-cordis: empty target directory")
 	}
+
+	// Enforce the empty-dir precondition before creating anything.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("create-cordis: inspect target directory: %w", err)
+		}
+	} else if len(entries) > 0 {
+		return fmt.Errorf("create-cordis: target directory %s is not empty", dir)
+	}
+
 	files := map[string]string{
 		"go.mod":                    fmt.Sprintf(goModTemplate, module),
 		"manifest.toml":             manifestTemplate,
@@ -123,16 +167,18 @@ func Generate(dir, module string) error {
 		"internal/app/component.go": componentTemplate,
 	}
 	names := []string{"go.mod", "manifest.toml", "main.go", "internal/app/component.go"}
-	var created []string
+	var createdFiles, createdDirs []string
 	rollback := func() {
-		for i := len(created) - 1; i >= 0; i-- {
-			_ = os.Remove(created[i])
+		for i := len(createdFiles) - 1; i >= 0; i-- {
+			_ = os.Remove(createdFiles[i])
+		}
+		for i := len(createdDirs) - 1; i >= 0; i-- {
+			_ = os.Remove(createdDirs[i])
 		}
 	}
 	for _, name := range names {
-		body := files[name]
 		path := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := mkdirAllTracked(filepath.Dir(path), &createdDirs); err != nil {
 			rollback()
 			return err
 		}
@@ -141,8 +187,8 @@ func Generate(dir, module string) error {
 			rollback()
 			return fmt.Errorf("create-cordis: %s: %w", name, err)
 		}
-		created = append(created, path) // track before any write can fail
-		if _, err := f.WriteString(body); err != nil {
+		createdFiles = append(createdFiles, path) // track before any write can fail
+		if _, err := f.WriteString(files[name]); err != nil {
 			_ = f.Close()
 			rollback()
 			return err
@@ -150,6 +196,12 @@ func Generate(dir, module string) error {
 		if err := f.Close(); err != nil {
 			rollback()
 			return err
+		}
+		if postWriteHook != nil {
+			if err := postWriteHook(name); err != nil {
+				rollback()
+				return err
+			}
 		}
 	}
 	return nil

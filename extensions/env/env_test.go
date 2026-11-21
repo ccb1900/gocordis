@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -350,10 +351,42 @@ func (c *stubFS) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	return nil, runtime.Provide[fs.Service](ctx, fs.ServiceKey, c.svc)
 }
 
+// freshFSService returns an already-mounted fs.Service from a separate runtime
+// whose lifetime is tied to the test. A disposed fs.Component closes its
+// service, so recovery must use a new one rather than re-mounting the old.
+func freshFSService(t *testing.T, root string) fs.Service {
+	t.Helper()
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.Close(context.Background()) })
+	ff, err := rt.Load(&fs.Component{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ff.Ready(tctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	p := &fsProbe{ch: make(chan fs.Service, 1)}
+	pf, err := rt.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pf.Ready(tctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	svc := <-p.ch
+	if err := svc.Mount("file://"+root, fs.NewLocalProvider(root)); err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
 func TestDependencyLossAndRecovery(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, ".env", "GOCORDIS_RECOVER=ok\n")
-	rt, fsf, fsvc := startRT(t, root)
+	rt, fsf, _ := startRT(t, root)
 	ef, svc := loadEnv(t, rt, "file://"+root, "test", false)
 	if got := svc.Get("GOCORDIS_RECOVER"); got != "ok" {
 		t.Fatalf("initial=%q", got)
@@ -365,21 +398,285 @@ func TestDependencyLossAndRecovery(t *testing.T) {
 	if err := fsf.Gone(tctx(t)); err != nil {
 		t.Fatal(err)
 	}
-	// Disposal closed the old service; re-mount before re-providing it.
-	if err := fsvc.Mount("file://"+root, fs.NewLocalProvider(root)); err != nil {
-		t.Fatal(err)
-	}
 	short, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
 	if err := ef.Ready(short); err == nil {
 		t.Fatal("env fiber stayed Active after fs service disappeared")
 	}
 
-	// Restore the dependency with a provider whose service already has the mount.
-	if _, err := rt.Load(&stubFS{svc: fsvc}); err != nil {
+	// Restore the dependency with a fresh provider whose service has the mount.
+	if _, err := rt.Load(&stubFS{svc: freshFSService(t, root)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := ef.Ready(tctx(t)); err != nil {
 		t.Fatalf("env fiber did not recover: %v", err)
+	}
+}
+
+func TestModeFromNODE_ENV(t *testing.T) {
+	t.Setenv("NODE_ENV", "staging")
+	root := t.TempDir()
+	writeFile(t, root, ".env", "GOCORDIS_MODE_BASE=base\n")
+	writeFile(t, root, ".env.staging", "GOCORDIS_MODE_STAGING=staging\n")
+	writeFile(t, root, ".env.development", "GOCORDIS_MODE_DEV=dev\n")
+
+	// Empty Mode must inherit NODE_ENV, not the development default.
+	rt, _, _ := startRT(t, root)
+	_, svc := loadEnv(t, rt, "file://"+root, "", false)
+	if got := svc.Get("GOCORDIS_MODE_STAGING"); got != "staging" {
+		t.Fatalf("NODE_ENV mode file not used: %q", got)
+	}
+	if _, ok := svc.Lookup("GOCORDIS_MODE_DEV"); ok {
+		t.Fatal("development file used despite NODE_ENV=staging")
+	}
+
+	// An explicit Mode still overrides NODE_ENV.
+	rt2, _, _ := startRT(t, root)
+	_, svc2 := loadEnv(t, rt2, "file://"+root, "development", false)
+	if got := svc2.Get("GOCORDIS_MODE_DEV"); got != "dev" {
+		t.Fatalf("explicit Mode ignored: %q", got)
+	}
+	if _, ok := svc2.Lookup("GOCORDIS_MODE_STAGING"); ok {
+		t.Fatal("NODE_ENV file used despite explicit Mode")
+	}
+}
+
+func TestModeFallsBackToDevelopment(t *testing.T) {
+	t.Setenv("NODE_ENV", "")
+	root := t.TempDir()
+	writeFile(t, root, ".env.development", "GOCORDIS_MODE_FALLBACK=dev\n")
+	rt, _, _ := startRT(t, root)
+	_, svc := loadEnv(t, rt, "file://"+root, "", false)
+	if got := svc.Get("GOCORDIS_MODE_FALLBACK"); got != "dev" {
+		t.Fatalf("development fallback not used: %q", got)
+	}
+}
+
+func TestDotenvMatureParsing(t *testing.T) {
+	for _, k := range []string{
+		"GOCORDIS_D_BASE", "GOCORDIS_D_REF", "GOCORDIS_D_BRACED",
+		"GOCORDIS_D_DEFAULT", "GOCORDIS_D_MULTILINE", "GOCORDIS_D_SINGLE",
+	} {
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := t.TempDir()
+	writeFile(t, root, ".env", "GOCORDIS_D_BASE=base\n"+
+		"GOCORDIS_D_REF=$GOCORDIS_D_BASE\n"+
+		"GOCORDIS_D_BRACED=${GOCORDIS_D_BASE}\n"+
+		"GOCORDIS_D_DEFAULT=${GOCORDIS_D_NO_SUCH:-fallback}\n"+
+		"GOCORDIS_D_MULTILINE=\"line1\nline2\"\n"+
+		"GOCORDIS_D_SINGLE='literal ${GOCORDIS_D_BASE}'\n")
+	rt, _, _ := startRT(t, root)
+	_, svc := loadEnv(t, rt, "file://"+root, "test", false)
+	for key, want := range map[string]string{
+		"GOCORDIS_D_REF":       "base",
+		"GOCORDIS_D_BRACED":    "base",
+		"GOCORDIS_D_DEFAULT":   "fallback",
+		"GOCORDIS_D_MULTILINE": "line1\nline2",
+		"GOCORDIS_D_SINGLE":    "literal ${GOCORDIS_D_BASE}",
+	} {
+		if got := svc.Get(key); got != want {
+			t.Errorf("%s=%q, want %q", key, got, want)
+		}
+	}
+}
+
+// newPopulatedEnv builds an isolated runtime whose env component publishes a
+// single key into the shared process environment. The registry is per-process,
+// so several of these overlap and exercise multi-instance ownership.
+func newPopulatedEnv(t *testing.T, key, value string) (*runtime.Runtime, *runtime.Fiber) {
+	t.Helper()
+	root := t.TempDir()
+	writeFile(t, root, ".env", key+"="+value+"\n")
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.Close(context.Background()) })
+	ff, err := rt.Load(&fs.Component{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ff.Ready(tctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	p := &fsProbe{ch: make(chan fs.Service, 1)}
+	pf, err := rt.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pf.Ready(tctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := (<-p.ch).Mount("file://"+root, fs.NewLocalProvider(root)); err != nil {
+		t.Fatal(err)
+	}
+	ef, err := rt.Load(&env.Component{Base: "file://" + root, Mode: "test", Populate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ef.Ready(tctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	return rt, ef
+}
+
+func TestPopulateMultiInstanceSameValue(t *testing.T) {
+	const key = "GOCORDIS_MULTI_SAME"
+	prior, wasSet := os.LookupEnv(key)
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv(key, prior)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+	_ = os.Unsetenv(key)
+
+	_, efA := newPopulatedEnv(t, key, "shared")
+	_, efB := newPopulatedEnv(t, key, "shared")
+	if got := os.Getenv(key); got != "shared" {
+		t.Fatalf("populated=%q", got)
+	}
+	// Disposing A must not remove B's contribution even though the values are
+	// identical: ownership comes from the registry, not a value comparison.
+	if err := efA.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := efA.Gone(tctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv(key); got != "shared" {
+		t.Fatalf("disposing first owner clobbered the second: %q", got)
+	}
+	if err := efB.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := efB.Gone(tctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := os.LookupEnv(key); ok {
+		t.Fatal("key still set after both owners disposed")
+	}
+}
+
+func TestPopulateMultiInstanceLowerOwnerFirst(t *testing.T) {
+	const key = "GOCORDIS_MULTI_LOWER"
+	prior, wasSet := os.LookupEnv(key)
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv(key, prior)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+	_ = os.Unsetenv(key)
+
+	// The second component sees the first one's populated value as process env,
+	// so process-env-wins keeps "first" for both owners.
+	_, efA := newPopulatedEnv(t, key, "first")
+	_, efB := newPopulatedEnv(t, key, "second")
+	if got := os.Getenv(key); got != "first" {
+		t.Fatalf("populated=%q, want the first owner's value", got)
+	}
+	// Dispose the lower owner first; the top owner's value must survive even
+	// though both owners wrote the same value.
+	if err := efA.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := efA.Gone(tctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv(key); got != "first" {
+		t.Fatalf("lower owner disposal changed value: %q", got)
+	}
+	if err := efB.Dispose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := efB.Gone(tctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := os.LookupEnv(key); ok {
+		t.Fatal("key still set after both owners disposed")
+	}
+}
+
+func TestPopulateConcurrentUnwind(t *testing.T) {
+	const key = "GOCORDIS_CONCURRENT"
+	prior, wasSet := os.LookupEnv(key)
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv(key, prior)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+	_ = os.Unsetenv(key)
+
+	root := t.TempDir()
+	writeFile(t, root, ".env", key+"=value\n")
+	errCh := make(chan error, 16)
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rt, err := runtime.New()
+			if err != nil {
+				errCh <- err
+				return
+			}
+			defer func() { _ = rt.Close(context.Background()) }()
+			ff, err := rt.Load(&fs.Component{})
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if err := ff.Ready(tctx(t)); err != nil {
+				errCh <- err
+				return
+			}
+			p := &fsProbe{ch: make(chan fs.Service, 1)}
+			pf, err := rt.Load(p)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if err := pf.Ready(tctx(t)); err != nil {
+				errCh <- err
+				return
+			}
+			if err := (<-p.ch).Mount("file://"+root, fs.NewLocalProvider(root)); err != nil {
+				errCh <- err
+				return
+			}
+			ef, err := rt.Load(&env.Component{Base: "file://" + root, Mode: "test", Populate: true})
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if err := ef.Ready(tctx(t)); err != nil {
+				errCh <- err
+				return
+			}
+			if err := ef.Dispose(); err != nil {
+				errCh <- err
+				return
+			}
+			if err := ef.Gone(tctx(t)); err != nil {
+				errCh <- err
+				return
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
+	}
+	if _, ok := os.LookupEnv(key); ok {
+		t.Fatal("concurrent owners left the key set")
 	}
 }

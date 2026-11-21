@@ -2,10 +2,11 @@
 // a lifecycle-scoped service that reports and edits module dependencies of a
 // Go module. It deliberately performs no network install by itself; module
 // downloads remain the Go toolchain's responsibility (go mod tidy/download).
+// Only the Go toolchain is detected as an Agent; there is no npm/pnpm/yarn
+// equivalent here.
 package packagemanager
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -15,6 +16,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 
 	"dynamic-runtime/runtime"
 )
@@ -68,6 +73,8 @@ type Config struct {
 }
 
 type service struct {
+	// mu is the single read/write lock shared by Report and Apply so a reader
+	// can never observe a batch half-applied.
 	mu   sync.Mutex
 	root string
 }
@@ -110,58 +117,192 @@ func (s *service) Agent(ctx context.Context) (AgentInfo, error) {
 }
 
 func (s *service) Report(ctx context.Context) ([]Module, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	body, err := os.ReadFile(filepath.Join(s.root, "go.mod"))
 	if err != nil {
 		return nil, err
 	}
-	return parseRequires(body)
-}
-
-func parseRequires(body []byte) ([]Module, error) {
-	var out []Module
-	inBlock := false
-	sc := bufio.NewScanner(bytes.NewReader(body))
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if i := strings.Index(line, "//"); i >= 0 {
-			line = strings.TrimSpace(line[:i])
-		}
-		if line == "" {
-			continue
-		}
-		if inBlock {
-			if line == ")" {
-				inBlock = false
-				continue
-			}
-		} else if line == "require (" {
-			inBlock = true
-			continue
-		} else if strings.HasPrefix(line, "require ") {
-			line = strings.TrimSpace(strings.TrimPrefix(line, "require "))
-		} else {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
-			return nil, fmt.Errorf("package-manager: malformed require line %q", line)
-		}
-		out = append(out, Module{Path: fields[0], Version: fields[1]})
+	f, err := modfile.Parse("go.mod", body, nil)
+	if err != nil {
+		return nil, fmt.Errorf("package-manager: parse go.mod: %w", err)
 	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	if inBlock {
-		return nil, errors.New("package-manager: unterminated require block")
+	out := make([]Module, 0, len(f.Require))
+	for _, r := range f.Require {
+		out = append(out, Module{Path: r.Mod.Path, Version: r.Mod.Version})
 	}
 	return out, nil
 }
 
-func validModulePath(p string) bool {
-	if p == "" || strings.ContainsAny(p, " \t\r\n@\"'\\") || strings.Contains(p, "..") {
-		return false
+// validateChange rejects malformed module paths and non-semver versions before
+// any file is touched.
+func validateChange(ch Change) error {
+	if err := module.CheckPath(ch.Module); err != nil {
+		return fmt.Errorf("invalid module path %q: %w", ch.Module, err)
 	}
-	return true
+	if ch.Version != "" && !semver.IsValid(ch.Version) {
+		return fmt.Errorf("invalid version %q for module %q", ch.Version, ch.Module)
+	}
+	return nil
+}
+
+// normalizeChanges validates every change and collapses repeated modules so
+// that only the last change for a path is applied. The relative order of the
+// surviving changes is preserved.
+func normalizeChanges(changes []Change) ([]Change, error) {
+	last := make(map[string]int, len(changes))
+	for i, ch := range changes {
+		if err := validateChange(ch); err != nil {
+			return nil, err
+		}
+		last[ch.Module] = i
+	}
+	out := make([]Change, 0, len(last))
+	for i, ch := range changes {
+		if last[ch.Module] == i {
+			out = append(out, ch)
+		}
+	}
+	return out, nil
+}
+
+// resultFrom builds the result from the final before/after state rather than
+// from intermediate edits, so Details never disagree with the written go.mod.
+func resultFrom(before, after map[string]string, changes []Change) Result {
+	var res Result
+	for _, ch := range changes {
+		old, hadOld := before[ch.Module]
+		now, hasNow := after[ch.Module]
+		if hadOld == hasNow && old == now {
+			continue
+		}
+		res.Details = append(res.Details, ChangeDetail{Module: ch.Module, Before: old, After: now})
+		switch {
+		case !hadOld && hasNow:
+			res.Added = append(res.Added, ch.Module)
+		case hadOld && !hasNow:
+			res.Removed = append(res.Removed, ch.Module)
+		default:
+			res.Updated = append(res.Updated, ch.Module)
+		}
+	}
+	return res
+}
+
+// validateFormatted re-parses the bytes that will be committed and checks
+// that their requirements exactly match the intended final state.
+func validateFormatted(formatted []byte, want map[string]string) error {
+	check, err := modfile.Parse("go.mod", formatted, nil)
+	if err != nil {
+		return fmt.Errorf("formatted go.mod is invalid: %w", err)
+	}
+	if len(check.Require) != len(want) {
+		return fmt.Errorf("formatted go.mod has %d requirements, want %d", len(check.Require), len(want))
+	}
+	seen := make(map[string]bool, len(check.Require))
+	for _, r := range check.Require {
+		if seen[r.Mod.Path] {
+			return fmt.Errorf("formatted go.mod repeats requirement %q", r.Mod.Path)
+		}
+		seen[r.Mod.Path] = true
+		if v, ok := want[r.Mod.Path]; !ok || v != r.Mod.Version {
+			return fmt.Errorf("formatted go.mod requirement %q=%q does not match final state", r.Mod.Path, r.Mod.Version)
+		}
+	}
+	return nil
+}
+
+// atomicReplace writes data to a temporary file in the same directory and
+// commits it with a single rename. The original file is never partially
+// written; any cleanup/restore error is joined with the original failure and
+// returned to the caller.
+func atomicReplace(path string, data []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".go.mod-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	restore := func() error {
+		if err := os.Remove(tmpName); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("restore: remove temp file %s: %w", tmpName, err)
+		}
+		return nil
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return errors.Join(err, restore())
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return errors.Join(err, restore())
+	}
+	if err := tmp.Close(); err != nil {
+		return errors.Join(err, restore())
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return errors.Join(err, restore())
+	}
+	return nil
+}
+
+// Apply validates and normalizes the whole batch, stages the complete edit in
+// memory, validates it, and commits it with one atomic rename.
+func (s *service) Apply(ctx context.Context, changes []Change) (Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	normalized, err := normalizeChanges(changes)
+	if err != nil {
+		return Result{}, fmt.Errorf("package-manager: %w", err)
+	}
+
+	path := filepath.Join(s.root, "go.mod")
+	info, err := os.Stat(path)
+	if err != nil {
+		return Result{}, err
+	}
+	mode := info.Mode().Perm()
+	original, err := os.ReadFile(path)
+	if err != nil {
+		return Result{}, err
+	}
+	f, err := modfile.Parse("go.mod", original, nil)
+	if err != nil {
+		return Result{}, fmt.Errorf("package-manager: parse go.mod: %w", err)
+	}
+
+	before := make(map[string]string, len(f.Require))
+	after := make(map[string]string, len(f.Require))
+	for _, r := range f.Require {
+		before[r.Mod.Path] = r.Mod.Version
+		after[r.Mod.Path] = r.Mod.Version
+	}
+	for _, ch := range normalized {
+		if ch.Version == "" {
+			_ = f.DropRequire(ch.Module)
+			delete(after, ch.Module)
+		} else {
+			if err := f.AddRequire(ch.Module, ch.Version); err != nil {
+				return Result{}, fmt.Errorf("package-manager: add %s: %w", ch.Module, err)
+			}
+			after[ch.Module] = ch.Version
+		}
+	}
+
+	res := resultFrom(before, after, normalized)
+	f.Cleanup()
+	formatted := modfile.Format(f.Syntax)
+	if err := validateFormatted(formatted, after); err != nil {
+		return Result{}, fmt.Errorf("package-manager: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	if err := atomicReplace(path, formatted, mode); err != nil {
+		return Result{}, fmt.Errorf("package-manager: write go.mod: %w", err)
+	}
+	return res, nil
 }
 
 func (s *service) run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -173,67 +314,6 @@ func (s *service) run(ctx context.Context, name string, args ...string) ([]byte,
 		return nil, fmt.Errorf("package-manager: %s %v: %w: %s", name, args, err, strings.TrimSpace(errOut.String()))
 	}
 	return out.Bytes(), nil
-}
-
-// Apply edits go.mod atomically: the file is restored if any change fails.
-func (s *service) Apply(ctx context.Context, changes []Change) (Result, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for _, ch := range changes {
-		if !validModulePath(ch.Module) {
-			return Result{}, fmt.Errorf("package-manager: invalid module path %q", ch.Module)
-		}
-	}
-	path := filepath.Join(s.root, "go.mod")
-	info, err := os.Stat(path)
-	if err != nil {
-		return Result{}, err
-	}
-	mode := info.Mode().Perm()
-	original, err := os.ReadFile(path)
-	if err != nil {
-		return Result{}, err
-	}
-	current, err := parseRequires(original)
-	if err != nil {
-		return Result{}, err
-	}
-	versions := make(map[string]string, len(current))
-	for _, m := range current {
-		versions[m.Path] = m.Version
-	}
-
-	restore := func() { _ = os.WriteFile(path, original, mode) }
-	var res Result
-	for _, ch := range changes {
-		old, existed := versions[ch.Module]
-		args := []string{"mod", "edit"}
-		detail := ChangeDetail{Module: ch.Module, Before: old, After: ch.Version}
-		if ch.Version == "" {
-			if !existed {
-				continue
-			}
-			args = append(args, "-droprequire="+ch.Module)
-			res.Removed = append(res.Removed, ch.Module)
-		} else {
-			if existed && old == ch.Version {
-				continue
-			}
-			args = append(args, "-require="+ch.Module+"@"+ch.Version)
-			if existed {
-				res.Updated = append(res.Updated, ch.Module)
-			} else {
-				res.Added = append(res.Added, ch.Module)
-			}
-		}
-		res.Details = append(res.Details, detail)
-		if _, err := s.run(ctx, "go", args...); err != nil {
-			restore()
-			return Result{}, err
-		}
-	}
-	return res, nil
 }
 
 // Component exposes the service through the runtime.

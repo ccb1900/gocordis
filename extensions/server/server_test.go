@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,8 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"dynamic-runtime/runtime"
 )
@@ -678,17 +682,28 @@ func TestServeRangeBindsFirstAvailablePort(t *testing.T) {
 func TestServeRangeExhaustedFailsActivation(t *testing.T) {
 	ctx := testCtx(t)
 	rt := newRT(t)
-	addr := freeAddr(t)
-
-	h1, err := net.Listen("tcp", addr)
-	if err != nil {
-		t.Fatalf("hold port 1: %v", err)
+	// freeAddr closes its probe, so another test can take one of the two
+	// ports in between. Retry with a fresh pair instead of assuming success.
+	var addr string
+	var h1, h2 net.Listener
+	var err error
+	for attempt := 0; attempt < 20; attempt++ {
+		addr = freeAddr(t)
+		h1, err = net.Listen("tcp", addr)
+		if err != nil {
+			continue
+		}
+		h2, err = net.Listen("tcp", portAt(t, addr, 1))
+		if err == nil {
+			break
+		}
+		_ = h1.Close()
+		h1 = nil
+	}
+	if h1 == nil || h2 == nil {
+		t.Fatalf("could not reserve two consecutive ports: %v", err)
 	}
 	defer h1.Close()
-	h2, err := net.Listen("tcp", portAt(t, addr, 1))
-	if err != nil {
-		t.Fatalf("hold port 2: %v", err)
-	}
 	defer h2.Close()
 
 	provider, err := rt.Load(&Component{})
@@ -712,5 +727,592 @@ func TestServeRangeExhaustedFailsActivation(t *testing.T) {
 	}
 	if err := invalid.Ready(ctx); err == nil {
 		t.Fatal("ports=0: want activation failure")
+	}
+}
+
+// ---- WebSocket ------------------------------------------------------------
+
+func newWSServer(t *testing.T) (Service, string, string) {
+	t.Helper()
+	svc := newRouter()
+	srv := httptest.NewServer(svc)
+	t.Cleanup(srv.Close)
+	return svc, srv.URL, "ws" + strings.TrimPrefix(srv.URL, "http")
+}
+
+func dialWS(t *testing.T, base, path string, hdr http.Header) *websocket.Conn {
+	t.Helper()
+	var h http.Header
+	if hdr != nil {
+		h = hdr.Clone()
+	}
+	c, _, err := websocket.DefaultDialer.Dial(base+path, h)
+	if err != nil {
+		t.Fatalf("Dial %s: %v", path, err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+func wsEcho(t *testing.T, c *websocket.Conn, mt int, payload []byte) (int, []byte) {
+	t.Helper()
+	if err := c.WriteMessage(mt, payload); err != nil {
+		t.Fatalf("WriteMessage: %v", err)
+	}
+	if err := c.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	gotMT, got, err := c.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	return gotMT, got
+}
+
+func wsEchoCallback(c *WSConn) error {
+	for {
+		mt, data, err := (*c).ReadMessage()
+		if err != nil {
+			return err
+		}
+		if err := (*c).WriteMessage(mt, data); err != nil {
+			return err
+		}
+	}
+}
+
+func TestWSTextBinaryEchoAndPathParam(t *testing.T) {
+	svc, _, wsBase := newWSServer(t)
+	dispose, err := svc.WS("/ws/{id}", func(c *WSConn) error {
+		for {
+			mt, data, err := (*c).ReadMessage()
+			if err != nil {
+				return err
+			}
+			out := append([]byte(WSParam(*c, "id")+":"), data...)
+			if err := (*c).WriteMessage(mt, out); err != nil {
+				return err
+			}
+		}
+	})
+	if err != nil {
+		t.Fatalf("WS: %v", err)
+	}
+	c := dialWS(t, wsBase, "/ws/42", nil)
+
+	mt, got := wsEcho(t, c, websocket.TextMessage, []byte("hello"))
+	if mt != websocket.TextMessage || string(got) != "42:hello" {
+		t.Fatalf("text echo = (%d, %q), want text 42:hello", mt, got)
+	}
+	mt, got = wsEcho(t, c, websocket.BinaryMessage, []byte{0, 1, 2})
+	if mt != websocket.BinaryMessage || string(got) != "42:\x00\x01\x02" {
+		t.Fatalf("binary echo = (%d, %q), want binary 42:\\x00\\x01\\x02", mt, got)
+	}
+	if err := dispose(); err != nil {
+		t.Fatalf("dispose: %v", err)
+	}
+}
+
+func TestWSMultipleClientsCloseOnDisposeAndIdempotentDisposer(t *testing.T) {
+	svc, _, wsBase := newWSServer(t)
+	// A second registration that must survive disposal of the first.
+	if _, err := svc.WS("/keep/{id}", wsEchoCallback); err != nil {
+		t.Fatalf("WS /keep: %v", err)
+	}
+	dispose, err := svc.WS("/ws/{id}", wsEchoCallback)
+	if err != nil {
+		t.Fatalf("WS /ws: %v", err)
+	}
+
+	clients := make([]*websocket.Conn, 3)
+	for i := range clients {
+		clients[i] = dialWS(t, wsBase, fmt.Sprintf("/ws/%d", i), nil)
+		mt, got := wsEcho(t, clients[i], websocket.TextMessage, []byte("ping"))
+		if mt != websocket.TextMessage || string(got) != "ping" {
+			t.Fatalf("client %d echo = (%d, %q)", i, mt, got)
+		}
+	}
+
+	// Idempotent disposer; removes only its own route.
+	if err := dispose(); err != nil {
+		t.Fatalf("dispose: %v", err)
+	}
+	if err := dispose(); err != nil {
+		t.Fatalf("dispose twice: %v", err)
+	}
+	for i, c := range clients {
+		if err := c.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatalf("client %d SetReadDeadline: %v", i, err)
+		}
+		if _, _, err := c.ReadMessage(); err == nil {
+			t.Fatalf("client %d: expected close on dispose", i)
+		}
+	}
+	if _, _, err := websocket.DefaultDialer.Dial(wsBase+"/ws/0", nil); err == nil {
+		t.Fatal("dial after dispose: expected route to be gone")
+	}
+	kc := dialWS(t, wsBase, "/keep/9", nil)
+	mt, got := wsEcho(t, kc, websocket.TextMessage, []byte("alive"))
+	if mt != websocket.TextMessage || string(got) != "alive" {
+		t.Fatalf("/keep echo after dispose = (%d, %q)", mt, got)
+	}
+}
+
+func TestWSExactMethodHTTPRouteWins(t *testing.T) {
+	svc, httpBase, wsBase := newWSServer(t)
+	if _, err := svc.WS("/ws/{id}", wsEchoCallback); err != nil {
+		t.Fatalf("WS: %v", err)
+	}
+	if _, err := svc.Handle(http.MethodGet, "/ws/42", func(w http.ResponseWriter, _ *http.Request) error {
+		_, err := io.WriteString(w, "http")
+		return err
+	}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	resp, err := http.Get(httpBase + "/ws/42") //nolint:gosec // test-local
+	if err != nil {
+		t.Fatalf("GET /ws/42: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(body) != "http" {
+		t.Fatalf("exact-method route body = %q, want http", body)
+	}
+
+	// A path with no exact-method route still upgrades to WebSocket.
+	c := dialWS(t, wsBase, "/ws/43", nil)
+	mt, got := wsEcho(t, c, websocket.TextMessage, []byte("ws"))
+	if mt != websocket.TextMessage || string(got) != "ws" {
+		t.Fatalf("ws echo = (%d, %q)", mt, got)
+	}
+}
+
+func TestWSRejectsNonWebSocketRequestWith400(t *testing.T) {
+	svc, httpBase, _ := newWSServer(t)
+	if _, err := svc.WS("/ws", wsEchoCallback); err != nil {
+		t.Fatalf("WS: %v", err)
+	}
+	resp, err := http.Get(httpBase + "/ws") //nolint:gosec // test-local
+	if err != nil {
+		t.Fatalf("GET /ws: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("non-WebSocket GET status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestWSCheckOriginConfigurable(t *testing.T) {
+	svc, _, wsBase := newWSServer(t)
+	if _, err := svc.WS("/ws", wsEchoCallback); err != nil {
+		t.Fatalf("WS: %v", err)
+	}
+	hdr := http.Header{"Origin": []string{"http://evil.example"}}
+	if _, resp, err := websocket.DefaultDialer.Dial(wsBase+"/ws", hdr); err == nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		t.Fatal("cross-origin dial: want default same-origin rejection")
+	}
+
+	svc.SetCheckOrigin(func(*http.Request) bool { return true })
+	c, _, err := websocket.DefaultDialer.Dial(wsBase+"/ws", hdr)
+	if err != nil {
+		t.Fatalf("dial after SetCheckOrigin: %v", err)
+	}
+	_ = c.Close()
+}
+
+func TestWSCallbackFailureContained(t *testing.T) {
+	svc, httpBase, wsBase := newWSServer(t)
+	if _, err := svc.Handle(http.MethodGet, "/health", func(w http.ResponseWriter, _ *http.Request) error {
+		_, err := io.WriteString(w, "ok")
+		return err
+	}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if _, err := svc.WS("/panic", func(*WSConn) error { panic("boom") }); err != nil {
+		t.Fatalf("WS /panic: %v", err)
+	}
+	if _, err := svc.WS("/fail", func(*WSConn) error { return errors.New("nope") }); err != nil {
+		t.Fatalf("WS /fail: %v", err)
+	}
+
+	pc := dialWS(t, wsBase, "/panic", nil)
+	if err := pc.WriteMessage(websocket.TextMessage, []byte("x")); err != nil {
+		t.Fatalf("write to panicking callback: %v", err)
+	}
+	if err := pc.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	if _, _, err := pc.ReadMessage(); err == nil {
+		t.Fatal("expected connection closed after callback panic")
+	}
+
+	fc := dialWS(t, wsBase, "/fail", nil)
+	if err := fc.WriteMessage(websocket.TextMessage, []byte("y")); err != nil {
+		t.Fatalf("write to erroring callback: %v", err)
+	}
+	resp, err := http.Get(httpBase + "/health") //nolint:gosec // test-local
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(body) != "ok" {
+		t.Fatalf("/health body = %q, want ok", body)
+	}
+}
+
+type wsServeComponent struct {
+	addr   string
+	exited chan struct{}
+	once   sync.Once
+}
+
+func (c *wsServeComponent) Name() string { return "test-ws-serve" }
+func (c *wsServeComponent) Inject() []runtime.Dependency {
+	return []runtime.Dependency{runtime.Requires(ServiceKey)}
+}
+func (c *wsServeComponent) Provide() []runtime.Capability { return nil }
+func (c *wsServeComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	svc, err := runtime.Require(ctx, ServiceKey)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := svc.WS("/ws/{id}", func(conn *WSConn) error {
+		if c.exited != nil {
+			defer c.once.Do(func() { close(c.exited) })
+		}
+		return wsEchoCallback(conn)
+	}); err != nil {
+		return nil, err
+	}
+	return nil, Serve(ctx, svc, c.addr)
+}
+
+func TestWSServiceCloseClosesLiveSocketsAndJoinsHandlers(t *testing.T) {
+	ctx := testCtx(t)
+	rt := newRT(t)
+	addr := freeAddr(t)
+
+	provider, err := rt.Load(&Component{})
+	if err != nil {
+		t.Fatalf("load provider: %v", err)
+	}
+	if err := provider.Ready(ctx); err != nil {
+		t.Fatalf("provider ready: %v", err)
+	}
+	dep := &wsServeComponent{addr: addr, exited: make(chan struct{})}
+	consumer, err := rt.Load(dep)
+	if err != nil {
+		t.Fatalf("load consumer: %v", err)
+	}
+	if err := consumer.Ready(ctx); err != nil {
+		t.Fatalf("consumer ready: %v", err)
+	}
+
+	c, _, err := websocket.DefaultDialer.Dial("ws://"+addr+"/ws/7", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	mt, got := wsEcho(t, c, websocket.TextMessage, []byte("hi"))
+	if mt != websocket.TextMessage || string(got) != "hi" {
+		t.Fatalf("echo = (%d, %q)", mt, got)
+	}
+
+	if err := consumer.Dispose(); err != nil {
+		t.Fatalf("consumer Dispose: %v", err)
+	}
+	if err := consumer.Gone(ctx); err != nil {
+		t.Fatalf("consumer Gone: %v", err)
+	}
+	if err := provider.Dispose(); err != nil {
+		t.Fatalf("provider Dispose: %v", err)
+	}
+	if err := provider.Gone(ctx); err != nil {
+		t.Fatalf("provider Gone: %v", err)
+	}
+
+	select {
+	case <-dep.exited:
+	default:
+		t.Fatal("handler goroutine still running after Gone")
+	}
+	if err := c.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	if _, _, err := c.ReadMessage(); err == nil {
+		t.Fatal("client did not observe close after Service.Close")
+	}
+}
+
+func TestWSConcurrentClients(t *testing.T) {
+	svc, _, wsBase := newWSServer(t)
+	dispose, err := svc.WS("/ws/{id}", wsEchoCallback)
+	if err != nil {
+		t.Fatalf("WS: %v", err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			c, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("%s/ws/%d", wsBase, id), nil)
+			if err != nil {
+				t.Errorf("dial %d: %v", id, err)
+				return
+			}
+			defer c.Close()
+			payload := fmt.Sprintf("client-%d", id)
+			if err := c.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
+				t.Errorf("write %d: %v", id, err)
+				return
+			}
+			if err := c.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Errorf("deadline %d: %v", id, err)
+				return
+			}
+			_, got, err := c.ReadMessage()
+			if err != nil || string(got) != payload {
+				t.Errorf("echo %d = %q, err = %v", id, got, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if err := dispose(); err != nil {
+		t.Fatalf("dispose: %v", err)
+	}
+}
+
+type wsEffectComponent struct {
+	addr      string
+	handlerBy chan struct{}
+	effectRan chan struct{}
+}
+
+func (c *wsEffectComponent) Name() string { return "test-ws-effect" }
+func (c *wsEffectComponent) Inject() []runtime.Dependency {
+	return []runtime.Dependency{runtime.Requires(ServiceKey)}
+}
+func (c *wsEffectComponent) Provide() []runtime.Capability { return nil }
+func (c *wsEffectComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	svc, err := runtime.Require(ctx, ServiceKey)
+	if err != nil {
+		return nil, err
+	}
+	dispose, err := svc.WS("/ws/{id}", func(conn *WSConn) error {
+		defer close(c.handlerBy)
+		return wsEchoCallback(conn)
+	})
+	if err != nil {
+		return nil, err
+	}
+	// The disposer is an ordinary reversible effect inverse.
+	if err := ctx.Effect(func() (func() error, error) {
+		return func() error {
+			err := dispose()
+			close(c.effectRan)
+			return err
+		}, nil
+	}); err != nil {
+		return nil, err
+	}
+	return nil, Serve(ctx, svc, c.addr)
+}
+
+func TestWSRegistrationIsReversibleEffect(t *testing.T) {
+	ctx := testCtx(t)
+	rt := newRT(t)
+	addr := freeAddr(t)
+
+	provider, err := rt.Load(&Component{})
+	if err != nil {
+		t.Fatalf("load provider: %v", err)
+	}
+	if err := provider.Ready(ctx); err != nil {
+		t.Fatalf("provider ready: %v", err)
+	}
+	dep := &wsEffectComponent{
+		addr: addr, handlerBy: make(chan struct{}), effectRan: make(chan struct{}),
+	}
+	consumer, err := rt.Load(dep)
+	if err != nil {
+		t.Fatalf("load consumer: %v", err)
+	}
+	if err := consumer.Ready(ctx); err != nil {
+		t.Fatalf("consumer ready: %v", err)
+	}
+
+	c, _, err := websocket.DefaultDialer.Dial("ws://"+addr+"/ws/7", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	mt, got := wsEcho(t, c, websocket.TextMessage, []byte("hi"))
+	if mt != websocket.TextMessage || string(got) != "hi" {
+		t.Fatalf("echo = (%d, %q)", mt, got)
+	}
+
+	if err := consumer.Dispose(); err != nil {
+		t.Fatalf("Dispose: %v", err)
+	}
+	if err := consumer.Gone(ctx); err != nil {
+		t.Fatalf("Gone: %v", err)
+	}
+	select {
+	case <-dep.effectRan:
+	default:
+		t.Fatal("effect inverse did not run on disposal")
+	}
+	select {
+	case <-dep.handlerBy:
+	default:
+		t.Fatal("handler goroutine not joined by the inverse")
+	}
+	if err := c.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	if _, _, err := c.ReadMessage(); err == nil {
+		t.Fatal("client did not observe close")
+	}
+	if _, _, err := websocket.DefaultDialer.Dial("ws://"+addr+"/ws/7", nil); err == nil {
+		t.Fatal("route survived disposer")
+	}
+}
+
+func TestWSMiddlewareAndRegistrationValidation(t *testing.T) {
+	svc, _, wsBase := newWSServer(t)
+	var hits atomic.Int32
+	if _, err := svc.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			next.ServeHTTP(w, r)
+		})
+	}); err != nil {
+		t.Fatalf("Use: %v", err)
+	}
+	if _, err := svc.WS("/ws", wsEchoCallback); err != nil {
+		t.Fatalf("WS: %v", err)
+	}
+	c := dialWS(t, wsBase, "/ws", nil)
+	mt, got := wsEcho(t, c, websocket.TextMessage, []byte("m"))
+	if mt != websocket.TextMessage || string(got) != "m" {
+		t.Fatalf("echo = (%d, %q)", mt, got)
+	}
+	if hits.Load() == 0 {
+		t.Fatal("middleware did not run for the WebSocket upgrade")
+	}
+
+	if _, err := svc.WS("relative", wsEchoCallback); err == nil {
+		t.Fatal("WS(relative): want invalid-pattern error")
+	}
+	if _, err := svc.WS("/nil", nil); err == nil {
+		t.Fatal("WS(nil callback): want error")
+	}
+	if err := svc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := svc.WS("/after", wsEchoCallback); err != errServiceClosed {
+		t.Fatalf("WS after Close: got %v, want errServiceClosed", err)
+	}
+	if err := svc.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// ---- callback-initiated disposal must not self-wait -----------------------
+
+func TestWSCallbackShutdownDoesNotSelfWait(t *testing.T) {
+	svc, _, wsBase := newWSServer(t)
+	handlerDone := make(chan struct{})
+	dispose, err := svc.WS("/ws", func(c *WSConn) error {
+		defer close(handlerDone)
+		if _, _, err := (*c).ReadMessage(); err != nil {
+			return err
+		}
+		// Non-joining, registration-scoped disposal from inside the callback.
+		if err := (*c).Shutdown(); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WS: %v", err)
+	}
+
+	c := dialWS(t, wsBase, "/ws", nil)
+	if err := c.WriteMessage(websocket.TextMessage, []byte("x")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("callback deadlocked on WSConn.Shutdown")
+	}
+	if err := c.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	if _, _, err := c.ReadMessage(); err == nil {
+		t.Fatal("client did not observe close after callback Shutdown")
+	}
+
+	// The joining inverse still works afterwards and joins handlers.
+	closed := make(chan struct{})
+	go func() { _ = svc.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Service.Close hung after callback Shutdown")
+	}
+	if err := dispose(); err != nil {
+		t.Fatalf("dispose after Close: %v", err)
+	}
+	if err := svc.Shutdown(); err != nil {
+		t.Fatalf("Shutdown after Close: %v", err)
+	}
+}
+
+func TestWSCallbackServiceShutdownDoesNotSelfWait(t *testing.T) {
+	svc, _, wsBase := newWSServer(t)
+	aDone := make(chan struct{})
+	if _, err := svc.WS("/a", func(c *WSConn) error {
+		defer close(aDone)
+		if _, _, err := (*c).ReadMessage(); err != nil {
+			return err
+		}
+		return svc.Shutdown() // service-wide but still non-joining
+	}); err != nil {
+		t.Fatalf("WS /a: %v", err)
+	}
+	if _, err := svc.WS("/b", wsEchoCallback); err != nil {
+		t.Fatalf("WS /b: %v", err)
+	}
+
+	ca := dialWS(t, wsBase, "/a", nil)
+	cb := dialWS(t, wsBase, "/b", nil)
+	if err := ca.WriteMessage(websocket.TextMessage, []byte("x")); err != nil {
+		t.Fatalf("write /a: %v", err)
+	}
+	select {
+	case <-aDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("callback deadlocked on Service.Shutdown")
+	}
+	for name, c := range map[string]*websocket.Conn{"a": ca, "b": cb} {
+		if err := c.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatalf("client %s SetReadDeadline: %v", name, err)
+		}
+		if _, _, err := c.ReadMessage(); err == nil {
+			t.Fatalf("client %s did not observe service-wide close", name)
+		}
+	}
+
+	closed := make(chan struct{})
+	go func() { _ = svc.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Service.Close hung after callback Service.Shutdown")
 	}
 }

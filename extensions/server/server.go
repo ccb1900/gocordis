@@ -8,16 +8,20 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"dynamic-runtime/runtime"
 )
@@ -28,23 +32,85 @@ type Handler func(http.ResponseWriter, *http.Request) error
 
 // Service is the reversible HTTP service provided by Component.
 //
-// Handle and Use return idempotent disposers that remove ONLY the registration
-// they were returned for. A registration lives exactly as long as the effect
-// that installed it; Close is the activation-level inverse.
+// Handle, All, WS and Use return idempotent disposers that remove ONLY the
+// registration they were returned for. A registration lives exactly as long as
+// the effect that installed it; Close is the activation-level inverse.
 type Service interface {
 	Handle(method, pattern string, h Handler) (func() error, error)
 	// All registers a handler for every HTTP method on pattern. Exact-method
 	// routes registered through Handle take precedence over an All route.
 	All(pattern string, h Handler) (func() error, error)
+	// WS registers a WebSocket upgrade handler on a ServeMux pattern (e.g.
+	// "/ws/{id}"). Like All it has no method qualifier, so exact-method HTTP
+	// routes registered through Handle take precedence. The disposer removes
+	// only this route and closes/joins every live connection it accepted.
+	//
+	// A callback MUST NOT call Close, nor its own disposer: both JOIN handler
+	// goroutines and would therefore wait for the callback that called them.
+	// Inside a callback use (*WSConn).Shutdown (own registration) or Shutdown
+	// (whole service); both are non-joining.
+	WS(pattern string, cb func(*WSConn) error) (func() error, error)
 	Use(mw func(http.Handler) http.Handler) (func() error, error)
+	// SetCheckOrigin overrides the policy used to verify the Origin header on
+	// WebSocket upgrades. nil restores the same-origin default. It affects
+	// upgrades performed after the call.
+	SetCheckOrigin(fn func(*http.Request) bool)
 	ServeHTTP(http.ResponseWriter, *http.Request)
+	// Close is the activation-level inverse. It removes all registrations,
+	// closes every live socket and JOINS all handler goroutines before it
+	// returns, so Gone implies no surviving socket or handler. Never call it
+	// from a WS callback (self-wait) — use Shutdown there.
 	Close() error
+	// Shutdown is the non-joining counterpart of Close: it removes all
+	// registrations and closes every live socket without waiting for handler
+	// goroutines. It is safe to call from inside a WS callback; the component
+	// inverse still uses Close so the Gone guarantee is preserved.
+	Shutdown() error
 }
 
 // ServiceKey is the capability a server Component provides while Active.
 var ServiceKey = runtime.NewKey[Service]("extension.server.service")
 
 var errServiceClosed = errors.New("server: service closed")
+
+// ---- WebSocket public surface --------------------------------------------
+
+// WSConn is the narrow view of an upgraded connection handed to a WS callback.
+// It is implemented by a wrapper around *websocket.Conn; gorilla owns the
+// handshake, framing and close protocol — nothing is re-implemented here.
+//
+// Close closes ONLY this socket. A callback that wants to dispose its
+// registration must call Shutdown instead: Close's sibling APIs on Service (and
+// the WS disposer) join handler goroutines and deadlock if called from a
+// callback's own goroutine.
+type WSConn interface {
+	ReadMessage() (int, []byte, error)
+	WriteMessage(int, []byte) error
+	Close() error
+	// Shutdown disposes the registration that accepted this connection: it
+	// removes the route and closes all its sockets, including this one, WITHOUT
+	// joining handler goroutines. Safe inside the callback. It is the only
+	// disposal path a callback may use for its own registration.
+	Shutdown() error
+}
+
+// WSRequestConn is optionally implemented by the WSConn value passed to a WS
+// callback. It exposes the handshake request so handlers can read path
+// parameters and headers. Use WSParam for the common path-parameter case.
+type WSRequestConn interface {
+	WSConn
+	Request() *http.Request
+}
+
+// WSParam returns a named path parameter captured by the route that accepted
+// the WebSocket connection (e.g. "id" for "/ws/{id}"). It is "" when conn does
+// not expose a handshake request or the name is unknown.
+func WSParam(conn WSConn, name string) string {
+	if rc, ok := conn.(WSRequestConn); ok {
+		return Param(rc.Request(), name)
+	}
+	return ""
+}
 
 // ---- named route params --------------------------------------------------
 
@@ -81,11 +147,152 @@ type router struct {
 	middlewares []*middleware
 	closed      bool
 	mux         *http.ServeMux // rebuilt whenever a registration changes
+
+	checkOrigin func(*http.Request) bool // nil => same-origin default
+	upgrader    *websocket.Upgrader
+	wsRegs      map[*wsRegistration]struct{}
+	closeOnce   sync.Once
+	joinOnce    sync.Once
+	closeDone   chan struct{}
+	closingRegs []*wsRegistration
 }
 
 // newRouter builds an empty, open router. Unexported on purpose: the only
 // public way to obtain a Service is Component + ServiceKey.
-func newRouter() Service { return &router{mux: http.NewServeMux()} }
+func newRouter() Service {
+	r := &router{
+		mux:       http.NewServeMux(),
+		wsRegs:    make(map[*wsRegistration]struct{}),
+		closeDone: make(chan struct{}),
+	}
+	r.upgrader = &websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     r.checkSameOrigin,
+	}
+	return r
+}
+
+// ---- WebSocket connection tracking ---------------------------------------
+
+const wsWriteWait = time.Second
+
+// closeScope records whether an inverse may wait for handler goroutines. It is
+// the code-level boundary for the self-wait hazard: callback-facing surfaces
+// (WSConn.Shutdown, Service.Shutdown) are structurally limited to scopeCallback
+// and can never reach wg.Wait. Only activation-level inverses use scopeInverse.
+type closeScope int
+
+const (
+	scopeCallback closeScope = iota // initiate shutdown only; safe in a callback
+	scopeInverse                    // initiate AND join; inverses only
+)
+
+// wsConn wraps gorilla's connection so Close is idempotent and the handshake
+// request stays reachable for path-parameter lookup. Gorilla still performs
+// the actual handshake, framing and close handshake.
+type wsConn struct {
+	*websocket.Conn
+	req  *http.Request
+	reg  *wsRegistration
+	once sync.Once
+}
+
+func (c *wsConn) Request() *http.Request { return c.req }
+
+func (c *wsConn) Close() error {
+	var err error
+	c.once.Do(func() { err = c.Conn.Close() })
+	return err
+}
+
+// Shutdown is the callback-safe disposal path. It only initiates shutdown of
+// this connection's registration; it never joins, so a callback can call it
+// without waiting for its own goroutine to finish.
+func (c *wsConn) Shutdown() error {
+	if c.reg != nil {
+		c.reg.shutdown()
+	}
+	return nil
+}
+
+// shutdown sends a normal close frame before closing the socket, so a client
+// observes a clean closure. WriteControl is safe to call concurrently with the
+// callback's reads/writes (gorilla guarantees this).
+func (c *wsConn) shutdown() {
+	_ = c.Conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, "server closed"),
+		time.Now().Add(wsWriteWait),
+	)
+	_ = c.Close()
+}
+
+// wsRegistration is the per-WS-route owner of every live connection it
+// accepted. shutdown is non-joining (safe inside a callback); close with
+// scopeInverse additionally joins all handler goroutines.
+type wsRegistration struct {
+	cb     func(*WSConn) error
+	mu     sync.Mutex
+	closed bool
+	conns  map[*wsConn]struct{}
+	wg     sync.WaitGroup
+	once   sync.Once
+}
+
+func newWSRegistration(cb func(*WSConn) error) *wsRegistration {
+	return &wsRegistration{cb: cb, conns: make(map[*wsConn]struct{})}
+}
+
+// track registers a new connection. It returns false once the registration is
+// closed, so no connection can be added after (or race with) a close/join.
+func (g *wsRegistration) track(c *wsConn) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return false
+	}
+	g.conns[c] = struct{}{}
+	g.wg.Add(1)
+	return true
+}
+
+func (g *wsRegistration) untrack(c *wsConn) {
+	g.mu.Lock()
+	delete(g.conns, c)
+	g.mu.Unlock()
+	g.wg.Done()
+}
+
+// shutdown is the non-joining half: mark closed and close every socket, then
+// return immediately. Safe from a callback because wg.Wait is never reached.
+func (g *wsRegistration) shutdown() {
+	g.once.Do(func() {
+		g.mu.Lock()
+		g.closed = true
+		conns := make([]*wsConn, 0, len(g.conns))
+		for c := range g.conns {
+			conns = append(conns, c)
+		}
+		g.mu.Unlock()
+
+		for _, c := range conns {
+			c.shutdown()
+		}
+	})
+}
+
+// join waits for handler goroutines and is reachable ONLY via scopeInverse.
+func (g *wsRegistration) join() {
+	g.wg.Wait()
+}
+
+func (g *wsRegistration) close(scope closeScope) {
+	g.shutdown()
+	if scope == scopeInverse {
+		g.join() // no handler goroutine outlives the inverse
+	}
+}
 
 // buildMux compiles the registration list into a fresh ServeMux. Path matching,
 // wildcards ({id}, {path...}) and method precedence are entirely the standard
@@ -122,17 +329,34 @@ func (r *router) Handle(method, pattern string, h Handler) (func() error, error)
 	if method == "" {
 		return nil, errors.New("server: empty method")
 	}
-	return r.register(strings.ToUpper(method), pattern, h)
+	return r.register(strings.ToUpper(method), pattern, h, nil)
 }
 
 func (r *router) All(pattern string, h Handler) (func() error, error) {
-	return r.register("", pattern, h)
+	return r.register("", pattern, h, nil)
 }
 
-// register is the shared, id-keyed registration path for Handle and All. Every
-// change rebuilds the mux from the current list. A disposer removes exactly the
-// route it was returned for, idempotently, and rebuilds the mux again.
-func (r *router) register(method, pattern string, h Handler) (func() error, error) {
+// WS registers a WebSocket upgrade handler on a ServeMux pattern. It shares the
+// Handle/All registry, router and middleware model; the pattern is compiled by
+// the standard library, so "/ws/{id}" works and exact-method HTTP routes still
+// win. The returned disposer removes only this route, then closes and joins all
+// connections accepted by it.
+func (r *router) WS(pattern string, cb func(*WSConn) error) (func() error, error) {
+	if cb == nil {
+		return nil, errors.New("server: nil websocket callback")
+	}
+	reg := newWSRegistration(cb)
+	handler := func(w http.ResponseWriter, req *http.Request) error {
+		r.serveWS(w, req, reg)
+		return nil
+	}
+	return r.register("", pattern, handler, reg)
+}
+
+// register is the shared, id-keyed registration path for Handle, All and WS.
+// Every change rebuilds the mux from the current list. A disposer removes
+// exactly the registration it was returned for, idempotently.
+func (r *router) register(method, pattern string, h Handler, wsReg *wsRegistration) (func() error, error) {
 	if h == nil {
 		return nil, errors.New("server: nil handler")
 	}
@@ -151,22 +375,95 @@ func (r *router) register(method, pattern string, h Handler) (func() error, erro
 		return nil, err
 	}
 	r.routes, r.mux = next, mux
+	if wsReg != nil {
+		r.wsRegs[wsReg] = struct{}{}
+	}
 	return func() error {
 		r.mu.Lock()
-		defer r.mu.Unlock()
 		for i, existing := range r.routes {
 			if existing.id == id {
 				remaining := append(append([]*route(nil), r.routes[:i]...), r.routes[i+1:]...)
 				rebuilt, err := buildMux(remaining)
 				if err != nil {
+					r.mu.Unlock()
 					return err
 				}
 				r.routes, r.mux = remaining, rebuilt
 				break
 			}
 		}
+		if wsReg != nil {
+			delete(r.wsRegs, wsReg)
+		}
+		r.mu.Unlock()
+		if wsReg != nil {
+			// Joining inverse (outside r.mu): user callbacks never run under a
+			// lock. A callback must not invoke this disposer — use Shutdown.
+			wsReg.close(scopeInverse)
+		}
 		return nil
 	}, nil
+}
+
+// SetCheckOrigin overrides the WebSocket origin policy for this service. A nil
+// fn restores the default, which accepts only same-origin requests (and clients
+// that send no Origin, e.g. native WebSocket clients).
+func (r *router) SetCheckOrigin(fn func(*http.Request) bool) {
+	r.mu.Lock()
+	r.checkOrigin = fn
+	r.mu.Unlock()
+}
+
+func (r *router) checkSameOrigin(req *http.Request) bool {
+	r.mu.RLock()
+	fn := r.checkOrigin
+	r.mu.RUnlock()
+	if fn != nil {
+		return fn(req)
+	}
+	return sameOrigin(req)
+}
+
+// sameOrigin is the safe default: an absent Origin (native clients) is allowed,
+// otherwise the Origin host must equal the request host. Rejecting a foreign
+// origin prevents a browser page from hijacking a user's socket (CSWSH).
+func sameOrigin(req *http.Request) bool {
+	origin := req.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, req.Host)
+}
+
+// serveWS performs the gorilla handshake, tracks the connection for the
+// lifetime of its registration, and runs the user callback with NO lock held.
+// A callback error or panic is contained: it only ends that one connection.
+func (r *router) serveWS(w http.ResponseWriter, req *http.Request, reg *wsRegistration) {
+	conn, err := r.upgrader.Upgrade(w, req, nil)
+	if err != nil {
+		return // gorilla has already written the rejection (400/403)
+	}
+	c := &wsConn{Conn: conn, req: req, reg: reg}
+	if !reg.track(c) {
+		_ = c.Close() // registration closed during the handshake
+		return
+	}
+	defer func() {
+		_ = c.Close()
+		reg.untrack(c)
+	}()
+	defer func() {
+		if recover() != nil {
+			// Contained on purpose: a user callback must never crash the server.
+		}
+	}()
+
+	var iface WSConn = c
+	_ = reg.cb(&iface)
 }
 
 func (r *router) Use(mw func(http.Handler) http.Handler) (func() error, error) {
@@ -194,18 +491,48 @@ func (r *router) Use(mw func(http.Handler) http.Handler) (func() error, error) {
 	}, nil
 }
 
-func (r *router) Close() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.closed {
-		return nil
-	}
-	r.closed = true
-	r.routes = nil
-	r.middlewares = nil
-	r.mux = http.NewServeMux()
-	return nil
+// shutdown is the non-joining half of service disposal. It removes every
+// registration and closes every socket but never waits for handlers, so it is
+// safe to call from a WS callback (Service.Shutdown is the public entry).
+func (r *router) shutdown() {
+	r.closeOnce.Do(func() {
+		r.mu.Lock()
+		r.closed = true
+		r.routes = nil
+		r.middlewares = nil
+		r.mux = http.NewServeMux()
+		r.closingRegs = make([]*wsRegistration, 0, len(r.wsRegs))
+		for reg := range r.wsRegs {
+			r.closingRegs = append(r.closingRegs, reg)
+		}
+		r.wsRegs = nil
+		r.mu.Unlock()
+
+		// Outside r.mu; a callback may be among the callers here, so do NOT join.
+		for _, reg := range r.closingRegs {
+			reg.shutdown()
+		}
+	})
 }
+
+func (r *router) close(scope closeScope) {
+	r.shutdown()
+	if scope == scopeInverse {
+		r.joinOnce.Do(func() {
+			// Activation-level inverse: join every handler before closeDone is
+			// signalled, so no socket/goroutine survives Gone.
+			for _, reg := range r.closingRegs {
+				reg.join()
+			}
+			close(r.closeDone)
+		})
+		<-r.closeDone
+	}
+}
+
+func (r *router) Close() error { r.close(scopeInverse); return nil }
+
+func (r *router) Shutdown() error { r.close(scopeCallback); return nil }
 
 func (r *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mu.RLock()
@@ -333,6 +660,17 @@ func (cw *captureWriter) Flush() {
 // Unwrap lets http.ResponseController reach optional capabilities of the
 // underlying ResponseWriter through the capturing wrapper.
 func (cw *captureWriter) Unwrap() http.ResponseWriter { return cw.ResponseWriter }
+
+// Hijack forwards the underlying connection so gorilla/websocket can upgrade a
+// request even though runHandler wraps the ResponseWriter. Without this the
+// Upgrader would see a writer without http.Hijacker and reject the upgrade.
+func (cw *captureWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := cw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("server: response writer does not support hijacking")
+	}
+	return h.Hijack()
+}
 
 // ---- Serve: bind before commit, join before unwind completes -------------
 

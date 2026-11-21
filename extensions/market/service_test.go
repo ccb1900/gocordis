@@ -557,3 +557,237 @@ func TestNativeReadOnly(t *testing.T) {
 		t.Fatalf("native catalog = %+v", cat.Entries)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// compatibility blocking: typed errors + catalog reason, no desired/fiber churn
+// ---------------------------------------------------------------------------
+
+func ownedSnapshot(env *serviceEnv) map[string]config.OwnedComponent {
+	out := make(map[string]config.OwnedComponent)
+	for _, o := range env.ctrl.Owned() {
+		out[o.ID] = o
+	}
+	return out
+}
+
+func assertOwnedUnchanged(t *testing.T, env *serviceEnv, before map[string]config.OwnedComponent) {
+	t.Helper()
+	after := ownedSnapshot(env)
+	if len(after) != len(before) {
+		t.Fatalf("declarations changed: %d -> %d", len(before), len(after))
+	}
+	for id, prev := range before {
+		now, ok := after[id]
+		if !ok || now.Type != prev.Type || now.Fiber != prev.Fiber ||
+			!reflect.DeepEqual(now.Config, prev.Config) {
+			t.Fatalf("declaration %q changed: %+v -> %+v", id, prev, now)
+		}
+	}
+}
+
+func TestIncompatibleCatalogReasonsAndBlocking(t *testing.T) {
+	dir := t.TempDir()
+	newWasm := func(id, runtimeExpr, apiExpr string) (string, string) {
+		artifact := filepath.Join(dir, id, "camera.wasm")
+		writeFile(t, artifact, id+"-wasm")
+		sum := sha256File(t, artifact)
+		body := wasmManifest(id, "1.0.0", sum, runtimeExpr)
+		if apiExpr != "" {
+			body = strings.Replace(body, `api = ">=1.0.0"`, `api = "`+apiExpr+`"`, 1)
+		}
+		path := filepath.Join(dir, id, "plugin.toml")
+		writeFile(t, path, body)
+		return path, sum
+	}
+	newProc := func(id, apiExpr string) (string, string) {
+		artifact := filepath.Join(dir, id, "bin", "modbus")
+		writeFile(t, artifact, id+"-proc")
+		sum := sha256File(t, artifact)
+		path := filepath.Join(dir, id, "plugin.json")
+		writeFile(t, path, procManifest(id, "1.0.0", sum, apiExpr))
+		return path, sum
+	}
+
+	newWasm("fit", ">=1.0.0 <2.0.0", "")
+	newWasm("fresh-runtime", ">=2.0.0", "") // runtime 1.2.0 cannot satisfy
+	newProc("fresh-api", ">=3.0.0")         // api 1.0.0 cannot satisfy
+	upRuntime, upRuntimeSum := newWasm("upgrade-runtime", ">=1.0.0 <2.0.0", "")
+	upAPI, upAPISum := newProc("upgrade-api", ">=1.0.0")
+
+	env := newServiceEnv(t, dir, "1.2.0", "1.0.0")
+	ctx := ctxT(t)
+
+	cat, err := env.svc.Catalog(ctx)
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+	if len(cat.Entries) != 5 {
+		t.Fatalf("entries = %d, want 5: %+v", len(cat.Entries), cat.Entries)
+	}
+	byID := make(map[string]market.Entry, len(cat.Entries))
+	for _, e := range cat.Entries {
+		byID[e.ID] = e
+	}
+	if e := byID["fit"]; !e.Compatible || e.CompatibleReason != "" {
+		t.Fatalf("fit entry = %+v", e)
+	}
+	if e := byID["fresh-runtime"]; e.Compatible || !strings.Contains(strings.ToLower(e.CompatibleReason), "runtime") {
+		t.Fatalf("runtime-incompatible reason = %q (entry %+v)", e.CompatibleReason, e)
+	}
+	if e := byID["fresh-api"]; e.Compatible || !strings.Contains(strings.ToLower(e.CompatibleReason), "api") {
+		t.Fatalf("api-incompatible reason = %q (entry %+v)", e.CompatibleReason, e)
+	}
+
+	// Install rejects both categories with distinguishable typed errors and
+	// leaves the desired set / fibers untouched.
+	before := ownedSnapshot(env)
+	loads := env.rt.loadCount()
+	if err := env.svc.Install(ctx, "fresh-runtime"); !errors.Is(err, market.ErrRuntimeIncompatible) {
+		t.Fatalf("Install runtime-incompatible: %v", err)
+	}
+	if err := env.svc.Install(ctx, "fresh-api"); !errors.Is(err, market.ErrAPIVersionIncompatible) {
+		t.Fatalf("Install api-incompatible: %v", err)
+	}
+	assertOwnedUnchanged(t, env, before)
+	if env.rt.loadCount() != loads {
+		t.Fatal("rejected install reached the runtime")
+	}
+
+	// Upgrade rejects a plugin that became incompatible after installation.
+	if err := env.svc.Install(ctx, "upgrade-runtime"); err != nil {
+		t.Fatalf("Install upgrade-runtime (compatible): %v", err)
+	}
+	if err := env.svc.Install(ctx, "upgrade-api"); err != nil {
+		t.Fatalf("Install upgrade-api (compatible): %v", err)
+	}
+	before = ownedSnapshot(env)
+	loads = env.rt.loadCount()
+	writeFile(t, upRuntime, wasmManifest("upgrade-runtime", "1.1.0", upRuntimeSum, ">=2.0.0"))
+	writeFile(t, upAPI, procManifest("upgrade-api", "1.1.0", upAPISum, ">=3.0.0"))
+	if err := env.svc.Upgrade(ctx, "upgrade-runtime"); !errors.Is(err, market.ErrRuntimeIncompatible) {
+		t.Fatalf("Upgrade runtime-incompatible: %v", err)
+	}
+	if err := env.svc.Upgrade(ctx, "upgrade-api"); !errors.Is(err, market.ErrAPIVersionIncompatible) {
+		t.Fatalf("Upgrade api-incompatible: %v", err)
+	}
+	assertOwnedUnchanged(t, env, before)
+	if env.rt.loadCount() != loads {
+		t.Fatal("rejected upgrade reached the runtime")
+	}
+	if got := ownedRow(t, env, "upgrade-runtime").Config["version"]; got != "1.0.0" {
+		t.Fatalf("upgrade-runtime version = %v, want unchanged 1.0.0", got)
+	}
+	if got := ownedRow(t, env, "upgrade-api").Config["version"]; got != "1.0.0" {
+		t.Fatalf("upgrade-api version = %v, want unchanged 1.0.0", got)
+	}
+}
+
+// A fresh Service over the same Controller state must recover install state
+// from declarations, not from its own (empty) in-memory row map.
+func TestInstallStateRecoveryAfterServiceRestart(t *testing.T) {
+	dir := t.TempDir()
+	wasm := filepath.Join(dir, "alpha", "camera.wasm")
+	writeFile(t, wasm, "bytes")
+	sum := sha256File(t, wasm)
+	writeFile(t, filepath.Join(dir, "alpha", "plugin.toml"), wasmManifest("alpha", "1.0.0", sum, ">=1.0.0"))
+
+	envA := newServiceEnv(t, dir)
+	if err := envA.svc.Install(ctxT(t), "alpha"); err != nil {
+		t.Fatalf("Install via service A: %v", err)
+	}
+
+	svcB, err := market.NewService(market.Options{
+		Controller:     envA.ctrl,
+		CatalogDirs:    []string{dir},
+		RuntimeVersion: "1.2.0",
+		APIVersion:     "1.0.0",
+		Trust:          "local",
+	})
+	if err != nil {
+		t.Fatalf("NewService B: %v", err)
+	}
+	cat, err := svcB.Catalog(ctxT(t))
+	if err != nil {
+		t.Fatalf("Catalog B: %v", err)
+	}
+	if len(cat.Entries) != 1 || !cat.Entries[0].Installed {
+		t.Fatalf("service B did not recover installed state: %+v", cat.Entries)
+	}
+	if err := svcB.Uninstall(ctxT(t), "alpha"); err != nil {
+		t.Fatalf("Uninstall via service B: %v", err)
+	}
+	if hasRow(t, envA, "alpha") {
+		t.Fatal("declaration survived Uninstall via service B")
+	}
+	cat, err = svcB.Catalog(ctxT(t))
+	if err != nil || len(cat.Entries) != 1 || cat.Entries[0].Installed {
+		t.Fatalf("installed state after Uninstall B = %+v, err %v", cat.Entries, err)
+	}
+}
+
+// Declaration-driven recovery: the catalog manifest may disappear before a
+// Service restart. The stored declaration is still the install authority, so a
+// new Service must show (and be able to uninstall) the orphaned row.
+func TestInstallStateRecoveryAfterManifestDeletedRestart(t *testing.T) {
+	dir := t.TempDir()
+	wasm := filepath.Join(dir, "alpha", "camera.wasm")
+	writeFile(t, wasm, "bytes")
+	sum := sha256File(t, wasm)
+	manifest := filepath.Join(dir, "alpha", "plugin.toml")
+	writeFile(t, manifest, wasmManifest("alpha", "1.0.0", sum, ">=1.0.0"))
+
+	envA := newServiceEnv(t, dir)
+	if err := envA.svc.Install(ctxT(t), "alpha"); err != nil {
+		t.Fatalf("Install via service A: %v", err)
+	}
+	if err := os.Remove(manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	svcB, err := market.NewService(market.Options{
+		Controller:     envA.ctrl,
+		CatalogDirs:    []string{dir},
+		RuntimeVersion: "1.2.0",
+		APIVersion:     "1.0.0",
+		Trust:          "local",
+	})
+	if err != nil {
+		t.Fatalf("NewService B: %v", err)
+	}
+	ctx := ctxT(t)
+	cat, err := svcB.Catalog(ctx)
+	if err != nil {
+		t.Fatalf("Catalog B: %v", err)
+	}
+	var orphan *market.Entry
+	for i := range cat.Entries {
+		if cat.Entries[i].ID == "alpha" {
+			orphan = &cat.Entries[i]
+		}
+	}
+	if orphan == nil || !orphan.Installed {
+		t.Fatalf("orphaned installed entry missing from Catalog: %+v", cat.Entries)
+	}
+	if !strings.Contains(orphan.Reason, "manifest missing") {
+		t.Fatalf("orphan reason = %q, want a 'manifest missing' reason", orphan.Reason)
+	}
+	if orphan.Backend != "wasm" || orphan.Version != "1.0.0" {
+		t.Fatalf("orphan entry = %+v", orphan)
+	}
+
+	if err := svcB.Uninstall(ctx, "alpha"); err != nil {
+		t.Fatalf("Uninstall orphan via service B: %v", err)
+	}
+	if hasRow(t, envA, "alpha") {
+		t.Fatal("orphaned declaration survived Uninstall via service B")
+	}
+	cat, err = svcB.Catalog(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range cat.Entries {
+		if e.ID == "alpha" {
+			t.Fatalf("orphan reappeared in Catalog after Uninstall: %+v", e)
+		}
+	}
+}

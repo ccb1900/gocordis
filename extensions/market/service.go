@@ -58,6 +58,12 @@ var (
 	ErrInvalidManifest = errors.New("market: invalid installable manifest")
 	// ErrUnsupportedBackend means the backend has no declaration mapping.
 	ErrUnsupportedBackend = errors.New("market: unsupported backend")
+	// ErrRuntimeIncompatible means the manifest's compatibility.runtime
+	// constraint rejects the host runtime version supplied to the Service.
+	ErrRuntimeIncompatible = errors.New("market: plugin incompatible with host runtime version")
+	// ErrAPIVersionIncompatible means the manifest's compatibility.api
+	// constraint rejects the plugin API version supplied to the Service.
+	ErrAPIVersionIncompatible = errors.New("market: plugin incompatible with plugin API version")
 )
 
 // Service is the backend marketplace capability exposed to applications.
@@ -71,17 +77,24 @@ type Service interface {
 // Entry is one catalog row. Trust is descriptive metadata only; it carries no
 // security guarantee. Compatible is the result of pluginmeta.ValidateAgainst
 // with the runtime/API versions supplied through Component config.
+// CompatibleReason is empty when compatible; otherwise it explains which
+// constraint rejected the entry. Reason carries non-compatibility state (e.g.
+// "manifest missing" for an installed entry whose catalog file disappeared).
+// Both are additive (omitempty) so ordinary entries keep the original DTO
+// shape.
 type Entry struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Version     string `json:"version"`
-	Backend     string `json:"backend"`
-	ModuleType  string `json:"moduleType"`
-	Description string `json:"description"`
-	Source      string `json:"source"`
-	Trust       string `json:"trust"`
-	Installed   bool   `json:"installed"`
-	Compatible  bool   `json:"compatible"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Version          string `json:"version"`
+	Backend          string `json:"backend"`
+	ModuleType       string `json:"moduleType"`
+	Description      string `json:"description"`
+	Source           string `json:"source"`
+	Trust            string `json:"trust"`
+	Installed        bool   `json:"installed"`
+	Compatible       bool   `json:"compatible"`
+	CompatibleReason string `json:"compatibleReason,omitempty"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 // Catalog is the hub query DTO. Sequence is a declaration generation counter,
@@ -178,7 +191,52 @@ func NewService(opts Options) (Service, error) {
 	if _, err := scan(opts.CatalogDirs, opts.RuntimeVersion, opts.APIVersion, trust); err != nil {
 		return nil, err
 	}
-	return &service{opts: opts, trust: trust, rows: make(map[string]config.ComponentConfig)}, nil
+	s := &service{opts: opts, trust: trust, rows: make(map[string]config.ComponentConfig)}
+	s.restoreRows()
+	return s, nil
+}
+
+// restoreRows recovers install state for a fresh Service over an already
+// reconciled Controller (e.g. process/market-service restart). The Controller's
+// stored declarations are the authority for what is installed: a row is
+// derived from the ComponentConfig itself (WASM source/path/version or Proc
+// dir/backend/version keys), with no dependency on a current catalog entry.
+// This keeps orphaned installs recoverable after plugin.toml is deleted, and
+// Uninstall can retire them. OwnID and unrelated app components are excluded.
+func (s *service) restoreRows() {
+	for _, owned := range s.opts.Controller.Owned() {
+		if owned.ID == s.opts.OwnID {
+			continue
+		}
+		row, ok := rowFromOwned(owned)
+		if !ok {
+			continue
+		}
+		s.rows[owned.ID] = row
+	}
+}
+
+// rowFromOwned reconstructs the declaration-level row market would have
+// written, using only the stored ComponentConfig shape. WASM rows carry a
+// module-type (non-proc) Type plus source/path/version keys; Proc rows use the
+// proc-plugin Type plus dir/backend/version keys.
+func rowFromOwned(owned config.OwnedComponent) (config.ComponentConfig, bool) {
+	if owned.Type == ProcPluginType && hasConfigKeys(owned.Config, KeyDir, KeyBackend, KeyVersion) {
+		return config.ComponentConfig{ID: owned.ID, Type: owned.Type, Config: owned.Config}, true
+	}
+	if owned.Type != "" && owned.Type != ProcPluginType && hasConfigKeys(owned.Config, KeySource, KeyPath, KeyVersion) {
+		return config.ComponentConfig{ID: owned.ID, Type: owned.Type, Config: owned.Config}, true
+	}
+	return config.ComponentConfig{}, false
+}
+
+func hasConfigKeys(cfg map[string]any, keys ...string) bool {
+	for _, k := range keys {
+		if _, ok := cfg[k]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // freshRecord re-scans the catalog and resolves one id. Invalid files and
@@ -220,6 +278,21 @@ func Scan(dirs []string, runtimeVersion, apiVersion, trust string) (ScanResult, 
 		out.Entries = append(out.Entries, rec.entry)
 	}
 	return out, nil
+}
+
+// compatibilityFailure classifies an incompatibility into the two typed
+// errors. The runtime constraint is checked first with the API check disabled
+// (an empty apiVersion imposes no API restriction), then the API constraint is
+// checked. Intrinsic manifest validity was already confirmed during scan, so
+// any failure here is a constraint rejection.
+func compatibilityFailure(m pluginmeta.Manifest, runtimeVersion, apiVersion string) error {
+	if err := pluginmeta.ValidateAgainst(m, runtimeVersion, ""); err != nil {
+		return fmt.Errorf("%w for %q: %v", ErrRuntimeIncompatible, m.ID, err)
+	}
+	if err := pluginmeta.ValidateAgainst(m, runtimeVersion, apiVersion); err != nil {
+		return fmt.Errorf("%w for %q: %v", ErrAPIVersionIncompatible, m.ID, err)
+	}
+	return nil
 }
 
 type scanOutcome struct {
@@ -270,11 +343,15 @@ func scan(dirs []string, runtimeVersion, apiVersion, trust string) (scanOutcome,
 			if source == "" {
 				source = m.Source.Kind
 			}
+			reason := ""
+			if err := compatibilityFailure(m, runtimeVersion, apiVersion); err != nil {
+				reason = err.Error()
+			}
 			out.entries = append(out.entries, record{
 				entry: Entry{
 					ID: m.ID, Name: m.Name, Version: m.Version, Backend: string(m.Backend),
 					ModuleType: m.ModuleType, Description: m.Description, Source: source, Trust: trust,
-					Compatible: pluginmeta.ValidateAgainst(m, runtimeVersion, apiVersion) == nil,
+					Compatible: reason == "", CompatibleReason: reason,
 				},
 				manifest: m,
 				dir:      filepath.Dir(path),
@@ -300,10 +377,21 @@ func (s *service) Catalog(ctx context.Context) (Catalog, error) {
 	cat := Catalog{Entries: res.Entries, Issues: append([]Issue(nil), res.Issues...)}
 	s.mu.RLock()
 	cat.Sequence = s.sequence
+	seen := make(map[string]struct{}, len(cat.Entries))
 	for i := range cat.Entries {
+		seen[cat.Entries[i].ID] = struct{}{}
 		_, cat.Entries[i].Installed = s.rows[cat.Entries[i].ID]
 	}
+	// Recovered declarations with no current catalog file still belong in the
+	// Catalog, so an orphan can be inspected and uninstalled after restart.
+	for id, row := range s.rows {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		cat.Entries = append(cat.Entries, orphanEntry(id, row, s.trust))
+	}
 	s.mu.RUnlock()
+	sort.Slice(cat.Entries, func(i, j int) bool { return cat.Entries[i].ID < cat.Entries[j].ID })
 	if len(res.Issues) > 0 {
 		reasons := make([]string, 0, len(res.Issues))
 		for _, issue := range res.Issues {
@@ -312,6 +400,24 @@ func (s *service) Catalog(ctx context.Context) (Catalog, error) {
 		return cat, fmt.Errorf("%w: %s", ErrInvalidCatalog, strings.Join(reasons, "; "))
 	}
 	return cat, ctx.Err()
+}
+
+// orphanEntry projects a recovered declaration that has no current catalog
+// file into a Catalog row. Without a manifest, compatibility cannot be
+// re-evaluated, so the entry is marked compatible (no known constraint) and
+// carries a Reason explaining that its manifest is missing.
+func orphanEntry(id string, row config.ComponentConfig, trust string) Entry {
+	e := Entry{ID: id, Trust: trust, Installed: true, Compatible: true, Reason: "manifest missing"}
+	e.Version, _ = row.Config[KeyVersion].(string)
+	if row.Type == ProcPluginType {
+		e.Backend = string(pluginmeta.BackendProc)
+		e.Source, _ = row.Config[KeyBackend].(string)
+		return e
+	}
+	e.Backend = string(pluginmeta.BackendWASM)
+	e.ModuleType = row.Type
+	e.Source, _ = row.Config[KeySource].(string)
+	return e
 }
 
 func (s *service) Install(ctx context.Context, id string) error {
@@ -323,6 +429,9 @@ func (s *service) Install(ctx context.Context, id string) error {
 	}
 	if rec.manifest.Backend == pluginmeta.BackendNative {
 		return fmt.Errorf("%w: %q", ErrBuildTimePlugin, id)
+	}
+	if err := compatibilityFailure(rec.manifest, s.opts.RuntimeVersion, s.opts.APIVersion); err != nil {
+		return err
 	}
 	row, err := s.rowFor(rec)
 	if err != nil {
@@ -366,6 +475,11 @@ func (s *service) Upgrade(ctx context.Context, id string) error {
 	s.mu.RUnlock()
 	if !installed {
 		return fmt.Errorf("%w: %q", ErrNotInstalled, id)
+	}
+	// A plugin that became incompatible after installation must not be
+	// upgraded: reject before touching any declaration or fiber.
+	if err := compatibilityFailure(rec.manifest, s.opts.RuntimeVersion, s.opts.APIVersion); err != nil {
+		return err
 	}
 	// Re-read the artifact/checksum from disk: an upgrade may have changed
 	// either. The new row is a declaration replacement (Config differs), never

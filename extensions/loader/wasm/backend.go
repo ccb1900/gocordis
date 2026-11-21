@@ -102,29 +102,36 @@ func NewBackend(opts ...Option) *Backend {
 // (NEW-13 fix — the generation comes from the same critical section as the
 // Module build in loadGeneration; a concurrent Unload + fresh load can never
 // bind a handle to the wrong generation).
+// LoadResource implements the resource-owning protocol. It performs the full
+// load itself (source read + loadGeneration), so the Module and the
+// generation the handle binds to come from the SAME critical section
+// (NEW-13 fix: no second ID query between the two).
 func (b *Backend) LoadResource(ctx context.Context, artifact loader.Artifact) (loader.Module, loader.ResourceHandle, error) {
-	mod, err := b.Load(ctx, artifact)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := b.checkOpen(); err != nil {
+		return loader.Module{}, nil, err
+	}
+	if artifact.BackendType != loader.BackendWASM {
+		return loader.Module{}, nil, fmt.Errorf("%w: wasm backend only accepts BackendType == %q, got %q", loader.ErrInvalidArtifact, loader.BackendWASM, artifact.BackendType)
+	}
+	if err := ctx.Err(); err != nil {
+		return loader.Module{}, nil, err
+	}
+	data, err := readSource(artifact.Source)
 	if err != nil {
 		return loader.Module{}, nil, err
 	}
-	f, ok := mod.Factory.(*wasmFactory)
-	if !ok {
-		return loader.Module{}, nil, fmt.Errorf("%w: wasm factory type %T", ErrWASMBackendPanic, mod.Factory)
+	if len(data) > maxModuleBytes {
+		return loader.Module{}, nil, fmt.Errorf("%w: module %d bytes exceeds limit %d", loader.ErrInvalidArtifact, len(data), maxModuleBytes)
 	}
-	// The factory's ref IS the generation's ref — the identity check in the
-	// handle operations makes any mismatch (Unload + fresh load raced between
-	// Load and here) a safe no-op rather than a wrong-generation release.
-	b.mu.Lock()
-	gen := b.generations[f.ref.id]
-	b.mu.Unlock()
-	if gen == nil || gen.ref != f.ref {
-		// The generation this Module was built from is no longer current —
-		// it was superseded. Its resources are already closed; the attempt
-		// has nothing left to own. Return a handle with a detached
-		// generation: Commit/Abandon/Release are all identity-checked
-		// no-ops for it.
-		detached := &moduleGeneration{ref: f.ref, committed: true}
-		return mod, &wasmResource{b: b, gen: detached}, nil
+	if err := ctx.Err(); err != nil {
+		return loader.Module{}, nil, err
+	}
+	gen, mod, err := b.loadGeneration(ctx, artifact, data)
+	if err != nil {
+		return loader.Module{}, nil, err
 	}
 	return mod, &wasmResource{b: b, gen: gen}, nil
 }
@@ -308,6 +315,15 @@ func (b *Backend) releaseGeneration(gen *moduleGeneration) {
 	cur, ok := b.generations[gen.ref.id]
 	if ok && cur == gen {
 		delete(b.generations, gen.ref.id)
+		if gen.holders > 0 {
+			gen.holders--
+		}
+		if gen.holders > 0 {
+			// Another in-flight attempt still holds the shared ref: keep it
+			// alive; that attempt's Abandon will release the last claim.
+			b.mu.Unlock()
+			return
+		}
 	}
 	b.mu.Unlock()
 	if ok && cur == gen {
@@ -326,9 +342,6 @@ func (b *Backend) commitGeneration(gen *moduleGeneration) {
 		return
 	}
 	gen.committed = true
-	if gen.holders > 0 {
-		gen.holders--
-	}
 }
 
 // abandonGeneration releases one holder's claim on gen (handle Abandon):

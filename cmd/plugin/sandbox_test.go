@@ -115,3 +115,29 @@ func TestSandboxCommandDispatch(t *testing.T) {
 		t.Fatalf("sandbox subcommand exited %d: %s%s", code, out.String(), errOut.String())
 	}
 }
+
+func TestSandboxFactoryFlagUsesBuiltinRegistry(t *testing.T) {
+	path := writeManifest(t, strings.Replace(validManifest, `id = "camera"`, `id = "factory-demo"`, 1))
+	var out, errOut bytes.Buffer
+	if code := run([]string{"sandbox", path, "--factory", "demo"}, &out, &errOut); code != 0 {
+		t.Fatalf("sandbox --factory exited %d: %s%s", code, out.String(), errOut.String())
+	}
+	text := out.String()
+	if !strings.Contains(text, "fibers: 1") || !strings.Contains(text, "providers: 1") {
+		t.Fatalf("built-in factory did not load a component: %s", text)
+	}
+	if strings.Contains(text, "requires build-time registration") {
+		t.Fatalf("boundary diagnostic should not appear with --factory: %s", text)
+	}
+}
+
+func TestSandboxFactoryFlagRejectsUnknownName(t *testing.T) {
+	path := writeManifest(t, validManifest)
+	var out, errOut bytes.Buffer
+	if code := run([]string{"sandbox", "--factory", "missing", path}, &out, &errOut); code == 0 {
+		t.Fatal("unknown factory name was accepted")
+	}
+	if !strings.Contains(errOut.String()+out.String(), "UNKNOWN_FACTORY") {
+		t.Fatalf("unknown-factory diagnostic missing: %s%s", out.String(), errOut.String())
+	}
+}

@@ -27,7 +27,8 @@
 15. [测试](#15)
 16. [边界与最佳实践](#16)
 17. [示例索引](#17)
-18. [故障排查](#18)
+18. [插件发布(catalog bundle)](#18)
+19. [故障排查](#19)
 
 ---
 
@@ -451,7 +452,7 @@ http.ListenAndServe(":8080", srv)
 4. **契约层**:key/事件/接口定义在 contracts 包;插件与应用互不 import;
 5. 禁止清单(手写启动顺序、sleep 等依赖、全局单例、自旋重试……)见
    `AGENTS.md` §6。
-6. CLI 沙箱边界:`cmd/plugin sandbox` 仅凭 pluginmeta 元数据无法构建插件组件(需宿主编译期注册 config.Factory),它输出 `REQUIRES_BUILD_TIME_REGISTRATION` 诊断并展示空 Runtime 的 snapshot,不改动任何用户文件。
+6. CLI 沙箱边界:`cmd/plugin sandbox` 仅凭 pluginmeta 元数据无法构建插件组件(需宿主编译期注册 config.Factory),它输出 `REQUIRES_BUILD_TIME_REGISTRATION` 诊断并展示空 Runtime 的 snapshot,不改动任何用户文件。`sandbox <manifest> --factory demo` 走公开库 API `sandboxlib.Sandbox(ctx, m, factory, out)`:新建 Runtime + Controller、登记工厂、调和一个声明、打印 snapshot 后干净关闭,不写文件。真实插件由宿主用自己的工厂注册表嵌入该 API(CLI 内置注册表仅有 `demo`)。
 
 ---
 
@@ -468,7 +469,53 @@ http.ListenAndServe(":8080", srv)
 
 ---
 
-## <a id="18"></a>18. 故障排查
+## <a id="18"></a>18. 插件发布(catalog bundle)
+
+用 `cmd/plugin` 的 CLI 走完一条最短发布链(所有命令都在插件目录外/内按提示使用):
+
+```bash
+# 1) 创建:生成 plugin.toml / component.go / go.mod / README.md
+plugin create ./my-plugin --id my-plugin --name "My Plugin" --backend native
+
+# 2) 体检:解析元数据并打印全部诊断;有 error 即非零退出
+plugin doctor ./my-plugin/plugin.toml
+
+# 2b) 可选沙箱:无工厂时只报 REQUIRES_BUILD_TIME_REGISTRATION 并显示空 Runtime
+plugin sandbox ./my-plugin/plugin.toml
+# 宿主已注册工厂时可用公开库 API:sandboxlib.Sandbox(ctx, m, factory, out)
+# CLI 的 --factory demo 仅用于演示工厂路径,不是发布步骤。
+
+# 3) 打包:校验清单 → 计算所有 artifact 的 sha256 → 写回 Source.Checksum
+#    → 生成确定性 tar.gz(manifest 在前,其余文件按名字排序)
+plugin package ./my-plugin                  # 默认 <id>.tar.gz 放在插件目录
+plugin package ./my-plugin --out ./my-plugin.tar.gz
+
+# 4) 放置 catalog:把 tar.gz 复制到宿主仓库的 catalog 目录(例如
+#    <host>/catalog/<id>/),与 catalog 索引条目(清单摘要/路径)一起提交。
+#    catalog 只包含声明与产物:不持久化 fiber 表或 Runtime snapshot。
+
+# 5) 安装:宿主用声明存储启用插件(manifest.toml 增一行 + 组合根注册工厂)
+[[components]]
+id = "my-plugin"
+type = "my-plugin"
+enabled = true
+```
+
+配套规则与边界:
+
+- **Native = 编译期**:`backend = "native"` 的插件不是下载即用的二进制——
+  `plugin.toml` 只是描述性元数据,必须**在宿主编译时**注册
+  `config.Factory`(`reg.Register(type, config.FactoryFunc(...))`)才可能激活;
+  `plugin create` 生成的 `component.go` 需要宿主 import 并注册。
+- **远端口市场/签名不在范围内**:本 CLI 只产出本地 catalog-ready 的
+  tar.gz 与 sha256;远程市场发现、上传、签名校验、密钥管理均**不在本仓库范围**,
+  应由宿主/发行方在 catalog 之外自行实现。
+- 打包拒绝非法清单、`..`/绝对路径/符号链接(防止路径逃出 bundle);重复打包
+  同一输入得到逐字节相同的 tarball。已存在的 `Source.Checksum` 会被覆盖。
+
+---
+
+## <a id="19"></a>19. 故障排查
 
 | 症状 | 原因 | 处理 |
 |---|---|---|

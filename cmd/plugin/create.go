@@ -126,23 +126,7 @@ var postWriteHook func(name string) error
 // normalizeCreateArgs lets the positional directory appear before or after the
 // flags, since Go's flag package stops parsing at the first non-flag argument.
 func normalizeCreateArgs(args []string) (positional, flags []string) {
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if !strings.HasPrefix(a, "-") {
-			positional = append(positional, a)
-			continue
-		}
-		flags = append(flags, a)
-		name := strings.TrimLeft(a, "-")
-		if strings.Contains(name, "=") || !createValue[name] {
-			continue
-		}
-		if i+1 < len(args) {
-			i++
-			flags = append(flags, args[i])
-		}
-	}
-	return positional, flags
+	return normalizeValueArgs(args, createValue)
 }
 
 func packageName(id string) string {

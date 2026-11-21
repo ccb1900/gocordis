@@ -12,10 +12,24 @@
 // still Component.Inject/Provide resolved through typed Key[T]. Adapters in
 // ./adapters merely project loader.Artifact, config.ComponentConfig and
 // procplugin.PluginManifest metadata into this common descriptor.
+//
+// CHECKSUM CONTRACT — one rule, two independent fields:
+//
+//   - source.checksum is the SHA-256 digest of the SINGLE artifact located at
+//     source.location. Consumers (e.g. extensions/market) resolve that location
+//     to one file and verify that file's digest against this field.
+//   - package.checksum is the deterministic, aggregate SHA-256 over the whole
+//     set of artifacts packaged together with the manifest. It identifies the
+//     packaged artifact set as a unit.
+//
+// The fields have different scopes and must never be substituted for one
+// another: a tool that writes them (e.g. `plugin package`) computes each from
+// its own definition, and a verifier of one field never reads the other.
 package pluginmeta
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -63,11 +77,21 @@ type Compatibility struct {
 }
 
 // Source records where a plugin implementation came from. Checksum, when set,
-// is a lowercase-or-uppercase hex encoded SHA-256 digest (64 hex characters).
+// is a lowercase-or-uppercase hex encoded SHA-256 digest (64 hex characters)
+// of the SINGLE artifact at Location (see the checksum contract above).
 // Integrity checking itself is the Loader's responsibility.
 type Source struct {
 	Kind     string `json:"kind" toml:"kind"`
 	Location string `json:"location" toml:"location"`
+	Checksum string `json:"checksum" toml:"checksum"`
+}
+
+// PackageInfo carries aggregate information about a packaged plugin release.
+// Checksum, when set, is a lowercase-or-uppercase hex encoded SHA-256 digest
+// (64 hex characters) over ALL artifacts in the package — deliberately NOT the
+// digest of the single artifact at Source.Location (see the checksum contract
+// above). It is additive: absent packages leave this field nil.
+type PackageInfo struct {
 	Checksum string `json:"checksum" toml:"checksum"`
 }
 
@@ -89,13 +113,14 @@ type Manifest struct {
 	Config        map[string]any `json:"config" toml:"config"`
 	Compatibility Compatibility  `json:"compatibility" toml:"compatibility"`
 	Source        Source         `json:"source" toml:"source"`
+	Package       *PackageInfo   `json:"package,omitempty" toml:"package,omitempty"`
 }
 
 // Validate checks the intrinsic well-formedness of m: required identity
 // fields, a valid semantic version, well-formed (but not yet evaluated)
-// compatibility constraints, duplicate/empty capability keys and the checksum
-// shape. It does not compare against a host runtime version; use
-// ValidateAgainst for that.
+// compatibility constraints, duplicate/empty capability keys and the shape of
+// both checksums (source.checksum and package.checksum). It does not compare
+// against a host runtime version; use ValidateAgainst for that.
 func Validate(m Manifest) error {
 	if strings.TrimSpace(m.ID) == "" {
 		return errors.New("pluginmeta: id is required")
@@ -121,11 +146,24 @@ func Validate(m Manifest) error {
 	if err := validateKeys(m.Provides, "provides", func(d Descriptor) string { return d.Key }); err != nil {
 		return err
 	}
-	if m.Source.Checksum != "" {
-		raw, err := hex.DecodeString(m.Source.Checksum)
-		if err != nil || len(raw) != 32 {
-			return fmt.Errorf("pluginmeta: source.checksum must be 64 hex characters (sha256)")
+	if err := validateChecksum("source.checksum", m.Source.Checksum); err != nil {
+		return err
+	}
+	if m.Package != nil {
+		if err := validateChecksum("package.checksum", m.Package.Checksum); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func validateChecksum(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	raw, err := hex.DecodeString(value)
+	if err != nil || len(raw) != sha256.Size {
+		return fmt.Errorf("pluginmeta: %s must be 64 hex characters (sha256)", field)
 	}
 	return nil
 }

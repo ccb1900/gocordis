@@ -143,3 +143,41 @@ func TestParseErrors(t *testing.T) {
 		t.Error("Parse accepted malformed TOML")
 	}
 }
+
+// Both checksum fields must round-trip through the strict decoders: unknown
+// fields are rejected, but the additive [package] table is now part of the
+// contract. The two values are deliberately different to catch field swaps.
+func TestParseBothChecksums(t *testing.T) {
+	const other = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tests := []struct {
+		name   string
+		format string
+		data   string
+	}{
+		{
+			"json", "json",
+			strings.Replace(validJSON, `"source": {`, `"package": {"checksum": "`+other+`"}, "source": {`, 1),
+		},
+		{
+			"toml", "toml",
+			validTOML + "\n[package]\nchecksum = \"" + other + "\"\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, err := pluginmeta.Parse([]byte(tt.data), tt.format)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if m.Package == nil || m.Package.Checksum != other {
+				t.Fatalf("package.checksum = %+v, want %q", m.Package, other)
+			}
+			if m.Source.Checksum != checksum {
+				t.Fatalf("source.checksum = %q, want %q", m.Source.Checksum, checksum)
+			}
+			if err := pluginmeta.Validate(m); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+		})
+	}
+}

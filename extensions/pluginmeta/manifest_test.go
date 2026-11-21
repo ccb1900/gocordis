@@ -178,3 +178,43 @@ func TestCapabilityKeys(t *testing.T) {
 		t.Errorf("unexpected provided keys: %v", provides)
 	}
 }
+
+// The two checksums are independent declarations: source.checksum covers the
+// single artifact at source.location, package.checksum covers the aggregate
+// packaged artifacts. Both must be validated with the same sha256-hex shape.
+func TestValidatePackageChecksum(t *testing.T) {
+	valid := strings.Repeat("a", 64)
+	other := strings.Repeat("b", 64)
+
+	for _, tc := range []struct {
+		name    string
+		pkg     *pluginmeta.PackageInfo
+		wantErr bool
+	}{
+		{"absent", nil, false},
+		{"empty", &pluginmeta.PackageInfo{}, false},
+		{"valid", &pluginmeta.PackageInfo{Checksum: valid}, false},
+		{"uppercase", &pluginmeta.PackageInfo{Checksum: strings.Repeat("A", 64)}, false},
+		{"too short", &pluginmeta.PackageInfo{Checksum: strings.Repeat("a", 63)}, true},
+		{"too long", &pluginmeta.PackageInfo{Checksum: strings.Repeat("a", 66)}, true},
+		{"non hex", &pluginmeta.PackageInfo{Checksum: strings.Repeat("z", 64)}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := validManifest()
+			m.Source.Checksum = valid
+			m.Package = tc.pkg
+			err := pluginmeta.Validate(m)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate(package=%+v) error = %v, wantErr %v", tc.pkg, err, tc.wantErr)
+			}
+		})
+	}
+
+	// A valid package.checksum must not mask an invalid source.checksum.
+	m := validManifest()
+	m.Source.Checksum = strings.Repeat("z", 64)
+	m.Package = &pluginmeta.PackageInfo{Checksum: other}
+	if err := pluginmeta.Validate(m); err == nil {
+		t.Fatal("Validate accepted an invalid source.checksum with a valid package.checksum")
+	}
+}

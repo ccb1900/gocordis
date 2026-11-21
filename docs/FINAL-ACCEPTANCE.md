@@ -193,18 +193,22 @@ windows-build(build/vet/test 交叉编译)、console-web(npm/vitest/tsc/build)�
 
 ---
 
-## 7.5 语义闭环（2026-11-21 收尾，原 P-CO-03 / P-CO-05 已关闭）
+## 7.5 语义闭环（R1–R4 修正后，原 P-CO-03 / P-CO-05 已关闭）
 
-审计 PASS WITH LIMITATIONS 指出的三项语义闭环已按论文原文补齐：
+审计先指出三项语义证据缺口，随后又指出首轮补齐使用了「快照模拟冒充真实 Runtime 验证」
+（R1 多 Realm 合并、R2 默认最弱观察、R3 空 inverse、R4 文件存在性检查）。以下为修正后状态：
 
-| 闭环 | 论文依据 | 实现 | 验收测试 |
+| 闭环 | 论文依据 | 实现（R1/R2/R4 修正） | 验收测试 |
 |---|---|---|---|
-| 观察等价 | §3.3.2 Def 31-35:≃ₖ 由 key 的操作集诱导(最粗被尊重等价),≃_S = 同域 + 逐 key ≃ₖ;递归类型上为偏等价 | `runtime/observation_equivalence.go`:`ObservationSpec` 声明每 key 的可观察边界,`ObservationModel.EquivalentAt` 实现 Def 33,`RelevantKeys` 计算 dom∩S | `observation_equivalence_test.go`:等价三性质、域交、操作尊重、generation 可观察性 |
-| Unified Context 递归 | §3.3.1 Def 28:Γ∞ = μΓ. Γ × (Γ→Γ) × Σ;子 Fiber 拥有新 Context,继承 Σ | `Context.Child` 派生 + `initialMetaView` 继承 + ownership 门控;三投影(Γ=activation, Γ→Γ=effect stack, Σ=keyRealms+metaView+graph) | `unified_context_test.go`:嵌套组合、逆序撤销、Revision 保留递归、投影不变量 |
-| 独立性与五定理 | §3.4 Def 42/44/Thm43/45;§4.3 Thm64/68/70/73/80 | `observation_equivalence.go` + `theorem_evidence_test.go` 前提-检查点-测试对照账本;不同 key 天然独立、同 key 需 witness | `independence_test.go`(4 项:不同 key 交换、同 key witness、不扰动他 key、生成式 S 投影)、`theorem_evidence_test.go`(前提锚点、前提门、Thm73 quiescence、Thm80 重命名等价) |
+| 观察等价 | §3.3.2 Def 31-35:≃ₖ 由 key 的操作集 𝒜ₖ 诱导(最粗被尊重等价),≃_S = 同域 + 逐 key ≃ₖ | `runtime/observation_equivalence.go`:`Operation`→`OperationSet.Validate`→`fieldsFor` 从操作推导边界(未声明 key 用保守全集,不再默认最弱);绑定身份=(key,ScopeID),多 Realm 同 key 不去重;observer realm 过滤先于域比较 | `observation_multirealm_test.go`:**真实 Runtime 两 realm 同 key** 的变更可观察性;`observation_equivalence_test.go`:操作集校验、保守默认、等价三性质、域交、多 Realm 不合并 |
+| Unified Context 递归 | §3.3.1 Def 28:Γ∞ = μΓ. Γ×(Γ→Γ)×Σ;子 Fiber 拥有新 Context,继承 Σ | `Context.Child` 派生 + `initialMetaView` 继承 + ownership 门控;三投影(Γ=activation, Γ→Γ=effect stack, Σ=keyRealms+metaView+graph) | `unified_context_test.go`:**真实三层 Parent→Child→Grandchild**,每层可观察 inverse + MetaKey 继承/局部遮蔽,Revision 两代际 inverse 各一次 |
+| 独立性与五定理 | §3.4 Def 42/44/Thm43/45;§4.3 Thm64/68/70/73/80 | `independence_test.go` 全部接**真实 Runtime** Provide/撤销/graph,不再快照模拟;`ComputePreconditions` 从**真实快照**算 acyclic/unique/independent/total | `independence_test.go`:真实不同 key 两序激活观测等价、撤销不扰动他 key、逆置换两 inverse 各一次;`theorem_evidence_test.go`:前提账本 + 真实快照前提检查 |
 
-**边界保持**:这些是有限模型/生成式 conformance 证据,不是对任意合法调度空间的形式化数学证明。
-`FINAL-ACCEPTANCE.md` §1 的 Theorem ✅ 始终带 "模型覆盖,非形式化证明" 限定,不因本轮升级结论而抹去。
+**证据边界(诚实区分,不把模型测试冒充语义证明)**:
+- **真实 Runtime 执行验证**:多 Realm 同 key 观察、三层递归 Meta/Effect/Revision、不同 key 两序激活交换、inverse 不扰动他 key、逆置换、前提从快照计算。
+- **结构近似(不冒充定理证明)**:`ComputePreconditions.bindingIndependent` 只检查绑定结构良好(非空 key/有效 owner);
+  真正的交换性由上述真实执行测试覆盖。`TheoremPremiseAnchors` 的前提描述/锚点是关联账本,不是机器可检验的语义等价。
+- 全部为有限模型 conformance,不是对任意合法调度空间的形式化数学证明;§1 的 Theorem ✅ 始终带 "模型覆盖,非形式化证明" 限定。
 
 ---
 

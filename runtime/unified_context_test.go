@@ -2,221 +2,252 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 )
 
-// Unified Context recursive composition (paper Def 28, §3.3.1):
-//
-//	Γ∞ ≔ μΓ. Γ × (Γ → Γ) × Σ
-//
-// The three projections are realized in GoCordis as:
-//   - Γ (current state)       — Fiber.activation + Context.state;
-//   - Γ→Γ (level accumulator) — the Effect stack whose inverses revert this
-//     level's consequences (install barrier + strict LIFO);
-//   - Σ (coeffect context)    — the key realm table (ρ), the derived metadata
-//     view (ι), and the identity-resolved dependency edges.
-//
-// The recursion is realized by Context.Child: each child Fiber owns a FRESH
-// Context (its own Γ and accumulator) that inherits Σ from its parent at
-// derivation time, while the parent aggregates children via ownership gating.
-// This is a STRUCTURAL composition check — not a claim that all structs live
-// in one Go object (the paper does not require that).
+// R3 audit: Unified Context (paper Def 28) recursion MUST be observed across
+// real Parent → Child → Grandchild with observable metadata inheritance (Σ),
+// observable effect inverses at each level (Γ→Γ), and Revision replacing a
+// generation without leaking old effects. No empty inverses, no snapshot-only
+// structure claims — everything here executes the real runtime.
 
-// composeLeaf is a leaf component that installs one reversible effect and
-// depends on a key, so its Context has a non-empty Γ→Γ accumulator and Σ edge.
-type composeLeaf struct {
-	key  Key[rehomeKeyVal]
-	seen chan string
-	ch   chan *Fiber // reports its own child for one nesting level
+var (
+	ucMetaKey = NewMetaKey[string, rehomeKeyVal](
+		"unified.meta",
+		rehomeKeyVal{tag: ""},
+		func(a, b rehomeKeyVal) rehomeKeyVal {
+			if b.tag != "" {
+				return b
+			}
+			return a
+		},
+	)
+)
+
+// ucProvider provides both a plain key and a meta-interpreted key.
+type ucProvider struct{}
+
+func (c *ucProvider) Name() string { return "uc-provider" }
+func (c *ucProvider) Inject() []Dependency {
+	return nil
+}
+func (c *ucProvider) Provide() []Capability {
+	return []Capability{rehomeKey.Capability(), ucMetaKey.Capability()}
+}
+func (c *ucProvider) Apply(ctx *Context) (Cleanup, error) {
+	if err := Provide(ctx, rehomeKey, rehomeKeyVal{tag: "svc"}); err != nil {
+		return nil, err
+	}
+	return nil, ProvideMeta(ctx, ucMetaKey, func(m rehomeKeyVal) string { return "meta:" + m.tag })
 }
 
-func (c *composeLeaf) Name() string          { return "compose-leaf" }
-func (c *composeLeaf) Inject() []Dependency  { return []Dependency{Requires(c.key)} }
-func (c *composeLeaf) Provide() []Capability { return nil }
-func (c *composeLeaf) Apply(ctx *Context) (Cleanup, error) {
-	v, err := Require(ctx, c.key)
+// ucLevel installs an observable inverse tagged by level, optionally overrides
+// metadata, and derives a child component factory for the next level.
+type ucLevel struct {
+	level    string
+	inverse  chan string
+	nu       *rehomeKeyVal // metadata installment at this level (nil = inherit)
+	child    Component     // next level, if any
+	childOut chan *Fiber
+	metaSeen chan string
+	stop     bool
+}
+
+func (c *ucLevel) Name() string { return "uc-" + c.level }
+func (c *ucLevel) Inject() []Dependency {
+	return []Dependency{RequiresMeta(ucMetaKey, rehomeKeyVal{tag: "declared"})}
+}
+func (c *ucLevel) Provide() []Capability { return nil }
+func (c *ucLevel) Apply(ctx *Context) (Cleanup, error) {
+	// Σ projection: read the derived metadata view (inherited or local).
+	v, err := RequireMeta(ctx, ucMetaKey)
 	if err != nil {
 		return nil, err
 	}
-	if c.seen != nil {
-		c.seen <- v.tag
+	if c.metaSeen != nil {
+		c.metaSeen <- v
 	}
-	// Install a reversible effect at this level (accumulator projection).
+	// Γ→Γ projection: install an observable inverse at THIS level.
 	if err := ctx.Effect(func() (func() error, error) {
-		return func() error { return nil }, nil
+		return func() error {
+			if c.inverse != nil {
+				c.inverse <- c.level
+			}
+			return nil
+		}, nil
 	}); err != nil {
 		return nil, err
+	}
+	// Derived realization: this level may shadow the metadata for descendants.
+	if c.nu != nil {
+		if err := InterceptMeta(ctx, ucMetaKey, *c.nu); err != nil {
+			return nil, err
+		}
+	}
+	// Recursion: derive the next level's Fiber (fresh Γ + inherited Σ).
+	if c.child != nil {
+		child, err := ctx.Child(c.child)
+		if err != nil {
+			return nil, err
+		}
+		if c.childOut != nil {
+			c.childOut <- child
+		}
 	}
 	return nil, nil
 }
 
-// composeParent hosts a nested child whose Context inherits this parent's
-// derived metadata view (Σ inheritance) and owns its own accumulator.
-type composeParent struct {
-	key Key[rehomeKeyVal]
-	ch  chan *Fiber
-	nu  string
-}
-
-func (c *composeParent) Name() string          { return "compose-parent" }
-func (c *composeParent) Inject() []Dependency  { return nil }
-func (c *composeParent) Provide() []Capability { return nil }
-func (c *composeParent) Apply(ctx *Context) (Cleanup, error) {
-	if err := ctx.Effect(func() (func() error, error) {
-		return func() error { return nil }, nil
-	}); err != nil {
-		return nil, err
-	}
-	child, err := ctx.Child(&composeLeaf{key: c.key})
-	if err != nil {
-		return nil, err
-	}
-	if c.ch != nil {
-		c.ch <- child
-	}
-	return nil, nil
-}
-
-// checkUnifiedContextInvariants verifies the Γ∞ projections over a snapshot:
-//  1. Γ: every non-Gone fiber has at most one live activation;
-//  2. Γ→Γ: every effect slot belongs to a live activation (accumulator cannot
-//     outlive its level);
-//  3. Σ: every dependency edge binds a provider identity, and a child's
-//     metadata view is derived (a sibling root never sees the parent's view —
-//     verified separately by the P-CO-01 leak test).
-func checkUnifiedContextInvariants(t *testing.T, snap RuntimeSnapshot, what string) {
+func ucWait(t *testing.T, f *Fiber, want FiberState) {
 	t.Helper()
-	activation := map[FiberID]ActivationID{}
-	for _, f := range snap.Fibers {
-		if f.State == StateGone {
-			continue
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if f.State() == want {
+			return
 		}
-		if f.ActivationID == 0 {
-			t.Fatalf("%s: Γ projection: fiber %s state=%v has no activation", what, f.Name, f.State)
-		}
-		activation[f.ID] = f.ActivationID
+		time.Sleep(2 * time.Millisecond)
 	}
-	for _, e := range snap.Effects {
-		act, ok := activation[e.OwnerFiberID]
-		if !ok || act != e.ActivationID {
-			t.Fatalf("%s: Γ→Γ projection: effect slot of fiber %d/act %d has no live activation", what, e.OwnerFiberID, e.ActivationID)
-		}
-	}
-	for _, d := range snap.Dependencies {
-		if d.ProviderFiberID == 0 {
-			t.Fatalf("%s: Σ projection: dependency of fiber %d has no provider identity", what, d.ConsumerFiberID)
-		}
+	t.Fatalf("%s stuck in %v, want %v", f.Name(), f.State(), want)
+}
+
+func ucRecv(t *testing.T, ch chan string) string {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(8 * time.Second):
+		t.Fatal("timeout")
+		return ""
 	}
 }
 
-// TestUnifiedContextRecursiveComposition — Γ∞ recursion across a real
-// nested Child tree: parent and child each own a level accumulator and a
-// derived Σ; disposal unwinds both levels LIFO and the child reaches Gone
-// before the parent finalizes (ownership preserves the recursive structure).
-func TestUnifiedContextRecursiveComposition(t *testing.T) {
+// TestUnifiedContextThreeLevelRecursion — R3: Parent→Child→Grandchild with
+// observable Σ inheritance/local override and Γ→Γ inverse execution.
+func TestUnifiedContextThreeLevelRecursion(t *testing.T) {
 	rt, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	defer func() { _ = rt.Close(ctx) }()
 
-	pf, err := rt.Load(&rehomeProvider{tag: "base"})
-	if err != nil {
+	pf, _ := rt.Load(&ucProvider{})
+	ucWait(t, pf, StateActive)
+
+	inv, grandMeta, childMeta, parentMeta := make(chan string, 8), make(chan string, 2), make(chan string, 2), make(chan string, 2)
+	grandchildOut := make(chan *Fiber, 1)
+	childOut := make(chan *Fiber, 1)
+
+	grandchild := &ucLevel{level: "grandchild", inverse: inv, metaSeen: grandMeta}
+	child := &ucLevel{
+		level: "child", inverse: inv, metaSeen: childMeta,
+		nu:    &rehomeKeyVal{tag: "child-nu"}, // local shadow for descendants
+		child: grandchild, childOut: grandchildOut,
+	}
+	parent := &ucLevel{
+		level: "parent", inverse: inv, metaSeen: parentMeta,
+		nu:    &rehomeKeyVal{tag: "parent-nu"},
+		child: child, childOut: childOut,
+	}
+	pfNode, _ := rt.Load(parent)
+	ucWait(t, pfNode, StateActive)
+	childFiber := <-childOut
+	ucWait(t, childFiber, StateActive)
+	grandFiber := <-grandchildOut
+	ucWait(t, grandFiber, StateActive)
+
+	// Σ: parent sees its own ν; child installs its ν before deriving grandchild;
+	// grandchild sees the CHILD's ν (local override), not the parent's.
+	if got := ucRecv(t, parentMeta); got != "meta:declared" {
+		t.Fatalf("parent Σ read = %q (declared merged before install)", got)
+	}
+	if got := ucRecv(t, childMeta); got != "meta:parent-nu" {
+		t.Fatalf("child Σ should inherit parent ν, got %q", got)
+	}
+	if got := ucRecv(t, grandMeta); got != "meta:child-nu" {
+		t.Fatalf("grandchild Σ should see child's local shadow, got %q", got)
+	}
+
+	// Γ→Γ: dispose the parent; ownership gating makes the whole recursion
+	// unwind child-first, grandchild-first, each level's observable inverse
+	// running exactly once.
+	if err := pfNode.Dispose(); err != nil {
 		t.Fatal(err)
 	}
-	rehomeWaitState(t, pf, StateActive)
+	ucWait(t, grandFiber, StateGone)
+	ucWait(t, childFiber, StateGone)
+	ucWait(t, pfNode, StateGone)
 
-	parentCh := make(chan *Fiber, 1)
-	parent, err := rt.Load(&composeParent{key: rehomeKey, ch: parentCh})
-	if err != nil {
-		t.Fatal(err)
+	seen := map[string]int{}
+	for i := 0; i < 3; i++ {
+		seen[ucRecv(t, inv)]++
 	}
-	rehomeWaitState(t, parent, StateActive)
-	child := <-parentCh
-	rehomeWaitState(t, child, StateActive)
-
-	snap, err := rt.Snapshot(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkUnifiedContextInvariants(t, snap, "nested-active")
-
-	// The child's dependency edge must bind the provider identity (Σ).
-	var childEdge *DependencyView
-	for i := range snap.Dependencies {
-		if snap.Dependencies[i].ConsumerFiberID == child.ID() {
-			childEdge = &snap.Dependencies[i]
+	for _, level := range []string{"parent", "child", "grandchild"} {
+		if seen[level] != 1 {
+			t.Fatalf("inverse for %s executed %d times, want 1: %v", level, seen[level], seen)
 		}
 	}
-	if childEdge == nil || childEdge.ProviderFiberID != pf.ID() {
-		t.Fatalf("child Σ dependency not bound to provider identity: %+v", childEdge)
-	}
-
-	// Recursive unwind: dispose the parent; the child must reach Gone BEFORE
-	// the parent (ownership gating preserves Γ→Γ nesting).
-	if err := parent.Dispose(); err != nil {
-		t.Fatal(err)
-	}
-	rehomeWaitState(t, child, StateGone)
-	rehomeWaitState(t, parent, StateGone)
-
-	snap2, err := rt.Snapshot(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkUnifiedContextInvariants(t, snap2, "after-unwind")
 }
 
-// TestUnifiedContextRevisionPreservesRecursion — a revision of the parent
-// must produce a NEW Γ (fresh activation) while the recursive Σ inheritance
-// (its child table) is re-created at insert time, not lost.
-func TestUnifiedContextRevisionPreservesRecursion(t *testing.T) {
+// TestUnifiedContextRevisionGeneration — R3: revising a level creates a new
+// Γ (fresh activation) and Σ is rebuilt at insert time; old generation's
+// inverse must NOT fire for the replacement.
+func TestUnifiedContextRevisionGeneration(t *testing.T) {
 	rt, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	defer func() { _ = rt.Close(ctx) }()
 
-	pf, err := rt.Load(&rehomeProvider{tag: "base"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rehomeWaitState(t, pf, StateActive)
+	pf, _ := rt.Load(&ucProvider{})
+	ucWait(t, pf, StateActive)
 
-	parentCh := make(chan *Fiber, 1)
-	parent, err := rt.Load(&composeParent{key: rehomeKey, ch: parentCh})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rehomeWaitState(t, parent, StateActive)
-	firstChild := <-parentCh
-	oldAct := firstChild.activationIDSnapshot()
+	inv := make(chan string, 8)
+	metaSeen := make(chan string, 2)
+	leaf := &ucLevel{level: "leaf", inverse: inv, metaSeen: metaSeen}
+	f, _ := rt.Load(leaf)
+	ucWait(t, f, StateActive)
+	_ = ucRecv(t, metaSeen)
+	oldID := f.activationIDSnapshot()
 
-	// Revise the child to a fresh definition — new activation (Γ), inherited
-	// Σ rebuilt at insert time.
-	newChild, err := firstChild.Revise(ctx, &composeLeaf{key: rehomeKey})
+	// Revise to a fresh generation with a NEW inverse tag; the old inverse
+	// tag must never be observed after revision.
+	replacement := &ucLevel{level: "leaf-v2", inverse: inv, metaSeen: make(chan string, 2)}
+	nf, err := f.Revise(ctx, replacement)
 	if err != nil {
 		t.Fatalf("revise: %v", err)
 	}
-	rehomeWaitState(t, newChild, StateActive)
-	newAct := newChild.activationIDSnapshot()
-	if newAct == oldAct {
+	ucWait(t, nf, StateActive)
+	_ = ucRecv(t, replacement.metaSeen)
+	newID := nf.activationIDSnapshot()
+	if newID == oldID {
 		t.Fatal("revision did not create a fresh activation (Γ)")
 	}
 
-	snap, err := rt.Snapshot(ctx)
-	if err != nil {
+	if err := nf.Dispose(); err != nil {
 		t.Fatal(err)
 	}
-	checkUnifiedContextInvariants(t, snap, "after-revision")
+	ucWait(t, nf, StateGone)
+	// BOTH generations' inverses must run exactly once: the retired "leaf"
+	// during Revise (oldgeneration withdrawal), the "leaf-v2" on Dispose.
+	first, second := ucRecv(t, inv), ucRecv(t, inv)
+	if !(first == "leaf" && second == "leaf-v2") && !(first == "leaf-v2" && second == "leaf") {
+		t.Fatalf("revision inverse order/content wrong: %q then %q", first, second)
+	}
+	// No third inverse — each generation reverted exactly once.
+	select {
+	case extra := <-inv:
+		t.Fatalf("extra inverse leaked: %s", extra)
+	default:
+	}
 }
 
+// activationIDSnapshot reads the live activation id under the fiber lock.
 func (f *Fiber) activationIDSnapshot() ActivationID {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
@@ -226,5 +257,5 @@ func (f *Fiber) activationIDSnapshot() ActivationID {
 	return f.activation.id
 }
 
-// Wait no sleep needed: channels + snapshot after terminal state.
+var _ = fmt.Sprint
 var _ = sync.Once{}

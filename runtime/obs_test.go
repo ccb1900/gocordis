@@ -214,22 +214,6 @@ func ObservationsEquivalent(a, b Observation) bool { return a.canonical() == b.c
 // Precondition Checker
 // ---------------------------------------------------------------------------
 
-type Preconditions struct {
-	AcyclicPrecedence   bool
-	ProviderUnique      bool
-	PairwiseIndependent bool
-	ComponentTotal      bool
-}
-
-func (p Preconditions) All() bool {
-	return p.AcyclicPrecedence && p.ProviderUnique && p.PairwiseIndependent && p.ComponentTotal
-}
-
-func (p Preconditions) String() string {
-	return fmt.Sprintf("acyclic=%v unique=%v independent=%v total=%v",
-		p.AcyclicPrecedence, p.ProviderUnique, p.PairwiseIndependent, p.ComponentTotal)
-}
-
 // quiescenceError checks the paper eq.(49) "no transition left in progress"
 // over one fiber's semantic state. An Installing / Undoing effect is a
 // transition in progress even when the Fiber itself is Active — the effect

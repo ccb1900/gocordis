@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 )
@@ -196,11 +195,13 @@ func TestIndependenceRealRuntimeInverseDoesNotDisturb(t *testing.T) {
 	}
 }
 
-// TestIndependenceRealRuntimeInversePermutation — Thm 43: after two
-// independent activations, their inverses in EITHER order recover the base.
-// We verify via real Dispose+Gone, with channel-observed inverse execution.
+// TestIndependenceRealRuntimeInversePermutation — C: TWO INDEPENDENT
+// operations on DISTINCT keys, both forward then reverted in two different
+// orders. Both runs must reach observationally EQUIVALENT base states, and
+// each operation's inverse must run exactly once. No empty branch, no same-key
+// witness shortcut (paper §3.4 Thm 43/45).
 func TestIndependenceRealRuntimeInversePermutation(t *testing.T) {
-	run := func(reverse bool) []string {
+	run := func(reverse bool) (RuntimeSnapshot, []string) {
 		rt, err := New()
 		if err != nil {
 			t.Fatal(err)
@@ -209,37 +210,59 @@ func TestIndependenceRealRuntimeInversePermutation(t *testing.T) {
 		defer cancel()
 		defer func() { _ = rt.Close(ctx) }()
 
-		key := NewKey[rehomeKeyVal]("ind.perm")
-		pf, _ := rt.Load(&independenceProv{key: key, tag: "p"})
-		indWait(t, pf, StateActive)
-		inv := make(chan string, 4)
-		c1, _ := rt.Load(&independenceConsumer{key: key, inverse: inv, tag: "c1"})
-		c2, _ := rt.Load(&independenceConsumer{key: key, inverse: inv, tag: "c2"})
-		indWait(t, c1, StateActive)
-		indWait(t, c2, StateActive)
+		keyA := NewKey[rehomeKeyVal]("ind.perm.a")
+		keyB := NewKey[rehomeKeyVal]("ind.perm.b")
+		inv := make(chan string, 8)
+		pa, _ := rt.Load(&independenceProv{key: keyA, tag: "a"})
+		pb, _ := rt.Load(&independenceProv{key: keyB, tag: "b"})
+		indWait(t, pa, StateActive)
+		indWait(t, pb, StateActive)
+		ca, _ := rt.Load(&independenceConsumer{key: keyA, inverse: inv, tag: "ca"})
+		cb, _ := rt.Load(&independenceConsumer{key: keyB, inverse: inv, tag: "cb"})
+		indWait(t, ca, StateActive)
+		indWait(t, cb, StateActive)
 
-		order := []*Fiber{c1, c2}
+		// Two independent operations: dispose consumer A and consumer B in
+		// chosen order; each inverse runs exactly once.
+		order := []*Fiber{ca, cb}
 		if reverse {
-			order = []*Fiber{c2, c1}
+			order = []*Fiber{cb, ca}
 		}
 		for _, f := range order {
 			_ = f.Dispose()
 			indWait(t, f, StateGone)
 		}
-		return []string{indRecv(t, inv), indRecv(t, inv)}
+		got := []string{indRecv(t, inv), indRecv(t, inv)}
+		snap, err := rt.Snapshot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return snap, got
 	}
 
-	forward := run(false)
-	reversed := run(true)
-	if fmt.Sprint(forward) == fmt.Sprint(reversed) && forward[0] == "c1" {
-		// Both orders happened to yield the same inverse sequence only if the
-		// runtime serialized; that is fine — LIFO is conservative. The point
-		// is no binding survived and no inverse was lost.
-	}
-	// Both permutations must have executed BOTH inverses exactly once.
-	for _, label := range []string{"c1", "c2"} {
-		if (forward[0] != label && forward[1] != label) || (reversed[0] != label && reversed[1] != label) {
-			t.Fatalf("inverse for %s lost in a permutation: %v / %v", label, forward, reversed)
+	forward, invF := run(false)
+	reversed, invR := run(true)
+	// Both inverse orders executed each independent operation's inverse once.
+	for _, label := range []string{"ca", "cb"} {
+		countF, countR := 0, 0
+		for _, x := range invF {
+			if x == label {
+				countF++
+			}
 		}
+		for _, x := range invR {
+			if x == label {
+				countR++
+			}
+		}
+		if countF != 1 || countR != 1 {
+			t.Fatalf("inverse %s counts %d/%d, want 1/1", label, countF, countR)
+		}
+	}
+	// Final states must be observationally equivalent (both back to base:
+	// providers still Active and bound, consumers gone).
+	model := NewObservationModel()
+	if !model.EquivalentAt(forward, reversed, nil, nil) {
+		t.Fatalf("inverse-order permutations reached non-equivalent states:\nA=%+v\nB=%+v", forward.Providers, reversed.Providers)
 	}
 }

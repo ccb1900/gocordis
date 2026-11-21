@@ -205,6 +205,7 @@ windows-build(build/vet/test 交叉编译)、console-web(npm/vitest/tsc/build)�
 | 独立性与五定理 | §3.4 Def 42/44/Thm43/45;§4.3 Thm64/68/70/73/80 | `independence_test.go` 全部接**真实 Runtime** Provide/撤销/graph,不再快照模拟;`ComputePreconditions` 从**真实快照**算 acyclic/unique/independent/total | `independence_test.go`:真实不同 key 两序激活观测等价、撤销不扰动他 key、逆置换两 inverse 各一次;`theorem_evidence_test.go`:前提账本 + 真实快照前提检查 |
 
 **证据边界(诚实区分,不把模型测试冒充语义证明)**:
+- **A/B/C 复审闭环(2026-11-21)**:A — `TestObservationRealRehomeChangesBinding` 对**真实** `Rehome` 前后快照验证绑定可观察性,原快照变异测试明确降级为 MODEL 测试;B — `OperationsFor` 默认覆盖全部 7 个真实操作,`NewObservationModel` 构建期校验、非法操作集 fail closed(`TestObservationModelInvalidFailsClosed`);C — 逆置换测试改用两个不同 key + 两种撤销顺序 + 最终真实快照观察等价,删除空分支。未新增观察/独立性抽象,未扩张定理账本。
 - **真实 Runtime 执行验证**:多 Realm 同 key 观察、三层递归 Meta/Effect/Revision、不同 key 两序激活交换、inverse 不扰动他 key、逆置换、前提从快照计算。
 - **结构近似(不冒充定理证明)**:`ComputePreconditions.bindingIndependent` 只检查绑定结构良好(非空 key/有效 owner);
   真正的交换性由上述真实执行测试覆盖。`TheoremPremiseAnchors` 的前提描述/锚点是关联账本,不是机器可检验的语义等价。

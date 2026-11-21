@@ -51,6 +51,11 @@ type Service interface {
 	// (whole service); both are non-joining.
 	WS(pattern string, cb func(*WSConn) error) (func() error, error)
 	Use(mw func(http.Handler) http.Handler) (func() error, error)
+	// AddRouteCheck registers a dispatch-time route veto. It is effect-owned:
+	// the returned idempotent disposer removes ONLY this check and is the
+	// inverse a component should commit through ctx.Effect. It never changes a
+	// Handle/All/WS registration or its disposer.
+	AddRouteCheck(check RouteCheck) (func() error, error)
 	// SetCheckOrigin overrides the policy used to verify the Origin header on
 	// WebSocket upgrades. nil restores the same-origin default. It affects
 	// upgrades performed after the call.
@@ -67,6 +72,13 @@ type Service interface {
 	// inverse still uses Close so the Gone guarantee is preserved.
 	Shutdown() error
 }
+
+// RouteCheck is a dispatch-time predicate over one registration. pattern is
+// the registration key: "GET /x" for Handle, "/x" for All and WS. Returning
+// false vetoes that route for this request; when no route survives, the
+// service answers 404 (never 403/405). Checks are additive: with none
+// registered, Handle/All/WS dispatch exactly as before.
+type RouteCheck func(req *http.Request, pattern string) bool
 
 // ServiceKey is the capability a server Component provides while Active.
 var ServiceKey = runtime.NewKey[Service]("extension.server.service")
@@ -140,11 +152,17 @@ type middleware struct {
 	fn func(http.Handler) http.Handler
 }
 
+type routeCheckReg struct {
+	id uint64
+	fn RouteCheck
+}
+
 type router struct {
 	mu          sync.RWMutex
 	nextID      uint64
 	routes      []*route
 	middlewares []*middleware
+	checks      []*routeCheckReg
 	closed      bool
 	mux         *http.ServeMux // rebuilt whenever a registration changes
 
@@ -491,6 +509,45 @@ func (r *router) Use(mw func(http.Handler) http.Handler) (func() error, error) {
 	}, nil
 }
 
+// AddRouteCheck registers a dispatch-time veto without touching route or
+// middleware registrations. Like Use it is id-keyed and reversible: the
+// disposer removes only this check, and repeated disposal is a no-op.
+func (r *router) AddRouteCheck(check RouteCheck) (func() error, error) {
+	if check == nil {
+		return nil, errors.New("server: nil route check")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil, errServiceClosed
+	}
+	r.nextID++
+	id := r.nextID
+	r.checks = append(r.checks, &routeCheckReg{id: id, fn: check})
+	return func() error {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for i, existing := range r.checks {
+			if existing.id == id {
+				r.checks = append(r.checks[:i], r.checks[i+1:]...)
+				break
+			}
+		}
+		return nil
+	}, nil
+}
+
+// checksAllow applies every registered check to one candidate route. A single
+// veto removes that route from consideration for this request.
+func checksAllow(req *http.Request, pattern string, checks []RouteCheck) bool {
+	for _, check := range checks {
+		if !check(req, pattern) {
+			return false
+		}
+	}
+	return true
+}
+
 // shutdown is the non-joining half of service disposal. It removes every
 // registration and closes every socket but never waits for handlers, so it is
 // safe to call from a WS callback (Service.Shutdown is the public entry).
@@ -500,6 +557,7 @@ func (r *router) shutdown() {
 		r.closed = true
 		r.routes = nil
 		r.middlewares = nil
+		r.checks = nil
 		r.mux = http.NewServeMux()
 		r.closingRegs = make([]*wsRegistration, 0, len(r.wsRegs))
 		for reg := range r.wsRegs {
@@ -547,12 +605,16 @@ func (r *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	for i, m := range r.middlewares {
 		chain[i] = m.fn
 	}
+	checks := make([]RouteCheck, len(r.checks))
+	for i, c := range r.checks {
+		checks[i] = c.fn
+	}
 	r.mu.RUnlock()
 
 	// Snapshot taken under the lock; user middleware/handlers run with NO lock
 	// held (no broad lock across user code).
 	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		r.dispatch(w, req, mux, routes)
+		r.dispatch(w, req, mux, routes, checks)
 	})
 	for i := len(chain) - 1; i >= 0; i-- {
 		h = chain[i](h)
@@ -560,7 +622,35 @@ func (r *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	h.ServeHTTP(w, req)
 }
 
-func (r *router) dispatch(w http.ResponseWriter, req *http.Request, mux *http.ServeMux, routes []*route) {
+func (r *router) dispatch(w http.ResponseWriter, req *http.Request, mux *http.ServeMux, routes []*route, checks []RouteCheck) {
+	// A veto removes exactly one route from consideration for this request,
+	// leaving other matching routes free to answer. Rebuilding the mux from the
+	// surviving registrations keeps all path/method matching in the standard
+	// library: a sole vetoed route yields the mux's own 404, never a middleware
+	// 403 or a method-mismatch 405. With no vetoes the original mux is reused.
+	if len(checks) > 0 {
+		filtered := make([]*route, 0, len(routes))
+		vetoed := false
+		for _, rt := range routes {
+			key := rt.pattern
+			if rt.method != "" {
+				key = rt.method + " " + rt.pattern
+			}
+			if checksAllow(req, key, checks) {
+				filtered = append(filtered, rt)
+			} else {
+				vetoed = true
+			}
+		}
+		if vetoed {
+			rebuilt, err := buildMux(filtered)
+			if err != nil {
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
+			mux, routes = rebuilt, filtered
+		}
+	}
 	// ServeMux's own 404 and 405 responses already match the old behavior
 	// (http.NotFound and http.Error(..., 405) with a sorted Allow header), so
 	// normal requests are handed straight to it. The one convention ServeMux
@@ -573,7 +663,7 @@ func (r *router) dispatch(w http.ResponseWriter, req *http.Request, mux *http.Se
 			mux.ServeHTTP(w, req)
 			return
 		}
-		allow := allowedMethods(req, mux, routes)
+		allow := allowedMethods(req, mux, routes, checks)
 		if allow == "" {
 			http.NotFound(w, req)
 			return
@@ -589,7 +679,7 @@ func (r *router) dispatch(w http.ResponseWriter, req *http.Request, mux *http.Se
 // this path — no second, hand-written path matcher is introduced. Each route is
 // probed with its own method (All routes with a neutral one) and is admitted
 // only when the mux selects that route's exact pattern.
-func allowedMethods(req *http.Request, mux *http.ServeMux, routes []*route) string {
+func allowedMethods(req *http.Request, mux *http.ServeMux, routes []*route, checks []RouteCheck) string {
 	allowed := make(map[string]struct{})
 	for _, rt := range routes {
 		method := rt.method
@@ -605,6 +695,9 @@ func allowedMethods(req *http.Request, mux *http.ServeMux, routes []*route) stri
 		}
 		if pattern != want {
 			continue // skipped: duplicate, shadowed or conflicting registration
+		}
+		if !checksAllow(req, want, checks) {
+			continue // vetoed route: does not contribute an Allow method
 		}
 		if rt.method == "" {
 			allowed["*"] = struct{}{}

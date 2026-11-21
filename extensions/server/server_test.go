@@ -1316,3 +1316,90 @@ func TestWSCallbackServiceShutdownDoesNotSelfWait(t *testing.T) {
 		t.Fatal("Service.Close hung after callback Service.Shutdown")
 	}
 }
+
+// ---- dispatch-time route checks (additive veto hook) ----------------------
+
+func TestAddRouteCheckVetoesAndIsReversible(t *testing.T) {
+	svc := newRouter()
+	h := func(w http.ResponseWriter, _ *http.Request) error {
+		_, err := io.WriteString(w, "ok")
+		return err
+	}
+	if _, err := svc.Handle(http.MethodGet, "/x", h); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	wsEntered := false
+	if _, err := svc.WS("/ws", func(*WSConn) error { wsEntered = true; return nil }); err != nil {
+		t.Fatalf("WS: %v", err)
+	}
+
+	// No checks: Handle/All/WS dispatch exactly as before.
+	rec := httptest.NewRecorder()
+	svc.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("before check: code=%d, want 200", rec.Code)
+	}
+
+	dispose, err := svc.AddRouteCheck(func(req *http.Request, pattern string) bool {
+		return req.Host != "bad.test"
+	})
+	if err != nil {
+		t.Fatalf("AddRouteCheck: %v", err)
+	}
+
+	call := func(host, path string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Host = host
+		rec := httptest.NewRecorder()
+		svc.ServeHTTP(rec, r)
+		return rec
+	}
+	if got := call("bad.test", "/x").Code; got != http.StatusNotFound {
+		t.Errorf("vetoed HTTP route: code=%d, want 404", got)
+	}
+	if got := call("bad.test", "/ws").Code; got != http.StatusNotFound {
+		t.Errorf("vetoed WS route: code=%d, want 404", got)
+	}
+	if wsEntered {
+		t.Error("vetoed WS route must not invoke its callback")
+	}
+	if got := call("good.test", "/x").Code; got != http.StatusOK {
+		t.Errorf("allowed HTTP route: code=%d, want 200", got)
+	}
+
+	if err := dispose(); err != nil {
+		t.Fatalf("dispose: %v", err)
+	}
+	if err := dispose(); err != nil {
+		t.Fatalf("second dispose: %v", err)
+	}
+	if got := call("bad.test", "/x").Code; got != http.StatusOK {
+		t.Errorf("after dispose: code=%d, want 200", got)
+	}
+}
+
+func TestRouteCheckVetoFallsThroughToOtherRoute(t *testing.T) {
+	svc := newRouter()
+	if _, err := svc.All("/x", func(w http.ResponseWriter, _ *http.Request) error {
+		_, err := io.WriteString(w, "all")
+		return err
+	}); err != nil {
+		t.Fatalf("All: %v", err)
+	}
+	if _, err := svc.Handle(http.MethodGet, "/x", func(w http.ResponseWriter, _ *http.Request) error {
+		_, err := io.WriteString(w, "get")
+		return err
+	}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if _, err := svc.AddRouteCheck(func(_ *http.Request, pattern string) bool {
+		return pattern != http.MethodGet+" /x"
+	}); err != nil {
+		t.Fatalf("AddRouteCheck: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	svc.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "all" {
+		t.Fatalf("vetoed GET should fall through to All: code=%d body=%q", rec.Code, rec.Body.String())
+	}
+}

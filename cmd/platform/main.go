@@ -29,8 +29,10 @@ import (
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/extensions/configwatch"
+	"dynamic-runtime/extensions/console/explorer"
 	"dynamic-runtime/extensions/console/host"
 	"dynamic-runtime/extensions/console/insight"
+	consoRuntime "dynamic-runtime/extensions/console/runtime"
 	"dynamic-runtime/extensions/console/webui"
 	"dynamic-runtime/extensions/devtools"
 	"dynamic-runtime/extensions/market"
@@ -40,7 +42,9 @@ import (
 const (
 	// Stable declaration types used by cmd/platform/manifest.toml.
 	hostType     = "console.host"
+	explorerType = "console.explorer"
 	insightType  = "console.insight"
+	runtimeType  = "console.runtime"
 	marketType   = "market"
 	devtoolsType = "devtools"
 	// demoSettingsType is registered by a real config.SchemaFactory, so the
@@ -58,8 +62,11 @@ type app struct {
 	ctrl         *config.Controller
 	manifestPath string
 
-	mu sync.RWMutex
-	ui *host.UIComponent
+	mu       sync.RWMutex
+	ui       *host.UIComponent
+	ring     *consoRuntime.Ring
+	explorer *explorer.Service
+	override *config.Config // declaration-side switches applied at runtime
 }
 
 // newApp builds the runtime, factory registry and controller. Factories are the
@@ -72,17 +79,21 @@ func newApp(manifestPath string) (*app, error) {
 	if abs, err := filepath.Abs(manifestPath); err == nil {
 		manifestPath = abs
 	}
-	rt, err := runtime.New()
+	ring := consoRuntime.NewRing(256)
+	rt, err := runtime.New(runtime.WithEventSink(ring))
 	if err != nil {
 		return nil, fmt.Errorf("runtime: %w", err)
 	}
-	a := &app{rt: rt, reg: config.NewFactoryRegistry(), manifestPath: manifestPath}
+	a := &app{rt: rt, reg: config.NewFactoryRegistry(), manifestPath: manifestPath, ring: ring}
 	reg := a.reg
 
-	// The controller must exist before the insight service: the service only
-	// reads declarations and snapshots and never owns either source.
+	// The controller must exist before the read-only services: they only read
+	// declarations and snapshots and never own either source.
 	a.ctrl = config.NewController(rt, reg)
 	insightSvc := insight.New(a.ctrl, rt)
+	a.explorer = explorer.New(nil)
+	a.explorer.SetOwned(a.ctrl.Owned)
+	a.explorer.SetDeclarationSwitch(a.switchDeclaration)
 
 	for _, f := range []struct {
 		typ  string
@@ -96,8 +107,16 @@ func newApp(manifestPath string) (*app, error) {
 			a.setUI(c)
 			return c, nil
 		}},
+		{explorerType, func(cc config.ComponentConfig) (runtime.Component, error) {
+			return explorer.NewPlugin(cc, a.explorer)
+		}},
 		{insightType, func(cc config.ComponentConfig) (runtime.Component, error) {
 			return insight.NewComponent(cc, insightSvc)
+		}},
+		{runtimeType, func(cc config.ComponentConfig) (runtime.Component, error) {
+			// Diagnostics are optional: the inspector must not become Pending
+			// when the devtools capability is absent or disabled.
+			return consoRuntime.New(cc, a.rt, a.ring)
 		}},
 		{marketType, func(cc config.ComponentConfig) (runtime.Component, error) {
 			return market.NewComponent(cc, a.ctrl)
@@ -152,6 +171,12 @@ func (a *app) reconcileManifest(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("parse manifest %q: %w", a.manifestPath, err)
 	}
+	a.mu.RLock()
+	override := a.override
+	a.mu.RUnlock()
+	if override != nil {
+		desired = *override
+	}
 	// Resolve declaration-side paths BEFORE Reconcile: the applied spec must be
 	// byte-identical to what the market service submits back on every mutation,
 	// otherwise its own declaration would be replaced on each install.
@@ -167,7 +192,45 @@ func (a *app) reconcileManifest(ctx context.Context) error {
 			return fmt.Errorf("component %q not ready: %w", o.ID, err)
 		}
 	}
+	if a.explorer != nil {
+		a.explorer.SetDesired(desired)
+	}
 	return nil
+}
+
+// switchDeclaration flips one component's declaration and reconciles. The
+// switch lives in the declaration layer (paper §4.4): no Fiber is touched here.
+func (a *app) switchDeclaration(ctx context.Context, id string, enable bool) error {
+	data, err := os.ReadFile(a.manifestPath)
+	if err != nil {
+		return err
+	}
+	source := configwatch.Source{ID: "platform-manifest", Path: a.manifestPath, Format: configwatch.FormatTOML}
+	desired, err := configwatch.NewTOMLParser().Parse(ctx, source, data)
+	if err != nil {
+		return err
+	}
+	a.mu.RLock()
+	if a.override != nil {
+		desired = *a.override
+	}
+	a.mu.RUnlock()
+	found := false
+	for i := range desired.Components {
+		if desired.Components[i].ID != id {
+			continue
+		}
+		found = true
+		enabled := enable
+		desired.Components[i].Enabled = &enabled
+	}
+	if !found {
+		return fmt.Errorf("component %q not declared", id)
+	}
+	a.mu.Lock()
+	a.override = &desired
+	a.mu.Unlock()
+	return a.reconcileManifest(ctx)
 }
 
 func (a *app) owned(id string) (config.OwnedComponent, bool) {

@@ -11,6 +11,15 @@ type = "console.host"
 host_id = "platform-demo"
 
 [[components]]
+id = "plugins"
+type = "console.explorer"
+[components.config]
+page_id = "plugins"
+title = "Plugins"
+route = "/plugins"
+order = 30
+
+[[components]]
 id = "insight"
 type = "console.insight"
 [components.config]
@@ -34,6 +43,15 @@ type = "devtools"
 [components.config]
 runtime_version = "1.2.0"
 api_version = "1.0.0"
+
+[[components]]
+id = "runtime-console"
+type = "console.runtime"
+[components.config]
+inspector_page_id = "inspector"
+dashboard_page_id = "dashboard"
+inspector_order = 50
+dashboard_order = 10
 
 [[components]]
 id = "demo"

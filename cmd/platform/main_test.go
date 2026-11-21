@@ -17,6 +17,7 @@ import (
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/extensions/console/host"
 	"dynamic-runtime/extensions/console/insight"
+	consoRuntime "dynamic-runtime/extensions/console/runtime"
 	"dynamic-runtime/extensions/market"
 	"dynamic-runtime/runtime"
 )
@@ -101,7 +102,7 @@ func ownedFiber(t *testing.T, a *app, id string) *runtime.Fiber {
 
 func TestReconcileManifestActivatesAllComponents(t *testing.T) {
 	a, ctx := readyApp(t)
-	for _, id := range []string{"host", "insight", "market", "devtools", "demo"} {
+	for _, id := range []string{"host", "plugins", "insight", "runtime-console", "market", "devtools", "demo"} {
 		f := ownedFiber(t, a, id)
 		if f == nil {
 			t.Fatalf("component %q has no fiber", id)
@@ -185,7 +186,7 @@ func TestInsightGraphQueryUsesDeclaredAndRuntimeGraphs(t *testing.T) {
 	for _, n := range g.Declared.Nodes {
 		declared[n.ID] = n
 	}
-	for _, id := range []string{"host", "insight", "market", "devtools", "demo"} {
+	for _, id := range []string{"host", "plugins", "insight", "runtime-console", "market", "devtools", "demo"} {
 		if _, ok := declared[id]; !ok {
 			t.Fatalf("declared graph missing %q: %+v", id, g.Declared.Nodes)
 		}
@@ -300,7 +301,7 @@ func TestMarketMutationsPreserveForeignDeclarations(t *testing.T) {
 		t.Fatalf("reconcileManifest: %v", err)
 	}
 	before := map[string]*runtime.Fiber{}
-	for _, id := range []string{"host", "insight", "market", "devtools", "demo"} {
+	for _, id := range []string{"host", "plugins", "insight", "runtime-console", "market", "devtools", "demo"} {
 		before[id] = ownedFiber(t, a, id)
 	}
 
@@ -351,7 +352,7 @@ func TestWebUIAPIWithoutListener(t *testing.T) {
 func TestShutdownLeavesAllFibersGone(t *testing.T) {
 	a, ctx := readyApp(t)
 	var fibers []*runtime.Fiber
-	for _, id := range []string{"host", "insight", "market", "devtools", "demo"} {
+	for _, id := range []string{"host", "plugins", "insight", "runtime-console", "market", "devtools", "demo"} {
 		fibers = append(fibers, ownedFiber(t, a, id))
 	}
 	if err := a.shutdown(ctx); err != nil {
@@ -384,4 +385,50 @@ func (m *markerComponent) Inject() []runtime.Dependency  { return nil }
 func (m *markerComponent) Provide() []runtime.Capability { return nil }
 func (m *markerComponent) Apply(*runtime.Context) (runtime.Cleanup, error) {
 	return nil, nil
+}
+
+func TestRuntimeConsoleQueriesAndPagesViaRealPlatform(t *testing.T) {
+	a, ctx := readyApp(t)
+	hub := a.hostUI().HostAdapter()
+
+	res, ue := hub.Query(consoRuntime.SnapshotQuery, nil)
+	if ue != nil {
+		t.Fatalf("runtime/snapshot query: %+v", ue)
+	}
+	snap, ok := res.(consoRuntime.SnapshotDTO)
+	if !ok {
+		t.Fatalf("runtime/snapshot result type = %T", res)
+	}
+	if snap.Sequence == 0 || len(snap.Fibers) == 0 || len(snap.Providers) == 0 {
+		t.Fatalf("snapshot DTO incomplete: %+v", snap)
+	}
+
+	res, ue = hub.Query(consoRuntime.EventsQuery, nil)
+	if ue != nil {
+		t.Fatalf("runtime/events query: %+v", ue)
+	}
+	events, ok := res.(consoRuntime.EventsDTO)
+	if !ok || len(events.Events) == 0 {
+		t.Fatalf("runtime/events result = %T %+v", res, res)
+	}
+
+	res, ue = hub.Query(consoRuntime.DashboardQuery, nil)
+	if ue != nil {
+		t.Fatalf("framework/dashboard query: %+v", ue)
+	}
+	dashboard, ok := res.(consoRuntime.DashboardDTO)
+	if !ok || dashboard.Counts.Fibers == 0 || len(dashboard.RecentEvents) == 0 {
+		t.Fatalf("dashboard result = %T %+v", res, res)
+	}
+	_ = ctx
+
+	pages := map[string]bool{}
+	for _, p := range a.hostUI().Pages() {
+		pages[p.ID] = true
+	}
+	for _, id := range []string{"plugins", "inspector", "dashboard", "insight", "market"} {
+		if !pages[id] {
+			t.Fatalf("page %q missing from platform composition: %v", id, pages)
+		}
+	}
 }

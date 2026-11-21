@@ -224,10 +224,19 @@ func (b *Backend) Load(ctx context.Context, artifact loader.Artifact) (m loader.
 		return loader.Module{}, err
 	}
 
-	_, mod, err := b.loadGeneration(ctx, artifact, data)
+	gen, mod, err := b.loadGeneration(ctx, artifact, data)
 	if err != nil {
 		return loader.Module{}, err
 	}
+	// Plain Load: no handle returned — release the attempt's holder claim
+	// immediately. The compiled ref stays alive because the generation is
+	// tracked in b.generations (closed by Backend.Close, or by Unload's
+	// handle.Release if the module later goes through the loader protocol).
+	b.mu.Lock()
+	if gen.holders > 0 {
+		gen.holders--
+	}
+	b.mu.Unlock()
 	return mod, nil
 }
 

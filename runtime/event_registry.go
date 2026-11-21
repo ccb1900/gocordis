@@ -65,6 +65,11 @@ type eventReg struct {
 	// whose next() is trivially satisfied). Plain On registrations keep
 	// chain == nil.
 	chain func(context.Context, any, Next) error
+	// valueHandler is non-nil only for value registrations (OnValue, JS bail
+	// parity). BailValue invokes it; every other dispatch mode ignores it and
+	// uses handler above (which value registrations also carry so they stay
+	// well-behaved listeners under Emit/Serial/Bail/Waterfall).
+	valueHandler func(context.Context, any) (any, bool, error)
 }
 
 func newEventRegistry() *eventRegistry {
@@ -74,12 +79,15 @@ func newEventRegistry() *eventRegistry {
 // register appends one registration and assigns the next global registration
 // sequence number. handler is the projection used by Emit/Serial/Parallel (and
 // by Waterfall for plain On registrations); chain is the chain-aware variant
-// used by Waterfall for OnWaterfall registrations (nil for plain On).
-func (g *eventRegistry) register(owner ProviderIdentity, realm *realm, key eventKeyID, handler func(context.Context, any) error, chain func(context.Context, any, Next) error) *eventReg {
+// used by Waterfall for OnWaterfall registrations (nil for plain On);
+// valueHandler is the value-returning projection used by BailValue (nil for
+// non-value registrations). Exactly one of chain / valueHandler is non-nil for
+// a given registration, while handler is always non-nil.
+func (g *eventRegistry) register(owner ProviderIdentity, realm *realm, key eventKeyID, handler func(context.Context, any) error, chain func(context.Context, any, Next) error, valueHandler func(context.Context, any) (any, bool, error)) *eventReg {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.seq++
-	reg := &eventReg{key: key, realm: realm, seq: g.seq, owner: owner, handler: handler, chain: chain}
+	reg := &eventReg{key: key, realm: realm, seq: g.seq, owner: owner, handler: handler, chain: chain, valueHandler: valueHandler}
 	g.byKey[key] = append(g.byKey[key], reg)
 	return reg
 }
@@ -227,8 +235,10 @@ func (h *EventRegistration) Disposed() bool {
 // onEventWith installs one Event registration as an Effect on ctx, optionally
 // exposing a manual handle. handler is the projection used by Emit/Serial/
 // Parallel; chain is the chain-aware variant used by Waterfall (nil for plain
-// On). Registration and removal remain ordinary Effect install/inverse work.
-func onEventWith(c *Context, key eventKeyID, handler func(context.Context, any) error, chain func(context.Context, any, Next) error, h *EventRegistration) error {
+// On); valueHandler is the value-returning projection used by BailValue (nil
+// for non-value registrations). Registration and removal remain ordinary
+// Effect install/inverse work, identical for every registration shape.
+func onEventWith(c *Context, key eventKeyID, handler func(context.Context, any) error, chain func(context.Context, any, Next) error, valueHandler func(context.Context, any) (any, bool, error), h *EventRegistration) error {
 	return c.effect(EffectKindEvent, CapabilityKey{}, func() (func() error, error) {
 		if c.rt == nil || c.rt.eventReg == nil {
 			return nil, errors.New("runtime: event registry unavailable")
@@ -247,6 +257,7 @@ func onEventWith(c *Context, key eventKeyID, handler func(context.Context, any) 
 			key,
 			handler,
 			chain,
+			valueHandler,
 		)
 		h.rt, h.reg = c.rt, reg
 		h.mu.Unlock()
@@ -258,7 +269,7 @@ func onEventWith(c *Context, key eventKeyID, handler func(context.Context, any) 
 }
 
 func onEvent(c *Context, key eventKeyID, handler func(context.Context, any) error, chain func(context.Context, any, Next) error) error {
-	return onEventWith(c, key, handler, chain, &EventRegistration{})
+	return onEventWith(c, key, handler, chain, nil, &EventRegistration{})
 }
 
 // On registers handler for key on ctx's current activation (Decision Record
@@ -310,10 +321,70 @@ func OnWithHandle[T any](c *Context, key EventKey[T], handler EventHandler[T]) (
 	typed := func(ctx context.Context, payload any) error {
 		return handler(ctx, payload.(T))
 	}
-	if err := onEventWith(c, key.id(), typed, nil, h); err != nil {
+	if err := onEventWith(c, key.id(), typed, nil, nil, h); err != nil {
 		return nil, err
 	}
 	return h, nil
+}
+
+// onValue is the shared installer behind OnValue / OnValueWithHandle. The
+// handler is stored once in the SAME registry as every other mode, in two
+// projections over one registration:
+//
+//   - valueHandler carries (result, present, error) for BailValue. present is
+//     the explicit "non-undefined" signal JS bail() infers from a return value.
+//   - handler is the ordinary error projection. It invokes the same user
+//     handler but ignores its result, so Emit/Serial/Bail/Waterfall still see a
+//     well-behaved listener instead of a nil handler. It never short-circuits
+//     those modes; only the error propagates there.
+//
+// Both projections share the registration's identity, realm, owner, seq, and
+// Effect-owned inverse; disposal retires exactly this one registration.
+func onValue[T any, R any](c *Context, key EventKey[T], handler ValueEventHandler[T, R]) (*EventRegistration, error) {
+	if c == nil {
+		return nil, errors.New("runtime: nil context")
+	}
+	if !key.valid() {
+		return nil, errors.New("runtime: zero-value EventKey (use NewEventKey)")
+	}
+	if handler == nil {
+		return nil, errors.New("runtime: nil event value handler")
+	}
+	valueHandler := func(ctx context.Context, payload any) (any, bool, error) {
+		result, present, err := handler(ctx, payload.(T))
+		return result, present, err
+	}
+	errorHandler := func(ctx context.Context, payload any) error {
+		_, _, err := handler(ctx, payload.(T))
+		return err
+	}
+	h := &EventRegistration{}
+	if err := onEventWith(c, key.id(), errorHandler, nil, valueHandler, h); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+// OnValue registers a value-returning handler for key on ctx's current
+// activation (JS Cordis bail() parity). The handler returns
+// (result, present, error): present=false models JS's `undefined` (dispatch
+// keeps looking), present=true short-circuits with result, and a non-nil error
+// fails dispatch. extensions/event.BailValue is the matching dispatch mode.
+//
+// Registration IS an Effect (kind = Event) in the SAME registry as On and
+// OnWaterfall: same EventKey identity, realm scope, owner activation, snapshot,
+// and LIFO inverse. The value projection is exposed on EventBinding.ValueHandler;
+// plain On bindings leave that field nil.
+func OnValue[T any, R any](c *Context, key EventKey[T], handler func(context.Context, T) (R, bool, error)) error {
+	_, err := onValue(c, key, handler)
+	return err
+}
+
+// OnValueWithHandle is OnValue plus an idempotent manual disposer (parity with
+// OnWithHandle). Early disposal retires just this value registration; the
+// activation's Effect inverse remains a no-op at unwind.
+func OnValueWithHandle[T any, R any](c *Context, key EventKey[T], handler func(context.Context, T) (R, bool, error)) (*EventRegistration, error) {
+	return onValue(c, key, handler)
 }
 
 // onOnceWithHandle builds a one-shot registration. The atomic claim makes the
@@ -340,7 +411,7 @@ func onOnceWithHandle[T any](c *Context, key EventKey[T], handler EventHandler[T
 		h.Dispose()
 		return handler(ctx, payload.(T))
 	}
-	if err := onEventWith(c, key.id(), typed, nil, h); err != nil {
+	if err := onEventWith(c, key.id(), typed, nil, nil, h); err != nil {
 		return nil, err
 	}
 	return h, nil
@@ -416,7 +487,7 @@ func OnWaterfallWithHandle[T any](c *Context, key EventKey[T], handler Waterfall
 		return handler(ctx, payload.(T), func() error { return nil })
 	}
 	h := &EventRegistration{}
-	if err := onEventWith(c, key.id(), plain, chain, h); err != nil {
+	if err := onEventWith(c, key.id(), plain, chain, nil, h); err != nil {
 		return nil, err
 	}
 	return h, nil
@@ -456,6 +527,12 @@ type EventBinding struct {
 	Order   uint64
 	Handler func(context.Context, any) error
 	Chain   func(context.Context, any, Next) error
+	// ValueHandler is the value-returning projection (result, present, error)
+	// of this registration, derived from the SAME eventReg as Handler/Chain.
+	// It is non-nil only for OnValue registrations; a plain On/OnWaterfall
+	// binding leaves it nil. BailValue invokes only bindings with a non-nil
+	// ValueHandler, so the four error-returning modes are unaffected.
+	ValueHandler func(context.Context, any) (any, bool, error)
 	// Active is a live check of this binding's registration. It stays valid
 	// after the snapshot is taken; dispatch modes MUST call it immediately
 	// before invoking Handler/Chain so a listener disposed earlier in the
@@ -475,11 +552,12 @@ func (c *Context) EventBindings(id EventKeyID) []EventBinding {
 	for _, reg := range snap {
 		reg, g := reg, c.rt.eventReg
 		out = append(out, EventBinding{
-			Owner:   reg.owner,
-			Order:   reg.seq,
-			Handler: reg.handler,
-			Chain:   reg.chain,
-			Active:  func() bool { return g.registrationIsActive(reg) },
+			Owner:        reg.owner,
+			Order:        reg.seq,
+			Handler:      reg.handler,
+			Chain:        reg.chain,
+			ValueHandler: reg.valueHandler,
+			Active:       func() bool { return g.registrationIsActive(reg) },
 		})
 	}
 	return out

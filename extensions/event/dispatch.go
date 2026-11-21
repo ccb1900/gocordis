@@ -9,6 +9,7 @@
 //	Serial    — strictly sequential in registration order; errors aggregate.
 //	Parallel  — concurrent start, ordered aggregation, synchronous return.
 //	Bail      — Serial with fail-fast: the first handler error stops dispatch.
+//	BailValue — value short-circuit (JS bail): stop at first present result.
 //	Waterfall — synchronous middleware chain driven by the handlers themselves.
 //
 // All modes share the kernel's guarantees per dispatch: one snapshot of the
@@ -25,6 +26,7 @@ package event
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"dynamic-runtime/runtime"
@@ -120,13 +122,13 @@ func Serial[T any](ctx context.Context, c *runtime.Context, key runtime.EventKey
 // handler starts returns the cancellation error. The returned error is the
 // first failure, not an aggregation.
 //
-// Divergence note (ADR-0004): JS Cordis's `bail` is value-short-circuit
-// (stop at the first handler returning a non-undefined value). That semantics
-// requires a value-returning handler shape, which the kernel's
-// error-returning registration surface does not carry; the paper defines no
-// dispatch modes. Bail here is therefore defined independently as fail-fast
-// serial, and the name is kept only as the conventional word for
-// stop-on-condition.
+// Divergence note (ADR-0004, docs/r1.md second-batch Event item): JS Cordis's
+// `bail` is value-short-circuit (stop at the first handler returning a
+// non-undefined value), which this error-returning Bail never did. The additive
+// value API (runtime.OnValue + BailValue below) now provides that semantics
+// without breaking this function: Bail REMAINS fail-fast-on-error, and callers
+// wanting JS bail() behaviour use BailValue. (A FailFast alias would name this
+// same behaviour explicitly; the original name is kept for compatibility.)
 func Bail[T any](ctx context.Context, c *runtime.Context, key runtime.EventKey[T], payload T) error {
 	if c == nil {
 		return errors.New("event: nil context")
@@ -153,6 +155,79 @@ func Bail[T any](ctx context.Context, c *runtime.Context, key runtime.EventKey[T
 		}
 	}
 	return nil
+}
+
+// BailValue dispatches payload to the VALUE bindings only (runtime.OnValue),
+// in one deterministic registration-order snapshot, and stops at the first
+// handler reporting present=true, returning its result. This is JS Cordis
+// bail() semantics: present=false is the explicit spelling of JS's `undefined`
+// and lets dispatch keep looking for a result.
+//
+// Contract (shared kernel guarantees, ADR-0004):
+//   - A handler error stops dispatch and is returned with present=false and
+//     the zero result (fail-fast); panics are contained via the same
+//     runtime.GuardEventHandler boundary as every other mode.
+//   - One snapshot is captured before dispatch; a binding disposed earlier in
+//     the batch is skipped via its live Active check; plain On/OnWaterfall
+//     bindings (nil ValueHandler) are never invoked.
+//   - Cancellation is checked before the snapshot and before each handler.
+//
+// R cannot be inferred from the arguments (it appears only in the result), so
+// callers specify both type parameters, e.g. BailValue[string, int](...).
+func BailValue[T any, R any](ctx context.Context, c *runtime.Context, key runtime.EventKey[T], payload T) (R, bool, error) {
+	var zero R
+	if c == nil {
+		return zero, false, errors.New("event: nil context")
+	}
+	if !key.Valid() {
+		return zero, false, errors.New("event: zero-value EventKey (use runtime.NewEventKey)")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := dispatchCancelErr(ctx, c); err != nil {
+		return zero, false, err
+	}
+
+	snap := c.EventBindings(key.ID())
+	for _, b := range snap {
+		if b.Active != nil && !b.Active() {
+			continue
+		}
+		if b.ValueHandler == nil {
+			continue
+		}
+		if err := dispatchCancelErr(ctx, c); err != nil {
+			return zero, false, err
+		}
+
+		var result any
+		var present bool
+		err := runtime.GuardEventHandler(func(hctx context.Context, p any) error {
+			var handlerErr error
+			result, present, handlerErr = b.ValueHandler(hctx, p)
+			return handlerErr
+		}, ctx, payload)
+		if err != nil {
+			return zero, false, err
+		}
+		if !present {
+			continue
+		}
+		// The kernel's read model erases R to any; recover the typed result.
+		// A nil projection result is the zero of R=any (a JS null-ish result);
+		// a mismatched R is a caller contract violation, surfaced as an error
+		// instead of a panic.
+		if result == nil {
+			return zero, true, nil
+		}
+		v, ok := result.(R)
+		if !ok {
+			return zero, false, fmt.Errorf("event: BailValue result type mismatch: got %T, want %T", result, zero)
+		}
+		return v, true, nil
+	}
+	return zero, false, nil
 }
 
 // Parallel starts every visible handler in its own goroutine and returns only

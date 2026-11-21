@@ -74,6 +74,20 @@ func (k EventKey[T]) valid() bool { return k.key.typeID != nil }
 // mode).
 type EventHandler[T any] func(context.Context, T) error
 
+// ValueEventHandler[T, R] is the value-returning handler contract for JS-style
+// bail() (extensions/event.BailValue). It returns (result, present, error):
+//
+//	present == false  →  no result (JS `undefined`); dispatch keeps looking;
+//	present == true   →  short-circuit dispatch with result;
+//	error != nil      →  fail dispatch (fail-fast, returned to the caller).
+//
+// Presence is an explicit flag instead of a sentinel value, so every R —
+// including one whose zero value is a legitimate result — can be expressed.
+// Registrations of this shape live in the SAME Event registry, with the same
+// EventKey identity, realm scope, owner activation, snapshot, and Effect-owned
+// inverse as plain On / OnWaterfall handlers.
+type ValueEventHandler[T any, R any] func(context.Context, T) (R, bool, error)
+
 // Next is the continuation of one Waterfall chain node (P1.4).
 //
 // Calling next() advances the chain to the next handler in the dispatch

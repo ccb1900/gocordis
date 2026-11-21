@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1616,6 +1617,456 @@ func TestWebSocketRejectsNonWebSocketSchemes(t *testing.T) {
 		if !strings.Contains(err.Error(), "ws") {
 			t.Errorf("WS(%q) error %q does not mention ws scheme", raw, err)
 		}
+	}
+	dispose(t, f)
+}
+
+// --- r1.md HTTP convergence: request-side streaming, stream lifetime,
+//     non-buffering stream interceptors and an additive RoundTrip -----------
+
+func asStateService(t *testing.T, svc exthttp.Service) exthttp.StateService {
+	t.Helper()
+	ss, ok := svc.(exthttp.StateService)
+	if !ok {
+		t.Fatalf("service %T does not implement StateService", svc)
+	}
+	return ss
+}
+
+func asRoundTripService(t *testing.T, svc exthttp.Service) exthttp.RoundTripService {
+	t.Helper()
+	rs, ok := svc.(exthttp.RoundTripService)
+	if !ok {
+		t.Fatalf("service %T does not implement RoundTripService", svc)
+	}
+	return rs
+}
+
+func waitForState(t *testing.T, st exthttp.StateService, want func(exthttp.HTTPState) bool) exthttp.HTTPState {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		got := st.State()
+		if want(got) {
+			return got
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("state never matched: %+v", got)
+			return got
+		case <-ticker.C:
+		}
+	}
+}
+
+func mustNotReceive[T any](t *testing.T, ch <-chan T, d time.Duration) {
+	t.Helper()
+	select {
+	case v := <-ch:
+		t.Fatalf("unexpected value received: %v", v)
+	case <-time.After(d):
+	}
+}
+
+// Request.BodyReader must be consumed while the request is owned by the
+// service: the server sees the first chunk while the caller's reader is still
+// open. A client that materialized the body with io.ReadAll could not do that.
+func TestBodyReaderStreamsRequestWithoutMaterializing(t *testing.T) {
+	firstRead := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+
+	const total = 80 * 1024
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		buf := make([]byte, 4096)
+		if _, err := io.ReadFull(r.Body, buf); err != nil {
+			stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
+			return
+		}
+		close(firstRead)
+		<-release
+		rest, err := io.ReadAll(r.Body)
+		if err != nil {
+			stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(strconv.Itoa(4096 + len(rest))))
+	}))
+	defer srv.Close()
+
+	ss, f := loadStreamService(t)
+	defer dispose(t, f)
+
+	pr, pw := io.Pipe()
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := pw.Write([]byte(strings.Repeat("a", 64*1024)))
+		if err == nil {
+			<-release
+			_, err = pw.Write([]byte(strings.Repeat("b", 16*1024)))
+		}
+		_ = pw.Close()
+		writeDone <- err
+	}()
+
+	type result struct {
+		resp *exthttp.StreamResponse
+		err  error
+	}
+	res := make(chan result, 1)
+	go func() {
+		resp, err := ss.DoStream(testCtx(t), exthttp.Request{
+			Method:     stdhttp.MethodPost,
+			URL:        srv.URL,
+			BodyReader: pr,
+		})
+		res <- result{resp, err}
+	}()
+
+	mustRecv(t, firstRead, 2*time.Second) // sent before the reader reached EOF
+	unblock()
+	got := mustRecv(t, res, 2*time.Second)
+	if got.err != nil {
+		t.Fatalf("DoStream with BodyReader: %v", got.err)
+	}
+	defer got.resp.Body.Close()
+	body, err := io.ReadAll(got.resp.Body)
+	if err != nil {
+		t.Fatalf("read streaming response: %v", err)
+	}
+	if string(body) != strconv.Itoa(total) {
+		t.Fatalf("server saw %q bytes, want %d", body, total)
+	}
+	if err := mustRecv(t, writeDone, time.Second); err != nil {
+		t.Fatalf("request body writer: %v", err)
+	}
+}
+
+// The WaitGroup slot of a stream is owned by the returned Body: Close must
+// wait for Body.Close, and State must expose that open stream separately from
+// the (already completed) request.
+func TestStreamBodyCloseReleasesOwnershipSlot(t *testing.T) {
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	ss, f := loadStreamService(t)
+	st := asStateService(t, ss)
+	resp, err := ss.DoStream(testCtx(t), exthttp.Request{URL: srv.URL})
+	if err != nil {
+		t.Fatalf("DoStream: %v", err)
+	}
+	if got := st.State(); got.OpenStreams != 1 || got.Active != 0 || got.Closed {
+		t.Fatalf("state after DoStream = %+v", got)
+	}
+
+	closeStarted := make(chan struct{})
+	closeDone := make(chan error, 1)
+	go func() {
+		close(closeStarted)
+		closeDone <- ss.Close()
+	}()
+	<-closeStarted
+	waitForState(t, st, func(s exthttp.HTTPState) bool { return s.Closed })
+	mustNotReceive(t, closeDone, 100*time.Millisecond) // still waiting for Body.Close
+
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("Body.Close: %v", err)
+	}
+	if err := mustRecv(t, closeDone, 2*time.Second); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := st.State(); got.OpenStreams != 0 || got.CloseTimedOut {
+		t.Fatalf("state after Body.Close = %+v", got)
+	}
+	dispose(t, f)
+}
+
+// Close must cancel, wait only up to CloseTimeout, then expose the timeout in
+// both its typed error and State. A second Close reports the same outcome.
+func TestCloseTimeoutIsObservableAndTyped(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+
+	svc, f := loadServiceWithConfig(t, exthttp.Config{CloseTimeout: 50 * time.Millisecond})
+	st := asStateService(t, svc)
+	_, err := svc.AddInterceptor(func(ctx context.Context, req *exthttp.Request, next func(context.Context, *exthttp.Request) (*exthttp.Response, error)) (*exthttp.Response, error) {
+		close(entered)
+		<-release // ignores ctx: only the bounded wait can finish Close
+		return next(ctx, req)
+	})
+	if err != nil {
+		t.Fatalf("AddInterceptor: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = svc.Get(testCtx(t), "http://example.invalid/never")
+	}()
+	mustRecv(t, entered, time.Second)
+
+	if err := svc.Close(); !errors.Is(err, exthttp.ErrCloseTimeout) {
+		t.Fatalf("Close error = %v, want ErrCloseTimeout", err)
+	}
+	got := st.State()
+	if !got.Closed || !got.CloseTimedOut || got.Active != 1 || got.CloseTimeout != 50*time.Millisecond {
+		t.Fatalf("state after timed-out Close = %+v", got)
+	}
+	// Idempotent Close does not re-report the same timeout; State keeps it.
+	if err := svc.Close(); err != nil {
+		t.Fatalf("second Close = %v, want nil", err)
+	}
+	if got := st.State(); !got.CloseTimedOut {
+		t.Fatalf("state after second Close = %+v", got)
+	}
+	unblock()
+	mustRecv(t, done, time.Second)
+	dispose(t, f)
+}
+
+func blockingChunkServer(t *testing.T, chunk string, chunks int) (*httptest.Server, <-chan struct{}, func()) {
+	t.Helper()
+	wroteFirst := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(stdhttp.StatusOK)
+		_, _ = io.WriteString(w, chunk)
+		w.(stdhttp.Flusher).Flush()
+		close(wroteFirst)
+		<-release
+		for i := 1; i < chunks; i++ {
+			_, _ = io.WriteString(w, chunk)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, wroteFirst, unblock
+}
+
+// A stream interceptor runs outside the buffered ordinary-interceptor adapter,
+// so a 512KB body can be read in chunks while the server is still blocked.
+func TestStreamInterceptorDoesNotBufferLargeBody(t *testing.T) {
+	const chunkSize = 64 * 1024
+	const chunks = 8
+	chunk := strings.Repeat("z", chunkSize)
+	srv, wroteFirst, unblock := blockingChunkServer(t, chunk, chunks)
+
+	ss, f := loadStreamService(t)
+	defer dispose(t, f)
+	var seen atomic.Int32
+	if _, err := ss.AddStreamInterceptor(func(ctx context.Context, req *exthttp.Request, next func(context.Context, *exthttp.Request) (*exthttp.StreamResponse, error)) (*exthttp.StreamResponse, error) {
+		seen.Add(1)
+		return next(ctx, req)
+	}); err != nil {
+		t.Fatalf("AddStreamInterceptor: %v", err)
+	}
+
+	resp, err := ss.DoStream(testCtx(t), exthttp.Request{URL: srv.URL})
+	if err != nil {
+		t.Fatalf("DoStream: %v", err)
+	}
+	defer resp.Body.Close()
+	mustRecv(t, wroteFirst, time.Second)
+
+	first := make([]byte, chunkSize)
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(resp.Body, first)
+		readErr <- err
+	}()
+	if err := mustRecv(t, readErr, 2*time.Second); err != nil {
+		t.Fatalf("first chunk did not arrive while server blocked: %v", err)
+	}
+	unblock()
+	rest, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read remaining chunks: %v", err)
+	}
+	if len(rest) != chunkSize*(chunks-1) || seen.Load() != 1 {
+		t.Fatalf("remaining = %d bytes, interceptor calls = %d", len(rest), seen.Load())
+	}
+}
+
+// Ordinary (non-stream) interceptors are adapted through a buffered next-chain
+// that calls io.ReadAll, so installing one materializes the response body. This
+// test pins that documented behavior: DoStream cannot return until the server
+// finishes writing, and the returned body already holds all 512KB.
+func TestOrdinaryInterceptorBuffersStreamResponse(t *testing.T) {
+	const chunkSize = 64 * 1024
+	const chunks = 8
+	chunk := strings.Repeat("q", chunkSize)
+	srv, wroteFirst, unblock := blockingChunkServer(t, chunk, chunks)
+
+	ss, f := loadStreamService(t)
+	defer dispose(t, f)
+	if _, err := ss.AddInterceptor(func(ctx context.Context, req *exthttp.Request, next func(context.Context, *exthttp.Request) (*exthttp.Response, error)) (*exthttp.Response, error) {
+		return next(ctx, req)
+	}); err != nil {
+		t.Fatalf("AddInterceptor: %v", err)
+	}
+
+	type result struct {
+		resp *exthttp.StreamResponse
+		err  error
+	}
+	res := make(chan result, 1)
+	go func() {
+		resp, err := ss.DoStream(testCtx(t), exthttp.Request{URL: srv.URL})
+		res <- result{resp, err}
+	}()
+	mustRecv(t, wroteFirst, time.Second)
+	mustNotReceive(t, res, 100*time.Millisecond) // buffered: no live body yet
+
+	unblock()
+	got := mustRecv(t, res, 2*time.Second)
+	if got.err != nil {
+		t.Fatalf("DoStream: %v", got.err)
+	}
+	defer got.resp.Body.Close()
+	body, err := io.ReadAll(got.resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if len(body) != chunkSize*chunks {
+		t.Fatalf("buffered body = %d bytes, want %d", len(body), chunkSize*chunks)
+	}
+}
+
+// RoundTrip reuses the service's ownership, interceptor chain and proxy
+// routing, and hands back a LIVE body whose Close releases the stream slot.
+func TestRoundTripReturnsLiveOwnedBody(t *testing.T) {
+	const chunkSize = 64 * 1024
+	chunk := strings.Repeat("r", chunkSize)
+	srv, wroteFirst, unblock := blockingChunkServer(t, chunk, 2)
+
+	svc, f := loadService(t)
+	rtSvc := asRoundTripService(t, svc)
+	st := asStateService(t, svc)
+	var seenHeader string
+	// A stream interceptor proves the chain runs without materializing the
+	// body; an ordinary interceptor would intentionally buffer it.
+	if _, err := asStreamService(t, svc).AddStreamInterceptor(func(ctx context.Context, req *exthttp.Request, next func(context.Context, *exthttp.Request) (*exthttp.StreamResponse, error)) (*exthttp.StreamResponse, error) {
+		seenHeader = req.Header.Get("X-RoundTrip")
+		return next(ctx, req)
+	}); err != nil {
+		t.Fatalf("AddStreamInterceptor: %v", err)
+	}
+
+	type result struct {
+		resp *stdhttp.Response
+		err  error
+	}
+	res := make(chan result, 1)
+	go func() {
+		req, err := stdhttp.NewRequestWithContext(testCtx(t), stdhttp.MethodGet, srv.URL, nil)
+		if err != nil {
+			res <- result{err: err}
+			return
+		}
+		req.Header.Set("X-RoundTrip", "yes")
+		resp, err := rtSvc.RoundTrip(req.Context(), req)
+		res <- result{resp, err}
+	}()
+
+	got := mustRecv(t, res, 2*time.Second) // returns before the server unblocks
+	if got.err != nil {
+		t.Fatalf("RoundTrip: %v", got.err)
+	}
+	if got.resp.StatusCode != stdhttp.StatusOK || seenHeader != "yes" {
+		t.Fatalf("status = %d, interceptor header = %q", got.resp.StatusCode, seenHeader)
+	}
+	mustRecv(t, wroteFirst, time.Second)
+	first := make([]byte, chunkSize)
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(got.resp.Body, first)
+		readErr <- err
+	}()
+	if err := mustRecv(t, readErr, 2*time.Second); err != nil {
+		t.Fatalf("live body did not stream: %v", err)
+	}
+	if got := st.State(); got.OpenStreams != 1 || got.Active != 0 {
+		t.Fatalf("state with open RoundTrip body = %+v", got)
+	}
+	unblock()
+	rest, err := io.ReadAll(got.resp.Body)
+	if err != nil {
+		t.Fatalf("read rest: %v", err)
+	}
+	if len(rest) != chunkSize {
+		t.Fatalf("rest = %d bytes, want %d", len(rest), chunkSize)
+	}
+	if err := got.resp.Body.Close(); err != nil {
+		t.Fatalf("body Close: %v", err)
+	}
+	if got := st.State(); got.OpenStreams != 0 {
+		t.Fatalf("state after body Close = %+v", got)
+	}
+	dispose(t, f)
+}
+
+func TestRoundTripUsesIdentityProxyRouting(t *testing.T) {
+	proxy := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		_, _ = w.Write([]byte("via-proxy"))
+	}))
+	defer proxy.Close()
+
+	svc, f := loadService(t)
+	remove, err := svc.RegisterProxy([]string{"http"}, proxy.URL)
+	if err != nil {
+		t.Fatalf("RegisterProxy: %v", err)
+	}
+	// Ordinary interceptors apply to RoundTrip too (and buffer by design).
+	hit := make(chan struct{}, 1)
+	if _, err := svc.AddInterceptor(func(ctx context.Context, req *exthttp.Request, next func(context.Context, *exthttp.Request) (*exthttp.Response, error)) (*exthttp.Response, error) {
+		hit <- struct{}{}
+		return next(ctx, req)
+	}); err != nil {
+		t.Fatalf("AddInterceptor: %v", err)
+	}
+	req, err := stdhttp.NewRequestWithContext(testCtx(t), stdhttp.MethodGet, "http://example.invalid/probe", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := asRoundTripService(t, svc).RoundTrip(req.Context(), req)
+	if err != nil {
+		t.Fatalf("RoundTrip via proxy: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != "via-proxy" {
+		t.Fatalf("body = %q, want via-proxy", body)
+	}
+	mustRecv(t, hit, time.Second)
+	if err := remove(); err != nil {
+		t.Fatalf("remove proxy: %v", err)
+	}
+	dispose(t, f)
+}
+
+func TestRoundTripAfterCloseRejected(t *testing.T) {
+	svc, f := loadService(t)
+	if err := svc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	req, _ := stdhttp.NewRequestWithContext(testCtx(t), stdhttp.MethodGet, "http://127.0.0.1:1", nil)
+	if _, err := asRoundTripService(t, svc).RoundTrip(req.Context(), req); !errors.Is(err, exthttp.ErrClosed) {
+		t.Fatalf("RoundTrip after Close = %v, want ErrClosed", err)
 	}
 	dispose(t, f)
 }

@@ -6,9 +6,19 @@
 // Proxies are identity-based registrations (mirroring the JS
 // ctx.http.proxy([schemes], factory)): unregistering one contribution restores
 // the previously winning one for its schemes instead of clearing a global.
-// The service also owns every in-flight request so Close behaves like an HTTP
-// server shutdown: stop new requests, cancel active ones, wait (bounded), then
-// release all transports.
+//
+// Ownership has three distinct completions, deliberately not conflated:
+//
+//   - Request Completed: Do/DoStream/RoundTrip returned and Active decreased.
+//     For a streaming call this happens as soon as response headers arrive.
+//   - Stream Closed: the Body returned by DoStream/RoundTrip was Closed; only
+//     then is that call's WaitGroup slot released and OpenStreams decreased.
+//   - Service Closed: Close stopped new calls, cancelled live ones and waited
+//     for all owned work up to CloseTimeout. A timeout is observable through
+//     ErrCloseTimeout and State.CloseTimedOut; it is NOT an absolute join.
+//
+// Close behaves like an HTTP server shutdown: stop new requests, cancel active
+// ones, wait (bounded), then release all transports.
 package http
 
 import (
@@ -34,8 +44,8 @@ import (
 )
 
 // Request is the transport-agnostic request passed through the interceptor
-// chain. Interceptors may mutate it; Header and Body are cloned at Do entry so
-// a caller's Request is never modified.
+// chain. Interceptors may mutate it; Header is cloned at call entry so a
+// caller's Request is never modified.
 type Request struct {
 	Method  string
 	URL     string
@@ -44,6 +54,18 @@ type Request struct {
 	Timeout time.Duration
 	// ExpectStatus validates the response status. Nil means 2xx is accepted.
 	ExpectStatus func(int) bool
+
+	// BodyReader is an additive streaming alternative to Body: callers can
+	// POST/PUT a stream without materializing []byte. If it implements
+	// io.Closer the service closes it after the transport finishes reading,
+	// under the same request ownership (including Close cancellation). When
+	// Body is non-empty it takes precedence and BodyReader is ignored.
+	BodyReader io.Reader
+	// ContentLength optionally describes BodyReader. Zero lets net/http pick
+	// (chunked for an unknown reader); -1 explicitly requests chunked encoding.
+	ContentLength int64
+	// Host optionally overrides the Host header sent to the peer.
+	Host string
 
 	// BaseURL is an optional prefix resolved against URL by Do/DoStream. An
 	// absolute URL overrides it. Params are appended to the URL's existing
@@ -62,13 +84,16 @@ type Response struct {
 }
 
 // StreamResponse is a response whose body has NOT been read. The caller owns
-// Body and must Close it; closing it also releases the service's per-request
-// context (timeout and Close cancellation). The service still tracks the
-// DoStream call itself in its in-flight set until DoStream returns.
+// Body and must Close it. Closing it releases this call's service-owned slot
+// (so Close can finish), its timeout/Close cancellation and its OpenStreams
+// count. DoStream/RoundTrip returning only means Request Completed, NOT
+// Stream Closed.
 type StreamResponse struct {
 	StatusCode int
 	Header     stdhttp.Header
 	Body       io.ReadCloser
+	// Uncompressed reports whether the transport decoded a content encoding.
+	Uncompressed bool
 }
 
 // StreamInterceptor is the stream-aware counterpart of Interceptor. It runs
@@ -78,6 +103,12 @@ type StreamInterceptor func(ctx context.Context, req *Request, next func(context
 
 // Interceptor is one link in a next-chain. It may short-circuit by returning
 // without calling next, or mutate req before delegating.
+//
+// Buffering caveat: when DoStream/RoundTrip run an ordinary Interceptor, its
+// next-chain is adapted to materialize the response with io.ReadAll before the
+// interceptor observes it (the Response type is []byte). Installing even one
+// ordinary interceptor therefore defeats streaming for that call. Use
+// StreamInterceptor when the body must stay live.
 type Interceptor func(ctx context.Context, req *Request, next func(context.Context, *Request) (*Response, error)) (*Response, error)
 
 // ProxyDialer dials a target through a proxy. Its signature matches
@@ -119,6 +150,36 @@ type StreamService interface {
 	// Decode uses this service's own decoder registry.
 	Decode(*StreamResponse, any) error
 	Extend(baseURL string, header stdhttp.Header) StreamService
+}
+
+// HTTPState is a linearizable, read-only view of the service's ownership.
+// Active counts requests that have not yet returned; OpenStreams counts live
+// bodies handed out by DoStream/RoundTrip that have not yet been Closed. The
+// two are intentionally separate: a streaming call can be Completed while its
+// stream is still Open.
+type HTTPState struct {
+	Closed        bool
+	Active        int64
+	OpenStreams   int64
+	CloseTimeout  time.Duration
+	CloseTimedOut bool
+}
+
+// StateService is the additive observation contract. It is separate from
+// Service so third-party implementations of Service remain source-compatible.
+type StateService interface {
+	Service
+	State() HTTPState
+}
+
+// RoundTripService is the additive transport-shaped contract. RoundTrip takes
+// a stdlib request and returns a LIVE response body, but it is still owned by
+// this service: the same WaitGroup, active count, cancellation, interceptor
+// chains and identity proxy routing apply. The raw transport is never exposed.
+// Closing the returned Body is what releases the call's ownership slot.
+type RoundTripService interface {
+	Service
+	RoundTrip(ctx context.Context, req *stdhttp.Request) (*stdhttp.Response, error)
 }
 
 // MethodService is the additive full method-family contract. The base Service
@@ -165,6 +226,11 @@ var (
 	// ErrStatus wraps a rejected response status. Use errors.Is together with
 	// errors.As for the accompanying *StatusError.
 	ErrStatus = errors.New("http: unexpected status")
+
+	// ErrCloseTimeout is returned by Close when the graceful wait expired
+	// while requests or open streams were still service-owned. State() reports
+	// the timed-out state; no absolute join is claimed in that case.
+	ErrCloseTimeout = errors.New("http service close timed out")
 )
 
 // StatusError carries the status code rejected by Request.ExpectStatus.
@@ -247,6 +313,53 @@ type proxyRegistration struct {
 
 type proxyDialerKey struct{}
 
+// lifetimeTracker is a WaitGroup whose wait can be bounded without leaving a
+// blocked goroutine behind when the bound expires. It also lets Close observe
+// that owned work survived the graceful wait instead of claiming a join.
+type lifetimeTracker struct {
+	mu   sync.Mutex
+	n    int
+	idle chan struct{}
+}
+
+func newLifetimeTracker() *lifetimeTracker {
+	idle := make(chan struct{})
+	close(idle)
+	return &lifetimeTracker{idle: idle}
+}
+
+func (t *lifetimeTracker) Add(delta int) {
+	t.mu.Lock()
+	prev := t.n
+	t.n += delta
+	switch {
+	case prev == 0 && t.n > 0:
+		t.idle = make(chan struct{})
+	case prev > 0 && t.n == 0:
+		close(t.idle)
+	}
+	negative := t.n < 0
+	t.mu.Unlock()
+	if negative {
+		panic("http: negative lifetime tracker count")
+	}
+}
+
+func (t *lifetimeTracker) Done() { t.Add(-1) }
+
+// WaitTimeout reports whether all owned work finished before the deadline.
+func (t *lifetimeTracker) WaitTimeout(d time.Duration) bool {
+	t.mu.Lock()
+	idle := t.idle
+	t.mu.Unlock()
+	select {
+	case <-idle:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
 type service struct {
 	mu                 sync.RWMutex
 	closed             bool
@@ -260,14 +373,17 @@ type service struct {
 	// retired holds every transport replaced by a proxy change. A request using
 	// an older transport may still be in flight, so each one stays reachable
 	// and is closed on every swap and again on service disposal.
-	retired      []*stdhttp.Transport
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	active       atomic.Int64
-	closeTimeout time.Duration
-	closeOnce    sync.Once
-	closeDone    chan struct{}
+	retired       []*stdhttp.Transport
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            *lifetimeTracker
+	active        atomic.Int64
+	openStreams   atomic.Int64
+	closeTimeout  time.Duration
+	closeTimedOut bool  // guarded by mu
+	closeErr      error // guarded by mu
+	closeOnce     sync.Once
+	closeDone     chan struct{}
 	// wsClients holds every live WebSocket client. Registrations and removals
 	// run under s.mu; Close snapshots this set, closes each client and then
 	// waits on s.wg so no socket or watcher goroutine outlives Service.Close.
@@ -282,6 +398,7 @@ func newService() *service {
 	s := &service{
 		ctx:          ctx,
 		cancel:       cancel,
+		wg:           newLifetimeTracker(),
 		closeTimeout: DefaultCloseTimeout,
 		closeDone:    make(chan struct{}),
 		wsClients:    make(map[*wsClientConn]struct{}),
@@ -367,13 +484,26 @@ func (s *service) rebuildTransportLocked() {
 	}
 }
 
-func (s *service) Do(ctx context.Context, req Request) (*Response, error) {
+// preparedCall is the single unit of service ownership shared by Do,
+// DoStream and RoundTrip. Its slot is added under the same read lock Close
+// uses to set `closed`, so no Add can race with Close's bounded wait.
+type preparedCall struct {
+	s           *service
+	req         Request
+	callCtx     context.Context
+	tr          *stdhttp.Transport
+	chain       []Interceptor
+	streams     []StreamInterceptor
+	dial        ProxyDialer
+	cleanups    []func()
+	cleanupOnce sync.Once
+	activeDone  bool
+	slotDone    bool
+}
+
+func (s *service) prepare(ctx context.Context, req Request) (*preparedCall, error) {
 	r := req
-	if r.Header == nil {
-		r.Header = make(stdhttp.Header)
-	} else {
-		r.Header = r.Header.Clone()
-	}
+	r.Header = cloneHeader(r.Header)
 	if r.Method == "" {
 		r.Method = stdhttp.MethodGet
 	}
@@ -388,8 +518,6 @@ func (s *service) Do(ctx context.Context, req Request) (*Response, error) {
 		s.mu.RUnlock()
 		return nil, ErrClosed
 	}
-	// Add before releasing the read lock; Close sets closed under the write
-	// lock before it waits, so no Add can race with Wait.
 	s.wg.Add(1)
 	s.active.Add(1)
 	tr := s.transport
@@ -397,56 +525,124 @@ func (s *service) Do(ctx context.Context, req Request) (*Response, error) {
 	for i, e := range s.interceptors {
 		chain[i] = e.fn
 	}
+	streams := make([]StreamInterceptor, len(s.streamInterceptors))
+	for i, e := range s.streamInterceptors {
+		streams[i] = e.fn
+	}
 	var dial ProxyDialer
 	if reg := winningRegistration(s.proxies, scheme); reg != nil {
 		dial = reg.dial
 	}
 	s.mu.RUnlock()
-	defer func() {
-		s.active.Add(-1)
-		s.wg.Done()
-	}()
 
 	// Derive the call context from both the caller and the service lifetime so
-	// Close can cancel requests that are still in flight.
+	// Close can cancel work that is still in flight. Cleanup is deliberately
+	// NOT run on return for streaming calls; it follows the Body's Close.
 	callCtx := ctx
+	var cleanups []func()
 	if s.cancel != nil {
-		var cancel context.CancelFunc
-		callCtx, cancel = context.WithCancel(ctx)
-		defer cancel()
+		c, cancel := context.WithCancel(ctx)
+		callCtx = c
 		stop := context.AfterFunc(s.ctx, cancel)
-		defer stop()
+		cleanups = append(cleanups, func() { stop(); cancel() })
 	}
 	if r.Timeout > 0 {
-		var cancelTimeout context.CancelFunc
-		callCtx, cancelTimeout = context.WithTimeout(callCtx, r.Timeout)
-		defer cancelTimeout()
+		c, cancelTimeout := context.WithTimeout(callCtx, r.Timeout)
+		callCtx = c
+		cleanups = append(cleanups, cancelTimeout)
 	}
 	if dial != nil {
 		callCtx = context.WithValue(callCtx, proxyDialerKey{}, dial)
 	}
+	return &preparedCall{
+		s: s, req: r, callCtx: callCtx, tr: tr,
+		chain: chain, streams: streams, dial: dial, cleanups: cleanups,
+	}, nil
+}
+
+func (p *preparedCall) cleanup() {
+	p.cleanupOnce.Do(func() {
+		for _, fn := range p.cleanups {
+			fn()
+		}
+	})
+}
+
+// endActive marks Request Completed. It always happens when the initiating
+// method returns, independently of a still-open stream body.
+func (p *preparedCall) endActive() {
+	if !p.activeDone {
+		p.activeDone = true
+		p.s.active.Add(-1)
+	}
+}
+
+// releaseSlot marks the end of service ownership for this call. For buffered
+// calls it runs on return; for streams it runs from streamBody.Close.
+func (p *preparedCall) releaseSlot() {
+	if !p.slotDone {
+		p.slotDone = true
+		p.s.wg.Done()
+	}
+}
+
+// abort is used when a call fails before a body can be handed to the caller.
+func (p *preparedCall) abort() {
+	p.endActive()
+	p.releaseSlot()
+	p.cleanup()
+}
+
+// ownStreamBody transfers ownership of the slot to the returned Body. This is
+// the ONLY path that releases it for a successful streaming call.
+func (p *preparedCall) ownStreamBody(sr *StreamResponse) {
+	p.endActive()
+	p.s.openStreams.Add(1)
+	sr.Body = &streamBody{
+		ReadCloser: sr.Body,
+		onClose: func() {
+			p.s.openStreams.Add(-1)
+			p.releaseSlot()
+			p.cleanup()
+		},
+	}
+}
+
+func wrapCallError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w", ErrTimeout, err)
+	}
+	return err
+}
+
+func (s *service) Do(ctx context.Context, req Request) (*Response, error) {
+	p, err := s.prepare(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer p.abort() // buffered call: Request Completed and ownership end together
 
 	next := func(c context.Context, rr *Request) (*Response, error) {
-		return s.roundTrip(c, tr, rr)
+		return s.roundTrip(c, p.tr, rr)
 	}
-	for i := len(chain) - 1; i >= 0; i-- {
-		ic := chain[i]
+	for i := len(p.chain) - 1; i >= 0; i-- {
+		ic := p.chain[i]
 		inner := next
 		next = func(c context.Context, rr *Request) (*Response, error) {
 			return ic(c, rr, inner)
 		}
 	}
-	resp, err := next(callCtx, &r)
+	resp, err := next(p.callCtx, &p.req)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(callCtx.Err(), context.DeadlineExceeded) {
-			return resp, fmt.Errorf("%w: %w", ErrTimeout, err)
-		}
-		return resp, err
+		return resp, wrapCallError(p.callCtx, err)
 	}
 	if resp == nil {
 		return nil, nil
 	}
-	check := r.ExpectStatus
+	check := p.req.ExpectStatus
 	if check == nil {
 		check = func(code int) bool { return code >= 200 && code < 300 }
 	}
@@ -456,10 +652,26 @@ func (s *service) Do(ctx context.Context, req Request) (*Response, error) {
 	return resp, nil
 }
 
-func (s *service) roundTrip(ctx context.Context, tr *stdhttp.Transport, req *Request) (*Response, error) {
+// ownedReader keeps a caller-supplied io.Closer alive until the transport has
+// finished reading it. net/http otherwise wraps unknown readers in NopCloser.
+type ownedReader struct{ io.Reader }
+
+func (r ownedReader) Close() error {
+	if c, ok := r.Reader.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
+}
+
+// newOutboundRequest is the single mapping from the capability's Request to a
+// stdlib request, shared by Do, DoStream and RoundTrip.
+func (s *service) newOutboundRequest(ctx context.Context, req *Request) (*stdhttp.Request, error) {
 	var body io.Reader
-	if len(req.Body) > 0 {
+	switch {
+	case len(req.Body) > 0:
 		body = bytes.NewReader(req.Body)
+	case req.BodyReader != nil:
+		body = ownedReader{Reader: req.BodyReader}
 	}
 	hr, err := stdhttp.NewRequestWithContext(ctx, req.Method, req.URL, body)
 	if err != nil {
@@ -467,6 +679,20 @@ func (s *service) roundTrip(ctx context.Context, tr *stdhttp.Transport, req *Req
 	}
 	if req.Header != nil {
 		hr.Header = req.Header.Clone()
+	}
+	if req.Host != "" {
+		hr.Host = req.Host
+	}
+	if body != nil && req.ContentLength != 0 {
+		hr.ContentLength = req.ContentLength
+	}
+	return hr, nil
+}
+
+func (s *service) roundTrip(ctx context.Context, tr *stdhttp.Transport, req *Request) (*Response, error) {
+	hr, err := s.newOutboundRequest(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 	client := &stdhttp.Client{Transport: tr}
 	resp, err := client.Do(hr)
@@ -557,83 +783,17 @@ func (b *streamBody) Close() error {
 	return err
 }
 
-// DoStream performs a request but hands the unread body to the caller. It is
-// tracked by the service's in-flight set exactly like Do, so Close refuses new
-// calls and waits for an in-flight DoStream to return. Status validation is
-// intentionally left to the caller: StreamResponse exposes StatusCode.
-func (s *service) DoStream(ctx context.Context, req Request) (*StreamResponse, error) {
-	r := req
-	r.Header = cloneHeader(r.Header)
-	if r.Method == "" {
-		r.Method = stdhttp.MethodGet
-	}
-	r.URL = resolveRequestURL(r.BaseURL, r.URL, r.Params)
-
-	scheme := ""
-	if u, err := url.Parse(r.URL); err == nil && u != nil {
-		scheme = normalizeScheme(u.Scheme)
-	}
-
-	s.mu.RLock()
-	if s.closed {
-		s.mu.RUnlock()
-		return nil, ErrClosed
-	}
-	s.wg.Add(1)
-	s.active.Add(1)
-	tr := s.transport
-	chain := make([]Interceptor, len(s.interceptors))
-	for i, e := range s.interceptors {
-		chain[i] = e.fn
-	}
-	streamChain := make([]StreamInterceptor, len(s.streamInterceptors))
-	for i, e := range s.streamInterceptors {
-		streamChain[i] = e.fn
-	}
-	var dial ProxyDialer
-	if reg := winningRegistration(s.proxies, scheme); reg != nil {
-		dial = reg.dial
-	}
-	s.mu.RUnlock()
-	defer func() {
-		s.active.Add(-1)
-		s.wg.Done()
-	}()
-
-	// Unlike Do, the derived context cannot be cancelled on return: the Body is
-	// still streaming. Cleanup is attached to Body.Close instead.
-	callCtx := ctx
-	var cleanups []func()
-	if s.cancel != nil {
-		c, cancel := context.WithCancel(ctx)
-		callCtx = c
-		stop := context.AfterFunc(s.ctx, cancel)
-		cleanups = append(cleanups, func() { stop(); cancel() })
-	}
-	if r.Timeout > 0 {
-		c, cancelTimeout := context.WithTimeout(callCtx, r.Timeout)
-		callCtx = c
-		cleanups = append(cleanups, cancelTimeout)
-	}
-	if dial != nil {
-		callCtx = context.WithValue(callCtx, proxyDialerKey{}, dial)
-	}
-	var cleanupOnce sync.Once
-	cleanup := func() {
-		cleanupOnce.Do(func() {
-			for _, fn := range cleanups {
-				fn()
-			}
-		})
-	}
-
+// executeStream builds the two interceptor chains and runs them. Stream
+// interceptors are outermost so they see the LIVE response; ordinary ones are
+// adapted through the documented io.ReadAll buffer. DoStream and RoundTrip
+// share this function so their ownership and chain semantics cannot diverge.
+func (s *service) executeStream(p *preparedCall) (*StreamResponse, error) {
 	next := func(c context.Context, rr *Request) (*StreamResponse, error) {
-		return s.roundTripStream(c, tr, rr)
+		return s.roundTripStream(c, p.tr, rr)
 	}
-	// Ordinary interceptors apply too. They are adapted through a buffered
-	// next-chain, so no materialization happens unless one is actually installed.
-	for i := len(chain) - 1; i >= 0; i-- {
-		ic := chain[i]
+	// Ordinary interceptors: buffering is explicit (see Interceptor's doc).
+	for i := len(p.chain) - 1; i >= 0; i-- {
+		ic := p.chain[i]
 		inner := next
 		next = func(c context.Context, rr *Request) (*StreamResponse, error) {
 			bufferedNext := func(c2 context.Context, r2 *Request) (*Response, error) {
@@ -652,54 +812,108 @@ func (s *service) DoStream(ctx context.Context, req Request) (*StreamResponse, e
 			if err != nil || resp == nil {
 				return nil, err
 			}
-			return &StreamResponse{StatusCode: resp.StatusCode, Header: resp.Header, Body: io.NopCloser(bytes.NewReader(resp.Body))}, nil
+			return &StreamResponse{
+				StatusCode: resp.StatusCode, Header: resp.Header,
+				Body: io.NopCloser(bytes.NewReader(resp.Body)),
+			}, nil
 		}
 	}
-	// Stream interceptors are outermost and run in registration order.
-	for i := len(streamChain) - 1; i >= 0; i-- {
-		si := streamChain[i]
+	// Stream interceptors are outermost and run in registration order. They
+	// receive the unread body and may stream it without materialization.
+	for i := len(p.streams) - 1; i >= 0; i-- {
+		si := p.streams[i]
 		inner := next
 		next = func(c context.Context, rr *Request) (*StreamResponse, error) {
 			return si(c, rr, inner)
 		}
 	}
 
-	sr, err := next(callCtx, &r)
+	sr, err := next(p.callCtx, &p.req)
 	if err != nil || sr == nil {
 		if sr != nil && sr.Body != nil {
 			_ = sr.Body.Close()
-		}
-		cleanup()
-		if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(callCtx.Err(), context.DeadlineExceeded)) {
-			return sr, fmt.Errorf("%w: %w", ErrTimeout, err)
 		}
 		return sr, err
 	}
 	if sr.Body == nil {
 		sr.Body = io.NopCloser(bytes.NewReader(nil))
 	}
-	sr.Body = &streamBody{ReadCloser: sr.Body, onClose: cleanup}
 	return sr, nil
 }
 
-func (s *service) roundTripStream(ctx context.Context, tr *stdhttp.Transport, req *Request) (*StreamResponse, error) {
-	var body io.Reader
-	if len(req.Body) > 0 {
-		body = bytes.NewReader(req.Body)
-	}
-	hr, err := stdhttp.NewRequestWithContext(ctx, req.Method, req.URL, body)
+// DoStream performs a request and hands the unread body to the caller. Its
+// slot remains service-owned until Body.Close: returning only means Request
+// Completed, not Stream Closed. Status validation is left to the caller.
+func (s *service) DoStream(ctx context.Context, req Request) (*StreamResponse, error) {
+	p, err := s.prepare(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	if req.Header != nil {
-		hr.Header = req.Header.Clone()
+	sr, err := s.executeStream(p)
+	if err != nil || sr == nil {
+		p.abort()
+		return sr, wrapCallError(p.callCtx, err)
+	}
+	p.ownStreamBody(sr)
+	return sr, nil
+}
+
+// RoundTrip is the transport-shaped, additive counterpart of DoStream. It
+// returns a stdlib response whose Body is LIVE and service-owned: closing it
+// releases this call's slot, exactly as for DoStream. The underlying transport
+// and proxy registrations stay private to the service.
+func (s *service) RoundTrip(ctx context.Context, req *stdhttp.Request) (*stdhttp.Response, error) {
+	if req == nil {
+		return nil, errors.New("http: nil request")
+	}
+	ir := Request{
+		Method:        req.Method,
+		Header:        cloneHeader(req.Header),
+		BodyReader:    req.Body,
+		ContentLength: req.ContentLength,
+		Host:          req.Host,
+	}
+	if ir.Method == "" {
+		ir.Method = stdhttp.MethodGet
+	}
+	if req.URL != nil {
+		ir.URL = req.URL.String()
+	}
+	p, err := s.prepare(ctx, ir)
+	if err != nil {
+		return nil, err
+	}
+	sr, err := s.executeStream(p)
+	if err != nil || sr == nil {
+		p.abort()
+		return nil, wrapCallError(p.callCtx, err)
+	}
+	p.ownStreamBody(sr)
+	return &stdhttp.Response{
+		Status:        fmt.Sprintf("%d %s", sr.StatusCode, stdhttp.StatusText(sr.StatusCode)),
+		StatusCode:    sr.StatusCode,
+		Header:        sr.Header,
+		Body:          sr.Body,
+		ContentLength: -1, // unknown/live: let stdlib peers stream it
+		Uncompressed:  sr.Uncompressed,
+		Request:       req,
+	}, nil
+}
+
+func (s *service) roundTripStream(ctx context.Context, tr *stdhttp.Transport, req *Request) (*StreamResponse, error) {
+	hr, err := s.newOutboundRequest(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 	client := &stdhttp.Client{Transport: tr}
 	resp, err := client.Do(hr)
 	if err != nil {
 		return nil, err
 	}
-	return &StreamResponse{StatusCode: resp.StatusCode, Header: resp.Header.Clone(), Body: resp.Body}, nil
+	return &StreamResponse{
+		StatusCode: resp.StatusCode, Header: resp.Header.Clone(),
+		Body: resp.Body, Uncompressed: resp.Uncompressed,
+	}, nil
 }
 
 func (s *service) GetStream(ctx context.Context, rawURL string) (*StreamResponse, error) {
@@ -899,6 +1113,26 @@ func (e *extendedService) Decode(resp *StreamResponse, out any) error {
 func (e *extendedService) SetProxy(raw string) error { return e.root.SetProxy(raw) }
 func (e *extendedService) Close() error              { return e.root.Close() }
 
+// State observes the single root owner; a view has no lifecycle of its own.
+func (e *extendedService) State() HTTPState { return e.root.State() }
+
+// RoundTrip layers the view's base URL and default headers over a cloned
+// request before delegating to the same root owner. The caller's request and
+// its Body are never mutated.
+func (e *extendedService) RoundTrip(ctx context.Context, req *stdhttp.Request) (*stdhttp.Response, error) {
+	if req == nil {
+		return e.root.RoundTrip(ctx, nil)
+	}
+	r := req.Clone(req.Context())
+	if r.URL != nil {
+		if resolved, err := url.Parse(resolveRequestURL(e.baseURL, r.URL.String(), nil)); err == nil {
+			r.URL = resolved
+		}
+	}
+	r.Header = mergeHeaders(e.header, r.Header)
+	return e.root.RoundTrip(ctx, r)
+}
+
 // --- method family + WebSocket (additive r1.md HTTP equivalence) -----------
 
 // Every verb delegates to Do with the same Request shape as Get/Post, so
@@ -1059,6 +1293,10 @@ func (e *extendedService) WS(ctx context.Context, rawURL string, reqHeader stdht
 var (
 	_ StreamService    = (*service)(nil)
 	_ StreamService    = (*extendedService)(nil)
+	_ StateService     = (*service)(nil)
+	_ StateService     = (*extendedService)(nil)
+	_ RoundTripService = (*service)(nil)
+	_ RoundTripService = (*extendedService)(nil)
 	_ MethodService    = (*service)(nil)
 	_ MethodService    = (*extendedService)(nil)
 	_ WebSocketService = (*service)(nil)
@@ -1289,9 +1527,27 @@ func (s *service) SetProxy(raw string) error {
 	return nil
 }
 
+// State is the additive read-only ownership view. It is linearized on the
+// service mutex; the atomics for Active/OpenStreams may change immediately
+// afterwards, which is expected for an observation snapshot.
+func (s *service) State() HTTPState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return HTTPState{
+		Closed:        s.closed,
+		Active:        s.active.Load(),
+		OpenStreams:   s.openStreams.Load(),
+		CloseTimeout:  s.closeTimeout,
+		CloseTimedOut: s.closeTimedOut,
+	}
+}
+
 // Close stops new requests, cancels active ones through the service context,
-// waits up to the configured timeout, and finally closes every transport
-// (including retired ones). It is idempotent and safe for concurrent callers.
+// waits up to CloseTimeout for every owned slot (requests, open stream bodies
+// and WebSockets), then closes every transport including retired ones. When
+// the bound expires it reports ErrCloseTimeout and State.CloseTimedOut; work
+// that ignores cancellation may outlive Close, so this is not an absolute join.
+// It is idempotent and safe for concurrent callers.
 func (s *service) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
@@ -1311,14 +1567,11 @@ func (s *service) Close() error {
 			_ = c.Close()
 		}
 
-		done := make(chan struct{})
-		go func() {
-			s.wg.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(s.closeTimeout):
+		if !s.wg.WaitTimeout(s.closeTimeout) {
+			s.mu.Lock()
+			s.closeTimedOut = true
+			s.closeErr = ErrCloseTimeout
+			s.mu.Unlock()
 		}
 
 		s.mu.Lock()
@@ -1334,7 +1587,14 @@ func (s *service) Close() error {
 		close(s.closeDone)
 	})
 	<-s.closeDone
-	return nil
+	// The timeout is reported to the caller that performed/awaited this close.
+	// Later idempotent calls (notably the runtime's disposal effect) observe
+	// the same state through State() without re-reporting the same timeout.
+	s.mu.Lock()
+	err := s.closeErr
+	s.closeErr = nil
+	s.mu.Unlock()
+	return err
 }
 
 // Config carries component-level HTTP settings.

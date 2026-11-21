@@ -71,15 +71,35 @@ func NewComponent(cc config.ComponentConfig, ctrl *config.Controller) (*Componen
 }
 
 // NewContributor binds an already-built Service to the console contribution.
+// The page carries a declarative view schema: its rowActions expose the three
+// hub commands to the generic market-catalog renderer (MarketCatalog.tsx). No
+// frontend code is imported and no extra lifecycle is created — the view is
+// registered inside the same Effect-owned page registration in Apply, so its
+// disposer remains owned by this activation.
 func NewContributor(cc config.ComponentConfig, svc Service) (*Component, error) {
 	if svc == nil {
 		return nil, fmt.Errorf("market %q requires a Service", cc.ID)
+	}
+	views, err := json.Marshal([]map[string]any{{
+		"kind":   "market-catalog",
+		"title":  "Market",
+		"query":  CatalogQuery,
+		"domain": "market",
+		"rowActions": []map[string]any{
+			{"label": "Install", "command": InstallCommand, "args": map[string]string{"id": "$row.id"}},
+			{"label": "Upgrade", "command": UpgradeCommand, "args": map[string]string{"id": "$row.id"}},
+			{"label": "Uninstall", "command": UninstallCommand, "args": map[string]string{"id": "$row.id"}},
+		},
+	}})
+	if err != nil {
+		return nil, fmt.Errorf("market %q view schema: %w", cc.ID, err)
 	}
 	return &Component{
 		id:      cc.ID,
 		service: svc,
 		page: registry.PageDefinition{
 			ID: PageID, Title: "Market", Route: PageRoute, Renderer: PageRenderer,
+			Views: views,
 		},
 	}, nil
 }

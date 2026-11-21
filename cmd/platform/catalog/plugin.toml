@@ -1,0 +1,11 @@
+# Build-time example row so market/catalog is non-empty out of the box.
+# Native entries are read-only: they are visible but cannot be installed,
+# upgraded or uninstalled at runtime.
+id = "platform-builtin"
+name = "Platform builtin"
+version = "1.0.0"
+description = "build-time-only example entry"
+backend = "native"
+module_type = "industrial.camera"
+[compatibility]
+runtime = ">=1.0.0"

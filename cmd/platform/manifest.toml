@@ -1,0 +1,45 @@
+# Declaration store for cmd/platform. Only declarations live here: component
+# switches, config and the catalog location. Runtime/fiber state is NEVER stored.
+#
+# GOCORDIS_CATALOG_DIR overrides the catalog path; when unset, ${...} expands to
+# "" and the factory falls back to ./catalog relative to this manifest.
+
+[[components]]
+id = "host"
+type = "console.host"
+[components.config]
+host_id = "platform-demo"
+
+[[components]]
+id = "insight"
+type = "console.insight"
+[components.config]
+page_id = "insight"
+title = "Insight"
+route = "/insight"
+order = 20
+
+[[components]]
+id = "market"
+type = "market"
+[components.config]
+catalog_dirs = ["${GOCORDIS_CATALOG_DIR}"]
+runtime_version = "1.2.0"
+api_version = "1.0.0"
+trust = "local"
+
+[[components]]
+id = "devtools"
+type = "devtools"
+[components.config]
+runtime_version = "1.2.0"
+api_version = "1.0.0"
+
+[[components]]
+id = "demo"
+type = "demo.settings"
+[components.config]
+mode = "balanced"
+enabled = true
+tags = ["alpha", "beta"]
+label = "platform demo"

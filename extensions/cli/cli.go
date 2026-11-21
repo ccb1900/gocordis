@@ -95,42 +95,107 @@ type parsedInput struct {
 }
 
 // tokenize is a quote-aware replacement for strings.Fields. Both '"' and '\”
-// group whitespace; a backslash escapes the next rune inside or outside
-// quotes. Unterminated quotes and trailing escapes are syntax errors.
+// group whitespace into a single token; the quoting characters are removed.
+//
+// Backslash handling is deliberately context-sensitive (docs/r1.md §4.1):
+//   - Outside quotes a backslash is LITERAL (Windows paths such as
+//     C:\Program\Files\App must not be mangled). It escapes the next rune only
+//     when that rune is whitespace or a quote, preserving shell-style `a\ b`.
+//   - Inside double quotes the escapes \", \\, \n and \t are decoded; any
+//     other \X sequence keeps both characters so quoted Windows paths survive.
+//   - Inside single quotes a backslash escapes just the next rune.
+//
+// Unterminated quotes and a trailing backslash are syntax errors.
 func tokenize(input string) ([]string, error) {
 	var tokens []string
 	var cur strings.Builder
 	var quote rune
-	escaped, started := false, false
-	for _, r := range input {
+	started := false
+	runes := []rune(input)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
 		switch {
-		case escaped:
-			cur.WriteRune(r)
-			escaped, started = false, true
-		case r == '\\':
-			escaped, started = true, true
-		case quote != 0:
-			if r == quote {
+		case quote == '"':
+			if r == '"' {
 				quote = 0
-			} else {
-				cur.WriteRune(r)
+				started = true
+				continue
 			}
+			if r == '\\' {
+				if i+1 >= len(runes) {
+					return nil, syntaxError(input, "trailing escape")
+				}
+				i++
+				switch n := runes[i]; n {
+				case '"':
+					cur.WriteByte('"')
+				case '\\':
+					cur.WriteByte('\\')
+				case 'n':
+					cur.WriteByte('\n')
+				case 't':
+					cur.WriteByte('\t')
+				case 'r':
+					cur.WriteByte('\r')
+				default:
+					cur.WriteByte('\\')
+					cur.WriteRune(n)
+				}
+				started = true
+				continue
+			}
+			cur.WriteRune(r)
 			started = true
-		case r == '"' || r == '\'':
-			quote, started = r, true
-		case unicode.IsSpace(r):
-			if started {
-				tokens = append(tokens, cur.String())
-				cur.Reset()
-				started = false
+		case quote == '\'':
+			if r == '\'' {
+				quote = 0
+				started = true
+				continue
 			}
+			if r == '\\' {
+				if i+1 >= len(runes) {
+					return nil, syntaxError(input, "trailing escape")
+				}
+				i++
+				cur.WriteRune(runes[i])
+				started = true
+				continue
+			}
+			cur.WriteRune(r)
+			started = true
 		default:
+			if r == '"' || r == '\'' {
+				quote = r
+				started = true
+				continue
+			}
+			if r == '\\' {
+				if i+1 >= len(runes) {
+					return nil, syntaxError(input, "trailing escape")
+				}
+				n := runes[i+1]
+				if unicode.IsSpace(n) || n == '"' || n == '\'' {
+					i++
+					cur.WriteRune(n)
+					started = true
+					continue
+				}
+				// Literal backslash outside quotes (Windows path separator).
+				cur.WriteRune(r)
+				started = true
+				continue
+			}
+			if unicode.IsSpace(r) {
+				if started {
+					tokens = append(tokens, cur.String())
+					cur.Reset()
+					started = false
+				}
+				continue
+			}
 			cur.WriteRune(r)
 			started = true
 		}
-	}
-	if escaped {
-		return nil, syntaxError(input, "trailing escape")
 	}
 	if quote != 0 {
 		return nil, syntaxError(input, "unterminated quote")

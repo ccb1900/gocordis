@@ -2,6 +2,8 @@ package timer_test
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -391,5 +393,287 @@ func TestOwnedDebounceStopsWithConsumer(t *testing.T) {
 	<-time.After(2 * owner.d)
 	if got := owner.calls.Load(); got != 0 {
 		t.Fatalf("owned debounce fired %d times after consumer disposal, want 0", got)
+	}
+}
+
+// ---- P1-02: context-owned timers -----------------------------------------
+
+type ownedResult struct {
+	handle  timer.Handle
+	trigger func()
+}
+
+// ownedConsumer obtains the service through the declared capability and uses
+// the context-bound APIs: no explicit Owned bookkeeping is left to the caller.
+type ownedConsumer struct {
+	kind  string
+	d     time.Duration
+	out   chan ownedResult
+	calls *atomic.Int32
+}
+
+func (c *ownedConsumer) Name() string { return "owned-consumer" }
+func (c *ownedConsumer) Inject() []runtime.Dependency {
+	return []runtime.Dependency{runtime.Requires(timer.ServiceKey)}
+}
+func (c *ownedConsumer) Provide() []runtime.Capability { return nil }
+func (c *ownedConsumer) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	fn := func() { c.calls.Add(1) }
+	var r ownedResult
+	switch c.kind {
+	case "timeout":
+		r.handle = timer.TimeoutOwned(ctx, fn, c.d)
+	case "interval":
+		r.handle = timer.IntervalOwned(ctx, fn, c.d)
+	case "debounce":
+		r.trigger = timer.DebounceOwned(ctx, fn, c.d)
+	case "throttle":
+		r.trigger = timer.ThrottleOwned(ctx, fn, c.d)
+	case "throttlenotrailing":
+		r.trigger = timer.ThrottleNoTrailingOwned(ctx, fn, c.d)
+	default:
+		return nil, errors.New("unknown kind")
+	}
+	c.out <- r
+	return nil, nil
+}
+
+func loadOwned(t *testing.T, kind string, d time.Duration) (*runtime.Fiber, ownedResult, *atomic.Int32) {
+	t.Helper()
+	ctx := testCtx(t)
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatalf("runtime.New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(testCtx(t)) })
+	if _, err := rt.Load(&timer.Component{}); err != nil {
+		t.Fatalf("load provider: %v", err)
+	}
+	c := &ownedConsumer{kind: kind, d: d, out: make(chan ownedResult, 1), calls: &atomic.Int32{}}
+	cf, err := rt.Load(c)
+	if err != nil {
+		t.Fatalf("load consumer: %v", err)
+	}
+	if err := cf.Ready(ctx); err != nil {
+		t.Fatalf("consumer Ready: %v", err)
+	}
+	return cf, mustRecv(t, c.out, time.Second), c.calls
+}
+
+func TestOwnedTimersStopWithConsumer(t *testing.T) {
+	for _, kind := range []string{"timeout", "interval", "debounce", "throttle", "throttlenotrailing"} {
+		t.Run(kind, func(t *testing.T) {
+			const d = 25 * time.Millisecond
+			cf, r, calls := loadOwned(t, kind, d)
+			if r.trigger != nil {
+				r.trigger()
+			}
+			time.Sleep(2 * d)
+			dispose(t, cf)
+			baseline := calls.Load()
+			time.Sleep(3 * d)
+			if got := calls.Load(); got != baseline {
+				t.Fatalf("%s fired %d more times after consumer Gone (baseline %d)", kind, got-baseline, baseline)
+			}
+		})
+	}
+}
+
+// blockedOwnedConsumer runs a long-lived owned callback that blocks on a
+// channel, exposing whether disposal waits for admitted callbacks.
+type blockedOwnedConsumer struct {
+	started chan struct{}
+	release chan struct{}
+	after   *atomic.Int32
+}
+
+func (c *blockedOwnedConsumer) Name() string { return "blocked-owned" }
+func (c *blockedOwnedConsumer) Inject() []runtime.Dependency {
+	return []runtime.Dependency{runtime.Requires(timer.ServiceKey)}
+}
+func (c *blockedOwnedConsumer) Provide() []runtime.Capability { return nil }
+func (c *blockedOwnedConsumer) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	timer.IntervalOwned(ctx, func() {
+		select {
+		case c.started <- struct{}{}:
+		default:
+		}
+		<-c.release
+		c.after.Add(1)
+	}, 5*time.Millisecond)
+	return nil, nil
+}
+
+func TestOwnedIntervalDisposeJoinsBlockedCallback(t *testing.T) {
+	ctx := testCtx(t)
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatalf("runtime.New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(testCtx(t)) })
+	if _, err := rt.Load(&timer.Component{}); err != nil {
+		t.Fatalf("load provider: %v", err)
+	}
+	c := &blockedOwnedConsumer{
+		started: make(chan struct{}, 1), release: make(chan struct{}), after: &atomic.Int32{},
+	}
+	cf, err := rt.Load(c)
+	if err != nil {
+		t.Fatalf("load consumer: %v", err)
+	}
+	if err := cf.Ready(ctx); err != nil {
+		t.Fatalf("consumer Ready: %v", err)
+	}
+	mustRecv(t, c.started, time.Second)
+	if err := cf.Dispose(); err != nil {
+		t.Fatalf("Dispose: %v", err)
+	}
+	short, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+	if err := cf.Gone(short); err == nil {
+		t.Fatal("Gone completed while an owned callback was still blocked")
+	}
+	close(c.release)
+	if err := cf.Gone(testCtx(t)); err != nil {
+		t.Fatalf("Gone after release: %v", err)
+	}
+	if got := c.after.Load(); got != 1 {
+		t.Fatalf("in-flight owned callback completion count = %d, want 1", got)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if got := c.after.Load(); got != 1 {
+		t.Fatalf("owned callback fired %d times after consumer Gone, want 0 more", got-1)
+	}
+}
+
+// selfStopOwnedConsumer's callback stops its own interval handle through the
+// non-waiting Stop; a waiting Stop here would self-join and deadlock.
+type selfStopOwnedConsumer struct {
+	hch     chan timer.Handle
+	didStop chan struct{}
+	calls   *atomic.Int32
+}
+
+func (c *selfStopOwnedConsumer) Name() string { return "self-stop-owned" }
+func (c *selfStopOwnedConsumer) Inject() []runtime.Dependency {
+	return []runtime.Dependency{runtime.Requires(timer.ServiceKey)}
+}
+func (c *selfStopOwnedConsumer) Provide() []runtime.Capability { return nil }
+func (c *selfStopOwnedConsumer) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	var once sync.Once
+	h := timer.IntervalOwned(ctx, func() {
+		once.Do(func() {
+			hh := <-c.hch
+			_ = hh.Stop() // must not wait: we are inside this timer's callback
+			close(c.didStop)
+		})
+		c.calls.Add(1)
+	}, 5*time.Millisecond)
+	c.hch <- h
+	return nil, nil
+}
+
+func TestOwnedCallbackCanStopItselfWithoutDeadlock(t *testing.T) {
+	ctx := testCtx(t)
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatalf("runtime.New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(testCtx(t)) })
+	if _, err := rt.Load(&timer.Component{}); err != nil {
+		t.Fatalf("load provider: %v", err)
+	}
+	c := &selfStopOwnedConsumer{
+		hch: make(chan timer.Handle, 1), didStop: make(chan struct{}), calls: &atomic.Int32{},
+	}
+	cf, err := rt.Load(c)
+	if err != nil {
+		t.Fatalf("load consumer: %v", err)
+	}
+	if err := cf.Ready(ctx); err != nil {
+		t.Fatalf("consumer Ready: %v", err)
+	}
+	mustRecv(t, c.didStop, time.Second)
+	if err := cf.Dispose(); err != nil {
+		t.Fatalf("Dispose: %v", err)
+	}
+	short, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := cf.Gone(short); err != nil {
+		t.Fatalf("self-stop deadlocked during Gone: %v", err)
+	}
+	baseline := c.calls.Load()
+	time.Sleep(60 * time.Millisecond)
+	if got := c.calls.Load(); got != baseline {
+		t.Fatalf("callback fired %d more times after self-Stop", got-baseline)
+	}
+}
+
+// selfStopDebounceConsumer exercises the interface-level fix for the debounce
+// self-wait documented in P1-02: the callback stops its own entry through the
+// non-waiting Handle.Stop from DebounceWithHandle.
+type selfStopDebounceConsumer struct {
+	hch     chan timer.Handle
+	trigCh  chan func()
+	didStop chan struct{}
+	calls   *atomic.Int32
+}
+
+func (c *selfStopDebounceConsumer) Name() string { return "self-stop-debounce" }
+func (c *selfStopDebounceConsumer) Inject() []runtime.Dependency {
+	return []runtime.Dependency{runtime.Requires(timer.ServiceKey)}
+}
+func (c *selfStopDebounceConsumer) Provide() []runtime.Capability { return nil }
+func (c *selfStopDebounceConsumer) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
+	svc, err := runtime.Require(ctx, timer.ServiceKey)
+	if err != nil {
+		return nil, err
+	}
+	trigger, h := svc.DebounceWithHandle(func() {
+		hh := <-c.hch
+		_ = hh.Stop() // safe inside our own callback: Stop never joins
+		close(c.didStop)
+		c.calls.Add(1)
+	}, 5*time.Millisecond)
+	c.hch <- h
+	c.trigCh <- trigger
+	return nil, nil
+}
+
+func TestDebounceCallbackCanStopItselfWithoutDeadlock(t *testing.T) {
+	ctx := testCtx(t)
+	rt, err := runtime.New()
+	if err != nil {
+		t.Fatalf("runtime.New: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(testCtx(t)) })
+	if _, err := rt.Load(&timer.Component{}); err != nil {
+		t.Fatalf("load provider: %v", err)
+	}
+	c := &selfStopDebounceConsumer{
+		hch: make(chan timer.Handle, 1), trigCh: make(chan func(), 1),
+		didStop: make(chan struct{}), calls: &atomic.Int32{},
+	}
+	cf, err := rt.Load(c)
+	if err != nil {
+		t.Fatalf("load consumer: %v", err)
+	}
+	if err := cf.Ready(ctx); err != nil {
+		t.Fatalf("consumer Ready: %v", err)
+	}
+	trigger := mustRecv(t, c.trigCh, time.Second)
+	trigger()
+	mustRecv(t, c.didStop, time.Second)
+	trigger() // inert after self-stop
+	if got := c.calls.Load(); got != 1 {
+		t.Fatalf("debounce callback count = %d, want 1", got)
+	}
+	if err := cf.Dispose(); err != nil {
+		t.Fatalf("Dispose: %v", err)
+	}
+	short, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := cf.Gone(short); err != nil {
+		t.Fatalf("debounce self-stop deadlocked during Gone: %v", err)
 	}
 }

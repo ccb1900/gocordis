@@ -512,3 +512,55 @@ type declaredOptionsCommand struct {
 }
 
 func (c *declaredOptionsCommand) DeclaredOptions() []string { return c.options }
+
+// ---- tokenizer: backslashes outside quotes (4.1) -------------------------
+
+func TestTokenizeBackslashesAndEscapes(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "windows path outside quotes keeps backslashes",
+			input: `run C:\Program\Files\App.exe`,
+			want:  []string{"run", `C:\Program\Files\App.exe`},
+		},
+		{
+			name:  "windows path with space stays split but keeps backslashes",
+			input: `run C:\Program Files\App`,
+			want:  []string{"run", `C:\Program`, `Files\App`},
+		},
+		{
+			name:  "quoted windows path keeps backslashes",
+			input: `run "C:\Program Files\App"`,
+			want:  []string{"run", `C:\Program Files\App`},
+		},
+		{
+			name:  "unix path is unchanged",
+			input: `run /usr/local/bin/app --flag=1`,
+			want:  []string{"run", "/usr/local/bin/app", "--flag=1"},
+		},
+		{
+			name:  "escaped quotes and sequences inside double quotes",
+			input: `run --name="say \"hi\"\nline\tcol"`,
+			want:  []string{"run", "--name=say \"hi\"\nline\tcol"},
+		},
+		{
+			name:  "double backslash inside double quotes",
+			input: `run "a\\b"`,
+			want:  []string{"run", `a\b`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tokenize(tc.input)
+			if err != nil {
+				t.Fatalf("tokenize(%q): %v", tc.input, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("tokenize(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}

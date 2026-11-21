@@ -4,6 +4,11 @@
 // stopping a timer is reversible, and disposal stops all entries and JOINS the
 // callback goroutines before the activation unwinds. No goroutine or callback
 // survives the fiber. All user callbacks run outside the service lock.
+//
+// The package-level *Owned functions bind an entry to the CALLING fiber (the
+// JS semantics of docs/r1.md P1-02): they install an effect whose inverse
+// cancels the entry and joins its admitted callbacks, so nothing outlives the
+// consumer. Callers never have to remember a separate Owned step.
 package timer
 
 import (
@@ -15,17 +20,31 @@ import (
 	"dynamic-runtime/runtime"
 )
 
-// Handle controls one Timeout or Interval timer. Stop is idempotent, safe from
-// any goroutine, and reports whether this call stopped a still-live timer.
+// Handle controls one timer entry.
+//
+// Stop cancels the timer and NEVER waits for callbacks. It is the ONLY method
+// on the public handle, so it is safe to call from anywhere - including inside
+// the timer's own callback, where a joining method would self-join and deadlock.
+// Stop reports whether this call cancelled a still-live timer.
+//
+// Joining admitted callbacks is not part of this interface. It is an internal
+// primitive reached only by effect inverses and Service.Close, never by user
+// code (docs/r1.md P1-02 requires the interface itself to prevent self-wait).
 type Handle interface {
 	Stop() bool
 }
 
+// joiner is the narrow, unexported joining primitive. Keeping it off Handle is
+// what makes self-wait structurally impossible through the capability API.
+type joiner interface {
+	stopAndWait() error
+}
+
 // Service is the timer capability consumed by components.
 //
-// Debounce/Throttle entries are owned by the service until it is disposed.
-// A consumer whose own fiber may be disposed first MUST use the *Handle forms
-// with Owned so the timer's inverse unwinds with the consumer, not the service.
+// Entries created by the plain methods belong to the Service and live until it
+// is disposed. A consumer whose own fiber may be disposed first should use the
+// package-level *Owned functions, which bind the entry to the calling fiber.
 type Service interface {
 	Timeout(fn func(), d time.Duration) Handle
 	Interval(fn func(), d time.Duration) Handle
@@ -34,12 +53,22 @@ type Service interface {
 	ThrottleNoTrailing(fn func(), d time.Duration) func()
 	DebounceHandle(fn func(), d time.Duration) (trigger func(), stop func() error)
 	ThrottleHandle(fn func(), d time.Duration) (trigger func(), stop func() error)
+	// DebounceWithHandle/ThrottleWithHandle are the interface-level answer to
+	// the debounce/throttle self-wait problem (docs/r1.md P1-02): the returned
+	// Handle exposes only the non-waiting Stop, so a callback may safely stop
+	// its own entry; joining is reserved for internal effect inverses.
+	DebounceWithHandle(fn func(), d time.Duration) (trigger func(), h Handle)
+	ThrottleWithHandle(fn func(), d time.Duration) (trigger func(), h Handle)
 }
 
 // Owned installs a timer handle's stop function as an effect of the consumer's
 // activation. When that activation unwinds, the handle is cancelled and its
 // in-flight callbacks are joined before the consumer reaches Gone. An refused
 // effect is compensated immediately so no timer outlives its consumer.
+//
+// Prefer the package-level TimeoutOwned/IntervalOwned/DebounceOwned/
+// ThrottleOwned/ThrottleNoTrailingOwned functions: they perform this binding
+// at creation time so callers do not have to remember it.
 func Owned(c *runtime.Context, trigger func(), stop func() error) error {
 	if c == nil {
 		return errors.New("timer: nil context")
@@ -56,6 +85,99 @@ func Owned(c *runtime.Context, trigger func(), stop func() error) error {
 	return err
 }
 
+// requireService resolves the capability through the caller's declared Inject
+// set. The consumer MUST declare runtime.Requires(ServiceKey) (declaration
+// authority, AGENTS.md §1); if it does not, an inert handle/trigger is returned
+// rather than letting an undeclared requirement leak a timer.
+func requireService(c *runtime.Context) (*service, error) {
+	if c == nil {
+		return nil, errors.New("timer: nil context")
+	}
+	svc, err := runtime.Require(c, ServiceKey)
+	if err != nil {
+		return nil, err
+	}
+	s, ok := svc.(*service)
+	if !ok {
+		return nil, errors.New("timer: unexpected timer service implementation")
+	}
+	return s, nil
+}
+
+// installOwnedEffect registers h's joining inverse. runtime.Context.Effect
+// runs the inverse immediately if the context is already unwinding, so a timer
+// created in the final moments of an activation cannot leak.
+func installOwnedEffect(c *runtime.Context, j joiner) {
+	err := c.Effect(func() (func() error, error) {
+		return j.stopAndWait, nil
+	})
+	if err != nil {
+		_ = j.stopAndWait()
+	}
+}
+
+// TimeoutOwned creates a one-shot timer owned by the calling fiber. The
+// entry's joining inverse is already installed on the fiber.
+func TimeoutOwned(c *runtime.Context, fn func(), d time.Duration) Handle {
+	s, err := requireService(c)
+	if err != nil {
+		return noopHandle{}
+	}
+	h := s.Timeout(fn, d).(*handle)
+	installOwnedEffect(c, h)
+	return h
+}
+
+// IntervalOwned creates a repeating timer owned by the calling fiber.
+func IntervalOwned(c *runtime.Context, fn func(), d time.Duration) Handle {
+	s, err := requireService(c)
+	if err != nil {
+		return noopHandle{}
+	}
+	h := s.Interval(fn, d).(*handle)
+	installOwnedEffect(c, h)
+	return h
+}
+
+// DebounceOwned creates a debounced trigger owned by the calling fiber. The
+// inverse cancels pending fires and joins callbacks admitted before disposal.
+func DebounceOwned(c *runtime.Context, fn func(), d time.Duration) func() {
+	s, err := requireService(c)
+	if err != nil {
+		return func() {}
+	}
+	trigger, h := s.debounceWithHandle(fn, d)
+	installOwnedEffect(c, h)
+	return trigger
+}
+
+// ThrottleOwned creates a leading/trailing throttle owned by the calling fiber.
+func ThrottleOwned(c *runtime.Context, fn func(), d time.Duration) func() {
+	return throttleOwned(c, fn, d, true)
+}
+
+// ThrottleNoTrailingOwned creates a leading-only throttle owned by the calling
+// fiber; calls inside the window are dropped.
+func ThrottleNoTrailingOwned(c *runtime.Context, fn func(), d time.Duration) func() {
+	return throttleOwned(c, fn, d, false)
+}
+
+func throttleOwned(c *runtime.Context, fn func(), d time.Duration, trailing bool) func() {
+	s, err := requireService(c)
+	if err != nil {
+		return func() {}
+	}
+	trigger, h := s.throttleWithHandle(fn, d, trailing)
+	installOwnedEffect(c, h)
+	return trigger
+}
+
+// noopHandle is returned when the capability could not be resolved; it keeps
+// the API total without leaking an untracked timer.
+type noopHandle struct{}
+
+func (noopHandle) Stop() bool { return false }
+
 // ServiceKey is the capability identity of the timer service.
 var ServiceKey = runtime.NewKey[Service]("extension.timer.service")
 
@@ -68,11 +190,12 @@ type timerEntry struct {
 	timer   *time.Timer
 	ticker  *time.Ticker
 
-	// cancelled and wg are used by per-consumer debounce/throttle handles:
 	// cancelled gates callback admission and wg lets stop join callbacks that
-	// were already in flight when the consumer's effect unwound.
+	// were already in flight when the timer's inverse unwound. loopWg tracks
+	// the interval dispatcher goroutine so joining also covers it.
 	cancelled bool
 	wg        sync.WaitGroup
+	loopWg    sync.WaitGroup
 }
 
 func newEntry() *timerEntry {
@@ -96,6 +219,15 @@ func (e *timerEntry) cancel() {
 			tk.Stop()
 		}
 	})
+}
+
+// cancelAndWait blocks new admissions, then joins the dispatcher (if any) and
+// every callback admitted before cancellation. It is the unexported primitive
+// behind handle.stopAndWait (effect inverses) and Service.Close.
+func (e *timerEntry) cancelAndWait() {
+	e.cancel()
+	e.loopWg.Wait()
+	e.wg.Wait()
 }
 
 func (e *timerEntry) setTimer(t *time.Timer) {
@@ -152,6 +284,7 @@ func (s *service) registerLoop(e *timerEntry) bool {
 	}
 	s.entries[e] = struct{}{}
 	s.wg.Add(1)
+	e.loopWg.Add(1)
 	return true
 }
 
@@ -165,6 +298,7 @@ func (s *service) unregister(e *timerEntry) bool {
 	return ok
 }
 
+// stop cancels without waiting. It is the implementation behind Handle.Stop.
 func (s *service) stop(e *timerEntry) bool {
 	if !s.unregister(e) {
 		return false
@@ -182,7 +316,9 @@ func (s *service) fire(fn func()) {
 
 // fireFor additionally rejects callbacks of an individually stopped handle.
 // The entry's cancelled flag and wg.Add share e.mu, so once stop marks the
-// entry cancelled no further callback can be admitted to its wg.
+// entry cancelled no further callback can be admitted to its wg. Every timer
+// (including Timeout and Interval) fires through here so that stopping a
+// handle also prevents a late, already-scheduled tick from starting a callback.
 func (s *service) fireFor(e *timerEntry, fn func()) {
 	if fn == nil {
 		return
@@ -238,23 +374,56 @@ func (s *service) Close() error {
 	s.mu.Unlock()
 
 	for _, e := range entries {
-		e.cancel()
+		e.cancelAndWait()
 	}
+	// Entries that self-removed after firing are not in the set above; their
+	// tracked goroutines are still covered by the service-level wait.
 	s.wg.Wait()
 	return nil
 }
 
+// handle implements the public Handle with a single, non-waiting Stop. The
+// joining inverse stopAndWait is deliberately unexported. onStop, when set,
+// removes the debounce/throttle trigger's pending timer so no new pending fire
+// can be scheduled.
 type handle struct {
 	svc     *service
 	e       *timerEntry
 	stopped atomic.Bool
+	onStop  func()
 }
 
+func (h *handle) runOnStop() {
+	if h.onStop != nil {
+		h.onStop()
+	}
+}
+
+// Stop cancels without waiting, so it is safe from inside this timer's own
+// callback.
 func (h *handle) Stop() bool {
 	if h == nil || !h.stopped.CompareAndSwap(false, true) {
 		return false
 	}
+	h.runOnStop()
 	return h.svc.stop(h.e)
+}
+
+// stopAndWait cancels and joins admitted callbacks. It is reachable only from
+// effect inverses and Close through the unexported joiner interface; user code
+// (including callbacks) can only reach the non-waiting Stop.
+func (h *handle) stopAndWait() error {
+	if h == nil {
+		return nil
+	}
+	if h.stopped.CompareAndSwap(false, true) {
+		h.runOnStop()
+	}
+	// A one-shot timeout self-removes when it fires, so do not rely on
+	// registration state: cancel directly to close the admission gate.
+	h.svc.unregister(h.e)
+	h.e.cancelAndWait()
+	return nil
 }
 
 func (s *service) Timeout(fn func(), d time.Duration) Handle {
@@ -264,7 +433,7 @@ func (s *service) Timeout(fn func(), d time.Duration) Handle {
 	}
 	tm := time.AfterFunc(d, func() {
 		s.unregister(e) // one-shot: self-remove before firing
-		s.fire(fn)
+		s.fireFor(e, fn)
 	})
 	e.setTimer(tm)
 	return &handle{svc: s, e: e}
@@ -282,10 +451,11 @@ func (s *service) Interval(fn func(), d time.Duration) Handle {
 	e.setTicker(ticker)
 	go func() {
 		defer s.wg.Done()
+		defer e.loopWg.Done()
 		for {
 			select {
 			case <-ticker.C:
-				s.fire(fn)
+				s.fireFor(e, fn)
 			case <-e.stopCh:
 				return
 			}
@@ -294,19 +464,18 @@ func (s *service) Interval(fn func(), d time.Duration) Handle {
 	return &handle{svc: s, e: e}
 }
 
-// DebounceHandle returns the debounced trigger and its inverse. Every pending
-// timer is cancelled by the returned stop, and callbacks already admitted are
-// joined before stop returns. Stop is idempotent and safe from any goroutine
-// except a callback of this same entry: that callback is tracked by e.wg and
-// would self-join, so callbacks must not stop their own entry.
-func (s *service) DebounceHandle(fn func(), d time.Duration) (func(), func() error) {
+// debounceWithHandle returns the debounced trigger and its full handle. Every
+// pending timer is cancelled by the handle and callbacks already admitted are
+// joined by the unexported inverse. The public Stop alone cancels without
+// joining, which makes it safe for a callback to stop its own entry.
+func (s *service) debounceWithHandle(fn func(), d time.Duration) (func(), *handle) {
 	if d < 0 {
 		d = 0
 	}
 	e := newEntry()
+	h := &handle{svc: s, e: e}
 	if !s.register(e) {
-		noop := func() {}
-		return noop, func() error { return nil }
+		return func() {}, h
 	}
 	var mu sync.Mutex
 	var pending *time.Timer
@@ -328,40 +497,43 @@ func (s *service) DebounceHandle(fn func(), d time.Duration) (func(), func() err
 		pending = time.AfterFunc(d, func() { s.fireFor(e, fn) })
 		e.setTimer(pending)
 	}
-	var once sync.Once
-	stop := func() error {
-		once.Do(func() {
-			mu.Lock()
-			stopped = true
-			if pending != nil {
-				pending.Stop()
-				pending = nil
-			}
-			mu.Unlock()
-			e.cancel()
-			s.unregister(e)
-			e.wg.Wait()
-		})
-		return nil
+	h.onStop = func() {
+		mu.Lock()
+		stopped = true
+		if pending != nil {
+			pending.Stop()
+			pending = nil
+		}
+		mu.Unlock()
 	}
-	return trigger, stop
+	return trigger, h
+}
+
+func (s *service) DebounceHandle(fn func(), d time.Duration) (func(), func() error) {
+	trigger, h := s.debounceWithHandle(fn, d)
+	return trigger, h.stopAndWait
+}
+
+func (s *service) DebounceWithHandle(fn func(), d time.Duration) (func(), Handle) {
+	trigger, h := s.debounceWithHandle(fn, d)
+	return trigger, h
 }
 
 func (s *service) Debounce(fn func(), d time.Duration) func() {
-	trigger, _ := s.DebounceHandle(fn, d)
+	trigger, _ := s.debounceWithHandle(fn, d)
 	return trigger
 }
 
-// throttleHandle implements both throttle modes; the no-trailing variant drops
-// calls inside the window instead of scheduling a trailing fire.
-func (s *service) throttleHandle(fn func(), d time.Duration, allowTrailing bool) (func(), func() error) {
+// throttleWithHandle implements both throttle modes; the no-trailing variant
+// drops calls inside the window instead of scheduling a trailing fire.
+func (s *service) throttleWithHandle(fn func(), d time.Duration, allowTrailing bool) (func(), *handle) {
 	if d < 0 {
 		d = 0
 	}
 	e := newEntry()
+	h := &handle{svc: s, e: e}
 	if !s.register(e) {
-		noop := func() {}
-		return noop, func() error { return nil }
+		return func() {}, h
 	}
 	var mu sync.Mutex
 	var window time.Time
@@ -410,37 +582,36 @@ func (s *service) throttleHandle(fn func(), d time.Duration, allowTrailing bool)
 		e.setTimer(t)
 		mu.Unlock()
 	}
-	var once sync.Once
-	stop := func() error {
-		once.Do(func() {
-			mu.Lock()
-			stopped = true
-			if timer != nil {
-				timer.Stop()
-				timer = nil
-			}
-			trailing = false
-			mu.Unlock()
-			e.cancel()
-			s.unregister(e)
-			e.wg.Wait()
-		})
-		return nil
+	h.onStop = func() {
+		mu.Lock()
+		stopped = true
+		if timer != nil {
+			timer.Stop()
+			timer = nil
+		}
+		trailing = false
+		mu.Unlock()
 	}
-	return trigger, stop
+	return trigger, h
 }
 
 func (s *service) ThrottleHandle(fn func(), d time.Duration) (func(), func() error) {
-	return s.throttleHandle(fn, d, true)
+	trigger, h := s.throttleWithHandle(fn, d, true)
+	return trigger, h.stopAndWait
+}
+
+func (s *service) ThrottleWithHandle(fn func(), d time.Duration) (func(), Handle) {
+	trigger, h := s.throttleWithHandle(fn, d, true)
+	return trigger, h
 }
 
 func (s *service) Throttle(fn func(), d time.Duration) func() {
-	trigger, _ := s.ThrottleHandle(fn, d)
+	trigger, _ := s.throttleWithHandle(fn, d, true)
 	return trigger
 }
 
 func (s *service) ThrottleNoTrailing(fn func(), d time.Duration) func() {
-	trigger, _ := s.throttleHandle(fn, d, false)
+	trigger, _ := s.throttleWithHandle(fn, d, false)
 	return trigger
 }
 

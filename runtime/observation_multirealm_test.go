@@ -52,7 +52,12 @@ func obsWaitState(t *testing.T, f *Fiber, want FiberState) {
 	t.Fatalf("%s stuck in %v, want %v", f.Name(), f.State(), want)
 }
 
-// TestObservationMultiRealmSameKeyDistinct — R1: two realms provide the same
+// TestObservationMultiRealmSameKeyDistinct is a MODEL test of the comparison
+// function over hand-built snapshots (it mutates a Snapshot copy — NOT the
+// runtime). The REAL runtime multi-realm scenario is covered by
+// TestObservationRealRehomeChangesBinding below.
+//
+// R1: two realms provide the same
 // key. An observer resolving through realm A must see a change to A's provider;
 // an observer resolving through realm B must NOT (it cannot see A).
 func TestObservationMultiRealmSameKeyDistinct(t *testing.T) {
@@ -123,5 +128,71 @@ func TestObservationMultiRealmSameKeyDistinct(t *testing.T) {
 	// Observer in realm B: A's record changed but B's realm unchanged -> still equivalent.
 	if !model.EquivalentAt(before, mutated, nil, scopeBOnly) {
 		t.Fatal("observer in realm B should not be affected by realm A's change")
+	}
+}
+
+// TestObservationRealRehomeChangesBinding — A: a REAL runtime realm move. A
+// provider in root realm provides rehomeKey; after RehomeWithFreshIsolation its
+// binding's ScopeID genuinely changes. An observer bound to the OLD realm must
+// see the difference; an observer with no realm restriction must too, because
+// the binding (key, scope) set changed.
+func TestObservationRealRehomeChangesBinding(t *testing.T) {
+	rt, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	defer func() { _ = rt.Close(ctx) }()
+
+	pf, err := rt.Load(&rehomeProvider{tag: "v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	obsWaitState(t, pf, StateActive)
+	before, err := rt.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Locate the provider's real realm in the snapshot.
+	var oldScope ScopeID
+	found := false
+	for _, p := range before.Providers {
+		if p.OwnerFiberID == pf.ID() && p.Key == rehomeKey.Capability().String() {
+			oldScope, found = p.ScopeID, true
+		}
+	}
+	if !found {
+		t.Fatal("provider binding not in snapshot")
+	}
+
+	// Real Rehome: the runtime moves the provision to a fresh namespace.
+	if err := pf.Rehome(ctx, RehomeWithFreshIsolation()); err != nil {
+		t.Fatalf("rehome: %v", err)
+	}
+	after, err := rt.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var newScope ScopeID
+	for _, p := range after.Providers {
+		if p.OwnerFiberID == pf.ID() && p.Key == rehomeKey.Capability().String() {
+			newScope = p.ScopeID
+		}
+	}
+	if newScope == oldScope {
+		t.Fatalf("real rehome did not change the provider's namespace: %v", oldScope)
+	}
+
+	// The observation model, applied to REAL before/after snapshots, must see
+	// the moved binding (unrestricted observation).
+	model := NewObservationModel()
+	if model.EquivalentAt(before, after, nil, nil) {
+		t.Fatal("real realm move was not observable — observation chain broken")
+	}
+	// An observer pinned to the OLD realm sees its binding vanish.
+	oldOnly := map[CapabilityKey]ScopeID{rehomeKey.Capability(): oldScope}
+	if model.EquivalentAt(before, after, nil, oldOnly) {
+		t.Fatal("old-realm observer did not see its binding disappear after rehome")
 	}
 }

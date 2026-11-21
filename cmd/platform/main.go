@@ -29,6 +29,7 @@ import (
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/extensions/configwatch"
+	"dynamic-runtime/extensions/console"
 	"dynamic-runtime/extensions/console/explorer"
 	"dynamic-runtime/extensions/console/host"
 	"dynamic-runtime/extensions/console/insight"
@@ -62,11 +63,12 @@ type app struct {
 	ctrl         *config.Controller
 	manifestPath string
 
-	mu       sync.RWMutex
-	ui       *host.UIComponent
-	ring     *consoRuntime.Ring
-	explorer *explorer.Service
-	override *config.Config // declaration-side switches applied at runtime
+	mu           sync.RWMutex
+	ui           *host.UIComponent
+	ring         *consoRuntime.Ring
+	explorer     *explorer.Service
+	explorerComp *explorer.ExplorerComponent
+	override     *config.Config // declaration-side switches applied at runtime
 }
 
 // newApp builds the runtime, factory registry and controller. Factories are the
@@ -108,15 +110,23 @@ func newApp(manifestPath string) (*app, error) {
 			return c, nil
 		}},
 		{explorerType, func(cc config.ComponentConfig) (runtime.Component, error) {
-			return explorer.NewPlugin(cc, a.explorer)
+			comp, err := explorer.NewPlugin(cc, a.explorer)
+			if err != nil {
+				return nil, err
+			}
+			a.mu.Lock()
+			a.explorerComp = comp
+			a.mu.Unlock()
+			return comp, nil
 		}},
 		{insightType, func(cc config.ComponentConfig) (runtime.Component, error) {
 			return insight.NewComponent(cc, insightSvc)
 		}},
 		{runtimeType, func(cc config.ComponentConfig) (runtime.Component, error) {
-			// Diagnostics are optional: the inspector must not become Pending
-			// when the devtools capability is absent or disabled.
-			return consoRuntime.New(cc, a.rt, a.ring)
+			// The platform demo declares devtools, so diagnostics are enabled
+			// here to exercise the full dashboard. Apps that omit devtools can
+			// construct the console without this option.
+			return consoRuntime.New(cc, a.rt, a.ring, consoRuntime.WithDevtoolsDiagnostics())
 		}},
 		{marketType, func(cc config.ComponentConfig) (runtime.Component, error) {
 			return market.NewComponent(cc, a.ctrl)
@@ -212,7 +222,7 @@ func (a *app) switchDeclaration(ctx context.Context, id string, enable bool) err
 	}
 	a.mu.RLock()
 	if a.override != nil {
-		desired = *a.override
+		desired = config.Config{Components: cloneComponentConfigs(a.override.Components)}
 	}
 	a.mu.RUnlock()
 	found := false
@@ -250,6 +260,29 @@ func (a *app) webUI(assets fs.FS) *webui.Server {
 		return nil
 	}
 	srv := webui.New(adapter.HostAdapter(), assets)
+	// Resolve the Explorer transport per request: disable→enable of the
+	// Explorer must not leave the server holding a stale deactivated adapter.
+	srv.SetExplorerProvider(func() *explorer.ExplorerTransport {
+		a.mu.RLock()
+		comp := a.explorerComp
+		a.mu.RUnlock()
+		if comp == nil {
+			return nil
+		}
+		return comp.HostAdapter()
+	})
+	store := &platformDesiredStore{
+		path:  a.manifestPath,
+		owned: a.ctrl.Owned,
+		clearOverride: func() {
+			a.mu.Lock()
+			a.override = nil
+			a.mu.Unlock()
+		},
+	}
+	lifecycle := console.NewControllerLifecycle(store, platformReconciler{app: a})
+	lifecycle.SetProtected("host", "plugins", "insight", "runtime-console", "devtools")
+	srv.SetPluginLifecycle(lifecycle)
 	adapter.SetObservationSink(observationSink{srv: srv})
 	return srv
 }

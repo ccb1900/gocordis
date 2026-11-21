@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"dynamic-runtime/extensions/config"
+	"dynamic-runtime/extensions/console"
 	"dynamic-runtime/extensions/console/host"
 	"dynamic-runtime/extensions/console/insight"
 	consoRuntime "dynamic-runtime/extensions/console/runtime"
@@ -429,6 +432,120 @@ func TestRuntimeConsoleQueriesAndPagesViaRealPlatform(t *testing.T) {
 	for _, id := range []string{"plugins", "inspector", "dashboard", "insight", "market"} {
 		if !pages[id] {
 			t.Fatalf("page %q missing from platform composition: %v", id, pages)
+		}
+	}
+}
+
+func TestRealHTTPServerEndToEnd(t *testing.T) {
+	a, _ := readyApp(t)
+	srv := a.webUI(nil)
+	if srv == nil {
+		t.Fatal("webUI server is nil")
+	}
+	httpSrv := httptest.NewServer(srv)
+	defer httpSrv.Close()
+
+	cases := []struct {
+		path   string
+		marker string
+	}{
+		{"/", "<"},
+		{"/api/ui/pages", "plugins"},
+		{"/api/query/" + consoRuntime.SnapshotQuery, "fibers"},
+		{"/api/query/" + consoRuntime.DashboardQuery, "counts"},
+		{"/api/plugins", "plugins"},
+	}
+	for _, tc := range cases {
+		resp, err := http.Get(httpSrv.URL + tc.path) //nolint:gosec // test-local server
+		if err != nil {
+			t.Fatalf("GET %s: %v", tc.path, err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", tc.path, resp.StatusCode, string(body))
+		}
+		if !strings.Contains(string(body), tc.marker) {
+			t.Fatalf("GET %s body missing %q: %s", tc.path, tc.marker, string(body))
+		}
+	}
+}
+
+func TestDesiredStorePersistenceAndLifecycleProtection(t *testing.T) {
+	a, ctx := readyApp(t)
+	// Use a temp manifest so the test never rewrites the repository file.
+	tmp := filepath.Join(t.TempDir(), "manifest.toml")
+	body, err := os.ReadFile(a.manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tmp, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.manifestPath = tmp
+
+	store := &platformDesiredStore{path: tmp, owned: a.ctrl.Owned}
+	comps, err := store.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"host", "plugins", "runtime-console", "devtools", "demo"} {
+		found := false
+		for _, cc := range comps {
+			if cc.ID == id {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("manifest lost declaration %q", id)
+		}
+	}
+	disabled := false
+	for i := range comps {
+		if comps[i].ID == "demo" {
+			comps[i].Enabled = &disabled
+			comps[i].Config["label"] = "changed"
+		}
+	}
+	if err := store.Save(ctx, comps); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := store.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cc := range reloaded {
+		if cc.ID == "demo" {
+			if cc.Enabled == nil || *cc.Enabled || cc.Config["label"] != "changed" {
+				t.Fatalf("demo declaration not persisted: %+v", cc)
+			}
+		}
+		if cc.ID == "host" && (cc.Enabled != nil && !*cc.Enabled) {
+			t.Fatal("protected host declaration was disabled")
+		}
+	}
+
+	lc := console.NewControllerLifecycle(store, platformReconciler{app: a})
+	lc.SetProtected("host", "plugins", "runtime-console", "devtools")
+	if err := lc.Uninstall(ctx, "host"); !errors.Is(err, console.ErrProtectedComponent) {
+		t.Fatalf("Uninstall(host) = %v, want protected error", err)
+	}
+	if err := lc.Install(ctx, "host"); !errors.Is(err, console.ErrProtectedComponent) {
+		t.Fatalf("Install(host) = %v, want protected error", err)
+	}
+	if err := lc.Uninstall(ctx, "demo"); err != nil {
+		t.Fatalf("Uninstall(demo): %v", err)
+	}
+	final, err := store.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cc := range final {
+		if cc.ID == "demo" && (cc.Enabled == nil || *cc.Enabled) {
+			t.Fatal("demo declaration remained enabled after Uninstall")
 		}
 	}
 }

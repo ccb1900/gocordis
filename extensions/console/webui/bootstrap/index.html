@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GOCORDIS Console — embedded bootstrap</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body data-console-bootstrap="gocordis-bootstrap">
+  <header class="topbar">
+    <h1>GOCORDIS Console</h1>
+    <span class="badge">embedded bootstrap</span>
+  </header>
+
+  <p class="intro">
+    Zero-build console served by <code>go:embed</code>. It works on a fresh clone
+    without <code>npm</code>. For the full React SPA, run
+    <code>make console</code> once, then reload.
+  </p>
+
+  <nav class="panel" aria-labelledby="pages-heading">
+    <h2 id="pages-heading">Pages</h2>
+    <p class="status" id="pages-status">Loading pages…</p>
+    <ul class="pages" id="pages-list"></ul>
+  </nav>
+
+  <main>
+    <section class="panel" aria-labelledby="snapshot-heading">
+      <div class="section-head">
+        <h2 id="snapshot-heading">Runtime snapshot</h2>
+        <code class="endpoint">/api/query/runtime/snapshot</code>
+      </div>
+      <p class="status" id="snapshot-status">Loading snapshot…</p>
+      <div id="snapshot-counts"></div>
+      <div id="snapshot-tables" class="table-grid"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="dashboard-heading">
+      <div class="section-head">
+        <h2 id="dashboard-heading">Framework dashboard</h2>
+        <code class="endpoint">/api/query/framework/dashboard</code>
+      </div>
+      <p class="status" id="dashboard-status">Loading dashboard…</p>
+      <div id="dashboard-content"></div>
+    </section>
+  </main>
+
+  <footer>
+    <button type="button" id="refresh">Refresh data</button>
+    <span>Data is read-only; actions live in the full SPA.</span>
+  </footer>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

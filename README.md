@@ -11,6 +11,30 @@
 - 设计裁决:[docs/adr/](docs/adr/) · 评审记录:[docs/review/](docs/review/)
 - 可运行示例:[cmd/](cmd/)(collector / backfill / httpd / wasmhmr / host / example)
 
+## 一条命令启动控制台
+
+```sh
+go run ./cmd/platform        # 打开 http://127.0.0.1:8170/
+```
+
+无需 npm:`web/console/dist` 被 gitignore,新克隆里没有构建产物,此时 webui
+直接由 `go:embed` 提供**内嵌 bootstrap UI**(`extensions/console/webui/bootstrap/`)。
+它用原生 JS 显示:页面导航(`/api/ui/pages`)、运行时快照表格与计数
+(`/api/query/runtime/snapshot`:fibers / providers / deps / effects)、框架仪表盘
+计数(`/api/query/framework/dashboard`)。查询尚未注册时对应区块给出提示,其余照常工作。
+
+需要完整的 React SPA(可选,仅 UI 更丰富,API 不变):
+
+```sh
+make console                # = cd web/console && npm ci && npm run build
+```
+
+只要 dist 中存在 `index.html`,就自动改用完整 SPA;删除 dist 即回退到 bootstrap。
+
+地址与环境变量:`GOCORDIS_ADDR`(默认 `127.0.0.1:8170`)、`GOCORDIS_WEB_DIST`
+(指定 dist 目录,不存在时同样回退到 bootstrap)、`GOCORDIS_MANIFEST`、`GOCORDIS_CATALOG_DIR`。
+控制台默认无鉴权,勿直接暴露到公网。详见 [用户手册 §13](docs/guide/user-manual.md#13)。
+
 ```go
 rt, _ := runtime.New()
 f, _ := rt.Load(&MyComponent{})

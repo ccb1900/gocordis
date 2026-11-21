@@ -28,4 +28,12 @@ test:
 race:
 	$(GO) test -race -count=1 ./...
 
-.PHONY: verify fmt-check vet test race
+# OPTIONAL: build the full React SPA into web/console/dist (gitignored).
+# Not needed for `go run ./cmd/platform`: without a dist, the console serves a
+# small embedded bootstrap UI from extensions/console/webui/bootstrap instead.
+console:
+	cd web/console && npm ci && npm run build
+
+web-console: console
+
+.PHONY: verify fmt-check vet test race console web-console

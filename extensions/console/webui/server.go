@@ -1,15 +1,19 @@
-// Package webui serves the embedded React UI and exposes the plugins/ui Host
-// Adapter over plain HTTP + SSE, so the UI can be reached through a browser
-// (go:embed + net/http) in addition to the Wails desktop host.
+// Package webui serves the console UI and exposes the plugins/ui Host Adapter
+// over plain HTTP + SSE, so the UI can be reached through a browser (go:embed
+// + net/http) in addition to the Wails desktop host.
 //
-// The same DTO/Error/Observation Contract is used: React calls the same api
-// layer; transport chooses Wails or HTTP automatically. Composition DTOs live
-// above transport and are served at GET /api/ui/pages and /api/ui/panels.
+// The same DTO/Error/Observation Contract is used: the client calls the same
+// api layer; transport chooses Wails or HTTP automatically. Composition DTOs
+// live above transport and are served at GET /api/ui/pages and /api/ui/panels.
+// When the built React SPA is absent (web/console/dist is gitignored, so a
+// fresh clone has none), a small embedded bootstrap UI is served instead —
+// `go run ./cmd/platform` is useful without an npm build.
 package webui
 
 import (
 	"context"
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"io/fs"
@@ -28,6 +32,25 @@ import (
 
 // Observation event name is fixed and shared with the Wails bridge.
 const ObservationEvent = "observation"
+
+// bootstrapRoot is the zero-dependency fallback console UI. It is embedded so
+// the binary always carries a working browser view; the built React SPA (when
+// present) takes priority — see staticAssets.
+//
+//go:embed bootstrap
+var bootstrapRoot embed.FS
+
+// bootstrapAssets is the embed FS rooted at the bootstrap directory, so its
+// files are addressed as index.html / app.js / styles.css like a real dist.
+var bootstrapAssets = mustSubFS(bootstrapRoot, "bootstrap")
+
+func mustSubFS(f fs.FS, dir string) fs.FS {
+	sub, err := fs.Sub(f, dir)
+	if err != nil {
+		panic(err) // constant, embedded path: this can only fail at build time
+	}
+	return sub
+}
 
 // RemovedPlugin is one uninstalled component offering an install-back action.
 type RemovedPlugin struct {
@@ -303,15 +326,18 @@ func clientModuleURL(m appui.ClientModule) string {
 	return url + "?v=" + hex.EncodeToString(sum[:4])
 }
 
-// serveStatic serves the embedded SPA build with an index fallback.
+// serveStatic serves the built SPA (or the embedded bootstrap fallback) with
+// an index fallback. Both / and static paths use the same FS so a bootstrap
+// page never points at the missing SPA bundle, and vice versa.
 func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
-	if s.assets == nil {
+	assets := s.staticAssets()
+	if assets == nil {
 		http.NotFound(w, r)
 		return
 	}
 	p := strings.TrimPrefix(r.URL.Path, "/")
 	if p == "" || p == "index.html" {
-		b, err := fs.ReadFile(s.assets, "index.html")
+		b, err := fs.ReadFile(assets, "index.html")
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -320,19 +346,34 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(b)
 		return
 	}
-	if f, err := s.assets.Open(p); err == nil {
+	if f, err := assets.Open(p); err == nil {
 		_ = f.Close()
-		http.FileServerFS(s.assets).ServeHTTP(w, r)
+		http.FileServerFS(assets).ServeHTTP(w, r)
 		return
 	}
-	// SPA fallback.
-	b, err := fs.ReadFile(s.assets, "index.html")
+	// SPA fallback: unknown paths resolve to the index of the active UI.
+	b, err := fs.ReadFile(assets, "index.html")
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(b)
+}
+
+// staticAssets selects the UI filesystem: a configured dist is used only when
+// it actually contains an index.html; otherwise the embedded bootstrap wins.
+// This covers all three "missing dist" cases — nil assets, a directory that
+// does not exist (GOCORDIS_WEB_DIST pointing nowhere), and an existing but
+// empty/stale directory. The check is a cheap stat per request, so a dist
+// built while the process runs is picked up without a restart.
+func (s *Server) staticAssets() fs.FS {
+	if s.assets != nil {
+		if info, err := fs.Stat(s.assets, "index.html"); err == nil && !info.IsDir() {
+			return s.assets
+		}
+	}
+	return bootstrapAssets
 }
 
 func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {

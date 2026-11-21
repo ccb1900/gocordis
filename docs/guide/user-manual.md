@@ -382,6 +382,36 @@ srv := webui.New(hostAdapter, assets) // HTTP+SSE 传输(go:embed 前端)
 http.ListenAndServe(":8080", srv)
 ```
 
+### 13.1 开箱即用:内嵌 bootstrap 与完整 SPA
+
+一条命令即可拿到可用浏览器 UI(无需 npm):
+
+```sh
+go run ./cmd/platform                       # http://127.0.0.1:8170/
+GOCORDIS_ADDR=127.0.0.1:9000 go run ./cmd/platform       # 改监听地址
+GOCORDIS_WEB_DIST=/path/to/dist go run ./cmd/platform   # 指定构建产物目录
+```
+
+`web/console/dist` 被 gitignore,新克隆不存在;当传入的 assets 为 nil、目录
+不存在或缺少 `index.html` 时,`webui` 自动提供 `go:embed` 的 **bootstrap UI**
+(`extensions/console/webui/bootstrap/`,纯原生 JS/CSS,零依赖)。它读取
+`/api/ui/pages` 渲染页面导航,读取 `/api/query/runtime/snapshot` 以表格显示
+fibers / providers / dependencies / effects 及各项计数,读取
+`/api/query/framework/dashboard` 显示框架计数;任一查询未注册时只在该区块
+显示"unavailable",不会拖垮整页。动态值一律 `textContent` 写入,不存在 XSS。
+bootstrap 是只读视图,命令/插件启停等操作请用完整 SPA。
+
+完整 React SPA 是**可选升级**:
+
+```sh
+make console            # cd web/console && npm ci && npm run build
+```
+
+只要 dist 内有 `index.html`,`/` 与静态路径就优先服务完整 SPA;删除/清空 dist
+即自动回退。两条路径共用同一套 API 与 DTO。其余环境变量:
+`GOCORDIS_MANIFEST`(声明存储路径)、`GOCORDIS_CATALOG_DIR`(插件目录)。
+控制台默认无鉴权,生产环境需在传输层自行加网关/中间件。
+
 - 应用通过 `hub.RegisterQuery/RegisterCommand` 注册领域查询/命令(可逆);
 - 控制台**没有鉴权**(开发姿态)——暴露到网络前请自行加反代/中间件;
 - 插件启停走声明(`PluginLifecycle`/`Enabled`),由应用决定如何持久化;

@@ -7,6 +7,8 @@ import (
 	"net"
 	stdhttp "net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -859,4 +861,466 @@ func TestRegisterProxyAcceptsSocksAliases(t *testing.T) {
 			t.Errorf("remove(%q): %v", raw, err)
 		}
 	}
+}
+
+// The new capability is deliberately a separate interface so that existing
+// third-party Service implementations (which only know Do/Get/Post/...) keep
+// compiling. A real service always implements it.
+func asStreamService(t *testing.T, svc exthttp.Service) exthttp.StreamService {
+	t.Helper()
+	ss, ok := svc.(exthttp.StreamService)
+	if !ok {
+		t.Fatalf("service %T does not implement StreamService", svc)
+	}
+	return ss
+}
+
+func loadStreamService(t *testing.T) (exthttp.StreamService, *runtime.Fiber) {
+	t.Helper()
+	svc, f := loadService(t)
+	return asStreamService(t, svc), f
+}
+
+// r1.md HTTP equivalence: a stream response must be handed to the caller
+// before the whole body arrives. The server writes one chunk, flushes and
+// blocks; the test reads that first chunk while the server is still blocked.
+func TestDoStreamStreamsBodyInChunks(t *testing.T) {
+	const chunks = 8
+	chunk := strings.Repeat("x", 64*1024)
+	wroteFirst := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(stdhttp.StatusOK)
+		_, _ = io.WriteString(w, chunk)
+		w.(stdhttp.Flusher).Flush()
+		close(wroteFirst)
+		<-release
+		for i := 1; i < chunks; i++ {
+			_, _ = io.WriteString(w, chunk)
+		}
+	}))
+	defer srv.Close()
+
+	ss, f := loadStreamService(t)
+	defer dispose(t, f)
+
+	type streamResult struct {
+		resp *exthttp.StreamResponse
+		err  error
+	}
+	res := make(chan streamResult, 1)
+	go func() {
+		resp, err := ss.DoStream(testCtx(t), exthttp.Request{Method: stdhttp.MethodGet, URL: srv.URL})
+		res <- streamResult{resp, err}
+	}()
+	got := mustRecv(t, res, 2*time.Second)
+	if got.err != nil {
+		t.Fatalf("DoStream: %v", got.err)
+	}
+	resp := got.resp
+	defer resp.Body.Close()
+	if resp.StatusCode != stdhttp.StatusOK || resp.Header.Get("Content-Type") != "application/octet-stream" {
+		t.Fatalf("stream status/header = %d %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	mustRecv(t, wroteFirst, time.Second)
+
+	first := make([]byte, len(chunk))
+	firstErr := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(resp.Body, first)
+		firstErr <- err
+	}()
+	if err := mustRecv(t, firstErr, 2*time.Second); err != nil {
+		t.Fatalf("first chunk did not arrive while server blocked: %v", err)
+	}
+	if string(first) != chunk {
+		t.Fatal("first chunk mismatch")
+	}
+	unblock()
+	rest, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read remaining chunks: %v", err)
+	}
+	if len(rest) != len(chunk)*(chunks-1) {
+		t.Fatalf("remaining body = %d bytes, want %d", len(rest), len(chunk)*(chunks-1))
+	}
+}
+
+func TestDoStreamTimeoutContextAndInterceptors(t *testing.T) {
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		select {
+		case <-release:
+			_, _ = io.WriteString(w, r.Header.Get("X-Stream-Interceptor"))
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+
+	ss, f := loadStreamService(t)
+	defer dispose(t, f)
+
+	_, err := ss.AddStreamInterceptor(func(ctx context.Context, req *exthttp.Request, next func(context.Context, *exthttp.Request) (*exthttp.StreamResponse, error)) (*exthttp.StreamResponse, error) {
+		req.Header.Set("X-Stream-Interceptor", "streamed")
+		return next(ctx, req)
+	})
+	if err != nil {
+		t.Fatalf("AddStreamInterceptor: %v", err)
+	}
+
+	// req.Timeout is honored by DoStream, with the same error wrapping as Do.
+	_, err = ss.DoStream(testCtx(t), exthttp.Request{URL: srv.URL, Timeout: 60 * time.Millisecond})
+	mustRecv(t, entered, time.Second)
+	if !errors.Is(err, exthttp.ErrTimeout) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("DoStream timeout error = %v", err)
+	}
+
+	// Caller cancellation is honored too.
+	ctx, cancel := context.WithCancel(testCtx(t))
+	done := make(chan error, 1)
+	go func() {
+		_, e := ss.DoStream(ctx, exthttp.Request{URL: srv.URL})
+		done <- e
+	}()
+	mustRecv(t, entered, time.Second)
+	cancel()
+	if err := mustRecv(t, done, time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DoStream cancel error = %v, want context.Canceled", err)
+	}
+
+	// GetStream is the convenience form and still runs the interceptor chain.
+	unblock()
+	resp, err := ss.GetStream(testCtx(t), srv.URL)
+	if err != nil {
+		t.Fatalf("GetStream: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read stream body: %v", err)
+	}
+	if string(body) != "streamed" {
+		t.Fatalf("stream interceptor body = %q, want streamed", body)
+	}
+}
+
+func TestDecoderSelectionParamsLatestWinsAndRestores(t *testing.T) {
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		w.Header().Set("Content-Type", r.URL.Query().Get("ct"))
+		_, _ = w.Write([]byte(`{"n":7}`))
+	}))
+	defer srv.Close()
+
+	ss, f := loadStreamService(t)
+	defer dispose(t, f)
+	ctx := testCtx(t)
+	fetch := func(ct string) *exthttp.StreamResponse {
+		t.Helper()
+		resp, err := ss.GetStream(ctx, srv.URL+"?ct="+url.QueryEscape(ct))
+		if err != nil {
+			t.Fatalf("GetStream(%q): %v", ct, err)
+		}
+		return resp
+	}
+
+	// Built-in application/json decoder is found via the media type when the
+	// Content-Type carries parameters. The package-level helper stays compatible.
+	var out struct {
+		N int `json:"n"`
+	}
+	resp := fetch("application/json; charset=utf-8")
+	if err := exthttp.Decode(resp, &out); err != nil {
+		t.Fatalf("package Decode builtin json: %v", err)
+	}
+	if out.N != 7 {
+		t.Fatalf("decoded n = %d, want 7", out.N)
+	}
+	out2 := struct {
+		N int `json:"n"`
+	}{}
+	if err := ss.Decode(fetch("application/json; charset=utf-8"), &out2); err != nil || out2.N != 7 {
+		t.Fatalf("service Decode builtin json: %v n=%d", err, out2.N)
+	}
+
+	customCT := "application/vnd.cordis.test+json; charset=utf-8"
+	var calls int
+	removeExact, err := ss.RegisterDecoder(customCT, func(r io.Reader, out any) error {
+		calls++
+		_, _ = io.Copy(io.Discard, r)
+		*(out.(*string)) = "exact"
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RegisterDecoder exact: %v", err)
+	}
+	decodeString := func(ct string) string {
+		t.Helper()
+		var s string
+		if err := ss.Decode(fetch(ct), &s); err != nil {
+			t.Fatalf("Decode(%q): %v", ct, err)
+		}
+		return s
+	}
+	if got := decodeString(customCT); got != "exact" || calls != 1 {
+		t.Fatalf("exact decoder = %q calls=%d", got, calls)
+	}
+
+	// An exact registration beats one for the bare media type.
+	removeBare, err := ss.RegisterDecoder("application/vnd.cordis.test+json", func(r io.Reader, out any) error {
+		_, _ = io.Copy(io.Discard, r)
+		*(out.(*string)) = "bare"
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RegisterDecoder bare: %v", err)
+	}
+	if got := decodeString(customCT); got != "exact" {
+		t.Fatalf("exact did not beat bare media type: %q", got)
+	}
+
+	removeLatest, err := ss.RegisterDecoder(customCT, func(r io.Reader, out any) error {
+		_, _ = io.Copy(io.Discard, r)
+		*(out.(*string)) = "latest"
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RegisterDecoder latest: %v", err)
+	}
+	if got := decodeString(customCT); got != "latest" {
+		t.Fatalf("latest decoder = %q", got)
+	}
+	if err := removeLatest(); err != nil {
+		t.Fatalf("remove latest: %v", err)
+	}
+	if err := removeLatest(); err != nil {
+		t.Fatalf("remove latest must be idempotent: %v", err)
+	}
+	if got := decodeString(customCT); got != "exact" {
+		t.Fatalf("previous decoder not restored: %q", got)
+	}
+	if err := removeExact(); err != nil {
+		t.Fatalf("remove exact: %v", err)
+	}
+	if got := decodeString(customCT); got != "bare" {
+		t.Fatalf("bare media-type decoder not restored: %q", got)
+	}
+	if err := removeBare(); err != nil {
+		t.Fatalf("remove bare: %v", err)
+	}
+
+	unknown := &exthttp.StreamResponse{
+		Header: stdhttp.Header{"Content-Type": {"application/x-unregistered-test"}},
+		Body:   io.NopCloser(strings.NewReader("raw")),
+	}
+	if err := ss.Decode(unknown, &out); err == nil || !strings.Contains(err.Error(), "application/x-unregistered-test") {
+		t.Fatalf("unknown decoder error = %v", err)
+	}
+}
+
+// Two independently loaded services must own independent decoder registries:
+// a contribution in one must not be visible in the other, and each must still
+// carry its own built-in JSON decoder.
+func TestDecodersArePerService(t *testing.T) {
+	ss1, f1 := loadStreamService(t)
+	defer dispose(t, f1)
+	ss2, f2 := loadStreamService(t)
+	defer dispose(t, f2)
+
+	mk := func(ct string) *exthttp.StreamResponse {
+		return &exthttp.StreamResponse{
+			Header: stdhttp.Header{"Content-Type": {ct}},
+			Body:   io.NopCloser(strings.NewReader(`{"n":7}`)),
+		}
+	}
+	const customCT = "application/x-only-on-service-one"
+	remove, err := ss1.RegisterDecoder(customCT, func(r io.Reader, out any) error {
+		_, _ = io.Copy(io.Discard, r)
+		*(out.(*string)) = "one"
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RegisterDecoder on ss1: %v", err)
+	}
+	defer func() { _ = remove() }()
+
+	var s string
+	if err := ss1.Decode(mk(customCT), &s); err != nil || s != "one" {
+		t.Fatalf("ss1 Decode = %q, %v; want one", s, err)
+	}
+	if err := ss2.Decode(mk(customCT), &s); err == nil || !strings.Contains(err.Error(), customCT) {
+		t.Fatalf("ss2 saw ss1's decoder: %v", err)
+	}
+
+	// A contribution in ss2 is likewise private, and views inherit only their
+	// own service's registry.
+	remove2, err := ss2.RegisterDecoder(customCT, func(r io.Reader, out any) error {
+		_, _ = io.Copy(io.Discard, r)
+		*(out.(*string)) = "two"
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RegisterDecoder on ss2: %v", err)
+	}
+	defer func() { _ = remove2() }()
+	if err := ss1.Decode(mk(customCT), &s); err != nil || s != "one" {
+		t.Fatalf("ss2 registration changed ss1: %q, %v", s, err)
+	}
+	if err := ss2.Decode(mk(customCT), &s); err != nil || s != "two" {
+		t.Fatalf("ss2 Decode = %q, %v; want two", s, err)
+	}
+	if err := ss1.Extend("", nil).Decode(mk(customCT), &s); err != nil || s != "one" {
+		t.Fatalf("ss1 view Decode = %q, %v; want one", s, err)
+	}
+
+	// Both instances got a private copy of the built-in JSON decoder.
+	for i, ss := range []exthttp.StreamService{ss1, ss2} {
+		var out struct {
+			N int `json:"n"`
+		}
+		if err := ss.Decode(mk("application/json"), &out); err != nil || out.N != 7 {
+			t.Fatalf("service %d builtin json = %v n=%d", i, err, out.N)
+		}
+	}
+}
+
+func TestBaseURLParamsAndExtendLayering(t *testing.T) {
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		w.Header().Set("X-Path", r.URL.Path)
+		w.Header().Set("X-Query", r.URL.RawQuery)
+		w.Header().Set("X-Layer", r.Header.Get("X-Layer"))
+		w.Header().Set("X-Default", r.Header.Get("X-Default"))
+	}))
+	defer srv.Close()
+
+	ss, f := loadStreamService(t)
+	defer dispose(t, f)
+	ctx := testCtx(t)
+
+	req := exthttp.Request{
+		Method:  stdhttp.MethodGet,
+		URL:     "/items?keep=1",
+		BaseURL: srv.URL + "/api",
+		Params:  url.Values{"page": {"2"}, "tag": {"a", "b"}},
+		Header:  stdhttp.Header{"X-Layer": {"req"}},
+	}
+	wantURL, wantBase := req.URL, req.BaseURL
+	wantParams := make(url.Values)
+	for k, vs := range req.Params {
+		wantParams[k] = append([]string(nil), vs...)
+	}
+	wantHeader := req.Header.Clone()
+	resp, err := ss.Do(ctx, req)
+	if err != nil {
+		t.Fatalf("Do with BaseURL/Params: %v", err)
+	}
+	if got := resp.Header.Get("X-Path"); got != "/api/items" {
+		t.Fatalf("resolved path = %q, want /api/items", got)
+	}
+	q := resp.Header.Get("X-Query")
+	for _, want := range []string{"keep=1", "page=2", "tag=a", "tag=b"} {
+		if !strings.Contains(q, want) {
+			t.Fatalf("query %q missing %q", q, want)
+		}
+	}
+	if req.URL != wantURL || req.BaseURL != wantBase || !reflect.DeepEqual(req.Params, wantParams) || !reflect.DeepEqual(req.Header, wantHeader) {
+		t.Fatalf("Do mutated caller's Request: %+v", req)
+	}
+
+	baseHeader := stdhttp.Header{}
+	baseHeader.Set("X-Layer", "base")
+	baseHeader.Set("X-Default", "base-default")
+	view := ss.Extend(srv.URL+"/api", baseHeader)
+	childHeader := stdhttp.Header{}
+	childHeader.Set("X-Default", "child")
+	view2 := view.Extend(srv.URL+"/api/v2", childHeader)
+
+	r2, err := view2.Do(ctx, exthttp.Request{URL: "/items", Header: stdhttp.Header{"X-Layer": {"req"}}})
+	if err != nil {
+		t.Fatalf("view2.Do: %v", err)
+	}
+	if r2.Header.Get("X-Path") != "/api/v2/items" || r2.Header.Get("X-Layer") != "req" || r2.Header.Get("X-Default") != "child" {
+		t.Fatalf("layered response = %v", r2.Header)
+	}
+	r1, err := view.Do(ctx, exthttp.Request{URL: "/items"})
+	if err != nil {
+		t.Fatalf("view.Do: %v", err)
+	}
+	if r1.Header.Get("X-Path") != "/api/items" || r1.Header.Get("X-Layer") != "base" || r1.Header.Get("X-Default") != "base-default" {
+		t.Fatalf("base view response = %v", r1.Header)
+	}
+	// Extending must not change the parent view's defaults.
+	if baseHeader.Get("X-Layer") != "base" {
+		t.Fatal("Extend mutated the caller's header")
+	}
+
+	// A view shares the parent lifecycle: closing it closes the one owner.
+	if err := view.Close(); err != nil {
+		t.Fatalf("view.Close: %v", err)
+	}
+	if _, err := ss.Do(ctx, exthttp.Request{URL: srv.URL}); !errors.Is(err, exthttp.ErrClosed) {
+		t.Fatalf("parent after view.Close = %v, want ErrClosed", err)
+	}
+	if _, err := view2.Do(ctx, exthttp.Request{URL: srv.URL}); !errors.Is(err, exthttp.ErrClosed) {
+		t.Fatalf("view after view.Close = %v, want ErrClosed", err)
+	}
+}
+
+func TestCloseJoinsInFlightStreamAndRejectsNew(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	ss, f := loadStreamService(t)
+	_, err := ss.AddStreamInterceptor(func(ctx context.Context, req *exthttp.Request, next func(context.Context, *exthttp.Request) (*exthttp.StreamResponse, error)) (*exthttp.StreamResponse, error) {
+		close(entered)
+		<-release // deliberately ignores ctx: only this test releases it
+		return next(ctx, req)
+	})
+	if err != nil {
+		t.Fatalf("AddStreamInterceptor: %v", err)
+	}
+
+	doDone := make(chan error, 1)
+	go func() {
+		_, e := ss.DoStream(testCtx(t), exthttp.Request{URL: srv.URL})
+		doDone <- e
+	}()
+	mustRecv(t, entered, time.Second)
+
+	closeCalled := make(chan struct{})
+	closeDone := make(chan struct{})
+	go func() {
+		close(closeCalled)
+		_ = ss.Close()
+		close(closeDone)
+	}()
+	<-closeCalled
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned while a stream request was still in flight")
+	default:
+	}
+	if _, err := ss.DoStream(testCtx(t), exthttp.Request{URL: srv.URL}); !errors.Is(err, exthttp.ErrClosed) {
+		t.Fatalf("DoStream after Close = %v, want ErrClosed", err)
+	}
+	close(release)
+	mustRecv(t, doDone, time.Second)
+	mustRecv(t, closeDone, time.Second)
+	dispose(t, f)
 }

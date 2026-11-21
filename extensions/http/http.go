@@ -14,9 +14,11 @@ package http
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	stdhttp "net/http"
 	"net/url"
@@ -40,6 +42,13 @@ type Request struct {
 	Timeout time.Duration
 	// ExpectStatus validates the response status. Nil means 2xx is accepted.
 	ExpectStatus func(int) bool
+
+	// BaseURL is an optional prefix resolved against URL by Do/DoStream. An
+	// absolute URL overrides it. Params are appended to the URL's existing
+	// query. Both fields are read-only to the caller: Do/DoStream work on a
+	// private copy and never mutate the Request they were given.
+	BaseURL string
+	Params  url.Values
 }
 
 // Response is the materialized response (the body has already been read and
@@ -49,6 +58,21 @@ type Response struct {
 	Header     stdhttp.Header
 	Body       []byte
 }
+
+// StreamResponse is a response whose body has NOT been read. The caller owns
+// Body and must Close it; closing it also releases the service's per-request
+// context (timeout and Close cancellation). The service still tracks the
+// DoStream call itself in its in-flight set until DoStream returns.
+type StreamResponse struct {
+	StatusCode int
+	Header     stdhttp.Header
+	Body       io.ReadCloser
+}
+
+// StreamInterceptor is the stream-aware counterpart of Interceptor. It runs
+// in registration order through a next-chain and may short-circuit by
+// returning without calling next.
+type StreamInterceptor func(ctx context.Context, req *Request, next func(context.Context, *Request) (*StreamResponse, error)) (*StreamResponse, error)
 
 // Interceptor is one link in a next-chain. It may short-circuit by returning
 // without calling next, or mutate req before delegating.
@@ -78,6 +102,21 @@ type Service interface {
 	// Close stops new requests, cancels active ones, waits (bounded) and
 	// releases all transports. It is idempotent.
 	Close() error
+}
+
+// StreamService is the additive streaming/configuration contract. It is kept
+// separate from Service on purpose: external code may implement only the
+// original Service interface (e.g. test doubles), so growing Service would be
+// a breaking change. The concrete service and every Extend view implement both.
+type StreamService interface {
+	Service
+	DoStream(context.Context, Request) (*StreamResponse, error)
+	GetStream(context.Context, string) (*StreamResponse, error)
+	AddStreamInterceptor(StreamInterceptor) (func() error, error)
+	RegisterDecoder(contentType string, fn func(io.Reader, any) error) (func() error, error)
+	// Decode uses this service's own decoder registry.
+	Decode(*StreamResponse, any) error
+	Extend(baseURL string, header stdhttp.Header) StreamService
 }
 
 // ServiceKey is the capability identity of the HTTP service.
@@ -110,6 +149,62 @@ type interceptorEntry struct {
 	fn Interceptor
 }
 
+type streamInterceptorEntry struct {
+	id uint64
+	fn StreamInterceptor
+}
+
+// decoderRegistration is an identity-bearing decoder contribution. Like
+// proxies, registrations live in an ordered slice: the last matching one wins
+// and removing it reveals the previous one for the same content type.
+type decoderRegistration struct {
+	id          uint64
+	contentType string // normalized: lower-cased and trimmed
+	fn          func(io.Reader, any) error
+}
+
+// builtinJSONDecoder is copied into every service's own decoder registry at
+// construction; decoders are per-service state, never process-global.
+func builtinJSONDecoder(r io.Reader, out any) error {
+	return json.NewDecoder(r).Decode(out)
+}
+
+// defaultDecoders is an immutable, built-in-only registry backing the
+// package-level Decode compatibility helper. It is never mutated, so it needs
+// no lock.
+var defaultDecoders = []decoderRegistration{{
+	contentType: "application/json",
+	fn:          builtinJSONDecoder,
+}}
+
+func normalizeContentType(ct string) string {
+	return strings.ToLower(strings.TrimSpace(ct))
+}
+
+// winningDecoderIn returns the most recently registered decoder in regs whose
+// content type equals one of the supplied keys (most specific key first).
+func winningDecoderIn(regs []decoderRegistration, keys ...string) func(io.Reader, any) error {
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		for i := len(regs) - 1; i >= 0; i-- {
+			if regs[i].contentType == key {
+				return regs[i].fn
+			}
+		}
+	}
+	return nil
+}
+
+// winningDecoder selects from this service's registry. The scan runs under the
+// service lock because removal compacts the slice in place.
+func (s *service) winningDecoder(keys ...string) func(io.Reader, any) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return winningDecoderIn(s.decoders, keys...)
+}
+
 // proxyRegistration is one identity-bearing proxy contribution.
 type proxyRegistration struct {
 	id       uint64
@@ -121,13 +216,15 @@ type proxyRegistration struct {
 type proxyDialerKey struct{}
 
 type service struct {
-	mu           sync.RWMutex
-	closed       bool
-	interceptors []interceptorEntry
-	nextID       uint64
-	proxies      []proxyRegistration // in registration order; last wins
-	sentinelID   uint64              // SetProxy's registration, 0 when absent
-	transport    *stdhttp.Transport
+	mu                 sync.RWMutex
+	closed             bool
+	interceptors       []interceptorEntry
+	streamInterceptors []streamInterceptorEntry
+	nextID             uint64
+	decoders           []decoderRegistration // per-service; in registration order, last wins
+	proxies            []proxyRegistration   // in registration order; last wins
+	sentinelID         uint64                // SetProxy's registration, 0 when absent
+	transport          *stdhttp.Transport
 	// retired holds every transport replaced by a proxy change. A request using
 	// an older transport may still be in flight, so each one stays reachable
 	// and is closed on every swap and again on service disposal.
@@ -152,6 +249,14 @@ func newService() *service {
 		closeTimeout: DefaultCloseTimeout,
 		closeDone:    make(chan struct{}),
 	}
+	// Every instance gets its own built-in decoder as the first contribution,
+	// so removing custom decoders reveals it without affecting other services.
+	s.nextID++
+	s.decoders = []decoderRegistration{{
+		id:          s.nextID,
+		contentType: "application/json",
+		fn:          builtinJSONDecoder,
+	}}
 	s.transport = s.buildTransport(nil)
 	return s
 }
@@ -235,6 +340,7 @@ func (s *service) Do(ctx context.Context, req Request) (*Response, error) {
 	if r.Method == "" {
 		r.Method = stdhttp.MethodGet
 	}
+	r.URL = resolveRequestURL(r.BaseURL, r.URL, r.Params)
 	scheme := ""
 	if u, err := url.Parse(r.URL); err == nil && u != nil {
 		scheme = normalizeScheme(u.Scheme)
@@ -337,6 +443,429 @@ func (s *service) roundTrip(ctx context.Context, tr *stdhttp.Transport, req *Req
 	}
 	return &Response{StatusCode: resp.StatusCode, Header: resp.Header.Clone(), Body: data}, nil
 }
+
+// --- additive r1.md HTTP equivalence APIs ---------------------------------
+
+// joinBaseURL prefixes rel with base using exactly one slash. An absolute rel
+// is returned unchanged so a request can always opt out of a configured base.
+func joinBaseURL(base, rel string) string {
+	if base == "" {
+		return rel
+	}
+	if rel == "" {
+		return base
+	}
+	if u, err := url.Parse(rel); err == nil && u.IsAbs() {
+		return rel
+	}
+	return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(rel, "/")
+}
+
+// resolveRequestURL applies BaseURL and Params to a private copy of the URL.
+// The existing query is preserved and Params are appended; the caller's
+// url.Values is never written through.
+func resolveRequestURL(baseURL, rawURL string, params url.Values) string {
+	resolved := joinBaseURL(baseURL, rawURL)
+	if len(params) == 0 {
+		return resolved
+	}
+	u, err := url.Parse(resolved)
+	if err != nil {
+		return resolved // let net/http report the malformed URL
+	}
+	q := u.Query()
+	for key, values := range params {
+		for _, value := range values {
+			q.Add(key, value)
+		}
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func cloneHeader(h stdhttp.Header) stdhttp.Header {
+	out := make(stdhttp.Header)
+	for k, vs := range h {
+		out[stdhttp.CanonicalHeaderKey(k)] = append([]string(nil), vs...)
+	}
+	return out
+}
+
+// mergeHeaders layers override over base: per-request values win over Extend
+// defaults, and child Extend defaults win over parent defaults.
+func mergeHeaders(base, override stdhttp.Header) stdhttp.Header {
+	out := cloneHeader(base)
+	for k, vs := range override {
+		out[stdhttp.CanonicalHeaderKey(k)] = append([]string(nil), vs...)
+	}
+	return out
+}
+
+// streamBody ties the per-request context cleanup (timeout cancel, service
+// Close cancel and AfterFunc stop) to the lifetime of the returned Body.
+type streamBody struct {
+	io.ReadCloser
+	once    sync.Once
+	onClose func()
+}
+
+func (b *streamBody) Close() error {
+	var err error
+	b.once.Do(func() {
+		if b.ReadCloser != nil {
+			err = b.ReadCloser.Close()
+		}
+		b.onClose()
+	})
+	return err
+}
+
+// DoStream performs a request but hands the unread body to the caller. It is
+// tracked by the service's in-flight set exactly like Do, so Close refuses new
+// calls and waits for an in-flight DoStream to return. Status validation is
+// intentionally left to the caller: StreamResponse exposes StatusCode.
+func (s *service) DoStream(ctx context.Context, req Request) (*StreamResponse, error) {
+	r := req
+	r.Header = cloneHeader(r.Header)
+	if r.Method == "" {
+		r.Method = stdhttp.MethodGet
+	}
+	r.URL = resolveRequestURL(r.BaseURL, r.URL, r.Params)
+
+	scheme := ""
+	if u, err := url.Parse(r.URL); err == nil && u != nil {
+		scheme = normalizeScheme(u.Scheme)
+	}
+
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return nil, ErrClosed
+	}
+	s.wg.Add(1)
+	s.active.Add(1)
+	tr := s.transport
+	chain := make([]Interceptor, len(s.interceptors))
+	for i, e := range s.interceptors {
+		chain[i] = e.fn
+	}
+	streamChain := make([]StreamInterceptor, len(s.streamInterceptors))
+	for i, e := range s.streamInterceptors {
+		streamChain[i] = e.fn
+	}
+	var dial ProxyDialer
+	if reg := winningRegistration(s.proxies, scheme); reg != nil {
+		dial = reg.dial
+	}
+	s.mu.RUnlock()
+	defer func() {
+		s.active.Add(-1)
+		s.wg.Done()
+	}()
+
+	// Unlike Do, the derived context cannot be cancelled on return: the Body is
+	// still streaming. Cleanup is attached to Body.Close instead.
+	callCtx := ctx
+	var cleanups []func()
+	if s.cancel != nil {
+		c, cancel := context.WithCancel(ctx)
+		callCtx = c
+		stop := context.AfterFunc(s.ctx, cancel)
+		cleanups = append(cleanups, func() { stop(); cancel() })
+	}
+	if r.Timeout > 0 {
+		c, cancelTimeout := context.WithTimeout(callCtx, r.Timeout)
+		callCtx = c
+		cleanups = append(cleanups, cancelTimeout)
+	}
+	if dial != nil {
+		callCtx = context.WithValue(callCtx, proxyDialerKey{}, dial)
+	}
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			for _, fn := range cleanups {
+				fn()
+			}
+		})
+	}
+
+	next := func(c context.Context, rr *Request) (*StreamResponse, error) {
+		return s.roundTripStream(c, tr, rr)
+	}
+	// Ordinary interceptors apply too. They are adapted through a buffered
+	// next-chain, so no materialization happens unless one is actually installed.
+	for i := len(chain) - 1; i >= 0; i-- {
+		ic := chain[i]
+		inner := next
+		next = func(c context.Context, rr *Request) (*StreamResponse, error) {
+			bufferedNext := func(c2 context.Context, r2 *Request) (*Response, error) {
+				sr, err := inner(c2, r2)
+				if err != nil || sr == nil {
+					return nil, err
+				}
+				data, err := io.ReadAll(sr.Body)
+				_ = sr.Body.Close()
+				if err != nil {
+					return nil, err
+				}
+				return &Response{StatusCode: sr.StatusCode, Header: sr.Header, Body: data}, nil
+			}
+			resp, err := ic(c, rr, bufferedNext)
+			if err != nil || resp == nil {
+				return nil, err
+			}
+			return &StreamResponse{StatusCode: resp.StatusCode, Header: resp.Header, Body: io.NopCloser(bytes.NewReader(resp.Body))}, nil
+		}
+	}
+	// Stream interceptors are outermost and run in registration order.
+	for i := len(streamChain) - 1; i >= 0; i-- {
+		si := streamChain[i]
+		inner := next
+		next = func(c context.Context, rr *Request) (*StreamResponse, error) {
+			return si(c, rr, inner)
+		}
+	}
+
+	sr, err := next(callCtx, &r)
+	if err != nil || sr == nil {
+		if sr != nil && sr.Body != nil {
+			_ = sr.Body.Close()
+		}
+		cleanup()
+		if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(callCtx.Err(), context.DeadlineExceeded)) {
+			return sr, fmt.Errorf("%w: %w", ErrTimeout, err)
+		}
+		return sr, err
+	}
+	if sr.Body == nil {
+		sr.Body = io.NopCloser(bytes.NewReader(nil))
+	}
+	sr.Body = &streamBody{ReadCloser: sr.Body, onClose: cleanup}
+	return sr, nil
+}
+
+func (s *service) roundTripStream(ctx context.Context, tr *stdhttp.Transport, req *Request) (*StreamResponse, error) {
+	var body io.Reader
+	if len(req.Body) > 0 {
+		body = bytes.NewReader(req.Body)
+	}
+	hr, err := stdhttp.NewRequestWithContext(ctx, req.Method, req.URL, body)
+	if err != nil {
+		return nil, err
+	}
+	if req.Header != nil {
+		hr.Header = req.Header.Clone()
+	}
+	client := &stdhttp.Client{Transport: tr}
+	resp, err := client.Do(hr)
+	if err != nil {
+		return nil, err
+	}
+	return &StreamResponse{StatusCode: resp.StatusCode, Header: resp.Header.Clone(), Body: resp.Body}, nil
+}
+
+func (s *service) GetStream(ctx context.Context, rawURL string) (*StreamResponse, error) {
+	return s.DoStream(ctx, Request{Method: stdhttp.MethodGet, URL: rawURL})
+}
+
+func (s *service) AddStreamInterceptor(si StreamInterceptor) (func() error, error) {
+	if si == nil {
+		return nil, errors.New("http: nil stream interceptor")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, errClosed
+	}
+	s.nextID++
+	id := s.nextID
+	s.streamInterceptors = append(s.streamInterceptors, streamInterceptorEntry{id: id, fn: si})
+
+	var once sync.Once
+	return func() error {
+		once.Do(func() {
+			s.mu.Lock()
+			for i, e := range s.streamInterceptors {
+				if e.id == id {
+					s.streamInterceptors = append(s.streamInterceptors[:i], s.streamInterceptors[i+1:]...)
+					break
+				}
+			}
+			s.mu.Unlock()
+		})
+		return nil
+	}, nil
+}
+
+// RegisterDecoder adds a decoder for contentType. The contribution is
+// identity-bearing: the returned inverse removes only this registration and
+// reveals the previously winning decoder for the same content type.
+func (s *service) RegisterDecoder(contentType string, fn func(io.Reader, any) error) (func() error, error) {
+	if fn == nil {
+		return nil, errors.New("http: nil decoder")
+	}
+	ct := normalizeContentType(contentType)
+	if ct == "" {
+		return nil, errors.New("http: empty content type")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, errClosed
+	}
+	s.nextID++
+	id := s.nextID
+	s.decoders = append(s.decoders, decoderRegistration{id: id, contentType: ct, fn: fn})
+
+	var once sync.Once
+	return func() error {
+		once.Do(func() {
+			s.mu.Lock()
+			for i, reg := range s.decoders {
+				if reg.id == id {
+					s.decoders = append(s.decoders[:i], s.decoders[i+1:]...)
+					break
+				}
+			}
+			s.mu.Unlock()
+		})
+		return nil
+	}, nil
+}
+
+type contentTypeKeys struct {
+	raw, exact, mediaType string
+}
+
+func checkDecodeResponse(resp *StreamResponse) error {
+	if resp == nil {
+		return errors.New("http: nil stream response")
+	}
+	if resp.Body == nil {
+		return errors.New("http: stream response has no body")
+	}
+	return nil
+}
+
+func contentTypeOf(resp *StreamResponse) contentTypeKeys {
+	raw := ""
+	if resp.Header != nil {
+		raw = strings.TrimSpace(resp.Header.Get("Content-Type"))
+	}
+	exact := normalizeContentType(raw)
+	mediaType := exact
+	if raw != "" {
+		if parsed, _, err := mime.ParseMediaType(raw); err == nil {
+			mediaType = normalizeContentType(parsed)
+		} else if i := strings.IndexByte(raw, ';'); i >= 0 {
+			mediaType = normalizeContentType(raw[:i])
+		}
+	}
+	return contentTypeKeys{raw: raw, exact: exact, mediaType: mediaType}
+}
+
+// consumeDecode closes resp.Body on every path: a decoder owns the stream once
+// selected, and an unregistered type must not leak the body either.
+func consumeDecode(resp *StreamResponse, out any, raw string, fn func(io.Reader, any) error) error {
+	if fn == nil {
+		_ = resp.Body.Close()
+		return fmt.Errorf("http: no decoder registered for content type %q", raw)
+	}
+	defer resp.Body.Close()
+	return fn(resp.Body, out)
+}
+
+// Decode is the package-level compatibility helper: it knows only the built-in
+// decoders. For registrations made with RegisterDecoder, use the service-scoped
+// StreamService.Decode (or a view derived from that service).
+func Decode(resp *StreamResponse, out any) error {
+	if err := checkDecodeResponse(resp); err != nil {
+		return err
+	}
+	keys := contentTypeOf(resp)
+	return consumeDecode(resp, out, keys.raw, winningDecoderIn(defaultDecoders, keys.exact, keys.mediaType))
+}
+
+// Decode consumes resp.Body using this service's registry: the full
+// Content-Type is tried first (so a registration may include parameters), then
+// the bare media type. Every instance carries its own built-in JSON decoder.
+func (s *service) Decode(resp *StreamResponse, out any) error {
+	if err := checkDecodeResponse(resp); err != nil {
+		return err
+	}
+	keys := contentTypeOf(resp)
+	return consumeDecode(resp, out, keys.raw, s.winningDecoder(keys.exact, keys.mediaType))
+}
+
+// Extend returns a view that layers a base URL and default headers over this
+// service. It owns no transport, goroutines or lifecycle: calls delegate to the
+// root service, and Close on any view closes that single owner.
+func (s *service) Extend(baseURL string, header stdhttp.Header) StreamService {
+	return &extendedService{root: s, baseURL: baseURL, header: cloneHeader(header)}
+}
+
+type extendedService struct {
+	root    *service
+	baseURL string
+	header  stdhttp.Header
+}
+
+func (e *extendedService) Extend(baseURL string, header stdhttp.Header) StreamService {
+	return &extendedService{
+		root:    e.root,
+		baseURL: joinBaseURL(e.baseURL, baseURL),
+		header:  mergeHeaders(e.header, header),
+	}
+}
+
+func (e *extendedService) prepare(req Request) Request {
+	r := req
+	r.Header = mergeHeaders(e.header, req.Header)
+	r.BaseURL = joinBaseURL(e.baseURL, req.BaseURL)
+	return r
+}
+
+func (e *extendedService) Do(ctx context.Context, req Request) (*Response, error) {
+	return e.root.Do(ctx, e.prepare(req))
+}
+func (e *extendedService) DoStream(ctx context.Context, req Request) (*StreamResponse, error) {
+	return e.root.DoStream(ctx, e.prepare(req))
+}
+func (e *extendedService) Get(ctx context.Context, rawURL string) (*Response, error) {
+	return e.Do(ctx, Request{Method: stdhttp.MethodGet, URL: rawURL})
+}
+func (e *extendedService) Post(ctx context.Context, rawURL string, body []byte) (*Response, error) {
+	return e.Do(ctx, Request{Method: stdhttp.MethodPost, URL: rawURL, Body: body})
+}
+func (e *extendedService) GetStream(ctx context.Context, rawURL string) (*StreamResponse, error) {
+	return e.DoStream(ctx, Request{Method: stdhttp.MethodGet, URL: rawURL})
+}
+func (e *extendedService) AddInterceptor(ic Interceptor) (func() error, error) {
+	return e.root.AddInterceptor(ic)
+}
+func (e *extendedService) AddStreamInterceptor(si StreamInterceptor) (func() error, error) {
+	return e.root.AddStreamInterceptor(si)
+}
+func (e *extendedService) RegisterProxy(schemes []string, proxyURL string) (func() error, error) {
+	return e.root.RegisterProxy(schemes, proxyURL)
+}
+func (e *extendedService) RegisterProxyDialer(schemes []string, dial ProxyDialer) (func() error, error) {
+	return e.root.RegisterProxyDialer(schemes, dial)
+}
+func (e *extendedService) RegisterDecoder(contentType string, fn func(io.Reader, any) error) (func() error, error) {
+	return e.root.RegisterDecoder(contentType, fn)
+}
+func (e *extendedService) Decode(resp *StreamResponse, out any) error {
+	return e.root.Decode(resp, out)
+}
+func (e *extendedService) SetProxy(raw string) error { return e.root.SetProxy(raw) }
+func (e *extendedService) Close() error              { return e.root.Close() }
+
+var (
+	_ StreamService = (*service)(nil)
+	_ StreamService = (*extendedService)(nil)
+)
 
 func (s *service) Get(ctx context.Context, url string) (*Response, error) {
 	return s.Do(ctx, Request{Method: stdhttp.MethodGet, URL: url})
@@ -569,6 +1098,7 @@ func (s *service) Close() error {
 		s.mu.Lock()
 		s.closed = true
 		s.interceptors = nil
+		s.streamInterceptors = nil
 		s.cancel()
 		s.mu.Unlock()
 

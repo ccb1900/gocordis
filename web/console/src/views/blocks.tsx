@@ -17,6 +17,8 @@ import { formatRow, matchFilter, needsFocus, resolveParams, type Focus, type Vie
 import { TrendChart, type TrendPoint } from "./TrendChart";
 import { InsightGraphBlock } from "./InsightGraphBlock";
 import { MarketCatalogBlock } from "./MarketCatalog";
+import { RuntimeInspectorBlock } from "./RuntimeInspector";
+import { FrameworkDashboardBlock } from "./FrameworkDashboard";
 
 export type { ViewBlock, ViewContext, BlockRenderer };
 
@@ -573,6 +575,8 @@ registerBlockRenderer("insight-graph", InsightGraphBlock);
 // Market catalog: domain-aware table over `market/catalog`; mutations are
 // declarative hub commands, native rows are build-time only / read-only.
 registerBlockRenderer("market-catalog", MarketCatalogBlock);
+registerBlockRenderer("runtime-inspector", RuntimeInspectorBlock);
+registerBlockRenderer("framework-dashboard", FrameworkDashboardBlock);
 
 // MasterDetail: the operator's home view for one dimension (sources). The
 // list selects a row; the nested detail views render beside it with the

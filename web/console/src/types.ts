@@ -90,3 +90,103 @@ export interface MarketCatalogQuery {
   entries: MarketCatalogEntry[];
   sequence: number;
 }
+
+// ---- Runtime observation DTOs -----------------------------------------------
+// Payloads of the `runtime/snapshot`, `runtime/events` and
+// `framework/dashboard` named queries. IDs are numeric in the kernel but the
+// wire may carry them as strings; all fields are optional so the renderers can
+// degrade gracefully while a backend query is still being rolled out.
+
+export type RuntimeID = string | number;
+
+export interface RuntimeFiberDTO {
+  id?: RuntimeID;
+  name?: string;
+  component?: string;
+  state?: string;
+  intent?: string;
+  err?: string;
+  activationID?: RuntimeID;
+  scopeID?: RuntimeID;
+  parentFiberIDs?: RuntimeID[];
+  childFiberIDs?: RuntimeID[];
+}
+
+export interface RuntimeScopeDTO {
+  id?: RuntimeID;
+  parentID?: RuntimeID;
+  providerKeys?: string[];
+  fiberIDs?: RuntimeID[];
+}
+
+export interface RuntimeProviderDTO {
+  key?: string;
+  state?: string;
+  retiring?: boolean;
+  ownerFiberID?: RuntimeID;
+  ownerActivationID?: RuntimeID;
+  scopeID?: RuntimeID;
+}
+
+export interface RuntimeDependencyDTO {
+  key?: string;
+  consumerFiberID?: RuntimeID;
+  consumerActivationID?: RuntimeID;
+  providerFiberID?: RuntimeID;
+  providerActivationID?: RuntimeID;
+  status?: string;
+  reason?: string;
+}
+
+export interface RuntimeEffectDTO {
+  ownerFiberID?: RuntimeID;
+  activationID?: RuntimeID;
+  seq?: RuntimeID;
+  kind?: string;
+  key?: string;
+  state?: string;
+}
+
+export interface RuntimeSnapshotDTO {
+  sequence?: RuntimeID;
+  runtimeID?: RuntimeID;
+  state?: string;
+  fibers?: RuntimeFiberDTO[];
+  scopes?: RuntimeScopeDTO[];
+  providers?: RuntimeProviderDTO[];
+  dependencies?: RuntimeDependencyDTO[];
+  effects?: RuntimeEffectDTO[];
+}
+
+export interface RuntimeEventDTO {
+  sequence?: RuntimeID;
+  timestamp?: string;
+  type?: string;
+  fiberID?: RuntimeID;
+  activationID?: RuntimeID;
+  data?: unknown;
+}
+
+export interface RuntimeEventsDTO {
+  events?: RuntimeEventDTO[];
+  sequence?: RuntimeID;
+}
+
+export interface RuntimeDiagnosticDTO {
+  id?: RuntimeID;
+  level?: string;
+  severity?: string;
+  code?: string;
+  message?: string;
+  detail?: string;
+  source?: string;
+  fiberID?: RuntimeID;
+}
+
+export interface FrameworkDashboardDTO {
+  sequence?: RuntimeID;
+  state?: string;
+  counts?: Record<string, unknown>;
+  recentEvents?: RuntimeEventDTO[];
+  diagnostics?: Array<RuntimeDiagnosticDTO | string>;
+}

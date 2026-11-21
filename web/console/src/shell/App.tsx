@@ -18,6 +18,7 @@ import { usePath, navigate, replace } from "../router";
 import { useTheme } from "../theme";
 import { ActionBar } from "./ActionBar";
 import { GenericPage } from "../views/GenericPage";
+import { registerBuiltinPageAliases } from "../views/page-renderers";
 import { ViewBlockRenderer, type ViewContext } from "../views/blocks";
 import {
   getPageRenderer,
@@ -36,6 +37,9 @@ const { Sider, Content } = Layout;
 registerPageRenderer("plugin-explorer", function PluginExplorerPage() {
   return <Lazy><PluginExplorerLazy /></Lazy>;
 });
+// Backend pages declare these renderer names without views; the aliases feed
+// the existing block renderers through GenericPage (see page-renderers.tsx).
+registerBuiltinPageAliases();
 registerPanelRenderer("event-feed", function EventFeedPanel({ generation }: { generation: number }) {
   return <Lazy><EventFeedLazy generation={generation} /></Lazy>;
 });

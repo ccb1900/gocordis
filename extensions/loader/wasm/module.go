@@ -19,3 +19,16 @@ type moduleRef struct {
 
 // ID returns the module identity.
 func (m *moduleRef) ID() string { return m.id }
+
+// moduleGeneration is one resource GENERATION for a module id (NEW-10
+// resource-identity protocol): the compiled ref plus the ownership state
+// shared by all load attempts that deduped onto it. Loader handles are bound
+// to a generation POINTER, so a superseded attempt (its generation replaced
+// by Unload + a fresh load) can never release the newer generation's
+// resources — closing a shared generation is decided by the holder count of
+// THAT generation, not by the module id.
+type moduleGeneration struct {
+	ref       *moduleRef
+	holders   int
+	committed bool
+}

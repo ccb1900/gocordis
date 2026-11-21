@@ -11,22 +11,32 @@ import (
 	"dynamic-runtime/runtime"
 )
 
-// EXT-05: the Loader's Backend interface is Load-only, so a Backend that
-// retains compiled resources (e.g. the WASM backend's CompiledModule) is never
-// told when the Loader discards a module — the resources survive until
-// Backend.Close. Loaders must notify a Backend implementing the optional
-// unload interface when a module leaves the registry.
+// EXT-05 / NEW-10: the Loader's Backend interface is Load-only, so a Backend
+// that retains compiled resources (e.g. the WASM backend's CompiledModule) is
+// never told when the Loader discards a module — the resources survive until
+// Backend.Close. The loader notifies a ResourceBackend through the attempt
+// handle's Release when a module leaves the registry.
 type unloadNotifyBackend struct {
 	loader.Backend
 	unloads atomic.Int32
 }
 
-func (b *unloadNotifyBackend) UnloadModule(id string) { b.unloads.Add(1) }
+type notifyResource struct {
+	b *unloadNotifyBackend
+}
 
-func (b *unloadNotifyBackend) Load(ctx context.Context, artifact loader.Artifact) (loader.Module, error) {
-	return loader.Module{ID: artifact.ID, Type: "fake", Factory: config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
-		return nil, errors.New("unused")
-	})}, nil
+func (h *notifyResource) Commit()  {}
+func (h *notifyResource) Abandon() {}
+func (h *notifyResource) Release() { h.b.unloads.Add(1) }
+
+func (b *unloadNotifyBackend) LoadResource(ctx context.Context, artifact loader.Artifact) (loader.Module, loader.ResourceHandle, error) {
+	return loader.Module{
+		ID:   artifact.ID,
+		Type: "fake",
+		Factory: config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
+			return nil, errors.New("unused")
+		}),
+	}, &notifyResource{b: b}, nil
 }
 
 func TestLoaderNotifiesBackendOnUnload(t *testing.T) {

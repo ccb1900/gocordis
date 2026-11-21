@@ -364,32 +364,44 @@ func TestV09TypeGuardRejected(t *testing.T) {
 // tracked. If an Unload released the ref between the loader's registry write
 // and the CommitModule call, a stale committed flag would make a later
 // AbandonModule refuse to release the id's NEXT resources (leak).
-func TestBackendCommitModuleSkipsUntrackedID(t *testing.T) {
+func TestBackendCommitSkipsStaleAttempt(t *testing.T) {
 	b := newTestBackend()
-	art := wasmArtifact("c1", "file://"+fixturePath("valid.wasm"))
+	art := wasmArtifact("c1", "file://"+absFixture(t, "valid.wasm"))
 	art.BackendType = loader.BackendWASM
 	art.Source = "file://" + absFixture(t, "valid.wasm")
-	if _, err := b.Load(context.Background(), art); err != nil {
-		t.Fatalf("load: %v", err)
+
+	// Generation 1: commit then Release (registry discard).
+	_, h1, err := b.LoadResource(context.Background(), art)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Loader lifecycle: commit → unload (release) → a STALE commit attempt.
-	b.CommitModule("c1")
-	b.UnloadModule("c1") // releases + clears ownership
-	b.CommitModule("c1") // stale: the id is untracked — must be a no-op
+	h1.Commit()
+	if b.CompiledModules() != 1 {
+		t.Fatalf("gen1 not tracked after commit")
+	}
+	h1.Release() // releases gen1
 	if b.CompiledModules() != 0 {
-		t.Fatalf("untracked id resurrected in the backend map")
+		t.Fatalf("gen1 not released: %d", b.CompiledModules())
 	}
-	// The stale mark must not block a later abandon of NEW resources for the
-	// same id: reload, fail the commit (abandon) — the ref must be released.
-	if _, err := b.Load(context.Background(), art); err != nil {
-		t.Fatalf("reload: %v", err)
+	// A stale attempt's Commit (gen1 handle after the release) must be a
+	// no-op — NEW-10: superseded handles never resurrect or mutate state.
+	h1.Commit()
+	if b.CompiledModules() != 0 {
+		t.Fatalf("stale commit resurrected resources")
+	}
+
+	// Generation 2 (fresh load after the discard): its Abandon releases only
+	// its OWN resources.
+	_, h2, err := b.LoadResource(context.Background(), art)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if b.CompiledModules() != 1 {
-		t.Fatalf("reload did not track a fresh ref")
+		t.Fatalf("gen2 not tracked: %d", b.CompiledModules())
 	}
-	b.AbandonModule("c1")
+	h2.Abandon()
 	if b.CompiledModules() != 0 {
-		t.Fatalf("Abandon refused to release the NEW ref (stale committed flag) — NEW-02 leak")
+		t.Fatalf("gen2 Abandon refused to release (NEW-02 leak)")
 	}
 }
 
@@ -401,13 +413,14 @@ func TestBackendSharedRefOwnership(t *testing.T) {
 	b := newTestBackend()
 	art := wasmArtifact("own", "file://"+absFixture(t, "valid.wasm"))
 	art.BackendType = loader.BackendWASM
+	art.Source = "file://" + absFixture(t, "valid.wasm")
 
-	// Two attempts share the ref (dedupe): holders = 2.
-	m1, err := b.Load(context.Background(), art)
+	// Two attempts share one generation (dedupe): holders = 2.
+	_, h1, err := b.LoadResource(context.Background(), art)
 	if err != nil {
 		t.Fatalf("load1: %v", err)
 	}
-	m2, err := b.Load(context.Background(), art)
+	_, h2, err := b.LoadResource(context.Background(), art)
 	if err != nil {
 		t.Fatalf("load2: %v", err)
 	}
@@ -416,26 +429,19 @@ func TestBackendSharedRefOwnership(t *testing.T) {
 	}
 
 	// Attempt 1 commits (ownership transfer): holders 2 -> 1.
-	b.CommitModule("own")
+	h1.Commit()
 
-	// Attempt 2 fails and abandons: holders 1 -> 0? NO — the committed
-	// attempt owns it now, so the abandon must not close the committed ref.
-	b.AbandonModule("own")
+	// Attempt 2 fails and abandons: it releases its holder slot, but the
+	// committed attempt owns the generation — resources stay alive.
+	h2.Abandon()
 	if b.CompiledModules() != 1 {
 		t.Fatalf("abandon closed a ref owned by the committed attempt: %d", b.CompiledModules())
 	}
 
-	// The committed module's ref must still be USABLE: instantiate through the
-	// factory's module ref (host round trip proves the compiled module lives).
-	f := m1.Factory
-	if f == nil || m2.Factory == nil {
-		t.Fatal("factories nil")
-	}
-
-	// Unload releases the owned ref.
-	b.UnloadModule("own")
+	// The registry discards: Release closes the owned generation.
+	h1.Release()
 	if b.CompiledModules() != 0 {
-		t.Fatalf("ref not released after Unload: %d", b.CompiledModules())
+		t.Fatalf("ref not released after Release: %d", b.CompiledModules())
 	}
 }
 
@@ -445,19 +451,22 @@ func TestBackendAbandonReleasesWhenLastHolder(t *testing.T) {
 	b := newTestBackend()
 	art := wasmArtifact("own2", "file://"+absFixture(t, "valid.wasm"))
 	art.BackendType = loader.BackendWASM
+	art.Source = "file://" + absFixture(t, "valid.wasm")
 
-	if _, err := b.Load(context.Background(), art); err != nil {
-		t.Fatalf("load1: %v", err)
+	_, h1, err := b.LoadResource(context.Background(), art)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := b.Load(context.Background(), art); err != nil {
-		t.Fatalf("load2: %v", err)
+	_, h2, err := b.LoadResource(context.Background(), art)
+	if err != nil {
+		t.Fatal(err)
 	}
 	// Neither attempt commits: both abandon. The LAST abandon releases.
-	b.AbandonModule("own2")
+	h1.Abandon()
 	if b.CompiledModules() != 1 {
-		t.Fatalf("shared ref closed while a holder remains: %d", b.CompiledModules())
+		t.Fatalf("shared gen closed while a holder remains: %d", b.CompiledModules())
 	}
-	b.AbandonModule("own2")
+	h2.Abandon()
 	if b.CompiledModules() != 0 {
 		t.Fatalf("last abandon did not release the ref: %d", b.CompiledModules())
 	}

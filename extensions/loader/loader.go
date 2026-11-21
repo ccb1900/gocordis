@@ -149,6 +149,35 @@ type Backend interface {
 	Load(ctx context.Context, artifact Artifact) (Module, error)
 }
 
+// ResourceHandle is one load attempt's OWNERSHIP TOKEN for backends that
+// retain per-load resources (e.g. a compiled WASM module). The token is bound
+// to a specific resource GENERATION, not merely to a module id: late Abandon
+// calls from a superseded attempt can never release a newer generation's
+// resources (NEW-10).
+//
+// The Loader drives the protocol:
+//   - Commit() after a successful registry commit (ownership transfer);
+//   - Abandon() when the load fails after the backend already produced
+//     resources (release if this handle is the last holder of its
+//     generation);
+//   - Release() when the registry discards a committed module (Unload /
+//     CloseContext eviction — always releases the underlying resources).
+type ResourceHandle interface {
+	Commit()
+	Abandon()
+	Release()
+}
+
+// ResourceBackend is the optional v2 Backend interface for backends that
+// retain per-load resources. The Loader prefers it over plain Load and drives
+// the returned handle's Commit/Abandon/Release protocol. Backends without
+// retained resources implement only Backend; the loader makes no release
+// notifications for them (their resources live and die with Backend.Close).
+type ResourceBackend interface {
+	Backend
+	LoadResource(ctx context.Context, artifact Artifact) (Module, ResourceHandle, error)
+}
+
 // ModuleRegistry is the read-only view of loaded Modules.
 type ModuleRegistry interface {
 	Get(id string) (Module, bool)

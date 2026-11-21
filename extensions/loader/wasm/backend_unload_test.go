@@ -29,13 +29,14 @@ func TestBackendUnloadModuleReleasesCompiled(t *testing.T) {
 	art := wasmArtifact("v01", "file://"+fixturePath("valid.wasm"))
 	art.BackendType = loader.BackendWASM
 	art.Source = "file://" + absFixture(t, "valid.wasm")
-	if _, err := b.Load(context.Background(), art); err != nil {
+	_, hA, err := b.LoadResource(context.Background(), art)
+	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	if n := b.CompiledModules(); n != 1 {
 		t.Fatalf("compiled modules retained after load = %d, want 1", n)
 	}
-	b.UnloadModule("v01")
+	hA.Release() // NEW-10: Unload discards through the attempt handle
 	if n := b.CompiledModules(); n != 0 {
 		t.Fatalf("compiled modules retained after UnloadModule = %d, want 0 (EXT-05)", n)
 	}

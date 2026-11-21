@@ -69,18 +69,13 @@ type Backend struct {
 	// double-retained CompiledModule leaks from the registry-commit loser).
 	modules map[string]*moduleRef
 
-	// holders counts the in-flight Load attempts sharing each tracked ref
-	// (NEW-06/NEW-02 ownership protocol). Every attempt that receives a ref
-	// holds it and ends in exactly one CommitModule (ownership transfer to the
-	// registry) or AbandonModule (holder release); a ref is closed when its
-	// LAST holder releases without a commit, or by UnloadModule. This makes
-	// concurrent same-ID loads safe: a failed attempt can never close the
-	// shared ref out from under a committed module, and a committed module
-	// keeps its ref alive regardless of other attempts abandoning.
-	holders map[string]int
-	// committed marks the ids whose ref the Loader OWNS via a successful
-	// registry commit.
-	committed map[string]bool
+	// generations maps a module id to its CURRENT resource generation
+	// (NEW-10 resource-identity protocol). Every load attempt receives a
+	// wasmResource handle BOUND to the exact generation it produced or
+	// deduped onto; Commit/Abandon/Release operate on that generation only.
+	// A superseded attempt (its generation replaced by Unload + a fresh load)
+	// can never touch the newer generation's resources.
+	generations map[string]*moduleGeneration
 
 	nextInstance atomic.Uint64
 }
@@ -101,10 +96,9 @@ func NewBackend(opts ...Option) *Backend {
 		}
 	}
 	return &Backend{
-		observer:  o.observer,
-		modules:   make(map[string]*moduleRef),
-		holders:   make(map[string]int),
-		committed: make(map[string]bool),
+		observer:    o.observer,
+		modules:     make(map[string]*moduleRef),
+		generations: make(map[string]*moduleGeneration),
 		// CloseOnContextDone: an in-flight guest call is aborted when its
 		// context expires, so a misbehaving guest cannot monopolize the
 		// activation goroutine indefinitely (paper §6.3: the sandbox must
@@ -113,6 +107,37 @@ func NewBackend(opts ...Option) *Backend {
 			wazero.NewRuntimeConfig().WithCloseOnContextDone(true)),
 	}
 }
+
+// LoadResource implements the resource-owning protocol: the returned handle
+// is bound to the exact generation this attempt produced or deduped onto
+// (NEW-10) — Commit/Abandon/Release never touch a newer generation.
+func (b *Backend) LoadResource(ctx context.Context, artifact loader.Artifact) (loader.Module, loader.ResourceHandle, error) {
+	mod, err := b.Load(ctx, artifact)
+	if err != nil {
+		return loader.Module{}, nil, err
+	}
+	f, ok := mod.Factory.(*wasmFactory)
+	if !ok {
+		return loader.Module{}, nil, fmt.Errorf("%w: wasm factory type %T", ErrWASMBackendPanic, mod.Factory)
+	}
+	b.mu.Lock()
+	gen := b.generations[f.ref.id]
+	b.mu.Unlock()
+	if gen == nil {
+		return loader.Module{}, nil, fmt.Errorf("%w: generation for %q vanished", ErrWASMBackendClosed, f.ref.id)
+	}
+	return mod, &wasmResource{b: b, gen: gen}, nil
+}
+
+// wasmResource is the attempt-scoped ownership token for one generation.
+type wasmResource struct {
+	b   *Backend
+	gen *moduleGeneration
+}
+
+func (h *wasmResource) Commit()  { h.b.commitGeneration(h.gen) }
+func (h *wasmResource) Abandon() { h.b.abandonGeneration(h.gen) }
+func (h *wasmResource) Release() { h.b.unloadGeneration(h.gen.ref.id) }
 
 // Load validates the artifact with the real wazero validator and materializes
 // a loader.Module (Type "wasm").
@@ -177,10 +202,11 @@ func (b *Backend) loadModule(ctx context.Context, artifact loader.Artifact, data
 	// retain two CompiledModules with no owner for the loser. Share the
 	// tracked ref.
 	b.mu.Lock()
-	if existing, ok := b.modules[artifact.ID]; ok {
-		b.holders[artifact.ID]++
+	if gen, ok := b.generations[artifact.ID]; ok {
+		gen.holders++
+		ref := gen.ref
 		b.mu.Unlock()
-		return existing, nil
+		return ref, nil
 	}
 	b.mu.Unlock()
 
@@ -209,14 +235,16 @@ func (b *Backend) loadModule(ctx context.Context, artifact loader.Artifact, data
 	// raced us to the same ID; the loser closes its fresh compilation and
 	// returns the tracked one.
 	b.mu.Lock()
-	if existing, ok := b.modules[artifact.ID]; ok {
-		b.holders[artifact.ID]++
+	if gen, ok := b.generations[artifact.ID]; ok {
+		gen.holders++
+		ref := gen.ref
 		b.mu.Unlock()
 		_ = compiled.Close(context.Background())
-		return existing, nil
+		return ref, nil
 	}
+	gen := &moduleGeneration{ref: ref, holders: 1}
+	b.generations[artifact.ID] = gen
 	b.modules[artifact.ID] = ref
-	b.holders[artifact.ID] = 1
 	b.mu.Unlock()
 	return ref, nil
 }
@@ -225,63 +253,68 @@ func (b *Backend) loadModule(ctx context.Context, artifact loader.Artifact, data
 // optional loader notification). The loader guarantees no module usage is
 // outstanding when it discards the registry entry, so closing the compiled
 // module here cannot strand a live activation.
-func (b *Backend) UnloadModule(id string) {
+// unloadGeneration releases the CURRENT generation's resources (registry
+// discard via Unload/CloseContext) — always closes, regardless of holders
+// (the loader guarantees no usage is outstanding).
+func (b *Backend) unloadGeneration(id string) {
 	b.mu.Lock()
-	ref, ok := b.modules[id]
+	gen, ok := b.generations[id]
 	if ok {
-		delete(b.modules, id)
+		delete(b.generations, id)
+		if cur := b.modules[id]; cur == gen.ref {
+			delete(b.modules, id)
+		}
 	}
-	delete(b.committed, id)
-	delete(b.holders, id)
 	b.mu.Unlock()
 	if ok {
-		_ = ref.compiled.Close(context.Background())
+		_ = gen.ref.compiled.Close(context.Background())
 	}
 }
 
-// CommitModule transfers ownership of id's ref to the registry (NEW-02):
-// from here on only UnloadModule may release it. The attempt releases its
-// holder slot; if the id is no longer tracked, an Unload already released it
-// between the loader's registry write and this call — nothing to mark.
-func (b *Backend) CommitModule(id string) {
+// commitGeneration transfers ownership of gen to the registry (handle
+// Commit): the attempt releases its holder slot and the generation is marked
+// committed. Identity-checked — a superseded generation never mutates the
+// current one.
+func (b *Backend) commitGeneration(gen *moduleGeneration) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if _, tracked := b.modules[id]; !tracked {
+	if b.generations[gen.ref.id] != gen {
 		return
 	}
-	if b.holders[id] > 0 {
-		b.holders[id]--
+	gen.committed = true
+	if gen.holders > 0 {
+		gen.holders--
 	}
-	b.committed[id] = true
 }
 
-// AbandonModule releases one holder's claim on id's ref (NEW-02): the ref is
-// closed and untracked only when the LAST holder abandons without a commit —
-// a failed attempt sharing a ref with a committed (or still in-flight)
-// attempt never closes it out from under them. Idempotent.
-func (b *Backend) AbandonModule(id string) {
+// abandonGeneration releases one holder's claim on gen (handle Abandon):
+// the ref is closed and untracked only when the LAST holder abandons without
+// a commit — a failed attempt sharing a gen with a committed (or still
+// in-flight) attempt never closes it out from under them. A SUPERSEDED
+// generation (Unload + fresh load raced ahead) is untouched: its resources
+// were already released, and the current generation is never affected
+// (NEW-10 identity isolation). Idempotent.
+func (b *Backend) abandonGeneration(gen *moduleGeneration) {
 	b.mu.Lock()
-	if b.committed[id] {
-		b.mu.Unlock()
+	defer b.mu.Unlock()
+	if b.generations[gen.ref.id] != gen {
+		return // superseded: nothing to release
+	}
+	if gen.committed {
 		return
 	}
-	ref, ok := b.modules[id]
-	if !ok {
-		b.mu.Unlock()
+	if gen.holders > 0 {
+		gen.holders--
+	}
+	if gen.holders > 0 {
+		// Another attempt still holds the shared generation: keep it alive.
 		return
 	}
-	if b.holders[id] > 0 {
-		b.holders[id]--
+	delete(b.generations, gen.ref.id)
+	if cur := b.modules[gen.ref.id]; cur == gen.ref {
+		delete(b.modules, gen.ref.id)
 	}
-	if b.holders[id] > 0 {
-		// Another attempt still holds the shared ref: keep it alive.
-		b.mu.Unlock()
-		return
-	}
-	delete(b.modules, id)
-	delete(b.holders, id)
-	b.mu.Unlock()
-	_ = ref.compiled.Close(context.Background())
+	_ = gen.ref.compiled.Close(context.Background())
 }
 
 // CompiledModules reports how many compiled modules the backend currently

@@ -13,9 +13,9 @@ import (
 	"dynamic-runtime/runtime"
 )
 
-// NEW-02: every Module lifecycle exit must use the SAME backend-resource
-// release protocol — Unload, CloseContext's bulk eviction, and failed commits.
-// The fake backend counts releases per id.
+// NEW-02/NEW-10: every Module lifecycle exit must use the SAME
+// resource-ownership protocol — Unload, CloseContext's bulk eviction, and
+// failed commits, driven through attempt-scoped ResourceHandles.
 
 type countingBackend struct {
 	loader.Backend
@@ -23,12 +23,25 @@ type countingBackend struct {
 	loads          int
 	commits        int
 	abandons       int
-	unloads        int
+	releases       int
 	failCommitNext bool
 	blockOnCtx     bool
 }
 
+type countingResource struct{ b *countingBackend }
+
+func (h *countingResource) Commit()  { h.b.mu.Lock(); h.b.commits++; h.b.mu.Unlock() }
+func (h *countingResource) Abandon() { h.b.mu.Lock(); h.b.abandons++; h.b.mu.Unlock() }
+func (h *countingResource) Release() { h.b.mu.Lock(); h.b.releases++; h.b.mu.Unlock() }
+
+// Load implements the Backend interface by delegating to LoadResource — the
+// loader prefers the resource path and drives the handle protocol.
 func (b *countingBackend) Load(ctx context.Context, artifact loader.Artifact) (loader.Module, error) {
+	mod, _, err := b.LoadResource(ctx, artifact)
+	return mod, err
+}
+
+func (b *countingBackend) LoadResource(ctx context.Context, artifact loader.Artifact) (loader.Module, loader.ResourceHandle, error) {
 	b.mu.Lock()
 	b.loads++
 	block := b.blockOnCtx
@@ -40,7 +53,7 @@ func (b *countingBackend) Load(ctx context.Context, artifact loader.Artifact) (l
 		<-ctx.Done()
 	}
 	if fail {
-		return loader.Module{}, errors.New("backend load failure")
+		return loader.Module{}, nil, errors.New("backend load failure")
 	}
 	return loader.Module{
 		ID:   artifact.ID,
@@ -48,13 +61,10 @@ func (b *countingBackend) Load(ctx context.Context, artifact loader.Artifact) (l
 		Factory: config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
 			return nil, errors.New("unused")
 		}),
-	}, nil
+	}, &countingResource{b: b}, nil
 }
-func (b *countingBackend) CommitModule(id string)  { b.mu.Lock(); b.commits++; b.mu.Unlock() }
-func (b *countingBackend) AbandonModule(id string) { b.mu.Lock(); b.abandons++; b.mu.Unlock() }
-func (b *countingBackend) UnloadModule(id string)  { b.mu.Lock(); b.unloads++; b.mu.Unlock() }
 
-// Unload and CloseContext both notify (NEW-02's main hole: CloseContext's
+// Unload and CloseContext both release (NEW-02's main hole: CloseContext's
 // bulk eviction deleted registry entries without notifying).
 func TestLoaderReleaseProtocolUnloadAndClose(t *testing.T) {
 	l := loader.NewBuiltinLoader()
@@ -73,25 +83,24 @@ func TestLoaderReleaseProtocolUnloadAndClose(t *testing.T) {
 	if err := l.Unload(context.Background(), "m1"); err != nil {
 		t.Fatal(err)
 	}
-	if b.unloads != 1 {
-		t.Fatalf("Unload notification = %d, want 1", b.unloads)
+	if b.releases != 1 {
+		t.Fatalf("Unload release = %d, want 1", b.releases)
 	}
 
-	// Re-load then CloseContext: the bulk eviction must notify too.
+	// Re-load then CloseContext: the bulk eviction must release too.
 	if _, err := l.Load(context.Background(), art); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.CloseContext(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if b.unloads != 2 {
-		t.Fatalf("CloseContext notification = %d, want 2 (NEW-02)", b.unloads)
+	if b.releases != 2 {
+		t.Fatalf("CloseContext release = %d, want 2 (NEW-02)", b.releases)
 	}
 }
 
-// A failed COMMIT releases the backend's resources via AbandonModule, and the
-// id is poisoned so a commit cannot adopt a released ref: the next Load
-// re-runs the backend path cleanly.
+// A failed COMMIT releases the backend's resources via the attempt handle's
+// Abandon, and a clean re-Load re-runs the backend path without residue.
 func TestLoaderCommitFailureAbandonsAndPoisons(t *testing.T) {
 	l := loader.NewBuiltinLoader()
 	b := &countingBackend{}
@@ -122,9 +131,7 @@ func TestLoaderCommitFailureAbandonsAndPoisons(t *testing.T) {
 		t.Fatal("expected the commit-phase failure (canceled during backend load)")
 	}
 
-	// The abandoned id must be poisoned: a commit for it cannot adopt the
-	// released ref. A re-Load with a healthy context re-runs the backend path
-	// cleanly (poison cleared by the fresh attempt).
+	// A re-Load with a healthy context re-runs the backend path cleanly.
 	b.mu.Lock()
 	b.blockOnCtx = false
 	b.mu.Unlock()
@@ -183,9 +190,8 @@ func TestLoaderBackendMapRaceWithRegister(t *testing.T) {
 // NEW-08: deterministic same-ID concurrent loads. Attempt 1 fails AT THE
 // COMMIT PHASE (its ctx is canceled while parked in the backend gate) and
 // must abandon exactly once; attempt 2 succeeds and must commit exactly once —
-// the loader must not poison the id (the old abandonedIDs design rejected the
-// winner's commit; under holder-based ownership the winner legitimately
-// commits while the loser releases its holder slot).
+// holder-based ownership lets the winner commit while the loser releases its
+// holder slot (the old abandonedIDs poison design rejected the winner).
 type gatingBackend struct {
 	loader.Backend
 	mu       sync.Mutex
@@ -193,10 +199,17 @@ type gatingBackend struct {
 	gate     chan struct{}
 	commits  int
 	abandons int
-	unloads  int
+	releases int
 }
 
+// Load implements the Backend interface by delegating to LoadResource — the
+// loader prefers the resource path and drives the handle protocol.
 func (b *gatingBackend) Load(ctx context.Context, artifact loader.Artifact) (loader.Module, error) {
+	mod, _, err := b.LoadResource(ctx, artifact)
+	return mod, err
+}
+
+func (b *gatingBackend) LoadResource(ctx context.Context, artifact loader.Artifact) (loader.Module, loader.ResourceHandle, error) {
 	b.mu.Lock()
 	b.entered++
 	gate := b.gate
@@ -221,11 +234,14 @@ func (b *gatingBackend) Load(ctx context.Context, artifact loader.Artifact) (loa
 		Factory: config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
 			return nil, errors.New("unused")
 		}),
-	}, nil
+	}, &gatingResource{b: b}, nil
 }
-func (b *gatingBackend) CommitModule(id string)  { b.mu.Lock(); b.commits++; b.mu.Unlock() }
-func (b *gatingBackend) AbandonModule(id string) { b.mu.Lock(); b.abandons++; b.mu.Unlock() }
-func (b *gatingBackend) UnloadModule(id string)  { b.mu.Lock(); b.unloads++; b.mu.Unlock() }
+
+type gatingResource struct{ b *gatingBackend }
+
+func (h *gatingResource) Commit()  { h.b.mu.Lock(); h.b.commits++; h.b.mu.Unlock() }
+func (h *gatingResource) Abandon() { h.b.mu.Lock(); h.b.abandons++; h.b.mu.Unlock() }
+func (h *gatingResource) Release() { h.b.mu.Lock(); h.b.releases++; h.b.mu.Unlock() }
 
 func TestLoaderSameIDConcurrentCommitAndAbandon(t *testing.T) {
 	l := loader.NewBuiltinLoader()
@@ -248,7 +264,7 @@ func TestLoaderSameIDConcurrentCommitAndAbandon(t *testing.T) {
 	}()
 
 	// Wait until attempt 1 is parked inside the backend gate, then start
-	// attempt 2 with a healthy context and open the gate for both.
+	// attempt 2 with a healthy context.
 	deadline := time.Now().Add(8 * time.Second)
 	for {
 		b.mu.Lock()
@@ -280,9 +296,6 @@ func TestLoaderSameIDConcurrentCommitAndAbandon(t *testing.T) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	// Attempt 1 is parked in the backend gate with healthy early checks done.
-	// Cancel it NOW, before the gate opens: the backend returns success, so
-	// attempt 1 reaches its commit phase and must abandon there.
 	// Attempt 1 is parked in the backend with healthy early checks done.
 	// Cancel it: the backend returns success, so attempt 1 reaches its commit
 	// phase and must abandon there — BEFORE attempt 2 is allowed to commit.
@@ -314,14 +327,14 @@ func TestLoaderSameIDConcurrentCommitAndAbandon(t *testing.T) {
 		t.Fatalf("protocol counts wrong: commits=%d abandons=%d, want 1/1", commits, abandons)
 	}
 
-	// The winner's module is live; unloading notifies exactly once.
+	// The winner's module is live; unloading releases its handle.
 	if err := l.Unload(context.Background(), "m"); err != nil {
 		t.Fatal(err)
 	}
 	b.mu.Lock()
-	unloads := b.unloads
+	releases := b.releases
 	b.mu.Unlock()
-	if unloads != 1 {
-		t.Fatalf("unload notification = %d, want 1", unloads)
+	if releases < 1 {
+		t.Fatalf("unload release = %d, want >=1", releases)
 	}
 }

@@ -94,7 +94,8 @@ type ObservationSpec struct {
 
 // ObservationModel is key → operation set. The model is immutable after build.
 type ObservationModel struct {
-	ops map[CapabilityKey][]Operation
+	ops     map[CapabilityKey][]Operation
+	invalid bool // set by NewObservationModel when a spec is malformed
 }
 
 // NewObservationModel builds a model from explicit operation declarations.
@@ -104,6 +105,11 @@ func NewObservationModel(specs ...ObservationSpec) *ObservationModel {
 	m := &ObservationModel{ops: make(map[CapabilityKey][]Operation, len(specs))}
 	for _, s := range specs {
 		m.ops[s.Key] = append([]Operation(nil), s.Ops...)
+	}
+	// Fail closed: a malformed spec must never enter a comparison. Validate
+	// is called at build time; invalid models make all equivalences FALSE.
+	if err := m.Validate(); err != nil {
+		m.invalid = true
 	}
 	return m
 }
@@ -116,7 +122,10 @@ func (m *ObservationModel) OperationsFor(k CapabilityKey) []Operation {
 			return ops
 		}
 	}
-	return []Operation{OpProvide, OpRequire, OpBindIdentity, OpRealmRoute}
+	return []Operation{
+		OpProvide, OpRequire, OpProvideMeta, OpRequireMeta,
+		OpInterceptMeta, OpBindIdentity, OpRealmRoute,
+	}
 }
 
 // Validate checks that a spec's operations are known and non-empty. It is the
@@ -214,6 +223,9 @@ func providerAt(o RuntimeSnapshot, key string, scope ScopeID) (ProviderView, boo
 // EquivalentValues is per-binding ≃ₖ (Def 31/32): agree on every field the
 // key's OPERATIONS can observe.
 func (m *ObservationModel) EquivalentValues(k CapabilityKey, a, b ProviderView) bool {
+	if m != nil && m.invalid {
+		return false // fail closed
+	}
 	f := m.fieldsFor(k)
 	if f[ObserveAvailability] {
 		if a.Retiring != b.Retiring || available(a) != available(b) {
@@ -238,6 +250,9 @@ func available(p ProviderView) bool { return !p.Retiring && p.State == StateActi
 // visibleScopes — nil means all realms; a non-nil map of key→scope restricts
 // observation to a single realm per key (Def 33's S at realm granularity).
 func (m *ObservationModel) EquivalentAt(a, b RuntimeSnapshot, S []CapabilityKey, visibleScopes map[CapabilityKey]ScopeID) bool {
+	if m != nil && m.invalid {
+		return false // fail closed
+	}
 	// Build a string-keyed view of the observer's realm restriction.
 	vis := map[string]ScopeID{}
 	for k, scope := range visibleScopes {

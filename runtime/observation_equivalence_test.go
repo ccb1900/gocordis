@@ -35,8 +35,17 @@ func TestObservationUndeclaredKeyUsesConservativeDefault(t *testing.T) {
 	// genuinely binds identity and routes realms; those changes must be seen.
 	m := NewObservationModel() // no specs
 	ops := m.OperationsFor(obsKind())
-	if len(ops) < 4 {
-		t.Fatalf("undeclared key default weakened to %v", ops)
+	if len(ops) < 7 {
+		t.Fatalf("undeclared key default incomplete: %v", ops)
+	}
+	hasMeta := false
+	for _, op := range ops {
+		if op == OpProvideMeta || op == OpRequireMeta || op == OpInterceptMeta {
+			hasMeta = true
+		}
+	}
+	if !hasMeta {
+		t.Fatalf("undeclared key default omits metadata operations: %v", ops)
 	}
 	a := ProviderView{Key: obsKind().String(), State: StateActive,
 		OwnerFiberID: 1, OwnerActivationID: 1, ScopeID: 7}
@@ -111,5 +120,21 @@ func TestObservationMultiRealmBindingsNotMerged(t *testing.T) {
 	visB := map[CapabilityKey]ScopeID{k: 20}
 	if !m.EquivalentAt(before, mutated, nil, visB) {
 		t.Fatal("observer in realm B should ignore realm A's change")
+	}
+}
+
+func TestObservationModelInvalidFailsClosed(t *testing.T) {
+	k := obsKind()
+	bad := NewObservationModel(ObservationSpec{Key: k, Ops: []Operation{"bogus"}})
+	a := RuntimeSnapshot{}
+	if bad.EquivalentAt(a, a, nil, nil) {
+		t.Fatal("invalid observation model returned TRUE — must fail closed")
+	}
+	if bad.EquivalentValues(k, ProviderView{}, ProviderView{}) {
+		t.Fatal("invalid model EquivalentValues must fail closed")
+	}
+	good := NewObservationModel(ObservationSpec{Key: k, Ops: []Operation{OpProvide, OpRequire}})
+	if !good.EquivalentAt(a, a, nil, nil) {
+		t.Fatal("valid model should compare normally")
 	}
 }

@@ -55,6 +55,26 @@ type ControllerLifecycle struct {
 	mu         sync.Mutex
 	store      DesiredStore
 	reconciler ControllerReconciler
+	protected  map[string]struct{}
+}
+
+// ErrProtectedComponent is returned when a console action would disable a
+// component that hosts the console itself or a framework management page.
+var ErrProtectedComponent = errors.New("console: component is platform-protected")
+
+// SetProtected marks component IDs that must never be disabled through the
+// console. Applications wire this from their declaration store.
+func (l *ControllerLifecycle) SetProtected(ids ...string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.protected == nil {
+		l.protected = map[string]struct{}{}
+	}
+	for _, id := range ids {
+		if id != "" {
+			l.protected[id] = struct{}{}
+		}
+	}
 }
 
 // NewControllerLifecycle builds the reference lifecycle.
@@ -123,6 +143,9 @@ func cloneDesiredSet(comps []config.ComponentConfig) []config.ComponentConfig {
 func (l *ControllerLifecycle) Uninstall(ctx context.Context, id string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if _, protected := l.protected[id]; protected {
+		return fmt.Errorf("%w: %s", ErrProtectedComponent, id)
+	}
 	comps, i, err := l.load(ctx, id)
 	if err != nil {
 		return err
@@ -139,6 +162,9 @@ func (l *ControllerLifecycle) Uninstall(ctx context.Context, id string) error {
 func (l *ControllerLifecycle) Install(ctx context.Context, id string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if _, protected := l.protected[id]; protected {
+		return fmt.Errorf("%w: %s", ErrProtectedComponent, id)
+	}
 	comps, i, err := l.load(ctx, id)
 	if err != nil {
 		return err

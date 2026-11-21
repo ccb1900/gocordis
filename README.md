@@ -23,6 +23,10 @@ go run ./cmd/platform        # 打开 http://127.0.0.1:8170/
 (`/api/query/runtime/snapshot`:fibers / providers / deps / effects)、框架仪表盘
 计数(`/api/query/framework/dashboard`)。查询尚未注册时对应区块给出提示,其余照常工作。
 
+Bootstrap 的定位是**开箱即用的基础诊断界面**,不是完整 Console 的等价实现:
+Scopes 表格、事件时间线、诊断明细与插件管理操作仍以完整 SPA 为准。它刻意保持只读、
+零依赖,避免为两种前端维护同一套复杂能力。
+
 需要完整的 React SPA(可选,仅 UI 更丰富,API 不变):
 
 ```sh

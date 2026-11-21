@@ -81,10 +81,11 @@ type Server struct {
 	// documented as start-ServeHTTP-time configuration, but a data race between
 	// a late setter and an already-serving request goroutine is still a bug;
 	// the guards make late reconfiguration race-free (EXT-07).
-	cfgMu     sync.RWMutex
-	explorer  *explorer.ExplorerTransport
-	lifecycle PluginLifecycle
-	policy    AccessPolicy
+	cfgMu            sync.RWMutex
+	explorer         *explorer.ExplorerTransport
+	explorerProvider func() *explorer.ExplorerTransport
+	lifecycle        PluginLifecycle
+	policy           AccessPolicy
 
 	hostID          string
 	startedAt       time.Time
@@ -113,8 +114,15 @@ func New(adapter *host.Host, assets fs.FS) *Server {
 // console's uninstall/install actions.
 func (s *Server) currentExplorer() *explorer.ExplorerTransport {
 	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
-	return s.explorer
+	provider := s.explorerProvider
+	fallback := s.explorer
+	s.cfgMu.RUnlock()
+	if provider != nil {
+		if exp := provider(); exp != nil {
+			return exp
+		}
+	}
+	return fallback
 }
 
 func (s *Server) currentLifecycle() PluginLifecycle {
@@ -133,6 +141,16 @@ func (s *Server) SetExplorer(exp *explorer.ExplorerTransport) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
 	s.explorer = exp
+}
+
+// SetExplorerProvider installs a live resolver for the active Explorer
+// transport. Applications that can disable and re-enable the Explorer should
+// use this instead of a one-shot SetExplorer so /api/plugins follows the
+// current activation.
+func (s *Server) SetExplorerProvider(provider func() *explorer.ExplorerTransport) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	s.explorerProvider = provider
 }
 
 // AccessKind classifies what an access request targets.
@@ -478,7 +496,7 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		if !s.allowed(w, r, AccessConfig, id) {
 			return
 		}
-		cfg, cerr := s.lifecycle.Config(r.Context(), id)
+		cfg, cerr := s.currentLifecycle().Config(r.Context(), id)
 		if cerr != nil {
 			writeAPIError(w, http.StatusNotFound, "not_found", cerr.Error())
 			return
@@ -500,7 +518,7 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		if !s.allowed(w, r, AccessConfig, id) {
 			return
 		}
-		if err := s.lifecycle.SetConfig(r.Context(), id, body.Config); err != nil {
+		if err := s.currentLifecycle().SetConfig(r.Context(), id, body.Config); err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}

@@ -83,8 +83,8 @@ func (s *Service) SetDesired(cfg config.Config) {
 			s.protected[cc.ID] = "ui host must stay active while the Console is open"
 		case "query-provider":
 			s.protected[cc.ID] = "query provider is required by the UI Host"
-		case "console.runtime", "console.insight":
-			s.protected[cc.ID] = "framework management page must stay active"
+		case "console.runtime", "console.insight", "devtools":
+			s.protected[cc.ID] = "framework management capability must stay active"
 		}
 	}
 }

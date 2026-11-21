@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -192,6 +191,9 @@ func TestGeneratedProjectBuilds(t *testing.T) {
 	}
 	run("mod", "tidy")
 	run("build", "./...")
+	if !processGroupSupported() {
+		t.Skip("process-group signal smoke test requires a POSIX host")
+	}
 
 	// Smoke-run the generated app. It blocks on <-ctx.Done() after a successful
 	// reconcile, so a short guard timeout is expected. Send SIGINT to the whole
@@ -209,8 +211,8 @@ func TestGeneratedProjectBuilds(t *testing.T) {
 	runCmd.Dir = dir
 	runCmd.Env = env
 	runCmd.Stdout, runCmd.Stderr = logFile, logFile
-	runCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	runCmd.Cancel = func() error { return syscall.Kill(-runCmd.Process.Pid, syscall.SIGINT) }
+	setProcessGroup(runCmd)
+	runCmd.Cancel = processGroupCancel(runCmd)
 	runCmd.WaitDelay = 2 * time.Second
 	runErr := runCmd.Run()
 	if err := logFile.Close(); err != nil {

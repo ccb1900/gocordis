@@ -35,6 +35,14 @@ type FileInfo interface {
 	ModTime() time.Time
 }
 
+// SymlinkInfo is an optional extension of FileInfo for providers that can
+// distinguish symbolic links. Lstat results from the local provider report
+// link metadata; memory results (and all regular files) report false/"".
+type SymlinkInfo interface {
+	IsSymlink() bool
+	LinkTarget() string
+}
+
 // File is an open, readable file. Close releases the underlying handle.
 type File interface {
 	io.Reader
@@ -93,6 +101,39 @@ type Provider interface {
 	Watch(context.Context, string, func(WatchEvent) error) (func() error, error)
 }
 
+// StreamProvider is an optional capability for providers that can serve a byte
+// range as a stream. offset must be >= 0; limit >= 0 caps the byte count and
+// limit == -1 means "through EOF". A short file is never an error.
+type StreamProvider interface {
+	OpenStream(ctx context.Context, name string, offset, limit int64) (io.ReadCloser, error)
+}
+
+// ExtendedProvider is an optional capability for the remaining JS-FS operation
+// surface. Providers that do not implement it keep working with the base
+// Provider operations; the Service returns *ErrNotSupported for these calls.
+type ExtendedProvider interface {
+	Lstat(ctx context.Context, name string) (FileInfo, error)
+	Mkdir(ctx context.Context, name string) error
+	Rename(ctx context.Context, old, new string) error
+	Copy(ctx context.Context, src, dst string) error
+	Access(ctx context.Context, name string) error
+}
+
+// ErrNotSupported is returned when the provider mounted for a name does not
+// implement the optional interface behind a Service operation. Use errors.As
+// to distinguish a capability gap from an I/O failure.
+type ErrNotSupported struct {
+	Op     string
+	Scheme string
+}
+
+func (e *ErrNotSupported) Error() string {
+	if e.Scheme == "" {
+		return fmt.Sprintf("fs: %s not supported by mounted provider", e.Op)
+	}
+	return fmt.Sprintf("fs: %s not supported by %q provider", e.Op, e.Scheme)
+}
+
 // Service is the mount-routed filesystem capability.
 type Service interface {
 	// Mount accepts an empty prefix as the fallback mount for names that match
@@ -113,6 +154,15 @@ type Service interface {
 	Stat(context.Context, string) (FileInfo, error)
 	ReadDir(context.Context, string) ([]FileInfo, error)
 	Remove(context.Context, string) error
+	// OpenStream/ReadRange need a StreamProvider, the five following calls need
+	// an ExtendedProvider; otherwise they return *ErrNotSupported.
+	OpenStream(context.Context, string, int64, int64) (io.ReadCloser, error)
+	ReadRange(context.Context, string, int64, int64) ([]byte, error)
+	Lstat(context.Context, string) (FileInfo, error)
+	Mkdir(context.Context, string) error
+	Rename(context.Context, string, string) error
+	Copy(context.Context, string, string) error
+	Access(context.Context, string) error
 	Watch(context.Context, string, func(WatchEvent) error) (func() error, error)
 	// WatchStream exposes the Change/Ready/Error/Dispose contract. A watch
 	// follows its name to whichever provider owns the mount after a route
@@ -130,19 +180,54 @@ var ServiceKey = runtime.NewKey[Service]("extension.fs.service")
 // ---------------------------------------------------------------------------
 
 type fileInfo struct {
-	name string
-	size int64
-	dir  bool
-	mod  time.Time
+	name   string
+	size   int64
+	dir    bool
+	mod    time.Time
+	link   bool
+	target string
 }
 
 func (f fileInfo) Name() string       { return f.name }
 func (f fileInfo) Size() int64        { return f.size }
 func (f fileInfo) IsDir() bool        { return f.dir }
 func (f fileInfo) ModTime() time.Time { return f.mod }
+func (f fileInfo) IsSymlink() bool    { return f.link }
+func (f fileInfo) LinkTarget() string { return f.target }
 
 func fromOSInfo(fi os.FileInfo) FileInfo {
 	return fileInfo{name: fi.Name(), size: fi.Size(), dir: fi.IsDir(), mod: fi.ModTime()}
+}
+
+// checkRange validates stream-range arguments shared by both providers.
+func checkRange(offset, limit int64) error {
+	if offset < 0 || limit < -1 {
+		return fmt.Errorf("fs: invalid range offset=%d limit=%d", offset, limit)
+	}
+	return nil
+}
+
+// copyCtx copies with a cancellation check per chunk so a large Copy remains
+// cooperative. It never runs under a provider/service lock.
+func copyCtx(ctx context.Context, dst io.Writer, src io.Reader) error {
+	buf := make([]byte, 32*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, err := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return werr
+			}
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 }
 
 func notExist(name string) error {
@@ -694,6 +779,114 @@ func (s *service) Remove(ctx context.Context, name string) error {
 	return p.Remove(ctx, res)
 }
 
+// streamProvider resolves a name and checks the optional streaming capability.
+// Provider code is only called after the service lock has been released.
+func (s *service) streamProvider(name, op string) (StreamProvider, string, error) {
+	p, res, err := s.Resolve(name)
+	if err != nil {
+		return nil, "", err
+	}
+	sp, ok := p.(StreamProvider)
+	if !ok {
+		return nil, "", &ErrNotSupported{Op: op, Scheme: p.Scheme()}
+	}
+	return sp, res, nil
+}
+
+func (s *service) extendedProvider(name, op string) (ExtendedProvider, string, error) {
+	p, res, err := s.Resolve(name)
+	if err != nil {
+		return nil, "", err
+	}
+	ep, ok := p.(ExtendedProvider)
+	if !ok {
+		return nil, "", &ErrNotSupported{Op: op, Scheme: p.Scheme()}
+	}
+	return ep, res, nil
+}
+
+// resolvePair is used by the two-path operations: both names must be served by
+// the same mounted provider, and that provider must implement the extension.
+func (s *service) resolvePair(src, dst, op string) (ExtendedProvider, string, string, error) {
+	p, a, err := s.Resolve(src)
+	if err != nil {
+		return nil, "", "", err
+	}
+	ep, ok := p.(ExtendedProvider)
+	if !ok {
+		return nil, "", "", &ErrNotSupported{Op: op, Scheme: p.Scheme()}
+	}
+	p2, b, err := s.Resolve(dst)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if p != p2 {
+		return nil, "", "", fmt.Errorf("fs: %s across providers %q and %q", op, p.Scheme(), p2.Scheme())
+	}
+	return ep, a, b, nil
+}
+
+func (s *service) OpenStream(ctx context.Context, name string, offset, limit int64) (io.ReadCloser, error) {
+	sp, res, err := s.streamProvider(name, "OpenStream")
+	if err != nil {
+		return nil, err
+	}
+	return sp.OpenStream(ctx, res, offset, limit)
+}
+
+func (s *service) ReadRange(ctx context.Context, name string, offset, limit int64) ([]byte, error) {
+	sp, res, err := s.streamProvider(name, "ReadRange")
+	if err != nil {
+		return nil, err
+	}
+	r, err := sp.OpenStream(ctx, res, offset, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
+func (s *service) Lstat(ctx context.Context, name string) (FileInfo, error) {
+	ep, res, err := s.extendedProvider(name, "Lstat")
+	if err != nil {
+		return nil, err
+	}
+	return ep.Lstat(ctx, res)
+}
+
+func (s *service) Mkdir(ctx context.Context, name string) error {
+	ep, res, err := s.extendedProvider(name, "Mkdir")
+	if err != nil {
+		return err
+	}
+	return ep.Mkdir(ctx, res)
+}
+
+func (s *service) Rename(ctx context.Context, old, new string) error {
+	ep, a, b, err := s.resolvePair(old, new, "Rename")
+	if err != nil {
+		return err
+	}
+	return ep.Rename(ctx, a, b)
+}
+
+func (s *service) Copy(ctx context.Context, src, dst string) error {
+	ep, a, b, err := s.resolvePair(src, dst, "Copy")
+	if err != nil {
+		return err
+	}
+	return ep.Copy(ctx, a, b)
+}
+
+func (s *service) Access(ctx context.Context, name string) error {
+	ep, res, err := s.extendedProvider(name, "Access")
+	if err != nil {
+		return err
+	}
+	return ep.Access(ctx, res)
+}
+
 func (s *service) Watch(ctx context.Context, name string, cb func(WatchEvent) error) (func() error, error) {
 	// Resolve, closed check and registration share one lock: Close cannot
 	// snapshot and clear s.watches between resolving and inserting this watch.
@@ -1056,6 +1249,147 @@ func (p *localProvider) Remove(ctx context.Context, name string) error {
 		return err
 	}
 	return p.root.Remove(rel)
+}
+
+// limitedReadCloser couples a bounded reader with the handle it reads from.
+type limitedReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+func (p *localProvider) OpenStream(ctx context.Context, name string, offset, limit int64) (io.ReadCloser, error) {
+	if err := checkRange(offset, limit); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	rel, err := p.relative(name)
+	if err != nil {
+		return nil, err
+	}
+	f, err := p.root.OpenFile(rel, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, fmt.Errorf("fs: open stream: %w", err)
+	}
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("fs: seek: %w", err)
+		}
+	}
+	var r io.Reader = f
+	if limit >= 0 {
+		r = io.LimitReader(f, limit)
+	}
+	return &limitedReadCloser{Reader: r, Closer: f}, nil
+}
+
+func (p *localProvider) Lstat(ctx context.Context, name string) (FileInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	rel, err := p.relative(name)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := p.root.Lstat(rel)
+	if err != nil {
+		return nil, fmt.Errorf("fs: lstat: %w", err)
+	}
+	out := fileInfo{name: fi.Name(), size: fi.Size(), dir: fi.IsDir(), mod: fi.ModTime()}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		out.link = true
+		// os.Root.Readlink postdates this module's go directive. Root.Lstat has
+		// already confined every path component, and readlink only reads the
+		// link text (it does not follow the final link), so no outside file is
+		// touched by this metadata call.
+		target, err := os.Readlink(filepath.Join(p.rootPath, rel))
+		if err != nil {
+			return nil, fmt.Errorf("fs: readlink: %w", err)
+		}
+		out.target = target
+	}
+	return out, nil
+}
+
+func (p *localProvider) Mkdir(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rel, err := p.relative(name)
+	if err != nil {
+		return err
+	}
+	return p.root.Mkdir(rel, 0o755)
+}
+
+func (p *localProvider) Rename(ctx context.Context, old, new string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a, err := p.relative(old)
+	if err != nil {
+		return err
+	}
+	b, err := p.relative(new)
+	if err != nil {
+		return err
+	}
+	// Root.Rename is the confined stdlib primitive, but it postdates this
+	// module's go1.24 directive; a narrow interface keeps go vet's stdversion
+	// check quiet while still calling Root.Rename itself.
+	var renamer interface{ Rename(string, string) error } = p.root
+	return renamer.Rename(a, b)
+}
+
+func (p *localProvider) Copy(ctx context.Context, src, dst string) error {
+	a, err := p.relative(src)
+	if err != nil {
+		return err
+	}
+	b, err := p.relative(dst)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	in, err := p.root.OpenFile(a, os.O_RDONLY, 0)
+	if err != nil {
+		return fmt.Errorf("fs: copy source: %w", err)
+	}
+	defer in.Close()
+	if dir := filepath.Dir(b); dir != "." {
+		if err := rootMkdirAll(p.root, dir, 0o755); err != nil {
+			return err
+		}
+	}
+	out, err := p.root.OpenFile(b, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("fs: copy destination: %w", err)
+	}
+	copyErr := copyCtx(ctx, out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
+}
+
+func (p *localProvider) Access(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rel, err := p.relative(name)
+	if err != nil {
+		return err
+	}
+	f, err := p.root.OpenFile(rel, os.O_RDONLY, 0)
+	if err != nil {
+		return fmt.Errorf("fs: access: %w", err)
+	}
+	return f.Close()
 }
 
 func mapOp(op fsnotify.Op) string {
@@ -1444,6 +1778,174 @@ func (p *memoryProvider) Remove(ctx context.Context, name string) error {
 	p.mu.Unlock()
 	p.notify(watches, WatchEvent{Path: name, Op: "remove"})
 	return nil
+}
+
+func (p *memoryProvider) OpenStream(ctx context.Context, name string, offset, limit int64) (io.ReadCloser, error) {
+	if err := checkRange(offset, limit); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	k := memKey(name)
+	if k == "" {
+		return nil, notExist(name)
+	}
+	p.mu.RLock()
+	e, ok := p.files[k]
+	p.mu.RUnlock() // entries are immutable: writers replace the slice, never mutate it
+	if !ok {
+		return nil, notExist(name)
+	}
+	r := bytes.NewReader(e.data)
+	if offset > 0 {
+		if _, err := r.Seek(offset, io.SeekStart); err != nil {
+			return nil, err
+		}
+	}
+	var reader io.Reader = r
+	if limit >= 0 {
+		reader = io.LimitReader(r, limit)
+	}
+	return io.NopCloser(reader), nil
+}
+
+// Lstat equals Stat here: the in-memory map has no symlink entries, so all
+// returned FileInfos implement SymlinkInfo as false/"".
+func (p *memoryProvider) Lstat(ctx context.Context, name string) (FileInfo, error) {
+	return p.Stat(ctx, name)
+}
+
+func (p *memoryProvider) Mkdir(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	k := memKey(name)
+	if k == "" {
+		return errors.New("fs: empty memory key")
+	}
+	p.mu.Lock()
+	_, isDir := p.dirs[k]
+	_, isFile := p.files[k]
+	if isDir || isFile {
+		p.mu.Unlock()
+		return fmt.Errorf("fs: mkdir %q: %w", name, os.ErrExist)
+	}
+	p.dirs[k] = struct{}{}
+	watches := p.matchesLocked(k)
+	p.mu.Unlock()
+	p.notify(watches, WatchEvent{Path: name, Op: "create"})
+	return nil
+}
+
+func (p *memoryProvider) Rename(ctx context.Context, old, new string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a, b := memKey(old), memKey(new)
+	if a == "" || b == "" {
+		return errors.New("fs: empty memory key")
+	}
+	p.mu.Lock()
+	if a == b {
+		p.mu.Unlock()
+		return nil
+	}
+	e, isFile := p.files[a]
+	_, isDir := p.dirs[a]
+	if !isFile && !isDir {
+		p.mu.Unlock()
+		return notExist(old)
+	}
+	if _, exists := p.files[b]; exists {
+		p.mu.Unlock()
+		return fmt.Errorf("fs: rename target %q exists", new)
+	}
+	if _, exists := p.dirs[b]; exists {
+		p.mu.Unlock()
+		return fmt.Errorf("fs: rename target %q exists", new)
+	}
+	if isDir && strings.HasPrefix(b, a+"/") {
+		p.mu.Unlock()
+		return fmt.Errorf("fs: cannot rename directory %q into itself", old)
+	}
+	if isFile {
+		delete(p.files, a)
+		p.files[b] = e
+	}
+	if isDir {
+		delete(p.dirs, a)
+		p.dirs[b] = struct{}{}
+		prefix := a + "/"
+		for k, v := range p.files {
+			if strings.HasPrefix(k, prefix) {
+				p.files[b+"/"+strings.TrimPrefix(k, prefix)] = v
+				delete(p.files, k)
+			}
+		}
+		for d := range p.dirs {
+			if strings.HasPrefix(d, prefix) {
+				p.dirs[b+"/"+strings.TrimPrefix(d, prefix)] = struct{}{}
+				delete(p.dirs, d)
+			}
+		}
+	}
+	for d := memParent(b); d != ""; d = memParent(d) {
+		p.dirs[d] = struct{}{}
+	}
+	watches := append(p.matchesLocked(a), p.matchesLocked(b)...)
+	p.mu.Unlock()
+	p.notify(watches, WatchEvent{Path: new, Op: "rename"})
+	return nil
+}
+
+func (p *memoryProvider) Copy(ctx context.Context, src, dst string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a, b := memKey(src), memKey(dst)
+	if a == "" || b == "" {
+		return errors.New("fs: empty memory key")
+	}
+	p.mu.Lock()
+	e, ok := p.files[a]
+	if !ok {
+		isDir := false
+		_, isDir = p.dirs[a]
+		p.mu.Unlock()
+		if isDir {
+			return fmt.Errorf("fs: copy: %q is a directory", src)
+		}
+		return notExist(src)
+	}
+	data := append([]byte(nil), e.data...) // independent copy, made under the lock
+	p.files[b] = memEntry{data: data, mod: time.Now()}
+	for d := memParent(b); d != ""; d = memParent(d) {
+		p.dirs[d] = struct{}{}
+	}
+	watches := p.matchesLocked(b)
+	p.mu.Unlock()
+	p.notify(watches, WatchEvent{Path: dst, Op: "create"})
+	return nil
+}
+
+func (p *memoryProvider) Access(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	k := memKey(name)
+	if k == "" {
+		return notExist(name)
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if _, ok := p.files[k]; ok {
+		return nil
+	}
+	if _, ok := p.dirs[k]; ok {
+		return nil
+	}
+	return notExist(name)
 }
 
 func (p *memoryProvider) Watch(ctx context.Context, name string, cb func(WatchEvent) error) (func() error, error) {

@@ -2,9 +2,11 @@ package fs_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -291,6 +293,12 @@ func TestOwnedProviderClosedByService(t *testing.T) {
 type fsConformanceCase struct {
 	name  string
 	setup func(t *testing.T) (fs.Service, func(string) string)
+	// symlink creates a real symlink at linkURL pointing to target. Providers
+	// with no symlink notion leave it nil; those cases only assert that
+	// ordinary metadata reports "not a link".
+	symlink func(t *testing.T, linkURL, target string)
+	// escapes lists names every extended operation must reject.
+	escapes []string
 }
 
 var fsConformanceCases = []fsConformanceCase{
@@ -306,6 +314,13 @@ var fsConformanceCases = []fsConformanceCase{
 				return "file://" + filepath.Join(root, filepath.FromSlash(rel))
 			}
 		},
+		symlink: func(t *testing.T, linkURL, target string) {
+			t.Helper()
+			if err := os.Symlink(target, strings.TrimPrefix(linkURL, "file://")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		escapes: []string{"file:///../../etc/passwd", "../../etc/passwd", "file:///etc/passwd"},
 	},
 	{
 		name: "memory",
@@ -316,6 +331,9 @@ var fsConformanceCases = []fsConformanceCase{
 			}
 			return svc, func(rel string) string { return "memory:///" + rel }
 		},
+		// memory has no host paths to escape; a foreign scheme normalizes to
+		// an empty key and must be rejected by every operation.
+		escapes: []string{"http://example.com/x", "ftp://host/y"},
 	},
 }
 
@@ -465,4 +483,250 @@ func TestWatchStreamReroutesOnMountChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectWatchEvent(t, ctx, w, "memory:///app/f", "write")
+}
+
+// ---------------------------------------------------------------------------
+// extended operation surface: stream/range read, Lstat + symlink metadata and
+// the ExtendedProvider operations. The same suite runs against both providers.
+// ---------------------------------------------------------------------------
+
+// minimalFSProvider exposes only the base Provider methods, so the service must
+// fall back to ErrNotSupported for every optional operation.
+type minimalFSProvider struct{ inner fs.Provider }
+
+func (p *minimalFSProvider) Scheme() string { return p.inner.Scheme() }
+func (p *minimalFSProvider) Open(ctx context.Context, n string) (fs.File, error) {
+	return p.inner.Open(ctx, n)
+}
+func (p *minimalFSProvider) Stat(ctx context.Context, n string) (fs.FileInfo, error) {
+	return p.inner.Stat(ctx, n)
+}
+func (p *minimalFSProvider) ReadDir(ctx context.Context, n string) ([]fs.FileInfo, error) {
+	return p.inner.ReadDir(ctx, n)
+}
+func (p *minimalFSProvider) Write(ctx context.Context, n string, d []byte) error {
+	return p.inner.Write(ctx, n, d)
+}
+func (p *minimalFSProvider) Remove(ctx context.Context, n string) error {
+	return p.inner.Remove(ctx, n)
+}
+func (p *minimalFSProvider) Close() error { return p.inner.Close() }
+func (p *minimalFSProvider) Watch(ctx context.Context, n string, cb func(fs.WatchEvent) error) (func() error, error) {
+	return p.inner.Watch(ctx, n, cb)
+}
+
+func TestOptionalOperationsNotSupported(t *testing.T) {
+	ctx := tctx(t)
+	_, _, svc := startFS(t)
+	if err := svc.Mount("memory:///", &minimalFSProvider{inner: fs.NewMemoryProvider()}); err != nil {
+		t.Fatal(err)
+	}
+	check := func(op string, err error) {
+		t.Helper()
+		var ns *fs.ErrNotSupported
+		if !errors.As(err, &ns) {
+			t.Fatalf("%s: got %v, want *fs.ErrNotSupported", op, err)
+		}
+		if ns.Op != op {
+			t.Fatalf("%s: ErrNotSupported.Op=%q", op, ns.Op)
+		}
+	}
+	_, err := svc.OpenStream(ctx, "memory:///x", 0, -1)
+	check("OpenStream", err)
+	_, err = svc.ReadRange(ctx, "memory:///x", 0, -1)
+	check("ReadRange", err)
+	_, err = svc.Lstat(ctx, "memory:///x")
+	check("Lstat", err)
+	check("Mkdir", svc.Mkdir(ctx, "memory:///x"))
+	check("Rename", svc.Rename(ctx, "memory:///x", "memory:///y"))
+	check("Copy", svc.Copy(ctx, "memory:///x", "memory:///y"))
+	check("Access", svc.Access(ctx, "memory:///x"))
+}
+
+func TestProviderExtendedConformance(t *testing.T) {
+	for _, tc := range fsConformanceCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := tctx(t)
+			svc, name := tc.setup(t)
+
+			// Stream/range reads: offset, limit, EOF and invalid range.
+			if err := svc.WriteFile(ctx, name("range.txt"), []byte("0123456789")); err != nil {
+				t.Fatal(err)
+			}
+			check := func(offset, limit int64, want string) {
+				t.Helper()
+				r, err := svc.OpenStream(ctx, name("range.txt"), offset, limit)
+				if err != nil {
+					t.Fatalf("OpenStream(%d,%d): %v", offset, limit, err)
+				}
+				got, err := io.ReadAll(r)
+				_ = r.Close()
+				if err != nil || string(got) != want {
+					t.Fatalf("OpenStream(%d,%d)=%q err=%v, want %q", offset, limit, got, err, want)
+				}
+				got, err = svc.ReadRange(ctx, name("range.txt"), offset, limit)
+				if err != nil || string(got) != want {
+					t.Fatalf("ReadRange(%d,%d)=%q err=%v, want %q", offset, limit, got, err, want)
+				}
+			}
+			check(0, -1, "0123456789")
+			check(2, 4, "2345")
+			check(0, 0, "")
+			check(8, 100, "89")
+			check(10, 5, "")
+			check(30, -1, "")
+			if _, err := svc.ReadRange(ctx, name("range.txt"), -1, 4); err == nil {
+				t.Fatal("negative offset was accepted")
+			}
+
+			// Lstat metadata: every provider's FileInfo implements SymlinkInfo;
+			// ordinary files are never reported as links.
+			fi, err := svc.Lstat(ctx, name("range.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			si, ok := fi.(fs.SymlinkInfo)
+			if !ok || si.IsSymlink() || si.LinkTarget() != "" {
+				t.Fatalf("regular file symlink metadata: %+v ok=%v", fi, ok)
+			}
+			if tc.symlink != nil {
+				tc.symlink(t, name("link.txt"), "range.txt")
+				li, err := svc.Lstat(ctx, name("link.txt"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				lsi, ok := li.(fs.SymlinkInfo)
+				if !ok || !lsi.IsSymlink() || lsi.LinkTarget() != "range.txt" {
+					t.Fatalf("symlink metadata: %+v ok=%v", li, ok)
+				}
+				fi, err = svc.Stat(ctx, name("link.txt")) // Stat follows the link
+				if err != nil {
+					t.Fatal(err)
+				}
+				if sfi := fi.(fs.SymlinkInfo); sfi.IsSymlink() {
+					t.Fatal("Stat reported a followed symlink as a link")
+				}
+			}
+
+			// Mkdir + Access, including duplicate/missing paths.
+			if err := svc.Mkdir(ctx, name("sub")); err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.Access(ctx, name("sub")); err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.Access(ctx, name("absent")); err == nil {
+				t.Fatal("Access succeeded on a missing path")
+			}
+			if err := svc.Mkdir(ctx, name("sub")); err == nil {
+				t.Fatal("duplicate Mkdir was accepted")
+			}
+
+			// Rename + Copy, with an independence check after a later write.
+			if err := svc.Rename(ctx, name("range.txt"), name("sub/renamed.txt")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := svc.Stat(ctx, name("range.txt")); err == nil {
+				t.Fatal("Stat succeeded on the renamed-away source")
+			}
+			data, err := svc.ReadFile(ctx, name("sub/renamed.txt"))
+			if err != nil || string(data) != "0123456789" {
+				t.Fatalf("renamed data=%q err=%v", data, err)
+			}
+			if err := svc.Copy(ctx, name("sub/renamed.txt"), name("copy.txt")); err != nil {
+				t.Fatal(err)
+			}
+			data, err = svc.ReadFile(ctx, name("copy.txt"))
+			if err != nil || string(data) != "0123456789" {
+				t.Fatalf("copied data=%q err=%v", data, err)
+			}
+			if err := svc.WriteFile(ctx, name("copy.txt"), []byte("edited")); err != nil {
+				t.Fatal(err)
+			}
+			data, err = svc.ReadFile(ctx, name("sub/renamed.txt"))
+			if err != nil || string(data) != "0123456789" {
+				t.Fatalf("source changed after copy edit: %q err=%v", data, err)
+			}
+
+			// Every new operation must reject escaping/foreign names.
+			for _, bad := range tc.escapes {
+				label := "escape " + bad
+				if _, err := svc.OpenStream(ctx, bad, 0, 1); err == nil {
+					t.Fatalf("%s: OpenStream accepted", label)
+				}
+				if _, err := svc.Lstat(ctx, bad); err == nil {
+					t.Fatalf("%s: Lstat accepted", label)
+				}
+				if err := svc.Mkdir(ctx, bad); err == nil {
+					t.Fatalf("%s: Mkdir accepted", label)
+				}
+				if err := svc.Rename(ctx, name("sub/renamed.txt"), bad); err == nil {
+					t.Fatalf("%s: Rename accepted", label)
+				}
+				if err := svc.Copy(ctx, name("sub/renamed.txt"), bad); err == nil {
+					t.Fatalf("%s: Copy accepted", label)
+				}
+				if err := svc.Access(ctx, bad); err == nil {
+					t.Fatalf("%s: Access accepted", label)
+				}
+			}
+			if err := svc.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// TestExtendedOperationsRejectSymlinkEscape pins the os.Root confinement of the
+// new operations: a symlink inside the root must not let any of them touch the
+// outside directory, even for metadata-only calls.
+func TestExtendedOperationsRejectSymlinkEscape(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	secret := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(secret, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, svc := startFS(t)
+	if _, err := svc.MountLocal("file:///", root); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tctx(t)
+	inside := "file://" + filepath.Join(root, "inside.txt")
+	if err := svc.WriteFile(ctx, inside, []byte("inside")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	escaped := func(rel string) string { return "file://" + filepath.Join(root, "escape", rel) }
+
+	if _, err := svc.OpenStream(ctx, escaped("secret.txt"), 0, -1); err == nil {
+		t.Fatal("OpenStream escaped through symlink")
+	}
+	if _, err := svc.Lstat(ctx, escaped("secret.txt")); err == nil {
+		t.Fatal("Lstat escaped through symlink")
+	}
+	if err := svc.Mkdir(ctx, escaped("made")); err == nil {
+		t.Fatal("Mkdir escaped through symlink")
+	}
+	if err := svc.Rename(ctx, inside, escaped("moved.txt")); err == nil {
+		t.Fatal("Rename escaped through symlink")
+	}
+	if err := svc.Copy(ctx, inside, escaped("copied.txt")); err == nil {
+		t.Fatal("Copy escaped through symlink")
+	}
+	if err := svc.Copy(ctx, escaped("secret.txt"), escaped("copied-away.txt")); err == nil {
+		t.Fatal("Copy escaped through symlink (source)")
+	}
+	if err := svc.Access(ctx, escaped("secret.txt")); err == nil {
+		t.Fatal("Access escaped through symlink")
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "secret.txt" {
+		t.Fatalf("outside directory was modified: entries=%v err=%v", entries, err)
+	}
+	data, err := os.ReadFile(secret)
+	if err != nil || string(data) != "secret" {
+		t.Fatalf("outside secret changed: %q err=%v", data, err)
+	}
 }

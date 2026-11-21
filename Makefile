@@ -5,10 +5,19 @@
 GO ?= go
 GOCACHE ?=
 
+# Export GOCACHE only when explicitly overridden — exporting an empty value
+# would break Go's default cache resolution.
+ifneq ($(strip $(GOCACHE)),)
+export GOCACHE
+endif
+
 verify: fmt-check vet test race
 
 fmt-check:
-	gofmt -l $$(find . -name '*.go' -not -path './vendor/*')
+	@unformatted=$$(gofmt -l $$(find . -name '*.go' -not -path './vendor/*')); \
+	if [ -n "$$unformatted" ]; then \
+		echo "gofmt required on:"; echo "$$unformatted"; exit 1; \
+	fi
 
 vet:
 	$(GO) vet ./...

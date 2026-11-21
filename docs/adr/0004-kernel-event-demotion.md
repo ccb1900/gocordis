@@ -18,7 +18,7 @@ parallel/bail/waterfall)是 JS Cordis 生态的 API 约定,不属于论文语义
 Kernel 公开面含非论文语义,违反 ROADMAP P6 的"kernel 公开 API 逐项可锚定论文条目"
 目标;事件派发作为 Kernel 内机制还会与 P4 的迭代器调度产生不必要的耦合点。
 
-## 决策(Proposed)
+## 决策
 
 1. **派发模式整体迁往 `extensions/event`**(该扩展本已存在总线实现,合并即可):
    kernel 侧仅保留——事件处理器注册 = ctx 上的**可逆 effect**(注册句柄、撤销 = 注销),

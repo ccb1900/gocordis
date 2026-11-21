@@ -2,5 +2,12 @@ build/
 web/console/node_modules/
 web/console/dist/
 
-# stray legacy client (ENG-01): dependencies are reproducible from package-lock.json
+# Dependencies are reproducible from their lockfiles — never tracked.
 client/node_modules/
+web/plugin-kit/node_modules/
+
+# Build artifacts: `go build ./cmd/backfill` writes ./backfill by default.
+/backfill
+
+# ZCode harness session state — local tool metadata, never source
+.zcode/

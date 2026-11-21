@@ -8,14 +8,14 @@ stc-go)自本文起停用,改用论文编号。
 
 | 论文章节 | 内容 | 与本仓库的关系 |
 |---|---|---|
-| §3.1 | Revertible effects(effect context、effect functions、**effect iterators**) | 已实现(槽位形态);迭代器形态未实现 → P4 |
-| §3.2 | Reactive coeffects(get/set、specification/notification、**isolation、interception**) | 已实现但机制与论文不同 → P2/P3 |
+| §3.1 | Revertible effects(effect context、effect functions、**effect iterators**) | 已实现:Effect 槽位状态机 + **IterComponent 逐 yield 迭代器**(ADR-0003 Accepted,P4 完成) |
+| §3.2 | Reactive coeffects(get/set、specification/notification、**isolation、interception**) | 已按论文实现:逐 key realm 表(ADR-0001)+ 元数据 monoid(ADR-0002),均 Accepted |
 | §3.3 | Context paradigm(统一 context、observational equivalence) | 已实现 |
-| §4.1–4.2 | Components/fibers、orchestration、lifecycle(六规则 L-Begin/L-Iter/L-Finish/L-Divert/L-Leave/L-Unload)、confinement | 已实现 |
-| §4.3 | 元理论:**Theorem 64** (Preservation)、**68** (Recovery exactness)、**70** (Ordering)、**73** (Progress)、**80** (Confluence) | 五套定理测试已实现,编号待重锚 → P1 |
-| §4.4 | 四个扩展:Asynchrony、Failure、Isolation(K×R 编码)、Configuration/revision | Asynchrony/Failure 已实现;Isolation 机制不同;revision 部分 → P5 |
-| §5 | 实现:Cordis core library、declarative loader(配置调和 + HMR) | loader/HMR/config 已有扩展形态 → P5 统一 |
-| §6 | 讨论:service multiplexing、access control、sandboxing、语言独立性、依赖类型/版本 | 扩展层 partially → P7 |
+| §4.1–4.2 | Components/fibers、orchestration、lifecycle(六规则 L-Begin/L-Iter/L-Finish/L-Divert/L-Leave/L-Unload)、confinement | 已实现(含迭代边界 divert) |
+| §4.3 | 元理论:**Theorem 64** (Preservation)、**68** (Recovery exactness)、**70** (Ordering)、**73** (Progress)、**80** (Confluence) | 五套定理测试已实现并按论文编号重锚(P1 完成) |
+| §4.4 | 四个扩展:Asynchrony、Failure、Isolation(K×R 编码)、Configuration/revision | 四项均已实现:Isolation=逐 key realm(ADR-0001),revision=Fiber.Revise 复合(P5) |
+| §5 | 实现:Cordis core library、declarative loader(配置调和 + HMR) | loader/HMR/config 扩展形态已就位,P5 内核原语完成 |
+| §6 | 讨论:service multiplexing、access control、sandboxing、语言独立性、依赖类型/版本 | 扩展层逐项落地(broker/proc/wasm);WASM 沙箱形式化与依赖版本为 P7 延后项 |
 
 ## 1. 论文 ↔ 代码对照表(经原文复核,2026-09-08)
 
@@ -35,16 +35,20 @@ stc-go)自本文起停用,改用论文编号。
 | **Theorem 80** | Confluence(规范形 + 合流;**排除 failed fiber**——与论文一致)。**deterministic interleaving conformance coverage（非完整定理证明）**:同一操作集的 ApplyDone/UnwindDone 不同提交顺序 → 终态在 ≃ 投影(忽略 Lemma 61 生成名重命名)下等价;明确断言 guard 链(consumer unwind 先于 provider unwind)与 Revise canonical order(旧 consumer unwind → 旧 provider unwind → 新 provider apply → consumer reattach);非法交错被 guard 变成不可达 = Thm80(1) canonical form 的结构性证据 | 合流生成器 + 前置条件 + det 交错 + ≃ 投影 | thm73_thm80、thm80_det_interleaving_test、revision_thm80 |
 | §4.4 Asynchrony | inertial host(L-Divert 只取 landing 替代)仍 quiesce | orchestrator 异步完成 + deterministic mode | det_admission、deterministic_close |
 | §4.4 Failure | raise → Unloading → Inactive,Installed nothing;outcome 阻止重入;**不向父传播**;failed 留在 registry | `finalizeActivation` Failed 分支 | TestApplyFailureEndsFailed、TestFailedDisposeLoadRetryCycle |
-| §4.4 Configuration | revision = 卸下→逆→移除(子先父后)→同名重插;re-enable 走复合而非改 τ | HMR/loader 的替换路径(partial) | hmr H1–H20 |
+| §4.4 Configuration | revision = 卸下→逆→移除(子先父后)→同名重插;re-enable 走复合而非改 τ | `runtime/revise.go`/`fiber.go:Revise` + HMR/loader 替换路径 | thm80_revision、revise_race_test、hmr H1–H20 |
 
-### 1.2 已实现但机制与论文不同(需要 ADR 裁决,见 P2/P3)
+### 1.2 历史偏差记录(已关闭,勿当作当前待办)
 
-| 论文条目 | 论文语义 | 现实现 | 偏差性质 |
+> **历史记录**:下表记的是 2026-09-08 复核时的**旧状态**,四项偏差均已由 P2/P3/P4 关闭。
+> 当前实现与裁决见 §1.1、ADR-0001/0002/0003 与各阶段实施记录。保留此表仅供追溯,
+> 不得据此重新引入祖先回退或推翻已接受的架构决策。
+
+| 论文条目 | 历史偏差(已关闭) | 关闭方式 | 当前状态 |
 |---|---|---|---|
-| **Def 24/25 + §4.4 Isolation** | **逐 key** 的 realm 表 ρ:K⇀R,**插入时固定**;isolate 运行时重指派 = 接口变更 = revision;经 K×R 配对编码,元定理在多 realm 下原样成立("provisions disjoint **within a realm**");无层级、无祖先回退、无 shadow | 层级 realm 树:WithScope 子 realm、继承、shadow、祖先回退(含 GAP-01 的 retiring-shadow 规则) | 重新解释 + 超结构。论文根本没有 ancestor fallback 概念,GAP-01 规则是本仓库独有操作规则 |
-| **Def 26/27** | interception = **元数据 monoid 合并**(声明 d(k) ⊕ 上下文 ι(k),right-biased、context 优先),provider 是 ℳₖ→𝒱ₖ 的**函数**,读取时解释元数据;承载 §6.3 capability 访问控制 | `runtime.Intercept[T]` 函数变换链,直接改值 | 同目的、异机制。现实现表达不了"provider 依元数据做策略裁决" |
-| **§3.1.3 + L-Iter/L-Divert** | 激活 = **效果迭代器**逐 yield(L-Iter 一步一迭代,L-Divert 可落在迭代之间);异步 host 取 landing 替代(inertial) | Apply 一次到位 + ctx.Effect 槽位注册,激活不可中断(仅完成时检查 stale) | 宿主化简化(stc-go 同);per-iteration divert 粒度缺失 |
-| §4.2.2 末段 | guard 沿 coeffect 排序,**不沿 fiber 树**("a parent may run its inverse while a child is still Unloading");仅 O-Remove(entry 移除)要求子先父后 | ownership 树强制 child cleanup 严格先于 parent(P0-08) | 比论文更强的保证(不违背,但表述应改为 operational strengthening) |
+| Def 24/25 + §4.4 Isolation | 旧实现为层级 realm 树 + 祖先回退 + shadow | ADR-0001 Accepted:逐 key realm 表 ρ,插入时固定,**无层级/无祖先回退/无 shadow**;`providers.go:lookupOwn` 严格逐 realm | ✅ 已对齐 |
+| Def 26/27 | 旧 `Intercept[T]` 为值变换链,表达不了 provider 依元数据裁决 | ADR-0002 Accepted:`InterceptMeta` = 声明 d(k) ⊕ 上下文 ι(k) 的 monoid 合并,provider 为 ℳₖ→𝒱ₖ 函数;`Intercept` 保留为附加读值变换能力 | ✅ 已对齐 |
+| §3.1.3 + L-Iter/L-Divert | 旧实现 Apply 一次到位,per-iteration divert 粒度缺失 | ADR-0003 Accepted:+ `IterComponent` 逐 yield 激活 + 迭代边界 divert(inertial landing);见 `runtime/iterator_test.go` | ✅ 已对齐 |
+| §4.2.2 末段 | ownership 树强制 child cleanup 严格先于 parent,比论文更强 | 保留为 **operational strengthening**(不违背论文;论文要求 guard 沿 coeffect 排序,本仓库额外保证子先父后) | ✅ 已接受的差异 |
 
 ### 1.3 扩展层分类(非内核语义,不得成为第二生命周期权威)
 
@@ -83,32 +87,39 @@ R4 评审(2026-09-09)按"是否服务论文实现"将扩展定类:
 
 ### P2 — ADR-I:Isolation 回归论文语义(Def 24/25)✅ 2026-09-08 完成(ADR-0001 Accepted,实施记录见 ADR)
 
-- [ ] 决策:以**逐 key realm 表(插入时固定)**为原语;运行时 isolate(k, r) 落为 revision
-      (卸下→重插,§4.4 Configuration 复合)。
-- [ ] 现有层级 scope 的处置:降级为派生语法糖(编译到逐 key 表)或废弃;祖先回退/shadow
-      若保留,必须作为显式 ADR 扩展并配 conformance,不得冒称论文语义。
-- [ ] 利用论文 §4.4 的 K×R 配对论证:多 realm 并存与 Theorem 64/68/70/73/80 兼容,
-      定理生成器扩展到 realm 维度。
+- [x] 决策:以**逐 key realm 表(插入时固定)**为原语;运行时 isolate(k, r) 落为 revision
+      (卸下→重插,§4.4 Configuration 复合)。实施:`providers.go:lookupOwn` 严格逐 realm,
+      `fiber.keyRealms` 为 ρ,Rehome 只迁移本 fiber 的 Provide 键。
+- [x] 现有层级 scope 的处置:WithScope/Isolate 降级为逐 key 表的派生语法糖;祖先回退/shadow
+      **已移除**,不冒称论文语义。证据:`def24_isolation_test.go`、`gap01_retiring_shadow_test.go`。
+- [x] 论文 §4.4 K×R 配对论证:多 realm 并存与 Theorem 64/68/70/73/80 兼容,
+      定理生成器扩展到 realm 维度(`c2_thm64_every_step_test.go`、`c3_thm70_ordering_test.go`、
+      `phase4_random_test.go`)。
 - 验收:Def 24/25 逐条 conformance(get/set/isolate 运输预条件、重指派语义);
   Theorem 80 合流生成器含 realm 交错。
 
 ### P3 — ADR-II:Interception 回归论文语义(Def 26/27)✅ 2026-09-08 完成(ADR-0002 Accepted)
 
-- [ ] Key[T] 携带元数据类型 ℳₖ 与 monoid(⊕ₖ, εₖ);provider 可声明为解释元数据的函数。
-- [ ] `runtime.Intercept` 演进为 `intercept(k, ν)` 元数据合并(right-biased),旧函数链适配或废弃。
-- [ ] 解锁 §6.3:capability 式访问控制(provider 按元数据裁决),拦截可在运行时增删而不触发 reload
-      (论文:"it affects only how a dependency is invoked, not whether it is satisfied")。
+- [x] `MetaKey[T,M]` 携带 monoid(zero ⊕ combine);provider 通过 `ProvideMeta` 声明为解释元数据的函数,
+      `RequireMeta` 在读取时以 d(k) ⊕ ι(k) 解释。证据:`meta_intercept_test.go`。
+- [x] `InterceptMeta` 实现论文元数据合并(right-biased、context 优先);旧 `Intercept` 保留为
+      Go 附加的读值变换能力,**不冒充论文语义**(见 §4 语义复审 / ADR-0002)。
+- [x] §6.3 capability 式访问控制:provider 可按合并元数据裁决,拦截/installment 可逆且走 Effect,
+      不触发 reload。证据:`meta_intercept_test.go`。
 - 验收:Def 26/27 conformance;访问控制示例进入 case study;fuzz 覆盖合并序。
 
 ### P4 — 效果迭代器(§3.1.3 / L-Iter / L-Divert)✅ 2026-09-08 完成(ADR-0003 Accepted)
 
-- [ ] 组件激活可选表达为 `iter.Seq`(Go 1.23 range-over-func)效果迭代器:每 yield 一个
-      (context 变换, inverse);Apply-once 形态保留为单迭代特例(源兼容)。
-- [ ] orchestrator 支持 **L-Divert 落在迭代边界**(inertial host:只取 landing 替代——
-      论文 §4.4 明确该替代下全部元定理仍成立,Theorem 73 不依赖 aborting 替代)。
-- [ ] deterministic driver 扩展到迭代粒度(divert 时刻成为可调度步骤)。
-- 验收:Theorem 68/70 在迭代粒度交错下保持;T66(T73 Progress)驱动器覆盖 divert 路径;
-  新增 FuzzIteratorInterleaving。
+- [x] 组件激活可选表达为效果迭代器:`IterComponent.ApplyIter(ctx, yield)` — 每 yield 一步 install,
+      逆操作搬入 LIFO 栈;Apply-once 形态保留为单迭代特例。采用回调式而非 `iter.Seq` range-over-func
+      (Go 自身的惯用取舍,语义等价:逐 yield 激活)。证据:`runtime/component.go`、`iterator_test.go`。
+- [x] orchestrator 支持 **L-Divert 落在迭代边界**(inertial host:只取 landing 替代——论文 §4.4
+      明确该替代下元定理仍成立)。证据:`iterator_test.go`(中途 Dispose、依赖消失、step raise 的 divert 路径)。
+- [ ] **延后(非语义缺陷)**:deterministic driver 尚未把每次 yield 作为独立可调度步骤(当前仅停靠
+      ApplyDone/UnwindDone)。迭代交错由 `iterator_test.go` 的 channel 屏障验证,非穷尽。见
+      FINAL-ACCEPTANCE.md 延后事项 G-05;不为它重构 Kernel。
+- 验收:Theorem 68/70 迭代粒度 conformance 由 `iterator_test.go` 覆盖;deterministic driver 逐 yield
+      调度为测试工具增强,列为延后。
 
 ### P5 — 声明式 revision 统一(§4.4 Configuration + §5.2)✅ 2026-09-08 内核原语完成
 
@@ -120,7 +131,8 @@ R4 评审(2026-09-09)按"是否服务论文实现"将扩展定类:
       无身份 canonical observable(逐名状态/绑定/提供集)与从头加载修订配置逐行相等。
 - [x] (R1 评审补齐,2026-09-08)`WithFreshIsolation()` — revision 重指派 realm 对
       (论文 §4.4:"the new realm pairs");`TestReviseReassignsIsolation` 固化。
-- [ ] loader/HMR 短路径(候选先行、载荷不变不 reload)对齐同一终点 — 扩展层改造,随后续阶段。
+- [x] loader/HMR 短路径(候选先行、载荷不变不 reload)对齐同一终点 — `extensions/hmr`、`extensions/loader`
+      实现并配 H1–H20 测试;Revision 目标选择按捕获的 ProviderIdentity 跟随,不做全局扫描。
 - 验收(已完成部分):全量 + race + vet + gofmt 绿;Thm80 终点等价测试 -count=3 稳定。
 
 ### P6 — ADR-III:内核瘦身至论文面 ✅ 2026-09-08 完成(ADR-0004 Accepted)
@@ -140,8 +152,9 @@ R4 评审(2026-09-09)按"是否服务论文实现"将扩展定类:
 - [x] 跨进程调用(§6.2):`extensions/loader/proc` — 进程外插件后端
       (stdio JSON-RPC 2.0;每激活一进程;握手即就绪;卸载先于终态;崩溃不自动重启;
       进程边界非沙箱的边界声明)。2026-09-09。
-- [ ] WASM 沙箱一致性(§6.3):guest 能力面 = 声明集的形式化。
-- [ ] 依赖类型/版本(§6.6):Key 元数据演进的自然延伸。
+- [ ] **延后(产品验证优先)**:WASM 沙箱一致性(§6.3):guest 能力面 = 声明集的形式化。
+      WASM Backend 生命周期已冻结(见 FINAL-ACCEPTANCE.md),沙箱能力面形式化属于后续产品安全验收。
+- [ ] **延后(产品验证优先)**:依赖类型/版本(§6.6):Key 元数据演进的自然延伸。
 
 ## 3. Go 最佳实践约定
 

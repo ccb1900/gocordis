@@ -23,7 +23,7 @@ Apply-once 丢失了迭代粒度:激活中途目标翻转(依赖消失/替换)�
 论文 Theorem 70(2) 的 episode 包夹关系、Theorem 80 的规范形都以迭代为基本步。
 现有 stale-completion 检查只是 inertial 的最小形态,不是迭代步。
 
-## 决策(Proposed)
+## 决策
 
 1. **组件激活可选表达为 `iter.Seq`**(Go 1.23+ range-over-func,go.mod 已 1.24):
    ```go

@@ -1,6 +1,6 @@
 # ADR-0001: Isolation 回归论文语义 — 逐 key realm 表
 
-Status: **Proposed** → 实施 = P2
+Status: **Accepted** (2026-09-08;实施与 conformance 见本文「实施记录」)
 Date: 2026-09-08
 Authority: 论文 §3.2.3 Definition 24/25、§4.4 Isolation 段、§4.4 Configuration 段
 
@@ -26,7 +26,7 @@ Authority: 论文 §3.2.3 Definition 24/25、§4.4 Isolation 段、§4.4 Configu
 Def 63 的良构性 + K×R 编码,不含回退查找),且 GAP-01(retiring-shadow)这类边角规则
 在论文模型下不存在对应物,持续产生"论文是否允许 X"的裁决负担。
 
-## 决策(Proposed)
+## 决策
 
 1. **原语改为论文形态**:Key 级隔离——fiber 插入时其声明 key 经 ρ 映射为 (k, ρ(k));
    provision 互斥在 realm 内成立;`Isolate(k, r)` 作为宿主 API 提供,语义 = 论文 Def 25。

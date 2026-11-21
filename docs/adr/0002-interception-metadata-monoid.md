@@ -1,6 +1,6 @@
 # ADR-0002: Interception 回归论文语义 — 元数据 monoid
 
-Status: **Proposed** → 实施 = P3
+Status: **Accepted** (2026-09-08;实施与 conformance 见本文「实施记录」)
 Date: 2026-09-08
 Authority: 论文 §3.2.3 Definition 26/27、§4.4 Isolation 段末、§6.3 Access Control
 
@@ -27,7 +27,7 @@ Authority: 论文 §3.2.3 Definition 26/27、§4.4 Isolation 段末、§6.3 Acce
 且论文元数据模型下拦截是纯读取期机制(no field of a fiber holds it),与现有
 per-realm 安装链的存放方式不同。
 
-## 决策(Proposed)
+## 决策
 
 1. **Key 类型扩展**:`Key[T]` 增加可选元数据参数——`Key[T, M]` 或伴随注册
    (M 提供 Monoid 三元组:zero、combine;右侧优先)。无元数据的 key 退化为

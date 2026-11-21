@@ -5,7 +5,7 @@ Authority: [`论文.pdf`](./论文.pdf) 为语义唯一裁决来源;JS Cordis �
 
 本文件是 **v0.1 Feature Freeze 的验收结论**。它取代 `ROADMAP.md` 中任何仍带
 "待实现/PARTIAL" 字样的历史描述;后者已统一标记为历史记录。
-结论:**PASS WITH ACCEPTED LIMITATIONS**(见 §8)。
+结论:**PASS**(见 §9;证据边界见 §1 与 §7.5,不宣称形式化数学证明)。
 
 ---
 
@@ -193,6 +193,21 @@ windows-build(build/vet/test 交叉编译)、console-web(npm/vitest/tsc/build)�
 
 ---
 
+## 7.5 语义闭环（2026-11-21 收尾，原 P-CO-03 / P-CO-05 已关闭）
+
+审计 PASS WITH LIMITATIONS 指出的三项语义闭环已按论文原文补齐：
+
+| 闭环 | 论文依据 | 实现 | 验收测试 |
+|---|---|---|---|
+| 观察等价 | §3.3.2 Def 31-35:≃ₖ 由 key 的操作集诱导(最粗被尊重等价),≃_S = 同域 + 逐 key ≃ₖ;递归类型上为偏等价 | `runtime/observation_equivalence.go`:`ObservationSpec` 声明每 key 的可观察边界,`ObservationModel.EquivalentAt` 实现 Def 33,`RelevantKeys` 计算 dom∩S | `observation_equivalence_test.go`:等价三性质、域交、操作尊重、generation 可观察性 |
+| Unified Context 递归 | §3.3.1 Def 28:Γ∞ = μΓ. Γ × (Γ→Γ) × Σ;子 Fiber 拥有新 Context,继承 Σ | `Context.Child` 派生 + `initialMetaView` 继承 + ownership 门控;三投影(Γ=activation, Γ→Γ=effect stack, Σ=keyRealms+metaView+graph) | `unified_context_test.go`:嵌套组合、逆序撤销、Revision 保留递归、投影不变量 |
+| 独立性与五定理 | §3.4 Def 42/44/Thm43/45;§4.3 Thm64/68/70/73/80 | `observation_equivalence.go` + `theorem_evidence_test.go` 前提-检查点-测试对照账本;不同 key 天然独立、同 key 需 witness | `independence_test.go`(4 项:不同 key 交换、同 key witness、不扰动他 key、生成式 S 投影)、`theorem_evidence_test.go`(前提锚点、前提门、Thm73 quiescence、Thm80 重命名等价) |
+
+**边界保持**:这些是有限模型/生成式 conformance 证据,不是对任意合法调度空间的形式化数学证明。
+`FINAL-ACCEPTANCE.md` §1 的 Theorem ✅ 始终带 "模型覆盖,非形式化证明" 限定,不因本轮升级结论而抹去。
+
+---
+
 ## 8. 延后事项及原因(不阻断 Feature Freeze)
 
 | 编号 | 事项 | 不阻断原因 |
@@ -201,18 +216,20 @@ windows-build(build/vet/test 交叉编译)、console-web(npm/vitest/tsc/build)�
 | G-06 | Windows 原生运行测试 | 当前交叉编译已守住编译兼容;工业 PC 原生运行测试归入产品发布验收,不属框架冻结条件 |
 | P7 | WASM 沙箱能力面 = 声明集的形式化 | 属产品安全验收;Loader 生命周期协议已冻结,沙箱形式化不重开生命周期 |
 | P7 | 依赖类型/版本(§6.6) | Key 元数据演进的自然延伸,待真实应用出现多版本依赖需求再启动 |
-| P-CO-03 | 通用论文语义观察等价模型(每种 Capability 自有 ≃ₖ、Coeffect 投影) | 现有 `ObservationsEquivalent`(canonical 字符串)与 `thm80DetCanonical`(生成名投影)已覆盖 conformance 测试所需;建立通用 ≃ₖ 模型是语义基础设施扩张,当前无对应失败测试。属证据不足而非已证明违反定理,不因设计偏好新增 Kernel 抽象 |
-| P-CO-05 | Unified Context(Def 32)的递归整体证明 | 组合已逐项验证(Effect accumulator / Coeffect view / Ownership / Revise / P-CO-01 派生作用域);形式化递归等价证明属研究性工作,不影响可复现正确性,Feature Freeze 后按需开展 |
 
 ---
 
 ## 9. Feature Freeze 决策
 
-**结论:PASS WITH ACCEPTED LIMITATIONS**
+**结论:PASS**(论文语义覆盖与可复现正确性层面)
 
 依据:
 - 论文核心语义(Effects / Coeffects / Isolation / Interception / Revision / 五定理)
   均有源码落点 + 测试证据,且无确定性阻断缺陷。
+- 审计 PASS WITH LIMITATIONS 指出的三项语义闭环(P-CO-03 观察等价、P-CO-05 Unified Context
+  递归组合、§3.4 独立性 + 五定理证据链)已按论文原文补齐并通过验收(§7.5)。
+- 仍保留的"非形式化证明"限定是证据边界的说明,不是已知语义缺陷;Theorem 的测试证据是
+  有限模型 conformance,不构成对任意合法调度空间的数学证明。
 - Kernel / Extension 边界清晰,Loader/WASM 生命周期协议已冻结并经端到端验证。
 - 全部本地验收命令通过;整改批次完成的 Makefile 严格门、仓库清理、文档一致性均已核实。
 - 延后事项均为测试工具增强 / 产品发布验收 / 未来功能,不属框架语义缺陷。

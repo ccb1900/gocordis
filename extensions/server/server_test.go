@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -91,6 +92,93 @@ func TestRouterRoutingAndParams(t *testing.T) {
 	// Param outside a handler / unknown name is empty, never a panic.
 	if got := Param(httptest.NewRequest(http.MethodGet, "/", nil), "id"); got != "" {
 		t.Fatalf("Param outside route = %q, want empty", got)
+	}
+}
+
+// ---- catch-all: {path...} spans the remaining segments -------------------
+
+func TestRouterCatchAllMatchesNestedPath(t *testing.T) {
+	svc := newRouter()
+	if _, err := svc.Handle(http.MethodGet, "/static/{path...}", func(w http.ResponseWriter, r *http.Request) error {
+		_, err := io.WriteString(w, "path="+Param(r, "path"))
+		return err
+	}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"/static/app.css", "path=app.css"},
+		{"/static/css/app.css", "path=css/app.css"},
+		{"/static/css/theme/dark.css", "path=css/theme/dark.css"},
+		{"/static/a%2Ecss", "path=a.css"}, // percent-escaped path
+	}
+	for _, tc := range cases {
+		rec := httptest.NewRecorder()
+		svc.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d, want 200", tc.path, rec.Code)
+		}
+		if got := rec.Body.String(); got != tc.want {
+			t.Fatalf("%s: body %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestRouterCatchAllExactMethodWinsOverAll(t *testing.T) {
+	svc := newRouter()
+	disposeAll, err := svc.All("/static/{path...}", func(w http.ResponseWriter, r *http.Request) error {
+		_, err := io.WriteString(w, "all:"+r.Method)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("All: %v", err)
+	}
+	disposeGet, err := svc.Handle(http.MethodGet, "/static/{path...}", func(w http.ResponseWriter, r *http.Request) error {
+		_, err := io.WriteString(w, "get:"+Param(r, "path"))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	svc.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/css/a.css", nil))
+	if rec.Body.String() != "get:css/a.css" {
+		t.Fatalf("GET prefer exact catch-all: %q", rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	svc.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/static/css/a.css", nil))
+	if rec.Body.String() != "all:POST" {
+		t.Fatalf("POST should use All catch-all: %q", rec.Body.String())
+	}
+
+	if err := disposeGet(); err != nil {
+		t.Fatalf("disposeGet: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	svc.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/css/a.css", nil))
+	if rec.Body.String() != "all:GET" {
+		t.Fatalf("GET after dispose: %q", rec.Body.String())
+	}
+	if err := disposeAll(); err != nil {
+		t.Fatalf("disposeAll: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	svc.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/css/a.css", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("after both disposed: code=%d, want 404", rec.Code)
+	}
+}
+
+func TestRouterRejectsInvalidPattern(t *testing.T) {
+	svc := newRouter()
+	for _, pattern := range []string{"relative", "/x/{", "/x/{a}/{a}"} {
+		if _, err := svc.Handle(http.MethodGet, pattern, func(http.ResponseWriter, *http.Request) error { return nil }); err == nil {
+			t.Fatalf("Handle(%q): want error, got nil", pattern)
+		}
 	}
 }
 
@@ -547,15 +635,31 @@ func TestServeRangeBindsFirstAvailablePort(t *testing.T) {
 		t.Fatalf("consumer ready: %v", err)
 	}
 
-	second := portAt(t, addr, 1)
-	resp, err := http.Get("http://" + second + "/ping") //nolint:gosec // test-local
-	if err != nil {
-		t.Fatalf("GET on fallback port: %v", err)
+	// Another test (or process) may take a port inside our range between
+	// freeAddr's probe and the bind. Probe every non-held port and accept the
+	// one ServeRange actually bound, instead of assuming offset 1.
+	client := &http.Client{Timeout: 3 * time.Second}
+	var lastErr error
+	servedPort := ""
+	found := false
+	for offset := 1; offset < 3; offset++ {
+		port := portAt(t, addr, offset)
+		resp, err := client.Get("http://" + port + "/ping") //nolint:gosec // test-local
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr == nil && string(body) == "range-pong" {
+			found = true
+			servedPort = port
+			break
+		}
+		lastErr = fmt.Errorf("body = %q, err = %v", body, readErr)
 	}
-	body, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	if err != nil || string(body) != "range-pong" {
-		t.Fatalf("body = %q, err = %v", body, err)
+	if !found {
+		t.Fatalf("no fallback port served range-pong: %v", lastErr)
 	}
 
 	if err := consumer.Dispose(); err != nil {
@@ -564,7 +668,7 @@ func TestServeRangeBindsFirstAvailablePort(t *testing.T) {
 	if err := consumer.Gone(ctx); err != nil {
 		t.Fatalf("Gone: %v", err)
 	}
-	rebound, err := net.Listen("tcp", second)
+	rebound, err := net.Listen("tcp", servedPort)
 	if err != nil {
 		t.Fatalf("rebind fallback after Gone: %v", err)
 	}

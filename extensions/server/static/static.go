@@ -15,10 +15,10 @@ import (
 	"dynamic-runtime/runtime"
 )
 
-// pathParam is the named segment the core router captures. The core router
-// matches one segment per parameter, so a request URL holds exactly one file
-// name after Route.
-const pathParam = "path..."
+// pathParam is the wildcard name used in the Route+"/{path...}" pattern. The
+// standard library captures every remaining segment (including nested
+// directories) under this name, readable through r.PathValue("path").
+const pathParam = "path"
 
 // Component serves files under Root at Route+"/{path...}" while Active.
 // Root is an fs resource-name prefix (e.g. "file:///tmp/assets") that must be
@@ -50,7 +50,7 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 		return nil, err
 	}
 	if err := ctx.Effect(func() (func() error, error) {
-		return svc.Handle(http.MethodGet, c.Route+"/{"+pathParam+"}", func(w http.ResponseWriter, r *http.Request) error {
+		return svc.Handle(http.MethodGet, c.Route+"/{"+pathParam+"...}", func(w http.ResponseWriter, r *http.Request) error {
 			return c.serve(fsSvc, w, r)
 		})
 	}); err != nil {
@@ -60,7 +60,7 @@ func (c *Component) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 }
 
 func (c *Component) serve(fsSvc fs.Service, w http.ResponseWriter, r *http.Request) error {
-	rel, ok := safeRelative(server.Param(r, pathParam))
+	rel, ok := safeRelative(r.PathValue(pathParam))
 	if !ok {
 		http.NotFound(w, r)
 		return nil
@@ -81,11 +81,16 @@ func (c *Component) serve(fsSvc fs.Service, w http.ResponseWriter, r *http.Reque
 }
 
 // safeRelative rejects traversal, absolute paths and foreign URL schemes.
-// Cleaning a slash-prefixed value keeps the result inside the mount even when
-// the incoming name contains ".." segments.
+// Every ".." segment is refused outright; cleaning a slash-prefixed value then
+// keeps the result inside the mount even for percent-encoded input.
 func safeRelative(name string) (string, bool) {
 	if name == "" || strings.ContainsAny(name, "\\\x00") || strings.Contains(name, "://") {
 		return "", false
+	}
+	for _, seg := range strings.Split(name, "/") {
+		if seg == ".." {
+			return "", false
+		}
 	}
 	rel := strings.TrimPrefix(path.Clean("/"+name), "/")
 	if rel == "" || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {

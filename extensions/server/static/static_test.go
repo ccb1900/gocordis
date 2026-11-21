@@ -117,6 +117,83 @@ func TestStaticServesMountedFileAnd404(t *testing.T) {
 	}
 }
 
+func TestStaticServesNestedPathsEncodedAndEmpty(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"a.css":              "A",
+		"css/a.css":          "CSS-A",
+		"css/theme/dark.css": "DARK",
+	}
+	for name, content := range files {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+	}
+
+	root := "file://" + dir
+	rt, svc, fsSvc := loadHarness(t)
+	if err := fsSvc.Mount(root, fs.NewLocalProvider(dir)); err != nil {
+		t.Fatalf("Mount: %v", err)
+	}
+	t.Cleanup(func() { _ = fsSvc.Unmount(root) })
+
+	ctx := testCtx(t)
+	comp, err := rt.Load(&Component{Route: "/static", Root: root})
+	if err != nil {
+		t.Fatalf("load static: %v", err)
+	}
+	if err := comp.Ready(ctx); err != nil {
+		t.Fatalf("static Ready: %v", err)
+	}
+
+	cases := map[string]string{
+		"/static/a.css":              "A",
+		"/static/css/a.css":          "CSS-A",
+		"/static/css/theme/dark.css": "DARK",
+		"/static/css/a%2Ecss":        "CSS-A", // percent-escaped path
+	}
+	for target, want := range cases {
+		rec := serve(svc, target)
+		if rec.Code != http.StatusOK || rec.Body.String() != want {
+			t.Fatalf("GET %s: code=%d body=%q, want 200 %q", target, rec.Code, rec.Body.String(), want)
+		}
+	}
+	if rec := serve(svc, "/static/"); rec.Code != http.StatusNotFound {
+		t.Fatalf("empty /static/: code=%d, want 404", rec.Code)
+	}
+}
+
+func TestStaticRejectsNestedTraversal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "css"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	root := "file://" + dir
+	rt, svc, fsSvc := loadHarness(t)
+	if err := fsSvc.Mount(root, fs.NewLocalProvider(dir)); err != nil {
+		t.Fatalf("Mount: %v", err)
+	}
+	t.Cleanup(func() { _ = fsSvc.Unmount(root) })
+
+	ctx := testCtx(t)
+	comp, err := rt.Load(&Component{Route: "/s", Root: root})
+	if err != nil {
+		t.Fatalf("load static: %v", err)
+	}
+	if err := comp.Ready(ctx); err != nil {
+		t.Fatalf("static Ready: %v", err)
+	}
+	for _, target := range []string{"/s/css/%2e%2e/secret.txt", "/s/a/%2e%2e/b"} {
+		if rec := serve(svc, target); rec.Code != http.StatusNotFound {
+			t.Fatalf("traversal %s: code=%d, want 404", target, rec.Code)
+		}
+	}
+}
+
 func TestStaticRejectsTraversal(t *testing.T) {
 	dir := t.TempDir()
 	outside := filepath.Join(filepath.Dir(dir), "outside-secret.txt")

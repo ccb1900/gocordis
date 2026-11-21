@@ -48,33 +48,25 @@ var errServiceClosed = errors.New("server: service closed")
 
 // ---- named route params --------------------------------------------------
 
-type paramsKey struct{}
-
 // Param returns a named path parameter captured by the matching route, e.g.
-// Param(r, "id") for a pattern "/users/{id}". It returns "" outside a routed
-// request or for an unknown name.
+// Param(r, "id") for a pattern "/users/{id}", or Param(r, "path") for the
+// catch-all "/static/{path...}" (which captures every remaining segment).
+// Values come from the standard library's PathValue; outside a routed request
+// or for an unknown name the result is "".
 func Param(r *http.Request, name string) string {
 	if r == nil {
 		return ""
 	}
-	params, _ := r.Context().Value(paramsKey{}).(map[string]string)
-	return params[name]
+	return r.PathValue(name)
 }
 
 // ---- route representation ------------------------------------------------
 
-type segment struct {
-	literal string
-	param   string
-	isParam bool
-}
-
 type route struct {
-	id       uint64
-	method   string
-	all      bool // true for All routes: method is meaningless, "*" in Allow
-	segments []segment
-	handler  Handler
+	id      uint64
+	method  string // "" for All routes, which match every method
+	pattern string // Go 1.22 ServeMux path pattern, e.g. "/users/{id}"
+	handler Handler
 }
 
 type middleware struct {
@@ -88,82 +80,61 @@ type router struct {
 	routes      []*route
 	middlewares []*middleware
 	closed      bool
+	mux         *http.ServeMux // rebuilt whenever a registration changes
 }
 
 // newRouter builds an empty, open router. Unexported on purpose: the only
 // public way to obtain a Service is Component + ServiceKey.
-func newRouter() Service { return &router{} }
+func newRouter() Service { return &router{mux: http.NewServeMux()} }
 
-func compilePattern(pattern string) ([]segment, error) {
-	if !strings.HasPrefix(pattern, "/") {
-		return nil, fmt.Errorf("server: pattern %q must start with /", pattern)
-	}
-	parts := strings.Split(pattern, "/")[1:]
-	segs := make([]segment, 0, len(parts))
-	for _, part := range parts {
-		switch {
-		case strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}"):
-			name := part[1 : len(part)-1]
-			if name == "" {
-				return nil, fmt.Errorf("server: empty parameter name in %q", pattern)
-			}
-			segs = append(segs, segment{param: name, isParam: true})
-		case strings.ContainsAny(part, "{}"):
-			return nil, fmt.Errorf("server: malformed pattern %q", pattern)
-		default:
-			segs = append(segs, segment{literal: part})
+// buildMux compiles the registration list into a fresh ServeMux. Path matching,
+// wildcards ({id}, {path...}) and method precedence are entirely the standard
+// library's job; there is no hand-written matcher here. The first registration
+// for a given pattern wins (matching the old dispatch order). ServeMux panics
+// on an invalid or conflicting pattern, so that panic is converted into an
+// error: a bad declaration must fail registration, never crash the process.
+func buildMux(routes []*route) (mux *http.ServeMux, err error) {
+	mux = http.NewServeMux()
+	defer func() {
+		if v := recover(); v != nil {
+			err = fmt.Errorf("server: invalid route registration: %v", v)
 		}
-	}
-	return segs, nil
-}
-
-// matchPath reports whether path matches segs and returns captured params
-// (nil when the route has no params).
-func matchPath(segs []segment, path string) (map[string]string, bool) {
-	if !strings.HasPrefix(path, "/") {
-		return nil, false
-	}
-	parts := strings.Split(path, "/")[1:]
-	if len(parts) != len(segs) {
-		return nil, false
-	}
-	var params map[string]string
-	for i, s := range segs {
-		if s.isParam {
-			if parts[i] == "" {
-				return nil, false
-			}
-			if params == nil {
-				params = make(map[string]string, len(segs))
-			}
-			params[s.param] = parts[i]
-		} else if parts[i] != s.literal {
-			return nil, false
+	}()
+	seen := make(map[string]struct{}, len(routes))
+	for _, rt := range routes {
+		pattern := rt.pattern
+		if rt.method != "" {
+			pattern = rt.method + " " + pattern
 		}
+		if _, duplicate := seen[pattern]; duplicate {
+			continue
+		}
+		seen[pattern] = struct{}{}
+		h := rt.handler
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, req *http.Request) {
+			runHandler(w, req, h)
+		})
 	}
-	return params, true
+	return mux, nil
 }
 
 func (r *router) Handle(method, pattern string, h Handler) (func() error, error) {
 	if method == "" {
 		return nil, errors.New("server: empty method")
 	}
-	return r.register(strings.ToUpper(method), pattern, false, h)
+	return r.register(strings.ToUpper(method), pattern, h)
 }
 
 func (r *router) All(pattern string, h Handler) (func() error, error) {
-	return r.register("", pattern, true, h)
+	return r.register("", pattern, h)
 }
 
-// register is the shared, id-keyed registration path for Handle and All. A
-// disposer removes exactly the route it was returned for, idempotently.
-func (r *router) register(method, pattern string, all bool, h Handler) (func() error, error) {
+// register is the shared, id-keyed registration path for Handle and All. Every
+// change rebuilds the mux from the current list. A disposer removes exactly the
+// route it was returned for, idempotently, and rebuilds the mux again.
+func (r *router) register(method, pattern string, h Handler) (func() error, error) {
 	if h == nil {
 		return nil, errors.New("server: nil handler")
-	}
-	segs, err := compilePattern(pattern)
-	if err != nil {
-		return nil, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -172,15 +143,25 @@ func (r *router) register(method, pattern string, all bool, h Handler) (func() e
 	}
 	r.nextID++
 	id := r.nextID
-	r.routes = append(r.routes, &route{
-		id: id, method: method, all: all, segments: segs, handler: h,
+	next := append(append([]*route(nil), r.routes...), &route{
+		id: id, method: method, pattern: pattern, handler: h,
 	})
+	mux, err := buildMux(next)
+	if err != nil {
+		return nil, err
+	}
+	r.routes, r.mux = next, mux
 	return func() error {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		for i, existing := range r.routes {
 			if existing.id == id {
-				r.routes = append(r.routes[:i], r.routes[i+1:]...)
+				remaining := append(append([]*route(nil), r.routes[:i]...), r.routes[i+1:]...)
+				rebuilt, err := buildMux(remaining)
+				if err != nil {
+					return err
+				}
+				r.routes, r.mux = remaining, rebuilt
 				break
 			}
 		}
@@ -222,6 +203,7 @@ func (r *router) Close() error {
 	r.closed = true
 	r.routes = nil
 	r.middlewares = nil
+	r.mux = http.NewServeMux()
 	return nil
 }
 
@@ -232,6 +214,7 @@ func (r *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "service closed", http.StatusServiceUnavailable)
 		return
 	}
+	mux := r.mux
 	routes := append([]*route(nil), r.routes...)
 	chain := make([]func(http.Handler) http.Handler, len(r.middlewares))
 	for i, m := range r.middlewares {
@@ -242,7 +225,7 @@ func (r *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Snapshot taken under the lock; user middleware/handlers run with NO lock
 	// held (no broad lock across user code).
 	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		r.dispatch(w, req, routes)
+		r.dispatch(w, req, mux, routes)
 	})
 	for i := len(chain) - 1; i >= 0; i-- {
 		h = chain[i](h)
@@ -250,46 +233,59 @@ func (r *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	h.ServeHTTP(w, req)
 }
 
-func (r *router) dispatch(w http.ResponseWriter, req *http.Request, routes []*route) {
-	method := strings.ToUpper(req.Method)
-	allowed := make(map[string]struct{})
-	var fallback *route
-	var fallbackParams map[string]string
-	for _, rt := range routes {
-		params, ok := matchPath(rt.segments, req.URL.Path)
-		if !ok {
-			continue
-		}
-		if rt.all {
-			allowed["*"] = struct{}{}
-			if fallback == nil {
-				fallback, fallbackParams = rt, params
-			}
-			continue
-		}
-		allowed[rt.method] = struct{}{}
-		// An explicit method match (including an explicit OPTIONS route) always
-		// wins, regardless of registration order or an All fallback.
-		if rt.method == method {
-			runHandler(w, req, rt, params)
+func (r *router) dispatch(w http.ResponseWriter, req *http.Request, mux *http.ServeMux, routes []*route) {
+	// ServeMux's own 404 and 405 responses already match the old behavior
+	// (http.NotFound and http.Error(..., 405) with a sorted Allow header), so
+	// normal requests are handed straight to it. The one convention ServeMux
+	// does not provide is the extension's OPTIONS handling: an empty 204 with
+	// the sorted Allow set, unless an explicit OPTIONS route was registered.
+	if req.Method == http.MethodOptions {
+		_, pattern := mux.Handler(req.Clone(req.Context()))
+		if strings.HasPrefix(pattern, http.MethodOptions+" ") {
+			// An explicit OPTIONS route wins over the automatic 204.
+			mux.ServeHTTP(w, req)
 			return
 		}
-	}
-	if method == http.MethodOptions && len(allowed) > 0 {
-		w.Header().Set("Allow", strings.Join(sortedMethods(allowed), ", "))
+		allow := allowedMethods(req, mux, routes)
+		if allow == "" {
+			http.NotFound(w, req)
+			return
+		}
+		w.Header().Set("Allow", allow)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if fallback != nil {
-		runHandler(w, req, fallback, fallbackParams)
-		return
+	mux.ServeHTTP(w, req)
+}
+
+// allowedMethods asks the very same ServeMux which registrations would handle
+// this path — no second, hand-written path matcher is introduced. Each route is
+// probed with its own method (All routes with a neutral one) and is admitted
+// only when the mux selects that route's exact pattern.
+func allowedMethods(req *http.Request, mux *http.ServeMux, routes []*route) string {
+	allowed := make(map[string]struct{})
+	for _, rt := range routes {
+		method := rt.method
+		if method == "" {
+			method = "PROBE" // an All route answers any method
+		}
+		probe := req.Clone(req.Context())
+		probe.Method = method
+		_, pattern := mux.Handler(probe)
+		want := rt.pattern
+		if rt.method != "" {
+			want = rt.method + " " + want
+		}
+		if pattern != want {
+			continue // skipped: duplicate, shadowed or conflicting registration
+		}
+		if rt.method == "" {
+			allowed["*"] = struct{}{}
+		} else {
+			allowed[rt.method] = struct{}{}
+		}
 	}
-	if len(allowed) > 0 {
-		w.Header().Set("Allow", strings.Join(sortedMethods(allowed), ", "))
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	http.NotFound(w, req)
+	return strings.Join(sortedMethods(allowed), ", ")
 }
 
 func sortedMethods(allowed map[string]struct{}) []string {
@@ -301,13 +297,9 @@ func sortedMethods(allowed map[string]struct{}) []string {
 	return methods
 }
 
-func runHandler(w http.ResponseWriter, req *http.Request, rt *route, params map[string]string) {
-	if params == nil {
-		params = map[string]string{}
-	}
-	scoped := req.WithContext(context.WithValue(req.Context(), paramsKey{}, params))
+func runHandler(w http.ResponseWriter, req *http.Request, h Handler) {
 	cw := &captureWriter{ResponseWriter: w}
-	if err := rt.handler(cw, scoped); err != nil && !cw.wrote {
+	if err := h(cw, req); err != nil && !cw.wrote {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
 }

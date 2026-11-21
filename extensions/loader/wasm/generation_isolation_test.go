@@ -167,3 +167,87 @@ func TestCommitAbandonInterleave(t *testing.T) {
 		t.Fatalf("registry discard did not release: %d", b.CompiledModules())
 	}
 }
+
+// TestLoadResourceHandleMatchesModuleGeneration — structural invariant
+// (NEW-13): the handle's generation pointer and the Module's factory ref must
+// refer to the SAME compiled module. The two-step code (b.Load + ID re-query)
+// breaks this under an Unload+Reload race — the Module references gen-1
+// (closed) while the handle binds gen-2. This test runs many iterations to
+// stress the binding, and asserts pointer identity every time.
+func TestLoadResourceHandleMatchesModuleGeneration(t *testing.T) {
+	b := newTestBackend()
+	art := wasmArtifact("bind-structural", "file://"+absFixture(t, "valid.wasm"))
+	art.BackendType = loader.BackendWASM
+	art.Source = "file://" + absFixture(t, "valid.wasm")
+
+	for i := 0; i < 200; i++ {
+		mod, h, err := b.LoadResource(context.Background(), art)
+		if err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		f, ok := mod.Factory.(*wasmFactory)
+		if !ok {
+			t.Fatalf("iteration %d: factory type %T", i, mod.Factory)
+		}
+		// Pointer identity: the handle's gen.ref IS the factory's ref.
+		wr, ok := h.(*wasmResource)
+		if !ok {
+			t.Fatalf("iteration %d: handle type %T", i, h)
+		}
+		if wr.gen.ref != f.ref {
+			t.Fatalf("iteration %d: handle gen.ref %p != factory ref %p (NEW-13)", i, wr.gen.ref, f.ref)
+		}
+		// Pointer identity: the handle's gen IS the tracked generation.
+		b.mu.Lock()
+		tracked := b.generations[art.ID]
+		b.mu.Unlock()
+		if wr.gen != tracked {
+			t.Fatalf("iteration %d: handle gen %p != tracked %p (NEW-13)", i, wr.gen, tracked)
+		}
+		h.Release()
+	}
+}
+
+// TestHandleReleaseTargetsOwnGeneration — NEW-12 structural: a handle's
+// Release must close its OWN generation's compiled ref, never a newer one.
+// Verified by pointer identity: after Release, the handle's gen is untracked
+// but a fresh same-ID load's gen is alive and distinct.
+func TestHandleReleaseTargetsOwnGeneration(t *testing.T) {
+	b := newTestBackend()
+	art := wasmArtifact("release-identity", "file://"+absFixture(t, "valid.wasm"))
+	art.BackendType = loader.BackendWASM
+	art.Source = "file://" + absFixture(t, "valid.wasm")
+
+	// Gen-1: load, commit, unload → Release closes gen-1.
+	_, h1, err := b.LoadResource(context.Background(), art)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h1.Commit()
+	h1.Release()
+	if b.CompiledModules() != 0 {
+		t.Fatalf("gen-1 not released: %d", b.CompiledModules())
+	}
+
+	// Gen-2: fresh same-ID load. Its compiled ref is a NEW compilation.
+	_, h2, err := b.LoadResource(context.Background(), art)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.CompiledModules() != 1 {
+		t.Fatalf("gen-2 not tracked: %d", b.CompiledModules())
+	}
+
+	// The stale gen-1 handle's Release must be a no-op (identity check):
+	// gen-2 stays alive.
+	h1.Release()
+	if b.CompiledModules() != 1 {
+		t.Fatalf("stale handle Release closed gen-2 (NEW-12): %d", b.CompiledModules())
+	}
+
+	// gen-2's own handle still works.
+	h2.Release()
+	if b.CompiledModules() != 0 {
+		t.Fatalf("gen-2 not released by its own handle: %d", b.CompiledModules())
+	}
+}

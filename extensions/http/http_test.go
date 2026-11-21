@@ -1,6 +1,7 @@
 package http_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -14,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	exthttp "dynamic-runtime/extensions/http"
 	"dynamic-runtime/runtime"
@@ -1280,6 +1283,7 @@ func TestBaseURLParamsAndExtendLayering(t *testing.T) {
 
 func TestCloseJoinsInFlightStreamAndRejectsNew(t *testing.T) {
 	entered := make(chan struct{})
+	var enteredOnce sync.Once
 	release := make(chan struct{})
 	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -1288,7 +1292,9 @@ func TestCloseJoinsInFlightStreamAndRejectsNew(t *testing.T) {
 
 	ss, f := loadStreamService(t)
 	_, err := ss.AddStreamInterceptor(func(ctx context.Context, req *exthttp.Request, next func(context.Context, *exthttp.Request) (*exthttp.StreamResponse, error)) (*exthttp.StreamResponse, error) {
-		close(entered)
+		// A post-Close probe may race into this interceptor before `closed`
+		// is observed; only the first request signals the barrier.
+		enteredOnce.Do(func() { close(entered) })
 		<-release // deliberately ignores ctx: only this test releases it
 		return next(ctx, req)
 	})
@@ -1316,11 +1322,300 @@ func TestCloseJoinsInFlightStreamAndRejectsNew(t *testing.T) {
 		t.Fatal("Close returned while a stream request was still in flight")
 	default:
 	}
-	if _, err := ss.DoStream(testCtx(t), exthttp.Request{URL: srv.URL}); !errors.Is(err, exthttp.ErrClosed) {
-		t.Fatalf("DoStream after Close = %v, want ErrClosed", err)
-	}
 	close(release)
 	mustRecv(t, doDone, time.Second)
 	mustRecv(t, closeDone, time.Second)
+	dispose(t, f)
+}
+
+func TestDoStreamAfterCloseRejected(t *testing.T) {
+	ss, f := loadStreamService(t)
+	if err := ss.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ss.DoStream(testCtx(t), exthttp.Request{URL: "http://127.0.0.1:1"}); !errors.Is(err, exthttp.ErrClosed) {
+		t.Fatalf("DoStream after Close = %v, want ErrClosed", err)
+	}
+	dispose(t, f)
+}
+
+// --- r1.md HTTP equivalence: full method family + WebSocket ---------------
+
+func asMethodService(t *testing.T, svc exthttp.Service) exthttp.MethodService {
+	t.Helper()
+	ms, ok := svc.(exthttp.MethodService)
+	if !ok {
+		t.Fatalf("service %T does not implement MethodService", svc)
+	}
+	return ms
+}
+
+func asWebSocketService(t *testing.T, svc exthttp.Service) exthttp.WebSocketService {
+	t.Helper()
+	wss, ok := svc.(exthttp.WebSocketService)
+	if !ok {
+		t.Fatalf("service %T does not implement WebSocketService", svc)
+	}
+	return wss
+}
+
+func wsURL(httpURL string) string { return "ws" + strings.TrimPrefix(httpURL, "http") }
+
+func TestMethodFamilyDelegatesToDo(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		mu.Lock()
+		got = append(got, r.Method)
+		mu.Unlock()
+		_, _ = w.Write([]byte(r.Method))
+	}))
+	defer srv.Close()
+
+	svc, f := loadService(t)
+	ms := asMethodService(t, svc)
+
+	// An interceptor sits in the Do chain; every verb must flow through it.
+	var seen string
+	if _, err := ms.AddInterceptor(func(ctx context.Context, req *exthttp.Request, next func(context.Context, *exthttp.Request) (*exthttp.Response, error)) (*exthttp.Response, error) {
+		seen = req.Method
+		return next(ctx, req)
+	}); err != nil {
+		t.Fatalf("AddInterceptor: %v", err)
+	}
+
+	calls := []struct {
+		name string
+		call func() error
+		want string
+	}{
+		{"Put", func() error { _, e := ms.Put(testCtx(t), srv.URL+"/x", []byte("body")); return e }, "PUT"},
+		{"Patch", func() error { _, e := ms.Patch(testCtx(t), srv.URL+"/x", []byte("body")); return e }, "PATCH"},
+		{"Delete", func() error { _, e := ms.Delete(testCtx(t), srv.URL+"/x"); return e }, "DELETE"},
+		{"Head", func() error { _, e := ms.Head(testCtx(t), srv.URL+"/x"); return e }, "HEAD"},
+	}
+	for _, c := range calls {
+		if err := c.call(); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if seen != c.want {
+			t.Errorf("interceptor saw method %q after %s, want %q", seen, c.name, c.want)
+		}
+	}
+
+	// The Extend view implements the same additive method family and layers
+	// base URL + default headers before delegating to Do.
+	ss := asStreamService(t, svc)
+	view, ok := ss.Extend(srv.URL, stdhttp.Header{"X-Default": []string{"yes"}}).(exthttp.MethodService)
+	if !ok {
+		t.Fatal("Extend view does not implement MethodService")
+	}
+	var header string
+	if _, err := view.AddInterceptor(func(ctx context.Context, req *exthttp.Request, next func(context.Context, *exthttp.Request) (*exthttp.Response, error)) (*exthttp.Response, error) {
+		header = req.Header.Get("X-Default")
+		return next(ctx, req)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := view.Put(testCtx(t), "/view", []byte("v")); err != nil {
+		t.Fatalf("view.Put: %v", err)
+	}
+	if header != "yes" {
+		t.Errorf("Extend default header = %q, want yes", header)
+	}
+
+	mu.Lock()
+	gotMethods := append([]string(nil), got...)
+	mu.Unlock()
+	want := []string{"PUT", "PATCH", "DELETE", "HEAD", "PUT"}
+	if !reflect.DeepEqual(gotMethods, want) {
+		t.Fatalf("server methods = %v, want %v", gotMethods, want)
+	}
+	dispose(t, f)
+}
+
+func TestWebSocketTextAndBinaryEcho(t *testing.T) {
+	headerSeen := make(chan string, 1)
+	up := websocket.Upgrader{}
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		headerSeen <- r.Header.Get("X-Test")
+		c, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for {
+			mt, msg, err := c.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := c.WriteMessage(mt, msg); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	svc, f := loadService(t)
+	ws, err := asWebSocketService(t, svc).WS(testCtx(t), wsURL(srv.URL)+"/echo", stdhttp.Header{"X-Test": []string{"v"}})
+	if err != nil {
+		t.Fatalf("WS: %v", err)
+	}
+	if got := <-headerSeen; got != "v" {
+		t.Fatalf("handshake header X-Test = %q, want v", got)
+	}
+	for _, tc := range []struct {
+		mt   int
+		data []byte
+	}{
+		{websocket.TextMessage, []byte("hello")},
+		{websocket.BinaryMessage, []byte{0, 1, 2, 255}},
+	} {
+		if err := ws.WriteMessage(tc.mt, tc.data); err != nil {
+			t.Fatalf("WriteMessage: %v", err)
+		}
+		mt, data, err := ws.ReadMessage()
+		if err != nil {
+			t.Fatalf("ReadMessage: %v", err)
+		}
+		if mt != tc.mt || !bytes.Equal(data, tc.data) {
+			t.Fatalf("echo = (%d, %v), want (%d, %v)", mt, data, tc.mt, tc.data)
+		}
+	}
+	if err := ws.Close(); err != nil {
+		t.Fatalf("client Close: %v", err)
+	}
+	dispose(t, f)
+}
+
+func TestWebSocketContextCancellation(t *testing.T) {
+	disconnected := make(chan struct{})
+	var once sync.Once
+	up := websocket.Upgrader{}
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		c, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		if _, _, err := c.ReadMessage(); err != nil {
+			once.Do(func() { close(disconnected) })
+		}
+	}))
+	defer srv.Close()
+
+	svc, f := loadService(t)
+	ctx, cancel := context.WithCancel(testCtx(t))
+	ws, err := asWebSocketService(t, svc).WS(ctx, wsURL(srv.URL), nil)
+	if err != nil {
+		t.Fatalf("WS: %v", err)
+	}
+	cancel()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if _, _, err := ws.ReadMessage(); err != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("ReadMessage still succeeded after ctx cancellation")
+		default:
+		}
+	}
+	mustRecv(t, disconnected, time.Second)
+	dispose(t, f)
+}
+
+func TestWebSocketServiceCloseClosesActiveClients(t *testing.T) {
+	disconnected := make(chan struct{}, 2)
+	up := websocket.Upgrader{}
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		c, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		if _, _, err := c.ReadMessage(); err != nil {
+			disconnected <- struct{}{}
+		}
+	}))
+	defer srv.Close()
+
+	svc, f := loadService(t)
+	wss := asWebSocketService(t, svc)
+	ws1, err := wss.WS(testCtx(t), wsURL(srv.URL), nil)
+	if err != nil {
+		t.Fatalf("WS 1: %v", err)
+	}
+	ws2, err := wss.WS(testCtx(t), wsURL(srv.URL), nil)
+	if err != nil {
+		t.Fatalf("WS 2: %v", err)
+	}
+
+	if err := svc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	for i, ws := range []exthttp.WSClient{ws1, ws2} {
+		if _, _, err := ws.ReadMessage(); err == nil {
+			t.Fatalf("client %d ReadMessage succeeded after Service.Close", i)
+		}
+		mustRecv(t, disconnected, time.Second)
+	}
+	if _, err := wss.WS(testCtx(t), wsURL(srv.URL), nil); !errors.Is(err, exthttp.ErrClosed) {
+		t.Fatalf("WS after Close = %v, want ErrClosed", err)
+	}
+	dispose(t, f)
+}
+
+func TestWebSocketCloseUnblocksBlockedReader(t *testing.T) {
+	up := websocket.Upgrader{}
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		_, _ = up.Upgrade(w, r, nil)
+	}))
+	defer srv.Close()
+
+	svc, f := loadService(t)
+	ws, err := asWebSocketService(t, svc).WS(testCtx(t), wsURL(srv.URL), nil)
+	if err != nil {
+		t.Fatalf("WS: %v", err)
+	}
+	readErr := make(chan error, 1)
+	go func() {
+		_, _, e := ws.ReadMessage()
+		readErr <- e
+	}()
+	// Give the reader time to actually block before Close tears the socket down.
+	time.Sleep(20 * time.Millisecond)
+	if err := svc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	mustRecv(t, readErr, time.Second)
+	dispose(t, f)
+}
+
+func TestWebSocketDialHonorsCanceledContext(t *testing.T) {
+	svc, f := loadService(t)
+	ctx, cancel := context.WithCancel(testCtx(t))
+	cancel()
+	if _, err := asWebSocketService(t, svc).WS(ctx, wsURL("http://127.0.0.1:1"), nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WS with canceled ctx = %v, want context.Canceled", err)
+	}
+	dispose(t, f)
+}
+
+func TestWebSocketRejectsNonWebSocketSchemes(t *testing.T) {
+	svc, f := loadService(t)
+	wss := asWebSocketService(t, svc)
+	for _, raw := range []string{"http://127.0.0.1:1", "ftp://example.com", "not a url", ""} {
+		_, err := wss.WS(testCtx(t), raw, nil)
+		if err == nil {
+			t.Errorf("WS(%q) succeeded, want scheme error", raw)
+			continue
+		}
+		if !strings.Contains(err.Error(), "ws") {
+			t.Errorf("WS(%q) error %q does not mention ws scheme", raw, err)
+		}
+	}
 	dispose(t, f)
 }

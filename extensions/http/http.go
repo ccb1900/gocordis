@@ -27,6 +27,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"dynamic-runtime/runtime"
 	h12socks "h12.io/socks"
 )
@@ -117,6 +119,36 @@ type StreamService interface {
 	// Decode uses this service's own decoder registry.
 	Decode(*StreamResponse, any) error
 	Extend(baseURL string, header stdhttp.Header) StreamService
+}
+
+// MethodService is the additive full method-family contract. The base Service
+// already carries Do/Get/Post; embedding it keeps those signatures identical
+// while adding the remaining verbs. It is deliberately separate from Service
+// so existing fake implementers of Service are not broken.
+type MethodService interface {
+	Service
+	Put(context.Context, string, []byte) (*Response, error)
+	Patch(context.Context, string, []byte) (*Response, error)
+	Delete(context.Context, string) (*Response, error)
+	Head(context.Context, string) (*Response, error)
+}
+
+// WSClient is the caller-facing WebSocket connection. Message type constants
+// are the gorilla/websocket ones (TextMessage, BinaryMessage, ...).
+type WSClient interface {
+	ReadMessage() (int, []byte, error)
+	WriteMessage(int, []byte) error
+	Close() error
+}
+
+// WebSocketService is the additive WebSocket contract. Like MethodService it
+// embeds the base Service instead of extending it, so it can be type-asserted
+// from a Service capability without affecting existing implementers.
+type WebSocketService interface {
+	Service
+	// WS dials a ws/wss URL. The returned client is registered in the owner
+	// service's active set: Service.Close closes it and joins its cleanup.
+	WS(ctx context.Context, url string, reqHeader stdhttp.Header) (WSClient, error)
 }
 
 // ServiceKey is the capability identity of the HTTP service.
@@ -236,6 +268,10 @@ type service struct {
 	closeTimeout time.Duration
 	closeOnce    sync.Once
 	closeDone    chan struct{}
+	// wsClients holds every live WebSocket client. Registrations and removals
+	// run under s.mu; Close snapshots this set, closes each client and then
+	// waits on s.wg so no socket or watcher goroutine outlives Service.Close.
+	wsClients map[*wsClientConn]struct{}
 }
 
 // DefaultCloseTimeout bounds the graceful wait in Close.
@@ -248,6 +284,7 @@ func newService() *service {
 		cancel:       cancel,
 		closeTimeout: DefaultCloseTimeout,
 		closeDone:    make(chan struct{}),
+		wsClients:    make(map[*wsClientConn]struct{}),
 	}
 	// Every instance gets its own built-in decoder as the first contribution,
 	// so removing custom decoders reveals it without affecting other services.
@@ -862,9 +899,171 @@ func (e *extendedService) Decode(resp *StreamResponse, out any) error {
 func (e *extendedService) SetProxy(raw string) error { return e.root.SetProxy(raw) }
 func (e *extendedService) Close() error              { return e.root.Close() }
 
+// --- method family + WebSocket (additive r1.md HTTP equivalence) -----------
+
+// Every verb delegates to Do with the same Request shape as Get/Post, so
+// interceptors, proxy routing, in-flight tracking and Close ownership are
+// identical for all methods.
+func (s *service) Put(ctx context.Context, rawURL string, body []byte) (*Response, error) {
+	return s.Do(ctx, Request{Method: stdhttp.MethodPut, URL: rawURL, Body: body})
+}
+
+func (s *service) Patch(ctx context.Context, rawURL string, body []byte) (*Response, error) {
+	return s.Do(ctx, Request{Method: stdhttp.MethodPatch, URL: rawURL, Body: body})
+}
+
+func (s *service) Delete(ctx context.Context, rawURL string) (*Response, error) {
+	return s.Do(ctx, Request{Method: stdhttp.MethodDelete, URL: rawURL})
+}
+
+func (s *service) Head(ctx context.Context, rawURL string) (*Response, error) {
+	return s.Do(ctx, Request{Method: stdhttp.MethodHead, URL: rawURL})
+}
+
+func (e *extendedService) Put(ctx context.Context, rawURL string, body []byte) (*Response, error) {
+	return e.Do(ctx, Request{Method: stdhttp.MethodPut, URL: rawURL, Body: body})
+}
+
+func (e *extendedService) Patch(ctx context.Context, rawURL string, body []byte) (*Response, error) {
+	return e.Do(ctx, Request{Method: stdhttp.MethodPatch, URL: rawURL, Body: body})
+}
+
+func (e *extendedService) Delete(ctx context.Context, rawURL string) (*Response, error) {
+	return e.Do(ctx, Request{Method: stdhttp.MethodDelete, URL: rawURL})
+}
+
+func (e *extendedService) Head(ctx context.Context, rawURL string) (*Response, error) {
+	return e.Do(ctx, Request{Method: stdhttp.MethodHead, URL: rawURL})
+}
+
+// wsClientConn adapts a gorilla connection to WSClient. Close is idempotent:
+// it deregisters from the owner, closes the socket, signals the ctx watcher
+// and releases the service wait-group slot.
+type wsClientConn struct {
+	conn *websocket.Conn
+	s    *service
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *wsClientConn) ReadMessage() (int, []byte, error) { return c.conn.ReadMessage() }
+func (c *wsClientConn) WriteMessage(mt int, data []byte) error {
+	return c.conn.WriteMessage(mt, data)
+}
+
+func (c *wsClientConn) Close() error {
+	var err error
+	c.once.Do(func() {
+		c.s.mu.Lock()
+		delete(c.s.wsClients, c)
+		c.s.mu.Unlock()
+		err = c.conn.Close()
+		close(c.done)
+		c.s.wg.Done()
+	})
+	return err
+}
+
+// WS dials a ws/wss URL with gorilla/websocket. It is exposed on the additive
+// WebSocketService interface, never on Service itself.
+func (s *service) WS(ctx context.Context, rawURL string, reqHeader stdhttp.Header) (WSClient, error) {
+	return s.ws(ctx, rawURL, reqHeader)
+}
+
+func (s *service) ws(ctx context.Context, rawURL string, reqHeader stdhttp.Header) (WSClient, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("http: invalid websocket URL %q: %w", rawURL, err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "ws" && scheme != "wss" {
+		return nil, fmt.Errorf("http: websocket URL must use ws or wss scheme, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("http: websocket URL %q has no host", rawURL)
+	}
+
+	s.mu.RLock()
+	closed := s.closed
+	var proxyURL *url.URL
+	var dial ProxyDialer
+	if reg := winningRegistration(s.proxies, scheme); reg != nil {
+		proxyURL, dial = reg.proxyURL, reg.dial
+	}
+	s.mu.RUnlock()
+	if closed {
+		return nil, ErrClosed
+	}
+
+	// Tie the dial to the service lifetime so Close also cancels a dial that
+	// has not produced a live client yet. The returned client watches the
+	// caller's ctx instead (see below).
+	dialCtx := ctx
+	if s.cancel != nil {
+		var cancel context.CancelFunc
+		dialCtx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		stop := context.AfterFunc(s.ctx, cancel)
+		defer stop()
+	}
+
+	dialer := websocket.Dialer{}
+	if proxyURL != nil && dial == nil {
+		dialer.Proxy = func(*stdhttp.Request) (*url.URL, error) { return proxyURL, nil }
+	}
+	if dial != nil {
+		dialer.NetDialContext = func(c context.Context, network, addr string) (net.Conn, error) {
+			return dial(c, network, addr)
+		}
+	}
+	conn, resp, err := dialer.DialContext(dialCtx, u.String(), cloneHeader(reqHeader))
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("http: websocket dial: %w", ctx.Err())
+		}
+		return nil, err
+	}
+
+	c := &wsClientConn{conn: conn, s: s, done: make(chan struct{})}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = conn.Close()
+		return nil, ErrClosed
+	}
+	// One slot for the client (released by c.Close) and one for the ctx
+	// watcher goroutine. Add happens under the same lock Close uses to set
+	// `closed`, so no Add can race with its Wait.
+	s.wg.Add(2)
+	s.wsClients[c] = struct{}{}
+	s.mu.Unlock()
+
+	go func() {
+		defer s.wg.Done()
+		select {
+		case <-ctx.Done():
+			_ = c.Close()
+		case <-c.done:
+		}
+	}()
+	return c, nil
+}
+
+func (e *extendedService) WS(ctx context.Context, rawURL string, reqHeader stdhttp.Header) (WSClient, error) {
+	return e.root.ws(ctx, joinBaseURL(e.baseURL, rawURL), mergeHeaders(e.header, reqHeader))
+}
+
 var (
-	_ StreamService = (*service)(nil)
-	_ StreamService = (*extendedService)(nil)
+	_ StreamService    = (*service)(nil)
+	_ StreamService    = (*extendedService)(nil)
+	_ MethodService    = (*service)(nil)
+	_ MethodService    = (*extendedService)(nil)
+	_ WebSocketService = (*service)(nil)
+	_ WebSocketService = (*extendedService)(nil)
+	_ WSClient         = (*wsClientConn)(nil)
 )
 
 func (s *service) Get(ctx context.Context, url string) (*Response, error) {
@@ -1099,8 +1298,18 @@ func (s *service) Close() error {
 		s.closed = true
 		s.interceptors = nil
 		s.streamInterceptors = nil
+		// Snapshot live WebSocket clients; each one is closed (idempotently)
+		// below so its socket and ctx watcher terminate before Wait returns.
+		clients := make([]*wsClientConn, 0, len(s.wsClients))
+		for c := range s.wsClients {
+			clients = append(clients, c)
+		}
 		s.cancel()
 		s.mu.Unlock()
+
+		for _, c := range clients {
+			_ = c.Close()
+		}
 
 		done := make(chan struct{})
 		go func() {

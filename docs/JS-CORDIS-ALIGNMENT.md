@@ -29,16 +29,17 @@ Baseline: JS Cordis `5e2e6c172335d207d11289959322edaaba4447f0` (`cordis` 4.0.0-r
 |---|---|---|
 | `loader`、`include`、`hmr`、`group` | `extensions/loader`、`config`+`configwatch`、`hmr`、`bundle` | 部分等价（模块模型不同；Loader/WASM 协议冻结） |
 | `logger-console` | `extensions/console/logstore` | 语义等价 / API 不同 |
-| `timer` | `extensions/timer`：五个 `*Owned` API（创建即绑定调用方 Fiber，Gone 后无回调）；`Stop()` 可在自身回调安全调用，等待由 Effect 内部完成 | 部分等价：无 JS 的 Promise/AsyncIterable 形式与参数转发 |
-| `fs` / `fs-node` / `fs-memory` | `extensions/fs`：挂载路由、local/memory Provider、递归 Watch（fsnotify + doublestar 过滤，Change/Ready/Error/Dispose）、`os.Root` 防逃逸与显式 Close、Provider conformance | 部分等价：Stream/Range/Lstat/Copy/Access/Symlink 元数据尚未覆盖 |
-| `env` | `extensions/env`：compose-go dotenv 解析（`$VAR`/`${VAR}`/`${VAR:-default}`/多行）、`NODE_ENV` 自动 mode、4 文件优先级、process 优先、多实例 Populate 栈式所有权 | 完整等价（进程级注入的所有权已按注册栈管理） |
-| `package-manager` | `extensions/package-manager`：x/mod/modfile 解析/编辑、原子 temp+rename、批量去重、Report/Apply 同锁、before/after diff | 部分等价：Go 原生定位，Agent=go toolchain；不做 npm/pnpm/yarn lockfile 安装 |
-| `http` | `extensions/http`：拦截器链、`RegisterProxy` 身份注册、h12.io/socks 真实拨号、in-flight 请求等待 + 关闭超时、类型化 timeout/status 错误 | 部分等价：Stream Response / Decoder / Fetch 配置继承未覆盖 |
-| `http-socks` | `extensions/http-socks` + h12.io/socks：socks4/4a/5/5h（含 `socks` 别名）真实拨号，逆只撤销自身注册 | 部分等价：Go 的 socks5/5h 均为远端 DNS，与 JS 的 local-DNS socks5 语义不同 |
-| `server` | `extensions/server`：stdlib `ServeMux` 路由（`{id}`/`{path...}` catch-all）、`Handle`/`All`/`Use`/`Serve`/`ServeRange`、404/405/OPTIONS 204 | 部分等价：WebSocket 需额外依赖，本批未实现 |
-| `server-acl`/`echo`/`proxy`/`static` | `extensions/server/*`；static 支持嵌套路径、编码路径与穿越拒绝 | 语义等价 / API 不同 |
-| `cli` / `cli-cordis` | `extensions/cli`（上下文敏感 tokenizer：Windows 路径保留反斜杠、引号内转义、组合短旗标）+ `cmd/cli-cordis` | 部分等价：输入为命令文本而非完整 shell 解析 |
-| `create-cordis` | `cmd/create-cordis`：空目录前置校验、文件+目录回滚、生成项目通过 `go mod tidy`/`go build` 测试 | 部分等价：本地静态模板，不下载远程模板/交互提示 |
+| `timer` | `extensions/timer`：五个 `*Owned` API + `TimeoutWait`/`Ticks`(iter.Seq)/`TimeoutContext`/`*Args`；Gone 后无回调 | 语义等价 / API 不同：Go 用 channel/iter 对应 JS Promise/AsyncIterable |
+| `fs` / `fs-node` / `fs-memory` | `extensions/fs`：挂载路由、递归 Watch、完整操作面（Range/Stream/Lstat/Mkdir/Rename/Copy/Access/Symlink 元数据）、`os.Root` 防逃逸、Provider conformance | 语义等价 / API 不同；JS 私有 glob filter 由 doublestar 对应 |
+| `env` | `extensions/env`：compose-go dotenv 解析、NODE_ENV 自动 mode、4 文件优先级、process 优先、栈式 Populate 所有权 | 完整等价 |
+| `package-manager` | `extensions/package-manager`：x/mod/modfile、原子 temp+rename、Report/Apply 同锁、before/after diff | 接受差异（Go 原生定位，见账本） |
+| `http` | `extensions/http`：拦截器链、身份代理、真实 SOCKS、活动请求关闭、StreamResponse/Decoder/BaseURL/Params/Extend | 语义等价 / API 不同；file:/data: URL 为接受差异（见账本） |
+| `http-socks` | `extensions/http-socks` + h12.io/socks：socks4/4a/5/5h（含 `socks` 别名）真实拨号 | 接受差异（DNS 语义，见账本） |
+| `server` | `extensions/server`：stdlib `ServeMux` catch-all、Handle/All/Use/Serve/ServeRange、404/405/OPTIONS 204、WS(gorilla/websocket) | 语义等价 / API 不同 |
+| `server-echo`/`static` | `extensions/server/*`；static 支持嵌套路径、编码路径与穿越拒绝 | 语义等价 / API 不同 |
+| `server-acl`/`proxy` | `extensions/server/{acl,proxy}`：本地行为测试已覆盖 | 部分等价：JS 授权/转发语义未逐条对照 |
+| `cli` / `cli-cordis` | `extensions/cli` + `cmd/cli-cordis`：Windows 路径、引号、组合旗标、别名/help | 接受差异（命令文本输入，见账本） |
+| `create-cordis` | `cmd/create-cordis`：空目录校验、回滚、生成项目 tidy/build/run 真实验收 | 接受差异（本地静态模板，见账本） |
 
 ## 3. r1 整改记录
 
@@ -54,6 +55,7 @@ Baseline: JS Cordis `5e2e6c172335d207d11289959322edaaba4447f0` (`cordis` 4.0.0-r
 ## 4. 明确保留的边界
 
 不复制 Proxy 动态属性访问、JS 特有的 Fiber 身份保留替换、跨 Effect 并发撤销。
-WebSocket、HTTP Stream/Decoder、FS Stream/Range/Lstat/Copy/Access、远程脚手架模板
-属于已标注的**部分等价**，不再用笼统"已实现"掩盖；是否补齐以 `docs/r1.md` 的
-清单为准，不在本记录里自动扩展。
+逐项冻结的接受差异见 `docs/ACCEPTED-DIFFERENCES.md`（终版账本）。
+表中"部分等价"仅剩 loader/hmr 模块模型差异与 server-acl/proxy 的 JS 语义未逐条对照；
+其余差异均已作为接受差异冻结（HTTP file/data URL、SOCKS DNS、package-manager Agent、
+CLI 输入、远程脚手架模板），不再自动扩展。

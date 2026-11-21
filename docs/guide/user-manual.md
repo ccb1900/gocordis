@@ -451,6 +451,7 @@ http.ListenAndServe(":8080", srv)
 4. **契约层**:key/事件/接口定义在 contracts 包;插件与应用互不 import;
 5. 禁止清单(手写启动顺序、sleep 等依赖、全局单例、自旋重试……)见
    `AGENTS.md` §6。
+6. CLI 沙箱边界:`cmd/plugin sandbox` 仅凭 pluginmeta 元数据无法构建插件组件(需宿主编译期注册 config.Factory),它输出 `REQUIRES_BUILD_TIME_REGISTRATION` 诊断并展示空 Runtime 的 snapshot,不改动任何用户文件。
 
 ---
 

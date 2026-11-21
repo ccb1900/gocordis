@@ -27,6 +27,7 @@
 | JS `copy` 的 `filter` / `dereference` 与 `readFile` 的 `encoding`、`open` 的 flags/mode | 谓词过滤、解引用符号链接、编码字符串、文件打开标志 | 不实现；`copy` 仅支持 `{Recursive,Overwrite}`，读写为 `[]byte`，符号链接按链接/目标规则固定处理 | JS 专有选项；Go 用字节切片与调用方解码表达，能力不缺失但不是逐选项等价，故不计入"语义等价" |
 | Loader/WASM 资源协议 | — | 保持冻结，仅因可复现正确性缺陷重开 | `FINAL-ACCEPTANCE.md` 已冻结；r1 未发现需要重开的缺陷 |
 | 定理证据体系 | — | 不扩张 | 论文语义基线已冻结，新增能力都在 Extension 层 |
+| 统一插件 manifest（`extensions/pluginmeta`） | JS manifest 可承载运行时装配语义 | `Manifest` 仅为描述性元数据；`Requires`/`Provides`/`Compatibility` 不建依赖边、不驱动生命周期（仍由 Runtime/Loader/Config 负责） | 论文声明权威与单一生命周期权威；loader.Artifact/config.ComponentConfig/procplugin.PluginManifest 保持各自所有权，仅经 adapters 投影为统一描述 |
 
 ## 已消除的差异（不再冻结）
 

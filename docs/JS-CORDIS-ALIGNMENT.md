@@ -28,6 +28,7 @@ Baseline: JS Cordis `5e2e6c172335d207d11289959322edaaba4447f0` (`cordis` 4.0.0-r
 | JS 包 / 能力 | Go 实现 | 判定 |
 |---|---|---|
 | `loader`、`include`、`hmr`、`group` | `extensions/loader`、`config`+`configwatch`、`hmr`、`bundle` | 部分等价（模块模型不同；Loader/WASM 协议冻结） |
+| 统一插件 manifest | `extensions/pluginmeta` + `adapters`：描述性 `Manifest`（语义化版本、约束、校验、JSON/TOML 严格解析），投影 native/WASM/proc 元数据 | 接受差异：`Requires`/`Provides` 只描述意图，不建运行时依赖边、不接管生命周期（见账本） |
 | `logger-console` | `extensions/console/logstore` | 语义等价 / API 不同 |
 | `timer` | `extensions/timer`：五个 `*Owned` API + `TimeoutWait`/`Ticks`(iter.Seq)/`TimeoutContext`/`*Args`；Gone 后无回调 | 语义等价 / API 不同：Go 用 channel/iter 对应 JS Promise/AsyncIterable |
 | `fs` / `fs-node` / `fs-memory` | `extensions/fs`：`contract`/`local`/`memory` 分包；挂载路由 + 递归 Watch（Change/Ready/Error/Dispose、doublestar filter）；`Remove{Recursive,Force}`、`Mkdir{Recursive}`、`Copy{Recursive,Overwrite}`、`Symlink`/`Readlink`、`ResolveWithBase`、Range/Stream/Lstat/Rename/Access；`os.Root` 防逃逸；双 provider 同一 conformance；`NewFS` → `io/fs.FS`（支持 http.FileServerFS） | 核心操作面语义等价 / API 不同；**JS 专有选项 `copy.filter`/`dereference`、`readFile.encoding`、`open` flags/mode 为接受差异**（见账本），不宣称逐选项等价 |

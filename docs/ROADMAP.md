@@ -64,6 +64,8 @@ R4 评审(2026-09-09)按"是否服务论文实现"将扩展定类:
 
 - `RuntimeDeterministic` 调度插桩:定理验证基础设施(已内部化,R3),保留。
 - `cmd/` 演示程序(backfill/collector/host/example/wasmhmr/httpd):论文 §5.3 case study 的角色。
+- `extensions/config` 的 `Schema`/`SchemaFactory`(JSON Schema 子集,仅 Reconcile 期对声明了 schema 的工厂校验)与 `extensions/console/insight`(hub 只读查询:声明图取自 Config Controller,运行图只取自 Runtime.Snapshot)属 A 类辅助:前者服务 §5.2 声明校验,后者不解析依赖、不改 Fiber(铁律 7 单一生命周期权威)。
+- `extensions/market`(Phase 3 backend,2026-11-21):本地目录 catalog + 仅经 Config Controller 声明的装卸(不改 Fiber);trust 只是描述性元数据、无安全保证,`Source.Checksum` 仅校验工件完整性。
 - kernel 内事件派发已按 ADR-0004 移入 extensions/event(P6 完成);Bus 已移除(R3)。
 
 ## 2. 演进阶段

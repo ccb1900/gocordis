@@ -168,7 +168,7 @@ func wasmArtifact(id, source string) loader.Artifact {
 
 func loadFixtureRef(t *testing.T, b *Backend, id, file string) *moduleRef {
 	t.Helper()
-	ref, err := b.loadModule(context.Background(), wasmArtifact(id, "file://"+fixturePath(file)), readFixture(t, file))
+	ref, err := b.loadGenerationForTest(context.Background(), wasmArtifact(id, "file://"+fixturePath(file)), readFixture(t, file))
 	if err != nil {
 		t.Fatalf("loadModule(%s): %v", file, err)
 	}
@@ -198,7 +198,7 @@ func TestV01ValidFixtureCompiles(t *testing.T) {
 // fallback): BackendType and ModuleType stay in separate namespaces.
 func TestV10MissingManifestRejected(t *testing.T) {
 	b := newTestBackend()
-	_, err := b.loadModule(context.Background(), wasmArtifact("v10", "builtin:manifest"), bNoManifestModule())
+	_, err := b.loadGenerationForTest(context.Background(), wasmArtifact("v10", "builtin:manifest"), bNoManifestModule())
 	if !errors.Is(err, loader.ErrInvalidModuleType) {
 		t.Fatalf("loadModule(no manifest) = %v, want ErrInvalidModuleType", err)
 	}
@@ -214,7 +214,7 @@ func TestV11ManifestLogicalTypes(t *testing.T) {
 		"can.wasm":    "automotive.can",
 	}
 	for file, want := range cases {
-		ref, err := b.loadModule(context.Background(), wasmArtifact("v11-"+file, "file://x"), readFixture(t, file))
+		ref, err := b.loadGenerationForTest(context.Background(), wasmArtifact("v11-"+file, "file://x"), readFixture(t, file))
 		if err != nil {
 			t.Fatalf("loadModule(%s): %v", file, err)
 		}
@@ -227,7 +227,7 @@ func TestV11ManifestLogicalTypes(t *testing.T) {
 // V-02 — invalid bytes are rejected by wazero as ErrInvalidWASM.
 func TestV02InvalidFixtureRejected(t *testing.T) {
 	b := newTestBackend()
-	_, err := b.loadModule(context.Background(), wasmArtifact("v02", "file://"+fixturePath("invalid.wasm")), readFixture(t, "invalid.wasm"))
+	_, err := b.loadGenerationForTest(context.Background(), wasmArtifact("v02", "file://"+fixturePath("invalid.wasm")), readFixture(t, "invalid.wasm"))
 	if !errors.Is(err, ErrInvalidWASM) {
 		t.Fatalf("loadModule(invalid) = %v, want ErrInvalidWASM", err)
 	}
@@ -237,7 +237,7 @@ func TestV02InvalidFixtureRejected(t *testing.T) {
 func TestV03TruncatedRejected(t *testing.T) {
 	b := newTestBackend()
 	data := readFixture(t, "valid.wasm")
-	_, err := b.loadModule(context.Background(), wasmArtifact("v03", "file://x"), data[:len(data)-3])
+	_, err := b.loadGenerationForTest(context.Background(), wasmArtifact("v03", "file://x"), data[:len(data)-3])
 	if !errors.Is(err, ErrInvalidWASM) {
 		t.Fatalf("loadModule(truncated) = %v, want ErrInvalidWASM", err)
 	}
@@ -246,7 +246,7 @@ func TestV03TruncatedRejected(t *testing.T) {
 // V-04 — a module missing the destroy export fails the ABI check.
 func TestV04MissingABIRejected(t *testing.T) {
 	b := newTestBackend()
-	_, err := b.loadModule(context.Background(), wasmArtifact("v04", "file://"+fixturePath("missing-export.wasm")), readFixture(t, "missing-export.wasm"))
+	_, err := b.loadGenerationForTest(context.Background(), wasmArtifact("v04", "file://"+fixturePath("missing-export.wasm")), readFixture(t, "missing-export.wasm"))
 	if !errors.Is(err, ErrWASMABI) {
 		t.Fatalf("loadModule(missing-export) = %v, want ErrWASMABI", err)
 	}
@@ -256,7 +256,7 @@ func TestV04MissingABIRejected(t *testing.T) {
 // be instantiated: v0.1 provides no host API.
 func TestV05ImportsLoadButNotInstantiable(t *testing.T) {
 	b := newTestBackend()
-	ref, err := b.loadModule(context.Background(), wasmArtifact("v05", "builtin:import"), bImportModule())
+	ref, err := b.loadGenerationForTest(context.Background(), wasmArtifact("v05", "builtin:import"), bImportModule())
 	if err != nil {
 		t.Fatalf("loadModule(import) = %v (imports must Load, only instantiation fails)", err)
 	}
@@ -301,7 +301,7 @@ func TestV06ExecutionRunsCreate(t *testing.T) {
 // orphan).
 func TestV07DestroyTrapReportedAndClosed(t *testing.T) {
 	b := newTestBackend()
-	ref, err := b.loadModule(context.Background(), wasmArtifact("v07", "builtin:trap"), bTrapDestroyModule())
+	ref, err := b.loadGenerationForTest(context.Background(), wasmArtifact("v07", "builtin:trap"), bTrapDestroyModule())
 	if err != nil {
 		t.Fatalf("loadModule(trap): %v", err)
 	}
@@ -337,7 +337,7 @@ func TestV08BackendClosedRejectsWork(t *testing.T) {
 	if !b.Closed() {
 		t.Fatal("Closed() = false after Close")
 	}
-	_, err := b.loadModule(context.Background(), wasmArtifact("v08b", "file://x"), readFixture(t, "valid.wasm"))
+	_, err := b.loadGenerationForTest(context.Background(), wasmArtifact("v08b", "file://x"), readFixture(t, "valid.wasm"))
 	if !errors.Is(err, ErrWASMBackendClosed) {
 		t.Fatalf("loadModule after Close = %v, want ErrWASMBackendClosed", err)
 	}
@@ -470,4 +470,15 @@ func TestBackendAbandonReleasesWhenLastHolder(t *testing.T) {
 	if b.CompiledModules() != 0 {
 		t.Fatalf("last abandon did not release the ref: %d", b.CompiledModules())
 	}
+}
+
+// loadGenerationForTest is the compile-only entry the V-series tests use: it
+// compiles and registers a generation WITHOUT incrementing holders (these
+// tests never go through the loader's Commit/Abandon protocol).
+func (b *Backend) loadGenerationForTest(ctx context.Context, artifact loader.Artifact, data []byte) (*moduleRef, error) {
+	ref, err := b.compileForTest(ctx, artifact, data)
+	if err != nil {
+		return nil, err
+	}
+	return ref, nil
 }

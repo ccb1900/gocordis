@@ -61,20 +61,10 @@ type Backend struct {
 
 	rt wazero.Runtime
 
-	// modules tracks, per module ID, the compiled module the backend retained
-	// (EXT-05). Loader.Unload notifies UnloadModule so compilation resources
-	// are released with the registry entry instead of lingering until Close.
-	// Concurrent duplicate Loads share one compilation: a second compile of an
-	// already-tracked ID is closed and the tracked ref is returned (no
-	// double-retained CompiledModule leaks from the registry-commit loser).
-	modules map[string]*moduleRef
-
-	// generations maps a module id to its CURRENT resource generation
-	// (NEW-10 resource-identity protocol). Every load attempt receives a
-	// wasmResource handle BOUND to the exact generation it produced or
-	// deduped onto; Commit/Abandon/Release operate on that generation only.
-	// A superseded attempt (its generation replaced by Unload + a fresh load)
-	// can never touch the newer generation's resources.
+	// generations tracks, per module ID, the CURRENT resource generation
+	// (EXT-05 + NEW-10). Loader.Unload releases the tracked generation through
+	// the attempt handle's Release. Concurrent duplicate Loads share one
+	// compilation and one generation (the loser's fresh compile is closed).
 	generations map[string]*moduleGeneration
 
 	nextInstance atomic.Uint64
@@ -97,7 +87,6 @@ func NewBackend(opts ...Option) *Backend {
 	}
 	return &Backend{
 		observer:    o.observer,
-		modules:     make(map[string]*moduleRef),
 		generations: make(map[string]*moduleGeneration),
 		// CloseOnContextDone: an in-flight guest call is aborted when its
 		// context expires, so a misbehaving guest cannot monopolize the
@@ -110,7 +99,9 @@ func NewBackend(opts ...Option) *Backend {
 
 // LoadResource implements the resource-owning protocol: the returned handle
 // is bound to the exact generation this attempt produced or deduped onto
-// (NEW-10) — Commit/Abandon/Release never touch a newer generation.
+// (NEW-13 fix — the generation comes from the same critical section as the
+// Module build in loadGeneration; a concurrent Unload + fresh load can never
+// bind a handle to the wrong generation).
 func (b *Backend) LoadResource(ctx context.Context, artifact loader.Artifact) (loader.Module, loader.ResourceHandle, error) {
 	mod, err := b.Load(ctx, artifact)
 	if err != nil {
@@ -120,24 +111,73 @@ func (b *Backend) LoadResource(ctx context.Context, artifact loader.Artifact) (l
 	if !ok {
 		return loader.Module{}, nil, fmt.Errorf("%w: wasm factory type %T", ErrWASMBackendPanic, mod.Factory)
 	}
+	// The factory's ref IS the generation's ref — the identity check in the
+	// handle operations makes any mismatch (Unload + fresh load raced between
+	// Load and here) a safe no-op rather than a wrong-generation release.
 	b.mu.Lock()
 	gen := b.generations[f.ref.id]
 	b.mu.Unlock()
-	if gen == nil {
-		return loader.Module{}, nil, fmt.Errorf("%w: generation for %q vanished", ErrWASMBackendClosed, f.ref.id)
+	if gen == nil || gen.ref != f.ref {
+		// The generation this Module was built from is no longer current —
+		// it was superseded. Its resources are already closed; the attempt
+		// has nothing left to own. Return a handle with a detached
+		// generation: Commit/Abandon/Release are all identity-checked
+		// no-ops for it.
+		detached := &moduleGeneration{ref: f.ref, committed: true}
+		return mod, &wasmResource{b: b, gen: detached}, nil
 	}
 	return mod, &wasmResource{b: b, gen: gen}, nil
 }
 
 // wasmResource is the attempt-scoped ownership token for one generation.
+// The state field enforces the single-transition contract (NEW-14): each
+// handle performs at most one of Commit/Abandon, and Release is valid only
+// from Committed (or directly from Pending when the registry discards).
+// Repeat calls are no-ops — a double Abandon can never release another
+// attempt's holder slot.
 type wasmResource struct {
-	b   *Backend
-	gen *moduleGeneration
+	b     *Backend
+	gen   *moduleGeneration
+	mu    sync.Mutex
+	state int32 // 0=pending 1=committed 2=abandoned 3=released
 }
 
-func (h *wasmResource) Commit()  { h.b.commitGeneration(h.gen) }
-func (h *wasmResource) Abandon() { h.b.abandonGeneration(h.gen) }
-func (h *wasmResource) Release() { h.b.unloadGeneration(h.gen.ref.id) }
+const (
+	wasmResPending   int32 = 0
+	wasmResCommitted int32 = 1
+	wasmResAbandoned int32 = 2
+	wasmResReleased  int32 = 3
+)
+
+func (h *wasmResource) Commit() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.state != wasmResPending {
+		return
+	}
+	h.b.commitGeneration(h.gen)
+	h.state = wasmResCommitted
+}
+
+func (h *wasmResource) Abandon() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.state != wasmResPending {
+		return
+	}
+	h.state = wasmResAbandoned
+	h.b.abandonGeneration(h.gen)
+}
+
+func (h *wasmResource) Release() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.state != wasmResPending && h.state != wasmResCommitted {
+		return
+	}
+	h.state = wasmResReleased
+	h.b.releaseGeneration(h.gen)
+}
 
 // Load validates the artifact with the real wazero validator and materializes
 // a loader.Module (Type "wasm").
@@ -177,96 +217,100 @@ func (b *Backend) Load(ctx context.Context, artifact loader.Artifact) (m loader.
 		return loader.Module{}, err
 	}
 
-	ref, err := b.loadModule(ctx, artifact, data)
+	_, mod, err := b.loadGeneration(ctx, artifact, data)
 	if err != nil {
 		return loader.Module{}, err
 	}
-	return loader.Module{
-		ID:      artifact.ID,
-		Type:    ref.moduleType,
-		Version: artifact.Version,
-		Factory: &wasmFactory{backend: b, ref: ref},
-	}, nil
+	return mod, nil
 }
 
-// loadModule compiles (full wazero validation) the wasm bytes and checks the
-// minimal ABI surface. Compilation failures map to ErrInvalidWASM; ABI
-// violations to ErrWASMABI. Context cancellation is honored before and after
-// the (non-preemptible) compile step.
-func (b *Backend) loadModule(ctx context.Context, artifact loader.Artifact, data []byte) (*moduleRef, error) {
+// loadGeneration compiles (or dedupes onto) the resource generation for the
+// artifact and returns the generation ATOMICALLY with the Module built from
+// it (NEW-13: Module and generation come from one critical section — a
+// concurrent Unload + fresh load between the two would bind a handle to the
+// wrong generation). Fresh compiles happen outside the lock; the re-check
+// under the lock registers ours or adopts the winner's.
+func (b *Backend) loadGeneration(ctx context.Context, artifact loader.Artifact, data []byte) (*moduleGeneration, loader.Module, error) {
 	if err := b.checkOpen(); err != nil {
-		return nil, err
+		return nil, loader.Module{}, err
 	}
 	// EXT-05: dedupe concurrent loads of the same module ID — the loader
 	// commits only one registry entry anyway, so two concurrent compiles would
 	// retain two CompiledModules with no owner for the loser. Share the
-	// tracked ref.
+	// tracked generation.
 	b.mu.Lock()
 	if gen, ok := b.generations[artifact.ID]; ok {
 		gen.holders++
-		ref := gen.ref
+		mod := b.moduleFromGeneration(gen)
 		b.mu.Unlock()
-		return ref, nil
+		return gen, mod, nil
 	}
 	b.mu.Unlock()
 
 	compiled, err := b.rt.CompileModule(ctx, data)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
+			return nil, loader.Module{}, ctxErr
 		}
-		return nil, fmt.Errorf("%w: %v", ErrInvalidWASM, err)
+		return nil, loader.Module{}, fmt.Errorf("%w: %v", ErrInvalidWASM, err)
 	}
 	if err := ctx.Err(); err != nil {
 		_ = compiled.Close(context.Background())
-		return nil, err
+		return nil, loader.Module{}, err
 	}
 	moduleType, err := manifestModuleType(compiled)
 	if err != nil {
 		_ = compiled.Close(context.Background())
-		return nil, err
+		return nil, loader.Module{}, err
 	}
 	if err := validateABI(compiled, defaultABI); err != nil {
 		_ = compiled.Close(context.Background())
-		return nil, err
+		return nil, loader.Module{}, err
 	}
 	ref := &moduleRef{id: artifact.ID, version: artifact.Version, moduleType: moduleType, compiled: compiled}
-	// EXT-05: track the compiled module for UnloadModule. Another load may have
-	// raced us to the same ID; the loser closes its fresh compilation and
-	// returns the tracked one.
+	// Re-check under the lock: another attempt may have raced us to the same
+	// ID. The loser closes its fresh compilation and adopts the winner's
+	// generation.
 	b.mu.Lock()
 	if gen, ok := b.generations[artifact.ID]; ok {
 		gen.holders++
-		ref := gen.ref
+		mod := b.moduleFromGeneration(gen)
 		b.mu.Unlock()
 		_ = compiled.Close(context.Background())
-		return ref, nil
+		return gen, mod, nil
 	}
 	gen := &moduleGeneration{ref: ref, holders: 1}
 	b.generations[artifact.ID] = gen
-	b.modules[artifact.ID] = ref
+	mod := b.moduleFromGeneration(gen)
 	b.mu.Unlock()
-	return ref, nil
+	return gen, mod, nil
 }
 
-// UnloadModule releases the backend's compiled resources for id (EXT-05,
-// optional loader notification). The loader guarantees no module usage is
-// outstanding when it discards the registry entry, so closing the compiled
-// module here cannot strand a live activation.
-// unloadGeneration releases the CURRENT generation's resources (registry
-// discard via Unload/CloseContext) — always closes, regardless of holders
-// (the loader guarantees no usage is outstanding).
-func (b *Backend) unloadGeneration(id string) {
+// moduleFromGeneration builds the loader.Module for one generation (the
+// factory carries the generation's own ref).
+func (b *Backend) moduleFromGeneration(gen *moduleGeneration) loader.Module {
+	return loader.Module{
+		ID:      gen.ref.id,
+		Type:    gen.ref.moduleType,
+		Version: gen.ref.version,
+		Factory: &wasmFactory{backend: b, ref: gen.ref},
+	}
+}
+
+// releaseGeneration releases gen's compiled resources (handle Release, NEW-12
+// fix): identity-checked against the CURRENT generation — a superseded
+// generation was already closed when replaced, so this is an idempotent
+// no-op for it; a current generation is closed and untracked. The gen
+// POINTER (not the id) is the identity, so a late Release racing a fresh
+// same-ID load can never close the new generation.
+func (b *Backend) releaseGeneration(gen *moduleGeneration) {
 	b.mu.Lock()
-	gen, ok := b.generations[id]
-	if ok {
-		delete(b.generations, id)
-		if cur := b.modules[id]; cur == gen.ref {
-			delete(b.modules, id)
-		}
+	cur, ok := b.generations[gen.ref.id]
+	if ok && cur == gen {
+		delete(b.generations, gen.ref.id)
 	}
 	b.mu.Unlock()
-	if ok {
+	if ok && cur == gen {
 		_ = gen.ref.compiled.Close(context.Background())
 	}
 }
@@ -300,21 +344,56 @@ func (b *Backend) abandonGeneration(gen *moduleGeneration) {
 	if b.generations[gen.ref.id] != gen {
 		return // superseded: nothing to release
 	}
-	if gen.committed {
-		return
-	}
 	if gen.holders > 0 {
 		gen.holders--
 	}
-	if gen.holders > 0 {
-		// Another attempt still holds the shared generation: keep it alive.
-		return
+	// Close only when the LAST holder abandons AND the registry has not
+	// committed the generation (a committed generation is owned by the
+	// registry — its own Release closes it). A shared generation with
+	// remaining holders stays alive.
+	if gen.holders == 0 && !gen.committed {
+		delete(b.generations, gen.ref.id)
+		_ = gen.ref.compiled.Close(context.Background())
 	}
-	delete(b.generations, gen.ref.id)
-	if cur := b.modules[gen.ref.id]; cur == gen.ref {
-		delete(b.modules, gen.ref.id)
+}
+
+// compileForTest compiles and tracks a generation without holder accounting
+// (test seam: V-series tests inspect raw generation state, never going
+// through the loader's Commit/Abandon protocol).
+func (b *Backend) compileForTest(ctx context.Context, artifact loader.Artifact, data []byte) (*moduleRef, error) {
+	if err := b.checkOpen(); err != nil {
+		return nil, err
 	}
-	_ = gen.ref.compiled.Close(context.Background())
+	compiled, err := b.rt.CompileModule(ctx, data)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("%w: %v", ErrInvalidWASM, err)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = compiled.Close(context.Background())
+		return nil, err
+	}
+	moduleType, err := manifestModuleType(compiled)
+	if err != nil {
+		_ = compiled.Close(context.Background())
+		return nil, err
+	}
+	if err := validateABI(compiled, defaultABI); err != nil {
+		_ = compiled.Close(context.Background())
+		return nil, err
+	}
+	ref := &moduleRef{id: artifact.ID, version: artifact.Version, moduleType: moduleType, compiled: compiled}
+	b.mu.Lock()
+	if gen, ok := b.generations[artifact.ID]; ok {
+		b.mu.Unlock()
+		_ = compiled.Close(context.Background())
+		return gen.ref, nil
+	}
+	b.generations[artifact.ID] = &moduleGeneration{ref: ref, holders: 0}
+	b.mu.Unlock()
+	return ref, nil
 }
 
 // CompiledModules reports how many compiled modules the backend currently
@@ -322,7 +401,7 @@ func (b *Backend) abandonGeneration(gen *moduleGeneration) {
 func (b *Backend) CompiledModules() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return len(b.modules)
+	return len(b.generations)
 }
 
 // manifestModuleType extracts the Logical Module Type from the wasm module's

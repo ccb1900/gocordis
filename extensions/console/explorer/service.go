@@ -77,12 +77,14 @@ func (s *Service) SetDesired(cfg config.Config) {
 	s.protected = map[string]string{}
 	for _, cc := range cfg.Components {
 		switch cc.Type {
-		case "plugin-explorer":
-			s.protected[cc.ID] = "plugin-explorer hosts its own Console UI"
-		case "ui":
+		case "plugin-explorer", "console.explorer":
+			s.protected[cc.ID] = "explorer hosts its own Console UI"
+		case "ui", "console.host":
 			s.protected[cc.ID] = "ui host must stay active while the Console is open"
 		case "query-provider":
 			s.protected[cc.ID] = "query provider is required by the UI Host"
+		case "console.runtime", "console.insight":
+			s.protected[cc.ID] = "framework management page must stay active"
 		}
 	}
 }

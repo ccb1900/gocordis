@@ -314,16 +314,20 @@ func (b *Backend) releaseGeneration(gen *moduleGeneration) {
 	b.mu.Lock()
 	cur, ok := b.generations[gen.ref.id]
 	if ok && cur == gen {
-		delete(b.generations, gen.ref.id)
 		if gen.holders > 0 {
 			gen.holders--
 		}
 		if gen.holders > 0 {
-			// Another in-flight attempt still holds the shared ref: keep it
-			// alive; that attempt's Abandon will release the last claim.
+			// Another in-flight attempt still holds the shared ref: KEEP the
+			// generation tracked and alive. The old code deleted it from the
+			// map even when holders remained — a subsequent Commit could
+			// never find it (identity check fails) and its resources were
+			// unreachable.
 			b.mu.Unlock()
 			return
 		}
+		// Last holder: untrack and close.
+		delete(b.generations, gen.ref.id)
 	}
 	b.mu.Unlock()
 	if ok && cur == gen {

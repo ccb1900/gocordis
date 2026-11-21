@@ -251,3 +251,61 @@ func TestHandleReleaseTargetsOwnGeneration(t *testing.T) {
 		t.Fatalf("gen-2 not released by its own handle: %d", b.CompiledModules())
 	}
 }
+
+// TestUnloadCommittedGenerationWhileAnotherAttemptInFlight — NEW-06/NEW-02
+// residual closure: A and B share a generation. A commits and Unloads (its
+// handle's Release fires). B is still in flight. The Release must decrement
+// holders and KEEP the generation tracked (B still holds it); B's subsequent
+// Commit and Release must succeed and close the generation at 0.
+func TestUnloadCommittedGenerationWhileAnotherAttemptInFlight(t *testing.T) {
+	b := newTestBackend()
+	art := wasmArtifact("shared-unload", "file://"+absFixture(t, "valid.wasm"))
+	art.BackendType = loader.BackendWASM
+	art.Source = "file://" + absFixture(t, "valid.wasm")
+
+	// A and B load the same ID: holders = 2, gen shared.
+	_, hA, err := b.LoadResource(context.Background(), art)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, hB, err := b.LoadResource(context.Background(), art)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A commits (registry owns A's claim).
+	hA.Commit()
+
+	// A's Unload fires hA.Release: holders 2→1. The generation must STAY
+	// tracked (B still holds it) and the compiled ref must stay alive.
+	hA.Release()
+	if b.CompiledModules() != 1 {
+		t.Fatalf("Release deleted the generation while B holds it (NEW-06 leak): %d", b.CompiledModules())
+	}
+
+	// B commits: the registry accepts B's module (holders → 0 after both
+	// claims transfer... actually holders stays 1 because B's claim is now
+	// the registry's).
+	hB.Commit()
+
+	// B's module's factory must reference a LIVE compiled ref (the Release
+	// did NOT close it while B held it). Instantiate through the backend's
+	// own instantiate path — this is what the wasm factory does.
+	b.mu.Lock()
+	gen := b.generations["shared-unload"]
+	b.mu.Unlock()
+	if gen == nil {
+		t.Fatal("generation not tracked after B commits")
+	}
+	inst, ierr := b.instantiate(context.Background(), gen.ref)
+	if ierr != nil {
+		t.Fatalf("instantiate failed (compiled module was prematurely closed): %v", ierr)
+	}
+	_ = inst
+
+	// B releases: holders → 0 → close.
+	hB.Release()
+	if b.CompiledModules() != 0 {
+		t.Fatalf("generation not closed after last release: %d", b.CompiledModules())
+	}
+}

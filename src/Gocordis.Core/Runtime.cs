@@ -869,41 +869,74 @@ public sealed class Runtime : IAsyncDisposable
         // still Require the dependency.
         activation.Cancellation.Cancel();
 
-        var consumers = _fibers.Values.Count(other =>
+        var consumers = _fibers.Values.Where(other =>
             !ReferenceEquals(other, fiber) &&
             other.Committed.Values.Any(b =>
-                b.FiberId == fiber.Id && b.ActivationId == activation.Id));
-        var children = fiber.ChildList.Count(c => c.State != FiberState.Gone);
-        var waiting = consumers + children;
+                b.FiberId == fiber.Id && b.ActivationId == activation.Id)).ToArray();
 
+        // Only a child that still owns an activation can report back through
+        // UnwindCompleted and release this waiter count. An Unwinding child is
+        // included because its in-flight teardown will report; Unwound is already
+        // terminal. A Pending/Failed child has no activation at all, so it must
+        // be retired here instead of stranding the parent's waiter count.
+        var liveChildren = new List<Fiber>();
+        foreach (var child in fiber.ChildList.ToArray())
+        {
+            if (HasReportableActivation(child))
+            {
+                liveChildren.Add(child);
+            }
+            else
+            {
+                RetireActivationlessChild(child);
+            }
+        }
+
+        var waiting = consumers.Length + liveChildren.Count;
         if (waiting > 0)
         {
             _unwindWaiters[activation.Id] = waiting;
-            foreach (var child in fiber.ChildList.ToArray())
+            foreach (var child in liveChildren)
             {
-                if (child.State == FiberState.Gone)
-                {
-                    continue;
-                }
-
                 child.Intent = LifecycleIntent.Retired;
                 StartUnwind(child, dependencyLoss: false);
             }
 
-            foreach (var other in _fibers.Values.ToArray())
+            foreach (var other in consumers)
             {
-                if (!ReferenceEquals(other, fiber) &&
-                    other.Committed.Values.Any(b =>
-                        b.FiberId == fiber.Id && b.ActivationId == activation.Id))
-                {
-                    StartUnwind(other, dependencyLoss: true);
-                }
+                StartUnwind(other, dependencyLoss: true);
             }
 
             return;
         }
 
         BeginUnwindExecution(activation);
+    }
+
+    /// <summary>
+    /// A child participates in teardown only while it has a current activation
+    /// whose completion produces a report. Unwinding still counts: that unwind
+    /// is already running and will release the parent's waiter.
+    /// </summary>
+    private static bool HasReportableActivation(Fiber child) =>
+        child.CurrentActivation is { } activation &&
+        activation.IsCurrent &&
+        activation.Phase != ActivationPhase.Unwound;
+
+    /// <summary>
+    /// Terminal handling for a child with no activation to unwind. It can never
+    /// send UnwindCompleted, so give it the same Gone bookkeeping a completed
+    /// unwind would have produced and detach it from the parent.
+    /// </summary>
+    private void RetireActivationlessChild(Fiber child)
+    {
+        child.Intent = LifecycleIntent.Retired;
+        child.State = FiberState.Gone;
+        _fibers.Remove(child.Id);
+        child.Parent?.RemoveChild(child);
+        child.SignalGone();
+        CompleteDispose(child);
+        _bindingsChanged = true;
     }
 
     private void BeginUnwindExecution(Activation activation)

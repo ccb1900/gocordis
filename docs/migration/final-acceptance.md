@@ -32,12 +32,11 @@ bash docs/migration/verify-baseline.sh  # Go baseline
 本地 .NET 验证结果：
 
 - Build：0 warning / 0 error
-- Test：358/358，连续 3 次零失败、零挂起
-- 构成：Core 26 / Conformance 113 / Runtime 114 / Extensions 52 / Packaging 8 / UI 3 / Client 2
+- Test：369/369，连续 3 次零失败、零挂起
+- 构成：Core 27 / Conformance 138 / Runtime 117 / Extensions 52 / Packaging 24 / UI 3 / Client 2 / Product 6
 
-CI 状态按 SHA 记录在最终交付消息；已知 `6ff30f1c` 的 `ci` workflow 在 Go baseline Race 步骤出现一次
-flake（Go main 冻结，不在本分支修改）。CI workflow 对该已知 flake 采用最多 3 次的有界重试：
-仍未通过则失败，真实缺陷不会被掩盖；Windows/Linux 该 SHA 均成功。
+CI 状态不在本轮工作流中核验。最终验收以本地构建/测试为准；历史 `6ff30f1c` 曾记录 Go baseline Race
+flake，CI workflow 对该已知 flake 采用最多 3 次有界重试，真实失败不会被掩盖。当前 HEAD 的 CI 结果需由外部流程确认，不在本文件中声称。
 
 ## 3. 产品使用示例
 
@@ -102,7 +101,9 @@ Web/WinForms/Avalonia profile 按各自能力渲染或明确降级。
 - Explorer/Inspector/Dashboard 的数据与资源交付已通过真实 HTTP 验收；原生控件级产品化由 web/console 前端承担。
 - Koishi 完整插件市场、远程安装与云端服务不在迁移范围。
 - 跨 effect 并发撤销按论文/Go 严格 LIFO，不采用 JS `Promise.all` 并发撤销。
-- Go baseline 的 Race flake 属于冻结 main 的既有问题，CI 状态按 SHA 留痕，不在此分支修改 Go。
+- Go baseline 的 Race flake 属于冻结 main 的既有问题，不在此分支修改 Go。
+- UI 控制面目前无认证：loopback 是默认安全边界；`--allow-remote` 且未安装 AccessPolicy 时所有写端点返回 403。远程部署必须在进程外或宿主侧提供鉴权。
+- 平台收敛 gate 仅移植代表性 6/30，不宣称 PC01–PC30 全覆盖。
 
 ## 7. 冻结条件
 

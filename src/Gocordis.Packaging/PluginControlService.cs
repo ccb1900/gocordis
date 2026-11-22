@@ -112,6 +112,7 @@ public sealed class PluginControlService
         _registry = Registry ?? throw new ArgumentNullException(nameof(Registry));
         _ui = Ui;
         _loader = new ApplicationLoader(Store, Registry);
+        CleanStaleUploads();
     }
 
     public long Revision => Interlocked.Read(ref _revision);
@@ -287,16 +288,19 @@ public sealed class PluginControlService
         {
             ArgumentNullException.ThrowIfNull(packageStream);
             ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
-            // The client-supplied name is a key only; it never becomes a path.
-            var key = Path.GetFileName(fileName);
-            if (string.IsNullOrWhiteSpace(key))
+            // The client-supplied name is never a key or a path. Keys are server
+            // generated so two uploads of the same file cannot overwrite each other.
+            var suppliedName = Path.GetFileName(fileName);
+            if (string.IsNullOrWhiteSpace(suppliedName))
             {
                 throw new ArgumentException("invalid package file name", nameof(fileName));
             }
 
+            var key = Guid.NewGuid().ToString("N");
+
             var uploadDirectory = Path.Combine(_store.Root, ".uploads");
             Directory.CreateDirectory(uploadDirectory);
-            var path = Path.Combine(uploadDirectory, $"{Guid.NewGuid():N}.gocordis-plugin");
+            var path = Path.Combine(uploadDirectory, $"{key}.gocordis-plugin");
             try
             {
                 await using (var output = File.Create(path))
@@ -351,29 +355,49 @@ public sealed class PluginControlService
         {
             var key = uploadKey ?? string.Empty;
             var path = await ResolveUploadAsync(key, token);
-            var content = await PluginPackageReader.ReadAsync(path, _store.HostVersion, token);
-            var id = content.Manifest.Id;
-            var application = await LoadApplicationAsync(token);
-            if (application.Plugins.Any(declaration => declaration.Id == id))
+            try
             {
-                return Rejected(id, "conflict", $"plugin '{id}' is already declared");
-            }
+                var content = await PluginPackageReader.ReadAsync(path, _store.HostVersion, token);
+                var id = content.Manifest.Id;
+                var version = content.Manifest.Version;
+                var application = await LoadApplicationAsync(token);
+                if (application.Plugins.Any(declaration => declaration.Id == id))
+                {
+                    return Rejected(id, "conflict", $"plugin '{id}' is already declared");
+                }
 
-            var storeResult = await _store.InstallAsync(path, token);
-            var updated = application with
-            {
-                Plugins = [.. application.Plugins,
-                    new ApplicationPlugin(id, content.Manifest.Version, enable)],
-            };
-            await updated.SaveAsync(_manifestPath, token);
-            var apply = await ApplyWithRollbackAsync(application, id, token);
-            if (!apply.Success)
-            {
-                return Failure(id, apply.Failure!);
-            }
+                // The store validates the package dependencies before it writes
+                // anything; remember whether this call actually adds a package so
+                // rollback never removes a version that predated the mutation.
+                var installedBefore = await _store.ListAsync(token);
+                var addedPackage = !installedBefore.Any(package =>
+                    string.Equals(package.Id, id, StringComparison.Ordinal) &&
+                    string.Equals(package.Version, version, StringComparison.Ordinal));
+                var storeResult = await _store.InstallAsync(path, token);
 
-            Interlocked.Increment(ref _revision);
-            return Accepted(id, storeResult.Changes);
+                var updated = application with
+                {
+                    Plugins = [.. application.Plugins, new ApplicationPlugin(id, version, enable)],
+                };
+                Func<Task>? undoStore = null;
+                if (addedPackage)
+                {
+                    undoStore = () => _store.UninstallAsync(id, version, CancellationToken.None);
+                }
+
+                var apply = await PersistAndApplyAsync(application, updated, token, undoStore);
+                if (!apply.Success)
+                {
+                    return Failure(id, apply.Failure!);
+                }
+
+                Interlocked.Increment(ref _revision);
+                return Accepted(id, storeResult.Changes);
+            }
+            finally
+            {
+                ConsumeUpload(key);
+            }
         }, ct);
 
     public Task<PluginMutationResult> UpgradeAsync(
@@ -381,46 +405,122 @@ public sealed class PluginControlService
         MutateAsync(id, async token =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(id);
-            var path = await ResolveUploadAsync(uploadKey, token);
-            var content = await PluginPackageReader.ReadAsync(path, _store.HostVersion, token);
-            if (!string.Equals(content.Manifest.Id, id, StringComparison.Ordinal))
+            var key = uploadKey ?? string.Empty;
+            var path = await ResolveUploadAsync(key, token);
+            try
             {
-                return Rejected(id, "invalid_request",
-                    $"uploaded package '{content.Manifest.Id}' does not match '{id}'");
-            }
+                var content = await PluginPackageReader.ReadAsync(path, _store.HostVersion, token);
+                if (!string.Equals(content.Manifest.Id, id, StringComparison.Ordinal))
+                {
+                    return Rejected(id, "invalid_request",
+                        $"uploaded package '{content.Manifest.Id}' does not match '{id}'");
+                }
 
-            var application = await LoadApplicationAsync(token);
-            var declaration = application.Plugins.FirstOrDefault(item => item.Id == id);
-            if (declaration is null)
-            {
-                return Rejected(id, "not_found", $"plugin '{id}' is not declared");
-            }
+                var application = await LoadApplicationAsync(token);
+                var declaration = application.Plugins.FirstOrDefault(item => item.Id == id);
+                if (declaration is null)
+                {
+                    return Rejected(id, "not_found", $"plugin '{id}' is not declared");
+                }
 
-            var range = versionRange;
-            if (string.IsNullOrWhiteSpace(range))
-            {
-                range = content.Manifest.Version;
-            }
-            else if (!VersionRange.TryParse(range, out _))
-            {
-                return Rejected(id, "invalid_request", $"invalid version range '{range}'");
-            }
+                if (_registry.ProtectedIds.Contains(id))
+                {
+                    return Rejected(id, "forbidden", $"plugin '{id}' is protected");
+                }
 
-            var storeResult = await _store.UpgradeAsync(path, token);
-            var replacement = declaration with { VersionRange = range };
-            var updated = application with
-            {
-                Plugins = application.Plugins.Select(item => item.Id == id ? replacement : item).ToArray(),
-            };
-            await updated.SaveAsync(_manifestPath, token);
-            var apply = await ApplyWithRollbackAsync(application, id, token);
-            if (!apply.Success)
-            {
-                return Failure(id, apply.Failure!);
-            }
+                var newVersion = content.Manifest.Version;
+                var parsedNewVersion = NuGetVersion.Parse(newVersion);
+                var range = versionRange;
+                if (string.IsNullOrWhiteSpace(range))
+                {
+                    range = newVersion;
+                }
+                else if (!VersionRange.TryParse(range, out var parsedRange) ||
+                         !parsedRange.Satisfies(parsedNewVersion))
+                {
+                    return Rejected(id, "invalid_request",
+                        $"version range '{range}' does not satisfy uploaded version '{newVersion}'");
+                }
 
-            Interlocked.Increment(ref _revision);
-            return Accepted(id, storeResult.Changes);
+                var installedBefore = await _store.ListAsync(token);
+                var oldInstalled = await _store.ResolveAsync(id, declaration.VersionRange, token);
+                var dependents = await FindInstalledDependentsAsync(id, new[] { parsedNewVersion }, token);
+                if (dependents.Length > 0)
+                {
+                    return Rejected(id, "conflict",
+                        $"installed plugins depend on '{id}' and would be unsatisfied: {string.Join(", ", dependents)}");
+                }
+
+                // Store.InstallAsync (not UpgradeAsync) adds v2 while v1 stays in
+                // place. v1 is removed only after the new declaration is applied.
+                var addedPackage = !installedBefore.Any(package =>
+                    string.Equals(package.Id, id, StringComparison.Ordinal) &&
+                    string.Equals(package.Version, newVersion, StringComparison.Ordinal));
+                var storeResult = await _store.InstallAsync(path, token);
+                var installedNew = (await _store.ListAsync(token)).FirstOrDefault(package =>
+                    string.Equals(package.Id, id, StringComparison.Ordinal) &&
+                    string.Equals(package.Version, newVersion, StringComparison.Ordinal));
+                if (installedNew is null)
+                {
+                    if (addedPackage)
+                    {
+                        await TryUninstallPackageAsync(id, newVersion);
+                    }
+
+                    return Rejected(id, "invalid_request",
+                        $"installed package '{id}' did not resolve to '{newVersion}'");
+                }
+
+                Func<Task>? undoStore = null;
+                if (addedPackage)
+                {
+                    var installedVersion = installedNew.Version;
+                    undoStore = () => _store.UninstallAsync(id, installedVersion, CancellationToken.None);
+                }
+
+                var replacement = declaration with { VersionRange = range };
+                var updated = application with
+                {
+                    Plugins = application.Plugins.Select(item => item.Id == id ? replacement : item).ToArray(),
+                };
+                var apply = await PersistAndApplyAsync(application, updated, token, undoStore);
+                if (!apply.Success)
+                {
+                    return Failure(id, apply.Failure!);
+                }
+
+                var oldVersion = oldInstalled?.Version;
+                if (oldVersion is not null &&
+                    !string.Equals(oldVersion, installedNew.Version, StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        await _store.UninstallAsync(id, oldVersion, CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Removing v1 is part of the transaction: undo v2 and the
+                        // declaration before reporting the failure.
+                        try
+                        {
+                            await TryRestoreAsync(application, undoStore);
+                        }
+                        catch
+                        {
+                            // The original error is the one worth reporting.
+                        }
+
+                        return Failure(id, ex);
+                    }
+                }
+
+                Interlocked.Increment(ref _revision);
+                return Accepted(id, storeResult.Changes);
+            }
+            finally
+            {
+                ConsumeUpload(key);
+            }
         }, ct);
 
     public Task<PluginMutationResult> UninstallAsync(
@@ -428,11 +528,11 @@ public sealed class PluginControlService
         MutateAsync(id, async token =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(id);
-            var application = await LoadApplicationAsync(token);
-            var declaration = application.Plugins.FirstOrDefault(item => item.Id == id);
-            if (declaration is null)
+            // The UI sends the declaration's versionRange verbatim, which may be
+            // an exact version or a NuGet range. Both are accepted here.
+            if (version is not null && !VersionRange.TryParse(version, out _))
             {
-                return Rejected(id, "not_found", $"plugin '{id}' is not declared");
+                return Rejected(id, "invalid_request", $"invalid version '{version}'");
             }
 
             if (_registry.ProtectedIds.Contains(id))
@@ -440,27 +540,63 @@ public sealed class PluginControlService
                 return Rejected(id, "forbidden", $"plugin '{id}' is protected");
             }
 
-            var dependents = await FindDeclaredDependentsAsync(application, id, version, token);
+            var application = await LoadApplicationOrEmptyAsync(token);
+            var declaration = application.Plugins.FirstOrDefault(item => item.Id == id);
+            var targets = await ResolveUninstallTargetsAsync(id, version, token);
+            if (declaration is null && targets.Length == 0)
+            {
+                return Rejected(id, "not_found", $"plugin '{id}' is not declared or installed");
+            }
+
+            // A package can be depended on even when its consumer is not declared;
+            // check every installed package, not just the declaration set. Versions
+            // that survive this uninstall still satisfy their dependents.
+            var allInstalled = await _store.ListAsync(token);
+            var targetVersions = targets.Select(package => NuGetVersion.Parse(package.Version)).ToArray();
+            var survivingVersions = allInstalled
+                .Where(package => package.Id == id &&
+                                  !targets.Any(target => string.Equals(
+                                      target.Version, package.Version, StringComparison.Ordinal)))
+                .Select(package => NuGetVersion.Parse(package.Version)).ToArray();
+            var dependents = await FindInstalledDependentsAsync(
+                id, targetVersions, token, survivingVersions);
             if (dependents.Length > 0)
             {
                 return Rejected(id, "conflict",
-                    $"declared plugins depend on '{id}': {string.Join(", ", dependents)}");
+                    $"installed plugins depend on '{id}': {string.Join(", ", dependents)}");
             }
 
+            // Even an orphan package has a fiber: reconcile the declaration first
+            // so the fiber is retired before its bytes leave the store.
             var updated = application with
             {
                 Plugins = application.Plugins.Where(item => item.Id != id).ToArray(),
             };
-            await updated.SaveAsync(_manifestPath, token);
-            var apply = await ApplyWithRollbackAsync(application, id, token);
+            var apply = await PersistAndApplyAsync(application, updated, token);
             if (!apply.Success)
             {
                 return Failure(id, apply.Failure!);
             }
 
-            var storeResult = await _store.UninstallAsync(id, version, token);
-            Interlocked.Increment(ref _revision);
-            return Accepted(id, storeResult.Changes);
+            try
+            {
+                var storeResult = await _store.UninstallAsync(id, version, token);
+                Interlocked.Increment(ref _revision);
+                return Accepted(id, storeResult.Changes);
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    await TryRestoreAsync(application, null);
+                }
+                catch
+                {
+                    // Best effort: report the store failure.
+                }
+
+                return Failure(id, ex);
+            }
         }, ct);
 
     public Task<PluginMutationResult> SetEnabledAsync(
@@ -485,8 +621,7 @@ public sealed class PluginControlService
             {
                 Plugins = application.Plugins.Select(item => item.Id == id ? replacement : item).ToArray(),
             };
-            await updated.SaveAsync(_manifestPath, token);
-            var apply = await ApplyWithRollbackAsync(application, id, token);
+            var apply = await PersistAndApplyAsync(application, updated, token);
             if (!apply.Success)
             {
                 return Failure(id, apply.Failure!);
@@ -524,13 +659,17 @@ public sealed class PluginControlService
                 return Rejected(id, "not_found", $"plugin '{id}' is not declared");
             }
 
+            if (_registry.ProtectedIds.Contains(id))
+            {
+                return Rejected(id, "forbidden", $"plugin '{id}' is protected");
+            }
+
             var replacement = declaration with { Config = values };
             var updated = application with
             {
                 Plugins = application.Plugins.Select(item => item.Id == id ? replacement : item).ToArray(),
             };
-            await updated.SaveAsync(_manifestPath, token);
-            var apply = await ApplyWithRollbackAsync(application, id, token);
+            var apply = await PersistAndApplyAsync(application, updated, token);
             if (!apply.Success)
             {
                 return Failure(id, apply.Failure!);
@@ -585,37 +724,133 @@ public sealed class PluginControlService
         throw new KeyNotFoundException($"unknown upload '{uploadKey}'");
     }
 
-    private async Task<string[]> FindDeclaredDependentsAsync(
-        ApplicationManifest application, string id, string? version, CancellationToken ct)
+    private async Task<ApplicationManifest> LoadApplicationOrEmptyAsync(CancellationToken ct)
     {
-        var installed = await _store.ListAsync(ct);
-        NuGetVersion.TryParse(version, out var targetVersion);
-        var dependents = new List<string>();
-        foreach (var declaration in application.Plugins.Where(item => item.Id != id))
+        try
         {
-            var package = installed.FirstOrDefault(item => item.Id == declaration.Id);
-            var depends = package?.Manifest.DependenciesOrEmpty.Any(dependency =>
-                dependency.Id == id &&
-                (targetVersion is null ||
-                 (VersionRange.TryParse(dependency.VersionRange, out var range) && range.Satisfies(targetVersion))));
-            if (depends == true)
+            return await LoadApplicationAsync(ct);
+        }
+        catch (FileNotFoundException)
+        {
+            // An orphan package can be uninstalled before any declaration exists.
+            return new ApplicationManifest("gocordis", "0.0.0", _store.HostVersion, []);
+        }
+    }
+
+    private async Task<InstalledPlugin[]> ResolveUninstallTargetsAsync(
+        string id, string? version, CancellationToken ct)
+    {
+        var candidates = (await _store.ListAsync(ct))
+            .Where(package => string.Equals(package.Id, id, StringComparison.Ordinal))
+            .ToArray();
+        if (version is null)
+        {
+            return candidates;
+        }
+
+        var exact = candidates.Where(package =>
+            string.Equals(package.Version, version, StringComparison.Ordinal)).ToArray();
+        if (exact.Length > 0)
+        {
+            return exact;
+        }
+
+        if (!VersionRange.TryParse(version, out var range))
+        {
+            return [];
+        }
+
+        return candidates.Where(package =>
+            NuGetVersion.TryParse(package.Version, out var parsed) && range.Satisfies(parsed)).ToArray();
+    }
+
+    private async Task<string[]> FindInstalledDependentsAsync(
+        string id,
+        IReadOnlyCollection<NuGetVersion> targetVersions,
+        CancellationToken ct,
+        IReadOnlyCollection<NuGetVersion>? survivingVersions = null)
+    {
+        if (targetVersions.Count == 0)
+        {
+            return [];
+        }
+
+        var installed = await _store.ListAsync(ct);
+        var dependents = new List<string>();
+        foreach (var package in installed)
+        {
+            if (string.Equals(package.Id, id, StringComparison.Ordinal))
             {
-                dependents.Add(declaration.Id);
+                continue;
+            }
+
+            foreach (var dependency in package.Manifest.DependenciesOrEmpty)
+            {
+                if (!string.Equals(dependency.Id, id, StringComparison.Ordinal) ||
+                    !VersionRange.TryParse(dependency.VersionRange, out var range) ||
+                    !targetVersions.Any(version => range.Satisfies(version)) ||
+                    (survivingVersions is not null && survivingVersions.Any(version => range.Satisfies(version))))
+                {
+                    continue;
+                }
+
+                dependents.Add(package.Id);
+                break;
             }
         }
 
         return dependents.Distinct(StringComparer.Ordinal).ToArray();
     }
 
-    /// <summary>
-    /// Reconcile after a persisted declaration edit. On failure the previous
-    /// declaration is written back and reapplied before the error is reported.
-    /// </summary>
-    private async Task<(bool Success, Exception? Failure)> ApplyWithRollbackAsync(
-        ApplicationManifest previous, string id, CancellationToken ct)
+    private async Task TryUninstallPackageAsync(string id, string version)
     {
         try
         {
+            await _store.UninstallAsync(id, version, CancellationToken.None);
+        }
+        catch
+        {
+            // Best effort: the package was never exposed through a declaration.
+        }
+    }
+
+    private void ConsumeUpload(string uploadKey)
+    {
+        if (_uploads.Remove(uploadKey, out var path))
+        {
+            TryDeleteFile(path);
+        }
+    }
+
+    private void CleanStaleUploads()
+    {
+        var directory = Path.Combine(_store.Root, ".uploads");
+        try
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    /// <summary>
+    /// Persists a declaration edit and reconciles it. On failure the previous
+    /// declaration and any store change made by this mutation are restored before
+    /// the error is reported. Revision is advanced by the caller only after the
+    /// whole mutation has succeeded.
+    /// </summary>
+    private async Task<(bool Success, Exception? Failure)> PersistAndApplyAsync(
+        ApplicationManifest previous,
+        ApplicationManifest updated,
+        CancellationToken ct,
+        Func<Task>? undoStore = null)
+    {
+        try
+        {
+            await updated.SaveAsync(_manifestPath, ct);
             await ApplyAllCoreAsync(ct);
             return (true, null);
         }
@@ -623,8 +858,7 @@ public sealed class PluginControlService
         {
             try
             {
-                await previous.SaveAsync(_manifestPath, CancellationToken.None);
-                await ApplyAllCoreAsync(CancellationToken.None);
+                await TryRestoreAsync(previous, undoStore);
             }
             catch
             {
@@ -633,6 +867,17 @@ public sealed class PluginControlService
 
             return (false, ex);
         }
+    }
+
+    private async Task TryRestoreAsync(ApplicationManifest previous, Func<Task>? undoStore)
+    {
+        await previous.SaveAsync(_manifestPath, CancellationToken.None);
+        if (undoStore is not null)
+        {
+            await undoStore();
+        }
+
+        await ApplyAllCoreAsync(CancellationToken.None);
     }
 
     private async Task<PluginMutationResult> MutateAsync(

@@ -2,13 +2,17 @@ import { useEffect, useState } from "react";
 import type {
   PluginStateEvent, StreamStatus, UIManifestEvent, UIObservation,
 } from "./types";
-import { ingestObservation, ingestPluginState, ingestUIManifest } from "./lib/projections";
+import {
+  ALL, COMPOSITION, PLUGIN, bumpDomains,
+  ingestObservation, ingestPluginState, ingestUIManifest,
+} from "./lib/projections";
 
 // One shared SSE connection per page. `observation` only invalidates; the
 // control plane also emits `plugin-state` (plugin list / runtime snapshot)
 // and `ui-manifest` (composition + client modules). State always comes from
 // named queries — the frame carries just a revision and an action label.
 let source: EventSource | null = null;
+let hasOpened = false;
 const handlers = new Set<(ev: UIObservation) => void>();
 const statusHandlers = new Set<(s: StreamStatus) => void>();
 const pluginHandlers = new Set<(ev: PluginStateEvent) => void>();
@@ -71,7 +75,14 @@ function ensure() {
     ingestUIManifest(ev);
     for (const fn of manifestHandlers) fn(ev);
   });
-  source.onopen = report;
+  source.onopen = () => {
+    // The first open just establishes the baseline: views fetched on mount.
+    // On a later open the socket was down in between, so frames were lost —
+    // force plugin/composition/all consumers to re-fetch authoritative state.
+    if (hasOpened) bumpDomains([PLUGIN, COMPOSITION, ALL]);
+    hasOpened = true;
+    report();
+  };
   source.onerror = report;
 }
 

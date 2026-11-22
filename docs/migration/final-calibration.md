@@ -53,6 +53,8 @@ Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52)
 | Koishi 完整市场/Console/聊天插件生态 | 有意不迁移 | KoishiCase 只验证组合语义 |
 | JS 公开 API 选项/异常/关闭时序严格等价 | 接受差异 | 机制等价，API 形状不同 |
 | WASM 零停机原子 HMR | 接受差异 | 当前为 warm-validate + 旧 Fiber Gone 后提交 |
+| UI 控制面鉴权 | 仅 loopback 安全；remote 需外部鉴权或宿主 AccessPolicy | `--allow-remote` 无 policy 时写端点被拒绝（403） |
+| 平台收敛 gate 覆盖 | 代表性 6/30，不宣称全覆盖 | 其余 24 项未移植 |
 
 因此：**行级 Missing = 0，但“Go 100% 逐能力等价”仍未成立**。等价的是主体框架与迁移范围；上述子能力属于明确边界或延期项。
 
@@ -77,7 +79,7 @@ Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52)
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 358/358
+dotnet test  Gocordis.sln → 369/369
 ```
 
 结论：

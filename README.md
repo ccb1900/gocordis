@@ -1,5 +1,5 @@
 > **C# 正式入口**：`dotnet run --project src/Gocordis.Platform -- --manifest gocordis.app.json --store ~/.gocordis/plugins`
-> Console 可通过 UI 安装、配置、启停、升级、卸载插件，并查看依赖与运行状态。
+> Console 可通过 UI 安装、配置、启停、升级、卸载插件，并查看依赖与运行状态；写操作默认仅 loopback 可用，远程需显式鉴权策略。
 > （不是 `samples/PlatformHost`；后者只是示例）。详见 `docs/migration/final-acceptance.md`。
 
 > **C# 迁移状态**：完整迁移在 [`migration/dotnet-complete`](https://github.com/ccb1900/gocordis/tree/migration/dotnet-complete) 分支。

@@ -157,7 +157,7 @@ public sealed class Phase6Tests
     }
 
     [Fact]
-    public async Task WebUiControlsPluginLifecycleAndConfigOverHttp()
+    public async Task WebUiRejectsUnpersistedLifecycleMutationsWithoutControl()
     {
         await using var runtime = new Gocordis.Core.Runtime();
         var host = new ConsoleHost(runtime);
@@ -170,30 +170,18 @@ public sealed class Phase6Tests
 
         var disabled = await PostJsonAsync(client, "/api/plugins/control",
             new JsonObject { ["pluginId"] = "p1", ["enable"] = false });
-        Assert.Equal(HttpStatusCode.OK, disabled.StatusCode);
-        var disabledData = JsonNode.Parse(await disabled.Content.ReadAsStringAsync())!["data"]!;
-        Assert.Equal("p1", disabledData["id"]!.GetValue<string>());
-        Assert.False(disabledData["enabled"]!.GetValue<bool>());
-        Assert.Equal("disabled", await PluginStateAsync(client, "p1"));
-
-        var enabled = await PostJsonAsync(client, "/api/plugins/control",
-            new JsonObject { ["pluginId"] = "p1", ["enable"] = true });
-        Assert.Equal(HttpStatusCode.OK, enabled.StatusCode);
-        Assert.Equal("Active", await PluginStateAsync(client, "p1"));
-
-        var config = JsonNode.Parse(await client.GetStringAsync("/api/plugins/p1/config"))!["data"]!;
-        Assert.Equal("1", config["value"]!.GetValue<string>());
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, disabled.StatusCode);
+        Assert.Equal("unavailable",
+            JsonNode.Parse(await disabled.Content.ReadAsStringAsync())!["code"]!.GetValue<string>());
 
         var changed = await PostJsonAsync(client, "/api/plugins/p1/config",
             new JsonObject { ["config"] = new JsonObject { ["value"] = "2" } });
-        Assert.Equal(HttpStatusCode.Accepted, changed.StatusCode);
-        var updated = JsonNode.Parse(await client.GetStringAsync("/api/plugins/p1/config"))!["data"]!;
-        Assert.Equal("2", updated["value"]!.GetValue<string>());
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, changed.StatusCode);
 
-        var missing = await client.GetAsync("/api/plugins/missing/config");
-        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
-        Assert.Equal("not_found",
-            JsonNode.Parse(await missing.Content.ReadAsStringAsync())!["code"]!.GetValue<string>());
+        // Reads remain available; no mutation happened.
+        var config = JsonNode.Parse(await client.GetStringAsync("/api/plugins/p1/config"))!["data"]!;
+        Assert.Equal("1", config["value"]!.GetValue<string>());
+        Assert.Equal("Active", await PluginStateAsync(client, "p1"));
     }
 
     [Fact]

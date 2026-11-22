@@ -283,6 +283,218 @@ public sealed class PluginControlPlaneTests
     }
 
     // -------------------------------------------------------------------------
+    // 7) rollback / staging / reverse dependencies / protected control plane
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task FailedUpgradeRollsBackStoreAlongsideManifest()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        var v1 = await BuildPackageAsync(fx.Temp, "alpha", "1.0.0", "demo");
+        var v1Key = await UploadAndGetKeyAsync(fx.Client, v1, "alpha-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = v1Key, ["enable"] = true })), "install alpha v1");
+
+        var manifestBefore = await File.ReadAllTextAsync(fx.ManifestPath);
+        var revisionBefore = fx.Control.Revision;
+
+        // v2 activates a factory whose Apply fails: the upgrade must undo both the
+        // declaration edit and the store mutation.
+        var v2 = await BuildPackageAsync(fx.Temp, "alpha", "2.0.0", "crash");
+        var v2Key = await UploadAndGetKeyAsync(fx.Client, v2, "alpha-2.0.0.gocordis-plugin");
+        var failed = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/upgrade",
+            new JsonObject { ["id"] = "alpha", ["uploadKey"] = v2Key, ["versionRange"] = RangeV2 }));
+        AssertRejected(failed, "conflict", "upgrade alpha with failing Apply");
+
+        Assert.Equal(manifestBefore, await File.ReadAllTextAsync(fx.ManifestPath));
+        Assert.Equal(revisionBefore, fx.Control.Revision);
+
+        var store = await GetDataArrayAsync(fx.Client, "/api/plugins/store");
+        AssertContainsStoreEntry(store, "alpha", "1.0.0");
+        Assert.DoesNotContain(store.OfType<JsonObject>(),
+            item => Str(item, "id") == "alpha" && Str(item, "version") == "2.0.0");
+
+        // The restored declaration must still be usable: a later control action
+        // resolves v1 from the store instead of failing with a missing package.
+        var disabled = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/control",
+            new JsonObject { ["pluginId"] = "alpha", ["enable"] = false }));
+        AssertAccepted(disabled, "disable alpha after failed upgrade");
+        Assert.Equal("1.0.0", Str(AssertPlugin(await GetDataArrayAsync(fx.Client, "/api/plugins"), "alpha"), "installedVersion"));
+    }
+
+    [Fact]
+    public async Task FailedInstallApplyLeavesNoUndeclaredStorePackage()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        var package = await BuildPackageAsync(fx.Temp, "alpha", "1.0.0", "crash");
+        var uploadKey = await UploadAndGetKeyAsync(fx.Client, package, "alpha-1.0.0.gocordis-plugin");
+        var revisionBefore = fx.Control.Revision;
+
+        var failed = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = uploadKey, ["enable"] = true }));
+        AssertRejected(failed, "conflict", "install alpha with failing Apply");
+
+        Assert.Equal(revisionBefore, fx.Control.Revision);
+        Assert.DoesNotContain(await File.ReadAllTextAsync(fx.ManifestPath), "alpha", StringComparison.Ordinal);
+        Assert.DoesNotContain((await GetDataArrayAsync(fx.Client, "/api/plugins/store")).OfType<JsonObject>(),
+            item => Str(item, "id") == "alpha");
+    }
+
+    [Fact]
+    public async Task UploadKeyIsServerGeneratedAndUploadFileIsConsumed()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        var package = await BuildPackageAsync(fx.Temp, "alpha", "1.0.0", "demo");
+        const string fileName = "alpha-1.0.0.gocordis-plugin";
+        var first = await ReadEnvelopeAsync(await UploadAsync(fx.Client, package, fileName));
+        var second = await ReadEnvelopeAsync(await UploadAsync(fx.Client, package, fileName));
+        var firstKey = Str(first.Data, "uploadKey");
+        var secondKey = Str(second.Data, "uploadKey");
+        Assert.False(string.IsNullOrWhiteSpace(firstKey));
+        Assert.False(string.IsNullOrWhiteSpace(secondKey));
+        Assert.NotEqual(fileName, firstKey);
+        Assert.NotEqual(firstKey, secondKey);
+
+        var uploadDirectory = Path.Combine(fx.StoreRoot, ".uploads");
+        Assert.Equal(2, Directory.GetFiles(uploadDirectory).Length);
+
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = firstKey, ["enable"] = true })), "install from first upload");
+        Assert.Single(Directory.GetFiles(uploadDirectory));
+
+        // A consumed key can no longer drive a mutation; the other upload is intact.
+        var replay = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = firstKey, ["enable"] = true }));
+        Assert.Equal("not_found", Code(replay));
+        var otherKey = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = secondKey, ["enable"] = true }));
+        Assert.Equal("conflict", Code(otherKey));
+
+        // A fresh control instance discards staging files left by an older process.
+        Directory.CreateDirectory(uploadDirectory);
+        await File.WriteAllTextAsync(Path.Combine(uploadDirectory, "orphan.gocordis-plugin"), "stale");
+        _ = new PluginControlService(fx.ManifestPath, fx.Store, fx.Registry);
+        Assert.False(Directory.Exists(uploadDirectory) && Directory.EnumerateFiles(uploadDirectory).Any());
+    }
+
+    [Fact]
+    public async Task UpgradeRejectsWhenInstalledDependentRangeWouldBeUnsatisfied()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        var providerV1 = await BuildPackageAsync(fx.Temp, "provider", "1.0.0", "provider",
+            provides: [DemoCapability.Name]);
+        var providerKey = await UploadAndGetKeyAsync(fx.Client, providerV1, "provider-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = providerKey, ["enable"] = true })), "install provider v1");
+
+        var consumer = await BuildPackageAsync(fx.Temp, "consumer", "1.0.0", "consumer",
+            dependencies: [new PluginDependency("provider", RangeV1)]);
+        var consumerKey = await UploadAndGetKeyAsync(fx.Client, consumer, "consumer-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = consumerKey, ["enable"] = true })), "install consumer");
+
+        var manifestBefore = await File.ReadAllTextAsync(fx.ManifestPath);
+        var providerV2 = await BuildPackageAsync(fx.Temp, "provider", "2.0.0", "provider",
+            provides: [DemoCapability.Name]);
+        var providerV2Key = await UploadAndGetKeyAsync(fx.Client, providerV2, "provider-2.0.0.gocordis-plugin");
+        var rejected = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/upgrade",
+            new JsonObject { ["id"] = "provider", ["uploadKey"] = providerV2Key, ["versionRange"] = RangeV2 }));
+        AssertRejected(rejected, "conflict", "upgrade provider past a declared dependent range");
+
+        Assert.Equal(manifestBefore, await File.ReadAllTextAsync(fx.ManifestPath));
+        var store = await GetDataArrayAsync(fx.Client, "/api/plugins/store");
+        AssertContainsStoreEntry(store, "provider", "1.0.0");
+        Assert.DoesNotContain(store.OfType<JsonObject>(),
+            item => Str(item, "id") == "provider" && Str(item, "version") == "2.0.0");
+        Assert.Equal("Active", Str(AssertPlugin(await GetDataArrayAsync(fx.Client, "/api/plugins"), "consumer"), "state"));
+    }
+
+    [Fact]
+    public async Task UiUninstallWithDeclarationVersionRangeActuallyRemovesStorePackage()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        var v1 = await BuildPackageAsync(fx.Temp, "alpha", "1.0.0", "demo");
+        var v1Key = await UploadAndGetKeyAsync(fx.Client, v1, "alpha-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = v1Key, ["enable"] = true })), "install alpha v1");
+
+        var v2 = await BuildPackageAsync(fx.Temp, "alpha", "2.0.0", "demo");
+        var v2Key = await UploadAndGetKeyAsync(fx.Client, v2, "alpha-2.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/upgrade",
+            new JsonObject { ["id"] = "alpha", ["uploadKey"] = v2Key, ["versionRange"] = RangeV2 })),
+            "upgrade alpha v2");
+
+        // The UI sends the declaration's versionRange verbatim; it is not an exact
+        // store version, but the package must still be removed.
+        var removed = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/uninstall",
+            new JsonObject { ["id"] = "alpha", ["version"] = RangeV2 }));
+        AssertAccepted(removed, "uninstall alpha with declaration range");
+
+        Assert.DoesNotContain((await GetDataArrayAsync(fx.Client, "/api/plugins/store")).OfType<JsonObject>(),
+            item => Str(item, "id") == "alpha");
+        Assert.Null(AssertPlugin(await GetDataArrayAsync(fx.Client, "/api/plugins"), "alpha"));
+        Assert.DoesNotContain(await File.ReadAllTextAsync(fx.ManifestPath), "alpha", StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OrphanStorePackageCanBeUninstalledWithoutDeclaration()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        var package = await BuildPackageAsync(fx.Temp, "orphan", "1.0.0", "demo");
+        var uploadKey = await UploadAndGetKeyAsync(fx.Client, package, "orphan-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = uploadKey, ["enable"] = true })), "install orphan");
+
+        // Drop only the declaration: the store package is still present and the UI
+        // must be able to clean it up.
+        var declared = await ApplicationManifest.LoadAsync(fx.ManifestPath);
+        await new ApplicationManifest(declared.Id, declared.Version, declared.HostVersion, [])
+            .SaveAsync(fx.ManifestPath);
+        AssertContainsStoreEntry(await GetDataArrayAsync(fx.Client, "/api/plugins/store"), "orphan", "1.0.0");
+
+        var removed = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/uninstall",
+            new JsonObject { ["id"] = "orphan" }));
+        AssertAccepted(removed, "uninstall orphan package");
+        Assert.DoesNotContain((await GetDataArrayAsync(fx.Client, "/api/plugins/store")).OfType<JsonObject>(),
+            item => Str(item, "id") == "orphan");
+    }
+
+    [Fact]
+    public async Task ProtectedPluginRejectsUpgradeAndConfigWrite()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        var v1 = await BuildPackageAsync(fx.Temp, "alpha", "1.0.0", "demo");
+        var v1Key = await UploadAndGetKeyAsync(fx.Client, v1, "alpha-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = v1Key, ["enable"] = true })), "install alpha v1");
+
+        fx.Registry.ProtectedIds.Add("alpha");
+        var manifestBefore = await File.ReadAllTextAsync(fx.ManifestPath);
+        var revisionBefore = fx.Control.Revision;
+
+        var v2 = await BuildPackageAsync(fx.Temp, "alpha", "2.0.0", "demo");
+        var v2Key = await UploadAndGetKeyAsync(fx.Client, v2, "alpha-2.0.0.gocordis-plugin");
+        var upgrade = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/upgrade",
+            new JsonObject { ["id"] = "alpha", ["uploadKey"] = v2Key, ["versionRange"] = RangeV2 }));
+        AssertRejected(upgrade, "forbidden", "upgrade protected alpha");
+
+        var config = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/alpha/config",
+            new JsonObject { ["config"] = new JsonObject { ["value"] = "blocked" } }));
+        AssertRejected(config, "forbidden", "configure protected alpha");
+
+        Assert.Equal(manifestBefore, await File.ReadAllTextAsync(fx.ManifestPath));
+        Assert.Equal(revisionBefore, fx.Control.Revision);
+        AssertContainsStoreEntry(await GetDataArrayAsync(fx.Client, "/api/plugins/store"), "alpha", "1.0.0");
+    }
+
+    // -------------------------------------------------------------------------
     // helpers: HTTP
     // -------------------------------------------------------------------------
 
@@ -339,6 +551,13 @@ public sealed class PluginControlPlaneTests
         Assert.True(accepted,
             $"{operation} was not accepted (HTTP {(int)result.StatusCode}, code={Code(result) ?? "<none>"}, " +
             $"error={Str(result.Data, "error") ?? "<none>"})");
+    }
+
+    private static void AssertRejected(Envelope result, string code, string operation)
+    {
+        var accepted = result.Data["accepted"] is JsonValue value && value.TryGetValue<bool>(out var flag) && flag;
+        Assert.False(accepted, $"{operation} must not be accepted");
+        Assert.Equal(code, Code(result));
     }
 
     private static string? Code(Envelope envelope) => Str(envelope.Data, "code") ?? Str(envelope.Root, "code");
@@ -538,6 +757,7 @@ public sealed class PluginControlPlaneTests
         public WebUiServer Server { get; }
         public HttpClient Client { get; }
         public string ManifestPath => Temp.Path("gocordis.app.json");
+        public string StoreRoot => Temp.Path("store");
 
         public static async Task<Fixture> CreateAsync()
         {
@@ -546,6 +766,7 @@ public sealed class PluginControlPlaneTests
             var host = new ConsoleHost(runtime);
             var registry = new PluginRegistry(runtime);
             registry.RegisterFactory("demo", _ => new NoopComponent("demo"));
+            registry.RegisterFactory("crash", _ => new CrashComponent());
             registry.RegisterFactory("provider", _ => new ProviderComponent());
             registry.RegisterFactory("consumer", _ => new ConsumerComponent());
 
@@ -579,6 +800,13 @@ public sealed class PluginControlPlaneTests
     {
         public override string Name => name;
         public override ValueTask<Cleanup?> ApplyAsync(Context context) => ValueTask.FromResult<Cleanup?>(null);
+    }
+
+    private sealed class CrashComponent : Component
+    {
+        public override string Name => "crash";
+        public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
+            throw new InvalidOperationException("crash plugin cannot activate");
     }
 
     private sealed class ProviderComponent : Component

@@ -12,6 +12,21 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Gocordis.Console.WebUi;
 
+/// <summary>The console capability a request wants to exercise. A policy sees
+/// the scope, never the raw request, so read-only and narrow write policies
+/// stay simple.</summary>
+public enum ConsoleAccessScope
+{
+    Query,
+    Command,
+    Lifecycle,
+    Config,
+    Package,
+}
+
+/// <summary>Returns true when the caller may exercise the given scope.</summary>
+public delegate bool ConsoleAccessPolicy(ConsoleAccessScope scope);
+
 /// <summary>
 /// Transport-level console API. The host and UI contribution contracts live in
 /// Gocordis.Plugins; this project is only an ASP.NET Core adapter.
@@ -23,7 +38,9 @@ public sealed class WebUiServer : IAsyncDisposable
 
     private readonly WebApplication _app;
     private readonly ConsoleHost _host;
+    private readonly bool _allowRemote;
     private readonly PluginControlService? _control;
+    private readonly ConsoleAccessPolicy? _accessPolicy;
     private readonly Func<string, string?> _clientModuleRoot;
     private readonly string? _reactDist;
 
@@ -34,10 +51,13 @@ public sealed class WebUiServer : IAsyncDisposable
         Plugins.PluginRegistry? registry = null,
         Func<string, string?>? clientModuleRootResolver = null,
         string? webDistPath = null,
-        PluginControlService? control = null)
+        PluginControlService? control = null,
+        ConsoleAccessPolicy? accessPolicy = null)
     {
         _host = host;
+        _allowRemote = allowRemote;
         _control = control;
+        _accessPolicy = accessPolicy;
         _clientModuleRoot = clientModuleRootResolver ?? DefaultClientModuleRoot;
         _reactDist = FindReactDist(webDistPath);
 
@@ -221,6 +241,11 @@ public sealed class WebUiServer : IAsyncDisposable
 
         _app.MapGet("/api/query/{**name}", (string name) =>
         {
+            // Reads stay open in the remote-without-policy mode; an explicit
+            // policy may still restrict query access.
+            IResult? denial = _accessPolicy is null ? null : Deny(ConsoleAccessScope.Query);
+            if (denial is not null) return denial;
+
             var result = host.Api.Query(name);
             return result is null
                 ? ApiResults.Error(StatusCodes.Status404NotFound, "not_found", $"unknown query '{name}'")
@@ -229,6 +254,9 @@ public sealed class WebUiServer : IAsyncDisposable
 
         _app.MapPost("/api/command/{**name}", async (string name, HttpContext context) =>
         {
+            var denial = Deny(ConsoleAccessScope.Command);
+            if (denial is not null) return denial;
+
             JsonNode? payload;
             try
             {
@@ -250,6 +278,9 @@ public sealed class WebUiServer : IAsyncDisposable
         // the package limit itself; FormOptions/Kestrel admit the full size.
         _app.MapPost("/api/plugins/packages", async (HttpContext context) =>
         {
+            var denial = Deny(ConsoleAccessScope.Package);
+            if (denial is not null) return denial;
+
             if (_control is null)
             {
                 return Unavailable("plugin control service is not configured");
@@ -305,6 +336,9 @@ public sealed class WebUiServer : IAsyncDisposable
 
         _app.MapPost("/api/plugins/install", async (HttpContext context) =>
         {
+            var denial = Deny(ConsoleAccessScope.Package);
+            if (denial is not null) return denial;
+
             if (_control is null)
             {
                 return Unavailable("plugin control service is not configured");
@@ -338,6 +372,9 @@ public sealed class WebUiServer : IAsyncDisposable
 
         _app.MapPost("/api/plugins/upgrade", async (HttpContext context) =>
         {
+            var denial = Deny(ConsoleAccessScope.Package);
+            if (denial is not null) return denial;
+
             if (_control is null)
             {
                 return Unavailable("plugin control service is not configured");
@@ -368,6 +405,9 @@ public sealed class WebUiServer : IAsyncDisposable
 
         _app.MapPost("/api/plugins/uninstall", async (HttpContext context) =>
         {
+            var denial = Deny(ConsoleAccessScope.Package);
+            if (denial is not null) return denial;
+
             if (_control is null)
             {
                 return Unavailable("plugin control service is not configured");
@@ -396,34 +436,14 @@ public sealed class WebUiServer : IAsyncDisposable
 
         _app.MapPost("/api/plugins/control", async (HttpContext context) =>
         {
-            if (_control is not null)
+            var denial = Deny(ConsoleAccessScope.Lifecycle);
+            if (denial is not null) return denial;
+
+            // The registry is a read model. Without the declaration control
+            // service a write could only change a fiber, never its manifest.
+            if (_control is null)
             {
-                JsonNode? controlPayload;
-                try
-                {
-                    controlPayload = await ReadBodyAsync(context);
-                }
-                catch (ApiRequestException ex)
-                {
-                    return ApiResults.Error(ex.Status, "invalid_request", ex.Message);
-                }
-
-                var body = controlPayload as JsonObject;
-                var pluginId = body?["pluginId"]?.GetValue<string>();
-                if (string.IsNullOrWhiteSpace(pluginId) ||
-                    body?["enable"] is not JsonValue controlEnableValue ||
-                    !controlEnableValue.TryGetValue<bool>(out var enabled))
-                {
-                    return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request",
-                        "pluginId and boolean enable are required");
-                }
-
-                return MutationResult(await _control.SetEnabledAsync(pluginId, enabled, context.RequestAborted));
-            }
-
-            if (registry is null)
-            {
-                return Unavailable("plugin registry is not configured");
+                return Unavailable("plugin control service is not configured");
             }
 
             JsonNode? payload;
@@ -436,33 +456,17 @@ public sealed class WebUiServer : IAsyncDisposable
                 return ApiResults.Error(ex.Status, "invalid_request", ex.Message);
             }
 
-            var id = (payload as JsonObject)?["pluginId"]?.GetValue<string>();
-            var enableNode = (payload as JsonObject)?["enable"];
-            if (string.IsNullOrWhiteSpace(id) || enableNode is not JsonValue enableValue ||
-                !enableValue.TryGetValue<bool>(out var enable))
+            var body = payload as JsonObject;
+            var pluginId = body?["pluginId"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(pluginId) ||
+                body?["enable"] is not JsonValue enableValue ||
+                !enableValue.TryGetValue<bool>(out var enabled))
             {
                 return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request",
                     "pluginId and boolean enable are required");
             }
 
-            if (!registry.Entries.ContainsKey(id))
-            {
-                return ApiResults.Error(StatusCodes.Status404NotFound, "not_found", $"unknown plugin '{id}'");
-            }
-
-            var declarations = registry.Entries.Values
-                .Select(entry => entry.Manifest.Id == id ? entry.Manifest with { Enabled = enable } : entry.Manifest)
-                .ToArray();
-            try
-            {
-                await registry.ApplyAsync(declarations);
-            }
-            catch (Exception ex)
-            {
-                return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request", ex.Message);
-            }
-
-            return ApiResults.Data(new JsonObject { ["id"] = id, ["enabled"] = enable });
+            return MutationResult(await _control.SetEnabledAsync(pluginId, enabled, context.RequestAborted));
         });
 
         _app.MapGet("/api/plugins/{id}/config", (string id) =>
@@ -483,6 +487,17 @@ public sealed class WebUiServer : IAsyncDisposable
 
         _app.MapPost("/api/plugins/{id}/config", async (string id, HttpContext context) =>
         {
+            var denial = Deny(ConsoleAccessScope.Config);
+            if (denial is not null) return denial;
+
+            // Configuration is a declaration: only the control service can
+            // persist it. A registry-only fallback would leave a fiber and its
+            // declaration out of sync after a restart.
+            if (_control is null)
+            {
+                return Unavailable("plugin control service is not configured");
+            }
+
             JsonNode? payload;
             try
             {
@@ -504,34 +519,7 @@ public sealed class WebUiServer : IAsyncDisposable
                 values[key] = ToClr(value);
             }
 
-            if (_control is not null)
-            {
-                return MutationResult(await _control.SetConfigAsync(id, values, context.RequestAborted));
-            }
-
-            if (registry is null)
-            {
-                return Unavailable("plugin registry is not configured");
-            }
-
-            if (!registry.Entries.TryGetValue(id, out var entry))
-            {
-                return ApiResults.Error(StatusCodes.Status404NotFound, "not_found", $"unknown plugin '{id}'");
-            }
-
-            var declarations = registry.Entries.Values
-                .Select(item => item.Manifest.Id == id ? item.Manifest with { Config = values } : item.Manifest)
-                .ToArray();
-            try
-            {
-                await registry.ApplyAsync(declarations);
-            }
-            catch (Exception ex)
-            {
-                return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request", ex.Message);
-            }
-
-            return ApiResults.Data(null, StatusCodes.Status202Accepted);
+            return MutationResult(await _control.SetConfigAsync(id, values, context.RequestAborted));
         });
 
         // Plugin client modules: only registered names are served, and every
@@ -890,6 +878,17 @@ public sealed class WebUiServer : IAsyncDisposable
 
     private static IResult Unavailable(string message) =>
         ApiResults.Error(StatusCodes.Status503ServiceUnavailable, "unavailable", message);
+
+    // A remote listener is read-only unless the host supplies an explicit
+    // policy. A supplied policy is authoritative even on a loopback listener.
+    private bool CanAccess(ConsoleAccessScope scope) =>
+        _accessPolicy?.Invoke(scope) ?? !_allowRemote;
+
+    private IResult? Deny(ConsoleAccessScope scope) =>
+        CanAccess(scope)
+            ? null
+            : ApiResults.Error(StatusCodes.Status403Forbidden, "forbidden",
+                $"{scope} is not permitted on this console");
 
     private static async Task<JsonNode?> ReadBodyAsync(HttpContext context)
     {

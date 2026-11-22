@@ -169,7 +169,9 @@ export function PluginExplorer() {
       setError(null);
       setNotice(null);
       try {
-        const result = await api.uninstallPlugin(plugin.id, plugin.version || undefined);
+        // The control service matches this against the exact installed store
+        // version; the declared `version` is a NuGet range and would not match.
+        const result = await api.uninstallPlugin(plugin.id, plugin.installedVersion || undefined);
         report(result, `已提交卸载 ${plugin.id}`);
       } catch (e) {
         setError(errText(e));
@@ -295,7 +297,9 @@ export function PluginExplorer() {
               { title: "操作", key: "actions", width: 240,
                 render: (_: unknown, p: ExplorerPlugin) => {
                   const canControl = p.controllable && !p.protected;
-                  const why = p.protected ? "受保护插件不可操作" : !p.controllable ? "该插件不接受运行时控制" : "";
+                  const why = p.protected
+                    ? "受保护插件不能完全启停/卸载"
+                    : !p.controllable ? "该插件不接受运行时控制" : "";
                   return (
                     <Space size={4} wrap onClick={(e) => e.stopPropagation()}>
                       <Tooltip title={why || undefined}>
@@ -352,7 +356,7 @@ export function PluginExplorer() {
                 </div>
                 <Space size={4} wrap>
                   {selected.protected && (
-                    <Tooltip title="控制台基础设施或宿主标记为受保护，不能开关/升级/卸载">
+                    <Tooltip title="宿主标记为受保护：不能完全启停/卸载；升级与配置由服务端裁决">
                       <Tag color="gold">受保护</Tag>
                     </Tooltip>
                   )}

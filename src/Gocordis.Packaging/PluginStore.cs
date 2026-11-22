@@ -82,18 +82,48 @@ public sealed class PluginStore
         try
         {
             var state = await ReadStateAsync(cancellationToken);
-            var targets = state.Plugins.Where(p =>
-                string.Equals(p.Id, id, StringComparison.Ordinal) &&
-                (version is null || string.Equals(p.Version, version, StringComparison.Ordinal))).ToArray();
+            var candidates = state.Plugins.Where(p =>
+                string.Equals(p.Id, id, StringComparison.Ordinal)).ToArray();
+            InstalledPlugin[] targets;
+            if (version is null)
+            {
+                targets = candidates;
+            }
+            else
+            {
+                // Exact versions keep their old semantics; the UI also sends the
+                // declaration's version range, which is resolved here instead.
+                var exact = candidates.Where(p =>
+                    string.Equals(p.Version, version, StringComparison.Ordinal)).ToArray();
+                if (exact.Length > 0)
+                {
+                    targets = exact;
+                }
+                else if (VersionRange.TryParse(version, out var range))
+                {
+                    targets = candidates.Where(p =>
+                        NuGetVersion.TryParse(p.Version, out var parsed) && range.Satisfies(parsed)).ToArray();
+                }
+                else
+                {
+                    targets = [];
+                }
+            }
+
             if (targets.Length == 0)
             {
                 return new PluginStoreResult([]);
             }
 
-            var dependents = state.Plugins.Where(p =>
-                p.Manifest.DependenciesOrEmpty.Any(d =>
+            // Dependents are still satisfied when another installed version of the
+            // same plugin remains within their declared range.
+            var survivors = state.Plugins.Where(p =>
+                !targets.Contains(p) && string.Equals(p.Id, id, StringComparison.Ordinal)).ToArray();
+            var dependents = state.Plugins.Where(p => !targets.Contains(p))
+                .Where(p => p.Manifest.DependenciesOrEmpty.Any(d =>
                     string.Equals(d.Id, id, StringComparison.Ordinal) &&
-                    targets.Any(t => VersionRange.Parse(d.VersionRange).Satisfies(NuGetVersion.Parse(t.Version)))))
+                    targets.Any(t => VersionRange.Parse(d.VersionRange).Satisfies(NuGetVersion.Parse(t.Version))) &&
+                    !survivors.Any(s => VersionRange.Parse(d.VersionRange).Satisfies(NuGetVersion.Parse(s.Version)))))
                 .Select(p => p.Id).Distinct(StringComparer.Ordinal).ToArray();
             if (dependents.Length > 0)
             {

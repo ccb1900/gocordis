@@ -138,6 +138,13 @@ function scheduleDomains(domains: string[]): void {
   if (!timer) timer = setTimeout(flush, coalesceMs);
 }
 
+/** Invalidate domains without an observation frame. Used when the SSE socket
+ * reconnects: events emitted during the outage were never delivered, so
+ * consumers must re-query their named queries from the authoritative state. */
+export function bumpDomains(domains: string[]): void {
+  scheduleDomains(domains);
+}
+
 /** ingestObservation folds one event into every interested projection and
  * marks its domains dirty; notification happens at most once per window. */
 export function ingestObservation(ev: UIObservation): void {

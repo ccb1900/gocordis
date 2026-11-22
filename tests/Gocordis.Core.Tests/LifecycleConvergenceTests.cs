@@ -102,6 +102,65 @@ public sealed class LifecycleConvergenceTests
     }
 
     [Fact]
+    public async Task DisposeParentWithFailedOrPendingChildDoesNotHang()
+    {
+        // Migration review P0-1: a child with no CurrentActivation (Failed or
+        // Pending) was counted as an unwind waiter, but StartUnwind returned
+        // immediately for it, so the parent never received a terminal report.
+        var runtime = new Runtime();
+        try
+        {
+            var neverProvided = new Key<int>($"never-provided-{Guid.NewGuid():N}");
+            var parent = await runtime.LoadAsync(new DelegateComponent(
+                "parent-of-inert-children",
+                async context =>
+                {
+                    await context.LoadChildAsync(new DelegateComponent(
+                        "failing-child",
+                        _ => throw new InvalidOperationException("child apply failed")));
+                    await context.LoadChildAsync(new DelegateComponent(
+                        "pending-child",
+                        _ => ValueTask.FromResult<Cleanup?>(null),
+                        inject: [neverProvided]));
+                    return null;
+                }));
+
+            Assert.Equal(2, parent.Children.Count);
+            var failed = parent.Children.Single(c => c.Component.Name == "failing-child");
+            var pending = parent.Children.Single(c => c.Component.Name == "pending-child");
+
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (failed.State != FiberState.Failed && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(10);
+            }
+
+            Assert.Equal(FiberState.Failed, failed.State);
+            Assert.Equal(FiberState.Pending, pending.State);
+
+            await runtime.DisposeAsync(parent).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(FiberState.Gone, parent.State);
+            Assert.Empty(parent.Children);
+            Assert.Equal(FiberState.Gone, failed.State);
+            Assert.Equal(FiberState.Gone, pending.State);
+
+            await runtime.CloseAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            // A broken build never replies to Close; do not turn the timeout
+            // failure into a second, indefinite hang during cleanup.
+            try
+            {
+                await runtime.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            catch (TimeoutException)
+            {
+            }
+        }
+    }
+
+    [Fact]
     public async Task GetFiberIsSafeUnderConcurrentLoadAndDispose()
     {
         await using var runtime = new Runtime();

@@ -19,7 +19,7 @@ Web UI 不直接操作 Fiber，不维护第二套插件状态。
 - 持有 manifest 路径、PluginStore、PluginRegistry、可选 UiContributionRegistry
 - 单一 SemaphoreSlim 串行化所有读写和 mutation
 - 工厂注册按 type 去重；ProductPluginComponent 贡献 typed key 与 UI Page
-- 每次 mutation 先写声明，再调和；失败时恢复旧声明并重新 Apply
+- 每次 mutation 先写声明，再调和；失败时恢复旧声明并尽力回滚 store（二次失败仍报告原始错误）
 - Revision 单调递增，供 SSE `plugin-state` 使用
 
 公开能力：List / Store / Dependencies / Upload / Install / Upgrade / Uninstall /
@@ -37,6 +37,7 @@ SetEnabled / SetConfig / ApplyAll。
 | POST | `/api/plugins/upgrade` | 升级并更新声明版本范围 |
 | POST | `/api/plugins/uninstall` | 先撤声明再卸载包 |
 | POST | `/api/plugins/control` | 持久化 enable/disable |
+| GET | `/api/plugins/{id}/config` | 读取当前插件配置 |
 | POST | `/api/plugins/{id}/config` | 持久化配置并 reload |
 | SSE | `/api/stream` | `plugin-state` + `ui-manifest` 增量刷新 |
 
@@ -78,12 +79,13 @@ npm run build → success
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 358/358
+dotnet test  Gocordis.sln → 369/369
 ```
 
 ## 5. 明确边界
 
 - 不做远程插件市场服务端；`IPluginPackageSource` 仍是未来接口
 - 不做用户/角色 IAM；loopback 是默认安全边界
+- `--allow-remote` 且无 AccessPolicy 时写端点返回 403；远程部署必须外部鉴权
 - 不让 Web UI 直接 Load/Dispose Fiber
 - 不复制 Koishi 聊天业务插件生态

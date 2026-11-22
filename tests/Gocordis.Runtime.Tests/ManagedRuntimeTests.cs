@@ -88,6 +88,29 @@ public sealed class ManagedRuntimeTests
     }
 
     [Fact]
+    public async Task TwoManagedComponentsCanBeActiveSimultaneously()
+    {
+        // Migration review P0-2: the backend used one static Key<string> for
+        // every managed component, so the second fiber failed as a duplicate
+        // provider. Each component must own the key it declares and provides.
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var loader = new ManagedPluginLoader();
+
+        var first = new ManagedPluginComponent(
+            loader, "managed-instance-a", SamplePath("SamplePlugin"), "SamplePlugin.SampleComponent");
+        var second = new ManagedPluginComponent(
+            loader, "managed-instance-b", SamplePath("SamplePlugin"), "SamplePlugin.SampleComponent");
+
+        var firstFiber = await runtime.LoadAsync(first).WaitAsync(TimeSpan.FromSeconds(5));
+        var secondFiber = await runtime.LoadAsync(second).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(FiberState.Active, firstFiber.State);
+        Assert.Equal(FiberState.Active, secondFiber.State);
+        Assert.Null(firstFiber.Failure);
+        Assert.Null(secondFiber.Failure);
+    }
+
+    [Fact]
     public async Task TwoPluginsCanUseDifferentVersionsOfAPrivateDependency()
     {
         await using var runtime = new Gocordis.Core.Runtime();

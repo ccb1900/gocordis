@@ -26,7 +26,10 @@ public sealed class BoundaryTests
         var project = ReadProject("src/Gocordis.Core/Gocordis.Core.csproj");
 
         Assert.DoesNotContain("ProjectReference", project, StringComparison.Ordinal);
-        Assert.DoesNotContain("PackageReference", project, StringComparison.Ordinal);
+        // Mature third-party packages (NuGet.Versioning) are allowed in Core;
+        // concrete runtimes, console and UI are not.
+        Assert.DoesNotContain("Gocordis.Runtime.", project, StringComparison.Ordinal);
+        Assert.DoesNotContain("Gocordis.Console", project, StringComparison.Ordinal);
     }
 
     [Theory]

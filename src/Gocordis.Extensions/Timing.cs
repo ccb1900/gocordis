@@ -151,7 +151,16 @@ public sealed class Scheduler : IAsyncDisposable
     private readonly Dictionary<Guid, Job> _jobs = [];
     private readonly HashSet<Guid> _running = [];
 
-    public IReadOnlyCollection<Job> Jobs => _jobs.Values.ToArray();
+    public IReadOnlyCollection<Job> Jobs
+    {
+        get
+        {
+            lock (_jobs)
+            {
+                return _jobs.Values.ToArray();
+            }
+        }
+    }
 
     public Guid ScheduleOnce(DateTimeOffset at, Func<ValueTask> action)
     {

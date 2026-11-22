@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using NuGet.Versioning;
 
 namespace Gocordis.Core;
 
@@ -14,6 +15,15 @@ public sealed class Runtime : IAsyncDisposable
     private readonly ConcurrentDictionary<ICapabilityKey, Fiber> _providers =
         new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<Realm, Dictionary<ICapabilityKey, Fiber>> _realmProviders = [];
+    private readonly List<VersionedBinding> _versionedProviders = [];
+
+    private sealed record VersionedBinding(
+        Realm Realm,
+        string Name,
+        Type ValueType,
+        NuGetVersion Version,
+        Fiber Provider,
+        object Value);
     private readonly Dictionary<ICapabilityKey, List<Handler>> _handlers =
         new(ReferenceEqualityComparer.Instance);
     private bool _closed;
@@ -153,6 +163,7 @@ public sealed class Runtime : IAsyncDisposable
             _fibers.Clear();
             _providers.Clear();
             _realmProviders.Clear();
+            _versionedProviders.Clear();
             _handlers.Clear();
         }
         finally
@@ -226,6 +237,68 @@ public sealed class Runtime : IAsyncDisposable
                 _realmProviders.Remove(realm);
             }
         }
+    }
+
+
+    internal void RegisterVersioned<T>(VersionedKey<T> key, T value, Fiber provider)
+    {
+        var realm = EffectiveRealm(provider, key);
+        var duplicate = _versionedProviders.FirstOrDefault(binding =>
+            ReferenceEquals(binding.Realm, realm) &&
+            binding.Name == key.Name &&
+            binding.ValueType == typeof(T) &&
+            binding.Version == key.Version &&
+            !ReferenceEquals(binding.Provider, provider));
+        if (duplicate is not null)
+        {
+            throw new DuplicateProviderException(
+                $"key '{key.Name}' version {key.Version} is already provided by '{duplicate.Provider.Component.Name}'");
+        }
+
+        _versionedProviders.RemoveAll(binding =>
+            ReferenceEquals(binding.Provider, provider) &&
+            binding.Name == key.Name &&
+            binding.ValueType == typeof(T));
+        _versionedProviders.Add(new VersionedBinding(realm, key.Name, typeof(T), key.Version, provider, value!));
+    }
+
+    internal void RemoveVersioned(Fiber provider, ICapabilityKey key) =>
+        _versionedProviders.RemoveAll(binding =>
+            ReferenceEquals(binding.Provider, provider) && binding.Name == key.Name);
+
+    internal T ResolveVersioned<T>(VersionedKey<T> key, Fiber consumer)
+    {
+        var realm = EffectiveRealm(consumer, key);
+        var binding = _versionedProviders
+            .Where(binding => ReferenceEquals(binding.Realm, realm) &&
+                              binding.Name == key.Name &&
+                              binding.ValueType == typeof(T) &&
+                              key.Accepts(binding.Version) &&
+                              !ReferenceEquals(binding.Provider, consumer) &&
+                              binding.Provider.State == FiberState.Active)
+            .OrderByDescending(binding => binding.Version)
+            .FirstOrDefault();
+        if (binding is null)
+        {
+            throw new DependencyMissingException(
+                $"'{consumer.Component.Name}' requires '{key.Name}' matching '{key.Constraint ?? (IFormattable)key.Version}' " +
+                $"but no active provider exists");
+        }
+
+        consumer.Committed[key] = binding.Provider;
+        return (T)binding.Value;
+    }
+
+    private bool HasVersionedProvider(IVersionedKey key, Fiber consumer)
+    {
+        var realm = EffectiveRealm(consumer, key);
+        return _versionedProviders.Any(binding =>
+            ReferenceEquals(binding.Realm, realm) &&
+            binding.Name == key.Name &&
+            binding.ValueType == key.ValueType &&
+            key.Accepts(binding.Version) &&
+            !ReferenceEquals(binding.Provider, consumer) &&
+            binding.Provider.State == FiberState.Active);
     }
 
     internal T RequireValue<T>(CapabilityKey key, Fiber consumer)
@@ -335,6 +408,16 @@ public sealed class Runtime : IAsyncDisposable
     {
         foreach (var key in fiber.Component.Inject().Where(key => key is not IMetaKey))
         {
+            if (key is IVersionedKey versioned)
+            {
+                if (!HasVersionedProvider(versioned, fiber))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
             var provider = FindProvider(EffectiveRealm(fiber, key), key);
             if (provider is null ||
                 provider.State != FiberState.Active ||
@@ -538,6 +621,7 @@ public sealed class Runtime : IAsyncDisposable
         fiber.Inverses.Clear();
         fiber.EffectStates.Clear();
         fiber.Provided.Clear();
+        _versionedProviders.RemoveAll(binding => ReferenceEquals(binding.Provider, fiber));
         fiber.Metadata.Clear();
         foreach (var key in fiber.Component.Provide())
         {
@@ -591,6 +675,10 @@ public sealed class Runtime : IAsyncDisposable
 
         // Cycle detection reads declarations, not current bindings: a cycle can
         // never be satisfied, so it must be rejected at the mount boundary.
+        var versionedDeclarations = _fibers.Values
+            .SelectMany(fiber => fiber.Component.Provide().OfType<IVersionedKey>()
+                .Select(key => (Fiber: fiber, Key: key)))
+            .ToArray();
         var declaredProviders = new Dictionary<(Realm, ICapabilityKey), Fiber>();
         foreach (var fiber in _fibers.Values)
         {
@@ -616,6 +704,24 @@ public sealed class Runtime : IAsyncDisposable
             visiting.Add(fiber.Id);
             foreach (var key in fiber.Component.Inject().Where(key => key is not IMetaKey))
             {
+                if (key is IVersionedKey requiredVersion)
+                {
+                    var best = versionedDeclarations
+                        .Where(candidate => candidate.Key.Name == requiredVersion.Name &&
+                                            candidate.Key.ValueType == requiredVersion.ValueType &&
+                                            requiredVersion.Accepts(candidate.Key.Version))
+                        .OrderByDescending(candidate => candidate.Key.Version)
+                        .Select(candidate => candidate.Fiber)
+                        .FirstOrDefault();
+                    if (best is not null && Visit(best))
+                    {
+                        chain.Add(fiber.Component.Name);
+                        return true;
+                    }
+
+                    continue;
+                }
+
                 if (declaredProviders.TryGetValue((EffectiveRealm(fiber, key), key), out var provider) &&
                     Visit(provider))
                 {

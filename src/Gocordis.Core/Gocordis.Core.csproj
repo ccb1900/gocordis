@@ -1,2 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="NuGet.Versioning" Version="8.0.0" />
+  </ItemGroup>
 </Project>

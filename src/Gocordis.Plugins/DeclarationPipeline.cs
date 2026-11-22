@@ -138,7 +138,15 @@ public sealed class ConfigWatcher : IDisposable
         }
         finally
         {
-            _reconcileGate.Release();
+            try
+            {
+                _reconcileGate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose raced with a queued file event.
+            }
+
             Interlocked.Increment(ref _revision);
         }
     }

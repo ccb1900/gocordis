@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../../src/Gocordis.Core/Gocordis.Core.csproj" />
+    <ProjectReference Include="../../src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
+    <ProjectReference Include="../../src/Gocordis.Extensions/Gocordis.Extensions.csproj" />
+    <ProjectReference Include="../../src/Gocordis.Console.WebUi/Gocordis.Console.WebUi.csproj" />
+  </ItemGroup>
+</Project>

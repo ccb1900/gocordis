@@ -186,6 +186,7 @@ public sealed class ExtensionTests
         using var two = broker.Register("b");
         Assert.Equal("a", broker.RoundRobin(0));
         Assert.Equal("b", broker.RoundRobin(1));
+        Assert.Equal("b", broker.RoundRobin(-1));
         two.Dispose();
         Assert.Single(broker.Providers);
 

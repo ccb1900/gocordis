@@ -47,7 +47,13 @@ public sealed class Broker<T>
     {
         lock (_sync)
         {
-            return _providers.Count == 0 ? default : _providers[(int)(ticket % _providers.Count)];
+            if (_providers.Count == 0)
+            {
+                return default;
+            }
+
+            var index = (int)((ticket % _providers.Count + _providers.Count) % _providers.Count);
+            return _providers[index];
         }
     }
 

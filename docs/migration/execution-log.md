@@ -64,6 +64,9 @@
 | 55 | 修正基线校验语义 | 迁移分支已有提交，`HEAD == baseline` 不再成立 | 校验改为"基线是 HEAD 祖先且 main 冻结"；`BASELINE VERIFIED` |
 | 56 | 外部终审问题集中修复 | 用户要求按 P0→P2 一次修完，不逐个小问题循环 | Effect 补偿/状态机/代次校验、Managed 生命周期所有者、Manifest typed 依赖统一、WASM bridge+HMR 串行化、Process 能力提供、扩展并发与路径安全、Console 端点 |
 | 57 | 终审闭合验证 | 证据驱动 | baseline + build + 99 passed；`review-closure-2026-11-22.md` |
+| 58 | 一次执行关闭 G-B1/G-B2 | 用户要求不分阶段 | `samples/KoishiCase` 复现论文 §5.3（服务端 + 浏览器双应用、开关、HMR、provider 切换）；`VersionedKey<T>` + NuGet.Versioning 实现 §6.6 版本路由 |
+| 59 | 闭环自审并修复 | agent 调用被拒，按审查清单直接自审 | 修 Broker 负索引、Scheduler/FS watcher 锁、ConfigWatcher gate 释放、版本化自依赖判环；补回归测试 |
+| 60 | 最终验证 | 证据驱动 | baseline + build + 108 passed |
 
 ## 验证结果（持续追加）
 

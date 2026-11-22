@@ -8,6 +8,7 @@ public sealed class FileSystemService : IAsyncDisposable
 {
     private readonly Dictionary<string, string> _mounts = new(StringComparer.Ordinal);
     private readonly List<FileSystemWatcher> _watchers = [];
+    private readonly object _watchersSync = new();
 
     public void Mount(string prefix, string root)
     {
@@ -33,11 +34,19 @@ public sealed class FileSystemService : IAsyncDisposable
         watcher.Changed += (_, args) => onChange(args.FullPath);
         watcher.Created += (_, args) => onChange(args.FullPath);
         watcher.EnableRaisingEvents = true;
-        _watchers.Add(watcher);
+        lock (_watchersSync)
+        {
+            _watchers.Add(watcher);
+        }
+
         return new Subscription(() =>
         {
             watcher.EnableRaisingEvents = false;
-            _watchers.Remove(watcher);
+            lock (_watchersSync)
+            {
+                _watchers.Remove(watcher);
+            }
+
             watcher.Dispose();
         });
     }
@@ -84,13 +93,18 @@ public sealed class FileSystemService : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var watcher in _watchers.ToArray())
+        FileSystemWatcher[] watchers;
+        lock (_watchersSync)
+        {
+            watchers = _watchers.ToArray();
+            _watchers.Clear();
+        }
+
+        foreach (var watcher in watchers)
         {
             watcher.EnableRaisingEvents = false;
             watcher.Dispose();
         }
-
-        _watchers.Clear();
         await ValueTask.CompletedTask;
     }
 

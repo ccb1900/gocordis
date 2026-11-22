@@ -7,5 +7,6 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Gocordis.Core/Gocordis.Core.csproj" />
     <ProjectReference Include="../../src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
+    <ProjectReference Include="../../samples/KoishiCase/KoishiCase.csproj" />
   </ItemGroup>
 </Project>

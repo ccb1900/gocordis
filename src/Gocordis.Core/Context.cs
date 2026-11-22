@@ -45,6 +45,27 @@ public sealed class Context
         return _runtime.RequireValue<T>(key, _fiber);
     }
 
+    /// <summary>Resolve a declared versioned dependency by peer range (paper §6.6).</summary>
+    public T Require<T>(VersionedKey<T> key)
+    {
+        EnsureGeneration();
+        RequireDeclared(key, _fiber.Component.Inject());
+        return _runtime.ResolveVersioned(key, _fiber);
+    }
+
+    /// <summary>Publish a versioned capability; the inverse removes the binding.</summary>
+    public void Provide<T>(VersionedKey<T> key, T value)
+    {
+        EnsureGeneration();
+        RequireDeclared(key, _fiber.Component.Provide());
+        _runtime.RegisterVersioned(key, value, _fiber);
+        _fiber.AddInverse(() =>
+        {
+            _runtime.RemoveVersioned(_fiber, key);
+            return ValueTask.CompletedTask;
+        });
+    }
+
     /// <summary>Resolve a declared event key as a capability (e.g. a channel).</summary>
     public T Require<T>(EventKey<T> key)
     {

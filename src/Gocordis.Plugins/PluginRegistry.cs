@@ -203,11 +203,16 @@ public sealed class PluginRegistry : IAsyncDisposable
         Dictionary<string, Component> staged)
     {
         var keyOwner = new Dictionary<ICapabilityKey, string>(ReferenceEqualityComparer.Instance);
+        var versionedOwners = new List<(string Id, IVersionedKey Key)>();
         foreach (var (id, component) in staged)
         {
             foreach (var key in component.Provide())
             {
                 keyOwner[key] = id;
+                if (key is IVersionedKey versioned)
+                {
+                    versionedOwners.Add((id, versioned));
+                }
             }
         }
 
@@ -226,6 +231,27 @@ public sealed class PluginRegistry : IAsyncDisposable
             {
                 if (key is IMetaKey)
                 {
+                    continue;
+                }
+
+                if (key is IVersionedKey requiredVersion)
+                {
+                    var best = versionedOwners
+                        .Where(candidate => candidate.Key.Name == requiredVersion.Name &&
+                                            candidate.Key.ValueType == requiredVersion.ValueType &&
+                                            requiredVersion.Accepts(candidate.Key.Version))
+                        .OrderByDescending(candidate => candidate.Key.Version)
+                        .FirstOrDefault();
+                    if (best.Id == id)
+                    {
+                        throw new DependencyCycleException($"plugin '{id}' depends on its own versioned capability");
+                    }
+
+                    if (best.Id is not null && !visited.Contains(best.Id))
+                    {
+                        Visit(best.Id);
+                    }
+
                     continue;
                 }
 

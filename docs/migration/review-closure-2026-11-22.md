@@ -30,12 +30,33 @@
 1. **WASM HMR** 是"串行化 warm 验证 + 旧 fiber Gone 后提交"，不是零停机原子提交；文档已下调表述。
 2. **Effect 补偿**只在调用方把 inverse 交给 `ctx.EffectAsync` 时成立；绕过 Context 的外部副作用不在可逆边界内（论文 §6.1 `idΓ`）。
 3. **Windows runner 实跑**：CI 配置已就绪，本机 Linux 未执行。
-4. **论文 §5.3 Koishi 端到端案例**（G-B1）与 **§6.6 版本化依赖路由**（G-B2）仍未复现，属于早前已记录的独立缺口。
+4. ~~论文 §5.3 Koishi 案例（G-B1）与 §6.6 版本化依赖路由（G-B2）~~ 已在同一次连续执行中关闭，见下节。
+
+## 闭环审查第二轮（同一执行内）
+
+无处 agent 可用，改由实现者按审查清单做独立自审并修复：
+
+| 发现 | 修复 | 证据 |
+| --- | --- | --- |
+| `Broker<T>.RoundRobin` 对负数 ticket 抛 `ArgumentOutOfRangeException` | 使用模归一化索引 | `BrokerAndRegistryManageMembers` 增加 `RoundRobin(-1)` |
+| `Scheduler.Jobs` 未加锁读取字典 | 加 `lock (_jobs)` 快照 | 全量测试 |
+| `FileSystemService` watcher 列表与 Dispose 竞态 | `lock (_watchersSync)` 保护添加/移除/释放 | 全量测试 |
+| `ConfigWatcher` 释放时队列回调可能释放已 dispose 的 gate | `Release` 捕获 `ObjectDisposedException` | 全量测试 |
+| `PluginRegistry` typed 图中版本化自依赖未判环 | `best.Id == id` 抛 `DependencyCycleException` | 闭环审查修复 |
+
+## G-B1 / G-B2 关闭
+
+- **G-B1**：`samples/KoishiCase` 复现论文 §5.3：服务端宿主只提供聊天领域词汇；IM adapter/DB driver 提供
+  coeffect；功能插件消费；控制台禁用插件时效果就地撤销；provider 重配置只让依赖者重激活且保留数据库连接；
+  Web Console 是第二个独立 Runtime。`KoishiCaseTests` 4 项覆盖这些主张。
+- **G-B2**：`VersionedKey<T>` + `NuGet.Versioning` 实现 peer range、最高兼容版本选择、多版本共存、
+  interface drift 与 key collision 的显式拒绝；`PluginRegistry` 的 typed 依赖图与环检测纳入版本维度。
+  `VersioningTests` 5 项覆盖。
 
 ## 验证
 
 ```
 bash docs/migration/verify-baseline.sh   → BASELINE VERIFIED
 dotnet build Gocordis.sln -m:1           → 0 Warning / 0 Error
-dotnet test Gocordis.sln -m:1            → 19 + 18 + 48 + 14 = 99 passed
+dotnet test Gocordis.sln -m:1            → 19 + 27 + 48 + 14 = 108 passed
 ```

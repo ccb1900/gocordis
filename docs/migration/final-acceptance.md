@@ -20,14 +20,14 @@
 ```
 bash docs/migration/verify-baseline.sh   → BASELINE VERIFIED
 dotnet build Gocordis.sln --nologo -m:1  → Build succeeded, 0 Warning(s), 0 Error(s)
-dotnet test Gocordis.sln --nologo -m:1   → 19 + 18 + 48 + 14 = 99 passed
+dotnet test Gocordis.sln --nologo -m:1   → 19 + 27 + 48 + 14 = 108 passed
 ```
 
 测试构成：
 
 - `Gocordis.Core.Tests`（19）：声明一致性、严格 LIFO、失败不重试、依赖丢失→Pending、divert、
   Cleanup 内 Require、所有权级联、事件注销、环拒绝、Realm 隔离、MetaKey 右偏、并发调和。
-- `Gocordis.Conformance.Tests`（18）：C06、C13、C22、Thm70、确定性重放 + 第 1 轮审查回归 5 项 + 第 4 轮 EventKey 解析。
+- `Gocordis.Conformance.Tests`（27）：C06、C13、C22、Thm70、确定性重放 + 第 1 轮审查回归 5 项 + 第 4 轮 EventKey 解析。
 - `Gocordis.Runtime.Tests`（36）：架构边界、Manifest/Registry、ALC 回收与依赖隔离、
   WASM/Process、UI 贡献与 HTTP API、组合与文件监听、第 1 轮审查回归 5 项。
 

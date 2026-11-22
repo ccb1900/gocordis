@@ -56,4 +56,4 @@ Managed / Process / WASM 只通过 `IPluginBackend` 接入，不建立自己的�
 - `ProcessRuntimeTests`：握手、RPC、shutdown、崩溃/超时、降级。
 - `WasmRuntimeTests`：ABI、自定义段、host bridge、HMR、64 MiB 上限。
 - `dotnet build Gocordis.sln`：0 warning / 0 error。
-- `dotnet test Gocordis.sln`：315/315（批次4新增 1 项）。
+- `dotnet test Gocordis.sln`：318/318（批次4新增 1 项）。

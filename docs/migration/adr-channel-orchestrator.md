@@ -72,7 +72,7 @@ Branch: `migration/dotnet`,基线 `b3371fe5`
 - `dotnet test Gocordis.sln`（`DOTNET_ROLL_FORWARD=LatestMajor`，本机仅安装 .NET 11 SDK
   运行 net10 目标）：批次 A 连续 10 次全绿，119 项测试
   （Core 22 / Conformance 28 / Extensions 19 / Runtime 50）。
-- 批次 A/B/C 最终全量：**315/315**，连续 26 次零失败、零挂起
+- 批次 A/B/C 最终全量：**318/318**，连续 29 次零失败、零挂起
   （Core 26 / Conformance 113 / Extensions 52 / Runtime 113 / Packaging 7）；build 0 warning / 0 error。
 
 ## 合入前置条件（批次 A 完成）

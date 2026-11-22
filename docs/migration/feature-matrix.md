@@ -61,12 +61,12 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 | platform host | cmd/platform/main.go:63,174 | cmd/platform/main_test.go:106 | C19/C40 | loader entry | App/CLI start | samples/PlatformHost/Program.cs:17-93 | Partial | sample, not product host | Product CLI with manifest + install + run | `(new) PlatformHostProductCloseLoop` |
 | cli-cordis | cmd/cli-cordis/main.go:18 | main_test.go:60 | §5 | CLI command | CLI plugin | samples/PlatformHost/Options (partial) | Partial | no CLI install/run commands | `gocordis install/run/enable/disable` | `(new) CliInstallEnableDisableRun` |
 | plugin CLI (create/doctor/package/sandbox) | cmd/plugin/{create,doctor,package,sandbox}.go | cmd/plugin/package_test.go:103 | C39/C40 | hmr/package | plugin dev tools | — | **Missing** | No plugin project/package tooling | `gocordis plugin create/package/doctor` | `(new) PluginCliCreatePackageDoctor` |
-| create-cordis scaffold | cmd/create-cordis/create.go:13 | create_test.go:16 | C40 | create-cordis | create-koi | — | **Missing** | No app scaffold | Generate minimal .NET app + manifest | `(new) CreateAppScaffoldBuilds` |
+| create-cordis scaffold | cmd/create-cordis/create.go:13 | create_test.go:16 | C40 | create-cordis | create-koi | tools/Gocordis.Cli/Program.cs (`create`) | Equivalent | — | Generate minimal .NET app + manifest | CliAndSourceTests.CliCreateGeneratesBuildableAppScaffold |
 | httpd sample | cmd/httpd/main.go:39 | main_test.go:46 | §5 | server example | simple app | WebUiServer sample | Divergent | no dedicated httpd host | Minimal HTTP host sample | `(new) HttpdSampleProbe` |
 | backfill sample | cmd/backfill/core.go:46 | core_test.go:62 | journal/replay | no direct | business plugin | — | Partial | no C# journal example | Business journal + idempotent replay sample | `(new) BackfillJournalReplay` |
 | example/host/collector/procplugindemo/wasmhmr | cmd/{example,host,collector,procplugindemo,wasmhmr} | few | C39 | examples | examples | samples/SamplePlugin, EchoProcPlugin, UiPlugin | Partial | only some samples | One C# sample per backend/composition | `(new) SampleParityList` |
 | web/console SPA | web/console/src/** | web/console/src/**/*.test.ts | UI-01..03 | client extension | Koishi webui | web/console + src/Gocordis.Console.WebUi | Partial | C# serves dist; front-end code not C#-owned | Same SPA served by product host | Phase6Tests.WebUiServesQueriesOverHttp + npm test |
-| web/plugin-kit/client SDK | web/plugin-kit; client/src/api.ts | TS tests | C39 | plugin kit | @koishijs/client | — | Missing | No C# client SDK package | Publish `@gocordis/client` equivalent or document C# substitute | `(new) ClientSdkContract` |
+| web/plugin-kit/client SDK | web/plugin-kit; client/src/api.ts | TS tests | C39 | plugin kit | @koishijs/client | src/Gocordis.Client/ConsoleClient.cs | Equivalent | .NET-native client SDK replaces JS package; envelope/API contract aligned | Typed Console client for meta/pages/panels/modules/query/command/stream | ConsoleClientTests.ClientReadsMetaPagesPanelsModulesAndNamedQueries |
 | integration gates | integration/e2e_*; platform_convergence_* | 21 files | Thm64/68/70/73/80 | no direct | E2E | tests/Gocordis.Conformance.Tests | Partial | subset ported; no full PC gate | Port PC01–PC30 + theorem gates | TheoremMatrixTests + PlatformConvergenceTests + `(new) PCGateParity` |
 | deterministic theorem facility | runtime/deterministic.go:17; theorem_evidence_test.go | fuzz/property tests | Thm64/68/70/73/80 | no direct | no direct | tests/Gocordis.Conformance.Tests/DeterministicDriver.cs | Partial | test-only, not production | Keep test-only; port missing Thm73 quiescence | `(new) Thm73InstallingQuiescence` |
 
@@ -90,7 +90,7 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 ## 4. Explicit decisions and unresolved rules
 
 1. **Accepted differences** (must stay documented, not hidden): C34 Rehome, C38 nominal K×P namespace, strict serial LIFO vs JS concurrent unwind, no JS Proxy `ctx.foo`, retire→reinsert instead of identity-preserving replace.
-2. **Missing rows are blocking for batch 6**: create scaffold and client SDK. They have concrete Target/Acceptance and must be implemented or replaced by an equally capable .NET-native mechanism with documented rationale.
+2. **No Missing rows remain**. All batch 6 targets were implemented as .NET-native mechanisms or explicitly documented divergences.
 3. **Partial rows are not complete**: each has a concrete Gap and a `(new)` acceptance test to add in the named batch; no row may be silently promoted.
 4. **Koishi is product reference only**: Koishi uses Cordis 3.x ForkScope; C# follows Go/Cordis-4 Fiber. Do not port `ctx.plugin`, `ns-require`, `require.cache`, or vite toolchain into C# runtime.
 5. **JS Cordis 4 conflicts resolved by paper/Go**: committed-after-Apply, strict LIFO, declaration enforcement, and no automatic retry on Failed are kept in C#.
@@ -101,10 +101,10 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 
 | Status | Count |
 | --- | ---: |
-| Equivalent | 33 |
+| Equivalent | 35 |
 | Partial | 14 |
 | Divergent | 3 |
-| Missing | 2 |
+| Missing | 0 |
 | **Total acceptance rows** | **52** |
 
 "Missing" count includes extension/product/front-end domains; none are unexplained. Each row above has Gap, Target, and Acceptance. Batch implementation order follows Go dependency order: Runtime → Plugin/Declaration → Extensions → Runtimes → UI/Product → Final gates.

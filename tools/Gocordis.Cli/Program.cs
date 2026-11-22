@@ -24,6 +24,7 @@ public static class Program
 
             return args[0] switch
             {
+                "create" => await CreateAsync(args[1..]),
                 "plugin" => await PluginAsync(args[1..]),
                 "app" => await AppAsync(args[1..]),
                 _ => Fail($"unknown command '{args[0]}'"),
@@ -34,6 +35,77 @@ public static class Program
             Console.Error.WriteLine(JsonSerializer.Serialize(new { error = ex.Message }, Json));
             return 1;
         }
+    }
+
+    private static async Task<int> CreateAsync(string[] args)
+    {
+        var output = Positional(args, 0);
+        if (output is null)
+        {
+            return Fail("usage: create <outputDir> [--id] [--version] [--host-version]");
+        }
+
+        var id = Option(args, "--id") ?? new DirectoryInfo(output).Name;
+        var version = Option(args, "--version") ?? "1.0.0";
+        var hostVersion = Option(args, "--host-version") ?? "1.0.0";
+        var root = FindRepoRoot();
+        Directory.CreateDirectory(output);
+
+        var manifest = new ApplicationManifest(id, version, hostVersion, []);
+        await manifest.SaveAsync(Path.Combine(output, "gocordis.app.json"));
+
+        var project = $$"""
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <OutputType>Exe</OutputType>
+              </PropertyGroup>
+              <ItemGroup>
+                <ProjectReference Include="{{root}}/src/Gocordis.Core/Gocordis.Core.csproj" />
+                <ProjectReference Include="{{root}}/src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
+                <ProjectReference Include="{{root}}/src/Gocordis.Packaging/Gocordis.Packaging.csproj" />
+                <ProjectReference Include="{{root}}/src/Gocordis.Console.WebUi/Gocordis.Console.WebUi.csproj" />
+              </ItemGroup>
+            </Project>
+            """;
+        await File.WriteAllTextAsync(Path.Combine(output, id + ".csproj"), project);
+
+        var program = $$"""
+            using Gocordis.Console.WebUi;
+            using Gocordis.Plugins;
+
+            var runtime = new Gocordis.Core.Runtime();
+            var host = new ConsoleHost(runtime);
+            var registry = new PluginRegistry(runtime);
+            var store = new Gocordis.Packaging.PluginStore(
+                Path.Combine(AppContext.BaseDirectory, "plugins"), "{{hostVersion}}");
+            var loader = new Gocordis.Packaging.ApplicationLoader(store, registry);
+            await loader.ApplyAsync(await Gocordis.Packaging.ApplicationManifest.LoadAsync("gocordis.app.json"));
+
+            await using var ui = new WebUiServer(host, registry: registry);
+            await ui.StartAsync();
+            Console.WriteLine($"Gocordis app '{{id}}': {ui.Address}");
+            await Task.Delay(Timeout.Infinite);
+            """;
+        await File.WriteAllTextAsync(Path.Combine(output, "Program.cs"), program);
+
+        Write(new { created = output, id, version, hostVersion });
+        return 0;
+    }
+
+    private static string FindRepoRoot()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null)
+        {
+            if (File.Exists(Path.Combine(current.FullName, "Gocordis.sln")))
+            {
+                return current.FullName.Replace('\\', '/');
+            }
+
+            current = current.Parent;
+        }
+
+        throw new DirectoryNotFoundException("cannot locate Gocordis.sln above the CLI assembly");
     }
 
     private static async Task<int> PluginAsync(string[] args)
@@ -216,6 +288,7 @@ public static class Program
     }
 
     private static void PrintUsage() => Console.Error.WriteLine("""
+        gocordis create <outputDir> [--id] [--version] [--host-version]
         gocordis plugin pack <sourceDir> <output> [--id] [--version] [--type] [--host-range]
         gocordis plugin install|upgrade <package> [--store] [--host-version]
         gocordis plugin uninstall <id> [--version] [--store] [--host-version]

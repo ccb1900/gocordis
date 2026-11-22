@@ -50,6 +50,30 @@ public sealed class CliAndSourceTests
         Assert.Equal("Removed", JsonNode.Parse(uninstall.Out)!["Changes"]![0]!["Kind"]!.GetValue<string>());
     }
 
+    [Fact]
+    public async Task CliCreateGeneratesBuildableAppScaffold()
+    {
+        using var temp = new TempDir();
+        var output = System.IO.Path.Combine(temp.Root, "sample-app");
+
+        var result = await RunAsync("create", output,
+            "--id", "sample-app", "--version", "1.2.3", "--host-version", "1.5.0");
+        Assert.Equal(0, result.Code);
+
+        var manifestPath = System.IO.Path.Combine(output, "gocordis.app.json");
+        var programPath = System.IO.Path.Combine(output, "Program.cs");
+        var projectPath = System.IO.Path.Combine(output, "sample-app.csproj");
+        Assert.True(File.Exists(manifestPath));
+        Assert.True(File.Exists(programPath));
+        Assert.True(File.Exists(projectPath));
+
+        var app = await ApplicationManifest.LoadAsync(manifestPath);
+        Assert.Equal("sample-app", app.Id);
+        Assert.Equal("1.2.3", app.Version);
+        Assert.Equal("1.5.0", app.HostVersion);
+        Assert.Contains("Gocordis.Packaging.ApplicationLoader", await File.ReadAllTextAsync(programPath));
+    }
+
     private static async Task PackageAsync(TempDir temp, string version)
     {
         var source = System.IO.Path.Combine(temp.Root, $"source-{version}");

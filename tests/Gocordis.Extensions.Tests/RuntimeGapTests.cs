@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Reflection;
 using Gocordis.Core;
 using Gocordis.Extensions;
 using Gocordis.Plugins;
@@ -182,6 +183,56 @@ public sealed class RuntimeGapTests
     }
 
     [Fact]
+    public async Task WatchDeliversReadyBeforeAnyChange()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"gocordis-watch-order-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        await using var service = new ReversibleWatchService();
+        var observed = new ConcurrentQueue<WatchEvent>();
+        var readyEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void OnEvent(WatchEvent evt)
+        {
+            if (evt.Kind == WatchEventKind.Ready)
+            {
+                readyEntered.TrySetResult();
+                // Park until the test has given native notifications a chance
+                // to fire. Any Change delivered while this is blocked is an
+                // ordering violation.
+                releaseReady.Task.GetAwaiter().GetResult();
+            }
+
+            observed.Enqueue(evt);
+        }
+
+        try
+        {
+            var watching = Task.Run(() => service.Watch(root, OnEvent));
+            await readyEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+            for (var i = 0; DateTime.UtcNow < deadline && !observed.Any(e => e.Kind == WatchEventKind.Change); i++)
+            {
+                await File.WriteAllTextAsync(Path.Combine(root, $"change-{i}.txt"), i.ToString());
+                await Task.Delay(10);
+            }
+
+            releaseReady.TrySetResult();
+            var subscription = await watching;
+            subscription.Dispose();
+
+            Assert.NotEmpty(observed);
+            Assert.Equal(WatchEventKind.Ready, observed.First().Kind);
+        }
+        finally
+        {
+            releaseReady.TrySetResult();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task WatchOwnedProviderFollowsOwnerActivation()
     {
         var root = Path.Combine(Path.GetTempPath(), $"gocordis-owned-watch-{Guid.NewGuid():N}");
@@ -307,6 +358,244 @@ public sealed class RuntimeGapTests
         Assert.False(failed.Succeeded);
         Assert.Contains("boom", failed.Error, StringComparison.Ordinal);
         Assert.Same(before.Value, hmr.CurrentBinding("t")!.Value);
+    }
+
+    [Fact]
+    public async Task GenericHmrBindRetiresPreviousValue()
+    {
+        var retired = new ConcurrentQueue<object>();
+        await using var hmr = new GenericHmr(deactivate: (value, _) =>
+        {
+            retired.Enqueue(value);
+            return ValueTask.CompletedTask;
+        });
+        hmr.RegisterTarget(new HmrTarget("t", "component"));
+
+        var first = new object();
+        var second = new object();
+        hmr.Bind("t", first);
+        hmr.Bind("t", second);
+
+        Assert.Same(first, Assert.Single(retired));
+        Assert.Same(second, hmr.CurrentBinding("t")!.Value);
+    }
+
+    [Fact]
+    public async Task GenericHmrReplaceDefersRetireWhileUsageHeld()
+    {
+        var retired = new ConcurrentQueue<object>();
+        await using var hmr = new GenericHmr(deactivate: (value, _) =>
+        {
+            retired.Enqueue(value);
+            return ValueTask.CompletedTask;
+        });
+        hmr.RegisterTarget(new HmrTarget("t", "component"));
+
+        var first = new object();
+        hmr.Bind("t", first);
+        using var held = hmr.Acquire("t");
+        var heldGeneration = held.Generation;
+
+        var result = await hmr.ReplaceAsync("t", new HmrTarget("t", "component", "v2"));
+
+        Assert.True(result.Succeeded, result.Error);
+        Assert.Empty(retired);
+        var committed = hmr.CurrentBinding("t")!;
+        Assert.NotEqual(heldGeneration, committed.Generation);
+        Assert.Equal(0, committed.UsageCount);
+
+        Assert.False(held.Release(), "a fenced stale generation must not report the new binding released");
+        Assert.True(await SpinUntilAsync(() => retired.Count == 1));
+        Assert.Same(first, Assert.Single(retired));
+        Assert.Same(committed.Value, hmr.CurrentBinding("t")!.Value);
+        Assert.Equal(committed.Generation, hmr.CurrentBinding("t")!.Generation);
+    }
+
+    [Fact]
+    public async Task EntriesSnapshotIsStableDuringConcurrentApply()
+    {
+        await using var runtime = new Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        registry.RegisterFactory("noop", _ => new Step("noop", _ => ValueTask.FromResult<Cleanup?>(null)));
+
+        static PluginManifest Declaration(string id) =>
+            new(id, "noop", true, new Dictionary<string, object?>(), [], []);
+
+        await registry.ApplyAsync([Declaration("seed")]);
+
+        // Captured once. A live dictionary would mutate under the reader while
+        // ApplyAsync reconciles the entries.
+        var entries = registry.Entries;
+        using var start = new ManualResetEventSlim(false);
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Exception? readerError = null;
+
+        var reader = Task.Run(() =>
+        {
+            start.Wait();
+            try
+            {
+                while (!done.Task.IsCompleted)
+                {
+                    foreach (var pair in entries)
+                    {
+                        _ = pair.Key;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                readerError = ex;
+            }
+        });
+
+        var writer = Task.Run(async () =>
+        {
+            start.Wait();
+            try
+            {
+                for (var i = 0; i < 200; i++)
+                {
+                    await registry.ApplyAsync([Declaration($"p{i}")]);
+                }
+            }
+            finally
+            {
+                done.TrySetResult();
+            }
+        });
+
+        start.Set();
+        await Task.WhenAll(reader, writer);
+
+        Assert.Null(readerError);
+        Assert.True(entries.Count >= 1);
+    }
+
+    /// <summary>
+    /// Late release must not race a replacement's withdraw/write-back of the
+    /// current fiber. The Extensions test project has no WASM reference (and
+    /// must not gain one here), so the swapper is loaded reflectively from its
+    /// freshly built output; when that output is absent the assertion is inert.
+    /// </summary>
+    [Fact]
+    public async Task ReleaseGenerationCannotRaceReplace()
+    {
+        var swapperType = LoadWasmSwapperType();
+        if (swapperType is null)
+        {
+            return;
+        }
+
+        await using var runtime = new Runtime();
+        var key = new Key<int>($"hmr-race-{Guid.NewGuid():N}");
+        object swapper;
+        try
+        {
+            swapper = Activator.CreateInstance(swapperType, runtime, key)!;
+        }
+        catch (MissingMethodException)
+        {
+            return;
+        }
+
+        var fiber = await runtime.LoadAsync(
+            new Step("release-race", _ => ValueTask.FromResult<Cleanup?>(null)));
+
+        var currentField = swapperType.GetField("_current", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var gateField = swapperType.GetField("_replaceGate", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var beginMethod = swapperType.GetMethod("BeginGeneration")!;
+        var releaseMethod = swapperType.GetMethod("ReleaseGenerationAsync")!;
+        var currentProperty = swapperType.GetProperty("Current")!;
+
+        currentField.SetValue(swapper, fiber);
+        var handle = beginMethod.Invoke(swapper, null)!;
+        var gate = (SemaphoreSlim)gateField.GetValue(swapper)!;
+        var gateHeld = false;
+
+        try
+        {
+            await gate.WaitAsync();
+            gateHeld = true;
+
+            // Holding the gate models an in-flight ReplaceAsync. A release that
+            // skips the gate completes here and withdraws the fiber underneath
+            // the replacement; one that shares the gate must wait.
+            var release = (Task<bool>)releaseMethod.Invoke(swapper, [handle])!;
+            await Task.Delay(250);
+
+            Assert.False(release.IsCompleted,
+                "ReleaseGenerationAsync must take the replacement gate");
+            Assert.Same(fiber, currentProperty.GetValue(swapper));
+
+            gate.Release();
+            gateHeld = false;
+            Assert.True(await release);
+        }
+        finally
+        {
+            if (gateHeld)
+            {
+                gate.Release();
+            }
+
+            await ((IAsyncDisposable)swapper).DisposeAsync();
+        }
+
+        Assert.Null(currentProperty.GetValue(swapper));
+        Assert.Equal(FiberState.Gone, fiber.State);
+    }
+
+    private static Type? LoadWasmSwapperType()
+    {
+        var loaded = AppDomain.CurrentDomain.GetAssemblies()
+            .FirstOrDefault(assembly => assembly.GetName().Name == "Gocordis.Runtime.Wasm");
+        if (loaded is not null)
+        {
+            return loaded.GetType("Gocordis.Runtime.Wasm.WasmHotSwapper");
+        }
+
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Combine(root.FullName, "Gocordis.sln")))
+        {
+            root = root.Parent;
+        }
+
+        if (root is null)
+        {
+            return null;
+        }
+
+        // Only exercise a binary built from the current source; a stale output
+        // from an unrelated partial build would produce a false signal.
+        var wasm = FreshWasmAssembly(root.FullName, "Gocordis.Runtime.Wasm", "WasmHotSwapper.cs");
+        var managed = FreshWasmAssembly(root.FullName, "Gocordis.Runtime.Managed", null);
+        if (wasm is null || managed is null)
+        {
+            return null;
+        }
+
+        Assembly.LoadFrom(managed);
+        return Assembly.LoadFrom(wasm).GetType("Gocordis.Runtime.Wasm.WasmHotSwapper");
+    }
+
+    private static string? FreshWasmAssembly(string root, string project, string? source)
+    {
+        var sourcePath = source is null ? null : Path.Combine(root, "src", project, source);
+        var output = Path.Combine(root, "src", project, "bin");
+        if (!Directory.Exists(output) || (sourcePath is not null && !File.Exists(sourcePath)))
+        {
+            return null;
+        }
+
+        return Directory.EnumerateFiles(output, project + ".dll", SearchOption.AllDirectories)
+            .Where(path => path.Contains($"{Path.DirectorySeparatorChar}Debug{Path.DirectorySeparatorChar}",
+                              StringComparison.Ordinal) &&
+                           path.Contains($"{Path.DirectorySeparatorChar}net10.0{Path.DirectorySeparatorChar}",
+                               StringComparison.Ordinal))
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .FirstOrDefault(path => sourcePath is null ||
+                                    File.GetLastWriteTimeUtc(path) >= File.GetLastWriteTimeUtc(sourcePath));
     }
 
     private static async Task<bool> SpinUntilAsync(Func<bool> condition, TimeSpan? timeout = null)

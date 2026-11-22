@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Gocordis.Core;
@@ -52,6 +53,18 @@ public sealed class ConfigSchema
                 {
                     child.Validate(childValue, $"{path}.{name}");
                 }
+                else if (child.Default is not null && map is IDictionary<string, object?> mutable)
+                {
+                    // Defaults are declarations too: materialize them for
+                    // missing optional properties so the factory sees the same
+                    // config the schema describes. Clone object defaults so
+                    // nested filling never mutates the registered schema.
+                    var applied = child.Default is IReadOnlyDictionary<string, object?> defaultMap
+                        ? new Dictionary<string, object?>(defaultMap, StringComparer.Ordinal)
+                        : child.Default;
+                    mutable[name] = applied;
+                    child.Validate(applied, $"{path}.{name}");
+                }
             }
         }
         else if (Type == "array" && value is IEnumerable sequence)
@@ -67,46 +80,46 @@ public sealed class ConfigSchema
             }
         }
 
-        if (Enum is not null && !Enum.Any(candidate => Equals(candidate, value)))
+        if (Enum is not null && !Enum.Any(candidate => ValuesEqual(candidate, value)))
         {
             throw new ConfigSchemaException($"{path} must be one of the declared enum values");
         }
     }
 
+    private static bool ValuesEqual(object? left, object? right)
+    {
+        if (Equals(left, right))
+        {
+            return true;
+        }
+
+        if (!IsNumeric(left) || !IsNumeric(right))
+        {
+            return false;
+        }
+
+        // JSON/TOML readers may produce int, long or double for the same value;
+        // compare numeric enums by value, not by CLR box type.
+        try
+        {
+            return Convert.ToDecimal(left, CultureInfo.InvariantCulture) ==
+                   Convert.ToDecimal(right, CultureInfo.InvariantCulture);
+        }
+        catch (OverflowException)
+        {
+            return Convert.ToDouble(left, CultureInfo.InvariantCulture) ==
+                   Convert.ToDouble(right, CultureInfo.InvariantCulture);
+        }
+    }
+
+    private static bool IsNumeric(object? value) => value is int or long or short or byte or sbyte
+        or uint or ushort or ulong or float or double or decimal;
+
     /// <summary>Self-contained draft 2020-12 document for console/help consumers.</summary>
     public string ToJsonSchema()
     {
-        var document = new Dictionary<string, object?>
-        {
-            ["$schema"] = "https://json-schema.org/draft/2020-12/schema",
-            ["type"] = Type,
-        };
-        if (Properties.Count > 0)
-        {
-            document["properties"] = Properties.ToDictionary(
-                pair => pair.Key, pair => ToObject(pair.Value), StringComparer.Ordinal);
-        }
-
-        if (Required.Count > 0)
-        {
-            document["required"] = Required.ToArray();
-        }
-
-        if (Items is not null)
-        {
-            document["items"] = ToObject(Items);
-        }
-
-        if (Enum is not null)
-        {
-            document["enum"] = Enum.ToArray();
-        }
-
-        if (Default is not null)
-        {
-            document["default"] = Default;
-        }
-
+        var document = ToObject(this);
+        document["$schema"] = "https://json-schema.org/draft/2020-12/schema";
         return JsonSerializer.Serialize(document);
     }
 
@@ -127,6 +140,16 @@ public sealed class ConfigSchema
         if (schema.Items is not null)
         {
             document["items"] = ToObject(schema.Items);
+        }
+
+        if (schema.Enum is not null)
+        {
+            document["enum"] = schema.Enum.ToArray();
+        }
+
+        if (schema.Default is not null)
+        {
+            document["default"] = schema.Default;
         }
 
         return document;

@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Gocordis.Core;
 using Gocordis.Extensions;
 using Gocordis.Plugins;
@@ -152,6 +153,86 @@ public sealed class DeclarationGapTests
 
         Assert.Equal(before, Snapshot(registry));
         Assert.Same(fiberBefore, registry.Entries["a"].Fiber);
+    }
+
+    [Fact]
+    public void ConfigSchemaEmitsNestedEnumAndDefault()
+    {
+        var schema = new ConfigSchema
+        {
+            Type = "object",
+            Properties = new Dictionary<string, ConfigSchema>
+            {
+                ["mode"] = new ConfigSchema
+                {
+                    Type = "object",
+                    Default = new Dictionary<string, object?> { ["kind"] = "fast" },
+                    Properties = new Dictionary<string, ConfigSchema>
+                    {
+                        ["kind"] = new ConfigSchema
+                        {
+                            Type = "string",
+                            Enum = ["fast", "slow"],
+                            Default = "fast",
+                        },
+                        ["level"] = new ConfigSchema
+                        {
+                            Type = "integer",
+                            Enum = [1, 2, 3],
+                            Default = 1,
+                        },
+                    },
+                },
+                ["tags"] = new ConfigSchema
+                {
+                    Type = "array",
+                    Items = new ConfigSchema
+                    {
+                        Type = "string",
+                        Enum = ["a", "b"],
+                        Default = "a",
+                    },
+                },
+            },
+        };
+
+        // Both the root document and every nested object/items node carry the
+        // full vocabulary: enum and default must not disappear below depth 1.
+        using var document = JsonDocument.Parse(schema.ToJsonSchema());
+        var root = document.RootElement;
+        var mode = root.GetProperty("properties").GetProperty("mode");
+        Assert.True(mode.TryGetProperty("default", out _));
+        var kind = mode.GetProperty("properties").GetProperty("kind");
+        Assert.Contains("fast", kind.GetProperty("enum").EnumerateArray().Select(item => item.GetString()));
+        Assert.Equal("fast", kind.GetProperty("default").GetString());
+        var level = mode.GetProperty("properties").GetProperty("level");
+        Assert.Equal(1, level.GetProperty("default").GetInt32());
+        var items = root.GetProperty("properties").GetProperty("tags").GetProperty("items");
+        Assert.True(items.TryGetProperty("enum", out _));
+        Assert.Equal("a", items.GetProperty("default").GetString());
+
+        // Missing optional properties are materialized from their default,
+        // recursively, without overwriting values the declaration supplied.
+        var config = new Dictionary<string, object?>
+        {
+            ["mode"] = new Dictionary<string, object?> { ["kind"] = "slow" },
+        };
+        schema.Validate(config);
+        var filledMode = Assert.IsType<Dictionary<string, object?>>(config["mode"]);
+        Assert.Equal("slow", filledMode["kind"]);
+        Assert.Equal(1, filledMode["level"]);
+
+        // A numeric enum must compare by value across CLR numeric types
+        // (1L satisfies an enum declared with int 1), and still reject 9L.
+        schema.Validate(new Dictionary<string, object?>
+        {
+            ["mode"] = new Dictionary<string, object?> { ["level"] = 1L },
+        });
+        var error = Assert.Throws<ConfigSchemaException>(() => schema.Validate(new Dictionary<string, object?>
+        {
+            ["mode"] = new Dictionary<string, object?> { ["level"] = 9L },
+        }));
+        Assert.Contains("enum", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

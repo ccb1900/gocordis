@@ -79,7 +79,7 @@ Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52)
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 369/369
+dotnet test  Gocordis.sln → 378/378
 ```
 
 结论：

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -237,6 +238,60 @@ public sealed class InfrastructureGapTests
     }
 
     [Fact]
+    public async Task SocksConnectSendsIpv6AtypAndPunycode()
+    {
+        await using var proxy = new FakeSocks5();
+        await using var registry = new SocksRegistry();
+        using var registration = registry.Register("socks5", $"127.0.0.1:{proxy.Port}");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        // An IPv6 literal must be encoded as ATYP=4 with 16 address bytes,
+        // not forwarded as a domain name (ATYP=3).
+        await using (var tunnel = await registry.ConnectAsync("socks5", "::1", 443, cts.Token))
+        {
+            Assert.NotNull(tunnel);
+        }
+
+        var ipv6 = Assert.Single(proxy.Requests);
+        Assert.Equal(4, ipv6.Atyp);
+        Assert.Equal(IPAddress.IPv6Loopback.GetAddressBytes(), ipv6.Address);
+        Assert.Equal("::1", ipv6.Host);
+        Assert.Equal(443, ipv6.Port);
+
+        // Non-ASCII names must be IDNA-encoded before the length check and the
+        // DOMAINNAME request, so the proxy sees the punycode form.
+        await using (var tunnel = await registry.ConnectAsync("socks5", "bücher.example", 8080, cts.Token))
+        {
+            Assert.NotNull(tunnel);
+        }
+
+        var requests = proxy.Requests.ToArray();
+        Assert.Equal(2, requests.Length);
+        var idn = requests[1];
+        Assert.Equal(3, idn.Atyp);
+        Assert.Equal("xn--bcher-kva.example", Encoding.ASCII.GetString(idn.Address));
+        Assert.Equal("xn--bcher-kva.example", idn.Host);
+        Assert.Equal(8080, idn.Port);
+    }
+
+    [Fact]
+    public async Task SocksRegistryParsesBracketedIpv6Proxy()
+    {
+        // Brackets belong to URL syntax only; the dialer must see the bare
+        // address or TcpClient tries to resolve "[::1]" as a host name.
+        Assert.Equal("socks5://::1:1080", SocksRegistry.ProxyUrl("socks5", "[::1]:1080"));
+        Assert.Equal("socks5://2001:db8::1:1080", SocksRegistry.ProxyUrl("socks5h", "[2001:db8::1]:1080"));
+
+        await using var registry = new SocksRegistry();
+        using var handle = registry.Register("socks5", "[::1]:1080");
+        Assert.Equal("socks5://::1:1080", registry.ResolveAddress("socks5"));
+        Assert.NotNull(registry.Resolve("socks5"));
+
+        handle.Dispose();
+        Assert.Null(registry.ResolveAddress("socks5"));
+    }
+
+    [Fact]
     public async Task ServerAclProxyWsConformance()
     {
         Assert.Equal("api.example.com", HostAcl.StripPort("API.Example.com:443"));
@@ -296,6 +351,9 @@ public sealed class InfrastructureGapTests
         public int Port { get; }
         public TaskCompletionSource<(string Host, int Port)> ConnectSeen { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ConcurrentQueue<CapturedConnect> Requests { get; } = new();
+
+        public sealed record CapturedConnect(byte Atyp, byte[] Address, string Host, int Port);
 
         public FakeSocks5()
         {
@@ -309,35 +367,63 @@ public sealed class InfrastructureGapTests
         {
             try
             {
-                using var client = await _listener.AcceptTcpClientAsync();
-                var stream = client.GetStream();
-                var greeting = await ReadExactlyAsync(stream, 3);
-                if (greeting[0] != 5)
+                while (true)
                 {
-                    return;
+                    using var client = await _listener.AcceptTcpClientAsync();
+                    try
+                    {
+                        await HandleAsync(client);
+                    }
+                    catch (Exception ex)
+                    {
+                        ConnectSeen.TrySetException(ex);
+                    }
                 }
-
-                await stream.WriteAsync(new byte[] { 5, 0 });
-                var header = await ReadExactlyAsync(stream, 4);
-                string host;
-                if (header[3] == 1)
-                {
-                    host = new IPAddress(await ReadExactlyAsync(stream, 4)).ToString();
-                }
-                else
-                {
-                    var length = (await ReadExactlyAsync(stream, 1))[0];
-                    host = Encoding.ASCII.GetString(await ReadExactlyAsync(stream, length));
-                }
-
-                var portBytes = await ReadExactlyAsync(stream, 2);
-                ConnectSeen.TrySetResult((host, (portBytes[0] << 8) | portBytes[1]));
-                await stream.WriteAsync(new byte[] { 5, 0, 0, 1, 127, 0, 0, 1, 0, 80 });
             }
-            catch (Exception ex)
+            catch
             {
-                ConnectSeen.TrySetException(ex);
+                // listener shutdown interrupts the pending accept
             }
+        }
+
+        private async Task HandleAsync(TcpClient client)
+        {
+            var stream = client.GetStream();
+            var greeting = await ReadExactlyAsync(stream, 3);
+            if (greeting[0] != 5)
+            {
+                return;
+            }
+
+            await stream.WriteAsync(new byte[] { 5, 0 });
+            var header = await ReadExactlyAsync(stream, 4);
+            var atyp = header[3];
+            byte[] address;
+            string host;
+            switch (atyp)
+            {
+                case 1:
+                    address = await ReadExactlyAsync(stream, 4);
+                    host = new IPAddress(address).ToString();
+                    break;
+                case 4:
+                    address = await ReadExactlyAsync(stream, 16);
+                    host = new IPAddress(address).ToString();
+                    break;
+                case 3:
+                    var length = (await ReadExactlyAsync(stream, 1))[0];
+                    address = await ReadExactlyAsync(stream, length);
+                    host = Encoding.ASCII.GetString(address);
+                    break;
+                default:
+                    throw new InvalidOperationException($"unexpected SOCKS5 address type {atyp}");
+            }
+
+            var portBytes = await ReadExactlyAsync(stream, 2);
+            var port = (portBytes[0] << 8) | portBytes[1];
+            Requests.Enqueue(new CapturedConnect(atyp, address, host, port));
+            ConnectSeen.TrySetResult((host, port));
+            await stream.WriteAsync(new byte[] { 5, 0, 0, 1, 127, 0, 0, 1, 0, 80 });
         }
 
         private static async Task<byte[]> ReadExactlyAsync(Stream stream, int count)

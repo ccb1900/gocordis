@@ -142,7 +142,7 @@ await registry.ApplyAsync(declarations.Select(d => d with { Enabled = false }));
 - 定理：`../migration/theorem-matrix.md`（Thm64/68/70/73/80 各 3 场景）。
 - JS / 接受差异：`../migration/js-cordis-csharp-differences.md`。
 - 并发用例必须跑 `go test -race`（Go 基线）与主线程统一 `dotnet test`；本子任务未运行构建/测试，
-  最终计数见 `../migration/execution-log.md`「批次 B/C 最终验证」：369/369。
+  最终计数见 `../migration/execution-log.md`「批次 B/C 最终验证」：378/378。
 
 ```bash
 dotnet build Gocordis.sln --nologo -m:1

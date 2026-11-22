@@ -130,33 +130,60 @@ public static class PluginPackageWriter
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
 
         var temp = outputPath + ".tmp";
-        using (var stream = File.Create(temp))
-        using (var archive = new ZipArchive(stream, ZipArchiveMode.Create))
+        try
         {
-            var entry = archive.CreateEntry("manifest.json", CompressionLevel.Optimal);
-            entry.LastWriteTime = FixedTimestamp;
-            await using (var writer = new StreamWriter(entry.Open()))
+            using (var stream = File.Create(temp))
+            using (var archive = new ZipArchive(stream, ZipArchiveMode.Create))
             {
-                await writer.WriteAsync(manifestJson);
+                var entry = archive.CreateEntry("manifest.json", CompressionLevel.Optimal);
+                entry.LastWriteTime = FixedTimestamp;
+                await using (var writer = new StreamWriter(entry.Open()))
+                {
+                    await writer.WriteAsync(manifestJson);
+                }
+
+                foreach (var file in files)
+                {
+                    var payload = archive.CreateEntry("payload/" + file.Path.Replace('\\', '/'), CompressionLevel.Optimal);
+                    payload.LastWriteTime = FixedTimestamp;
+                    await using var target = payload.Open();
+                    await using var source = File.OpenRead(Path.Combine(sourceDirectory, file.Path));
+                    await source.CopyToAsync(target, cancellationToken);
+                }
             }
 
-            foreach (var file in files)
+            // Check the staged file before it can replace a valid package, so
+            // an oversized build never clobbers the published output.
+            if (new FileInfo(temp).Length > PluginPackageLimits.MaxPackageBytes)
             {
-                var payload = archive.CreateEntry("payload/" + file.Path.Replace('\\', '/'), CompressionLevel.Optimal);
-                payload.LastWriteTime = FixedTimestamp;
-                await using var target = payload.Open();
-                await using var source = File.OpenRead(Path.Combine(sourceDirectory, file.Path));
-                await source.CopyToAsync(target, cancellationToken);
+                throw new InvalidPluginPackageException("package exceeds the size limit");
             }
+
+            File.Move(temp, outputPath, overwrite: true);
         }
-
-        File.Move(temp, outputPath, overwrite: true);
-        if (new FileInfo(outputPath).Length > PluginPackageLimits.MaxPackageBytes)
+        catch
         {
-            throw new InvalidPluginPackageException("package exceeds the size limit");
+            TryDeleteQuietly(temp); // cancellation, I/O fault or size overflow: never strand .tmp
+            throw;
         }
 
         return completed;
+    }
+
+    private static void TryDeleteQuietly(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (IOException)
+        {
+            // best-effort cleanup only: never mask the original failure
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // best-effort cleanup only: never mask the original failure
+        }
     }
 
     private static readonly DateTimeOffset FixedTimestamp = new(1980, 1, 1, 0, 0, 0, TimeSpan.Zero);

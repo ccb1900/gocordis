@@ -30,7 +30,27 @@ public sealed class PluginRegistry : IAsyncDisposable
         _runtime = runtime;
     }
 
-    public IReadOnlyDictionary<string, PluginEntry> Entries => _entries;
+    /// <summary>
+    /// Stable read-only view of the current declarations. The copy is taken
+    /// under the same gate as Apply/Dispose, so readers can enumerate it while
+    /// a reconciliation mutates the live table without ever observing a
+    /// half-applied batch or a collection-modified fault.
+    /// </summary>
+    public IReadOnlyDictionary<string, PluginEntry> Entries
+    {
+        get
+        {
+            _gate.Wait();
+            try
+            {
+                return new Dictionary<string, PluginEntry>(_entries, StringComparer.Ordinal);
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+    }
 
     /// <summary>Diagnostics from the most recent discovery pass.</summary>
     public IReadOnlyList<ManifestDiagnostic> Diagnostics => Volatile.Read(ref _diagnostics);

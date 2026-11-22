@@ -78,7 +78,7 @@ public sealed class ReversibleWatchService : IAsyncDisposable
                            NotifyFilters.DirectoryName | NotifyFilters.Size,
         };
         var id = Guid.NewGuid();
-        var subscription = new Subscription(this, id, watcher, full, options.Filter);
+        var subscription = new Subscription(this, id, watcher, full, options.Filter, onEvent);
 
         FileSystemEventHandler handler = (_, args) =>
         {
@@ -100,13 +100,13 @@ public sealed class ReversibleWatchService : IAsyncDisposable
                 _revisions[full] = revision;
             }
 
-            onEvent(new WatchEvent(WatchEventKind.Change, args.FullPath, revision));
+            subscription.Deliver(new WatchEvent(WatchEventKind.Change, args.FullPath, revision));
         };
         watcher.Changed += handler;
         watcher.Created += handler;
         watcher.Deleted += handler;
         watcher.Renamed += (sender, args) => handler(sender, args);
-        watcher.Error += (_, args) => onEvent(new WatchEvent(WatchEventKind.Error, full,
+        watcher.Error += (_, args) => subscription.Deliver(new WatchEvent(WatchEventKind.Error, full,
             Error: args.GetException()?.Message ?? "file watcher error"));
 
         lock (_sync)
@@ -116,9 +116,12 @@ public sealed class ReversibleWatchService : IAsyncDisposable
             watcher.EnableRaisingEvents = true;
         }
 
-        // Ready is delivered outside the lock: user callbacks must never run
-        // while the service is serializing watcher state.
+        // Ready is delivered outside the service lock: user callbacks must
+        // never run while the service is serializing watcher state. Native
+        // observations raised before this returns are buffered per
+        // subscription and flushed afterwards, so Ready is always first.
         onEvent(new WatchEvent(WatchEventKind.Ready, full));
+        subscription.MarkReady();
         return subscription;
     }
 
@@ -212,21 +215,64 @@ public sealed class ReversibleWatchService : IAsyncDisposable
         private readonly Guid _id;
         private readonly string _root;
         private readonly string? _filter;
+        private readonly Action<WatchEvent> _onEvent;
+        private readonly object _deliverySync = new();
+        private Queue<WatchEvent>? _buffered;
+        private bool _readyDelivered;
         private int _disposed;
 
         internal Subscription(ReversibleWatchService owner, Guid id, FileSystemWatcher watcher,
-            string root, string? filter)
+            string root, string? filter, Action<WatchEvent> onEvent)
         {
             _owner = owner;
             _id = id;
             Watcher = watcher;
             _root = root;
             _filter = filter;
+            _onEvent = onEvent;
         }
 
         internal FileSystemWatcher Watcher { get; }
 
         internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+        /// <summary>
+        /// Holds any observation raised before Ready was handed to the consumer.
+        /// The per-subscription lock also serializes the flush so a later
+        /// observation cannot overtake a buffered one.
+        /// </summary>
+        internal void Deliver(WatchEvent evt)
+        {
+            lock (_deliverySync)
+            {
+                if (!_readyDelivered)
+                {
+                    (_buffered ??= new Queue<WatchEvent>()).Enqueue(evt);
+                    return;
+                }
+
+                _onEvent(evt);
+            }
+        }
+
+        internal void MarkReady()
+        {
+            lock (_deliverySync)
+            {
+                _readyDelivered = true;
+                if (_buffered is null)
+                {
+                    return;
+                }
+
+                while (_buffered.Count > 0)
+                {
+                    _onEvent(_buffered.Dequeue());
+                }
+
+                _buffered = null;
+            }
+        }
 
         public void Dispose()
         {

@@ -62,17 +62,22 @@ public sealed class UsageHandle : IDisposable
 /// Minimal target/binding/usage protocol for hot replacement. All state is
 /// guarded by one lock; validation, activation and retirement (user code) run
 /// outside it. A failed validation or activation leaves the old binding intact.
-/// WasmHotSwapper is deliberately untouched: this is the generic protocol only.
+/// Fiber lifecycle in WasmHotSwapper is a separate protocol; this one is generic.
 /// </summary>
 public sealed class GenericHmr : IAsyncDisposable
 {
-    private sealed record State(HmrTarget Target, object Value, long Generation, int UsageCount);
+    private sealed record State(HmrTarget Target, object Value, long Generation, int UsageCount, bool Bound);
+
+    // A generation that lost its binding but still has live usage handles. The
+    // key keeps each deferred retirement fenced to its own generation.
+    private sealed record PendingRetirement(object Value, int UsageCount);
 
     private readonly object _sync = new();
     private readonly HmrValidateAsync? _validate;
     private readonly HmrActivateAsync? _activate;
     private readonly HmrDeactivateAsync? _deactivate;
     private readonly Dictionary<string, State> _bindings = new(StringComparer.Ordinal);
+    private readonly Dictionary<(string TargetId, long Generation), PendingRetirement> _pendingRetirements = new();
     private long _nextGeneration;
     private bool _disposed;
 
@@ -107,24 +112,35 @@ public sealed class GenericHmr : IAsyncDisposable
                 throw new InvalidOperationException($"HMR target '{target.Id}' already exists");
             }
 
-            _bindings[target.Id] = new State(target, target, ++_nextGeneration, 0);
+            _bindings[target.Id] = new State(target, target, ++_nextGeneration, 0, Bound: false);
         }
     }
 
-    /// <summary>Binds a value to an existing target, advancing its generation.</summary>
+    /// <summary>
+    /// Binds a value to an existing target, advancing its generation and
+    /// retiring the value it displaces (once that generation has no users).
+    /// </summary>
     public void Bind(string targetId, object value)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
         ArgumentNullException.ThrowIfNull(value);
+        object? retired;
         lock (_sync)
         {
             var state = Require(targetId);
+            retired = DetachForRetirement(state);
             _bindings[targetId] = state with
             {
                 Value = value,
                 Generation = ++_nextGeneration,
                 UsageCount = 0,
+                Bound = true,
             };
+        }
+
+        if (retired is not null)
+        {
+            ScheduleRetire(retired);
         }
     }
 
@@ -160,19 +176,50 @@ public sealed class GenericHmr : IAsyncDisposable
 
     internal bool Release(UsageHandle handle)
     {
+        object? toRetire = null;
+        bool released = false;
         lock (_sync)
         {
-            if (_disposed ||
-                !_bindings.TryGetValue(handle.TargetId, out var state) ||
-                state.Generation != handle.Generation ||
-                state.UsageCount <= 0)
+            if (_disposed)
             {
                 return false;
             }
 
-            _bindings[handle.TargetId] = state with { UsageCount = state.UsageCount - 1 };
-            return true;
+            if (_bindings.TryGetValue(handle.TargetId, out var state) &&
+                state.Generation == handle.Generation &&
+                state.UsageCount > 0)
+            {
+                _bindings[handle.TargetId] = state with { UsageCount = state.UsageCount - 1 };
+                released = true;
+            }
+            else
+            {
+                // The handle belongs to a displaced generation. Its release is
+                // the signal that generation's last user is gone, so settle its
+                // deferred retirement -- without ever touching the newer
+                // binding (the generation fence is preserved).
+                var key = (handle.TargetId, handle.Generation);
+                if (_pendingRetirements.TryGetValue(key, out var pending))
+                {
+                    if (pending.UsageCount <= 1)
+                    {
+                        _pendingRetirements.Remove(key);
+                        toRetire = pending.Value;
+                    }
+                    else
+                    {
+                        _pendingRetirements[key] = pending with { UsageCount = pending.UsageCount - 1 };
+                    }
+                }
+            }
         }
+
+        if (toRetire is not null)
+        {
+            ScheduleRetire(toRetire);
+        }
+
+        return released;
     }
 
     /// <summary>
@@ -221,6 +268,7 @@ public sealed class GenericHmr : IAsyncDisposable
 
         long generation;
         bool discard;
+        object? superseded = null;
         lock (_sync)
         {
             if (_disposed || !_bindings.TryGetValue(targetId, out var current))
@@ -238,12 +286,14 @@ public sealed class GenericHmr : IAsyncDisposable
             {
                 discard = false;
                 generation = ++_nextGeneration;
+                superseded = DetachForRetirement(current);
                 _bindings[targetId] = current with
                 {
                     Target = candidate,
                     Value = replacement,
                     Generation = generation,
                     UsageCount = 0,
+                    Bound = true,
                 };
             }
         }
@@ -254,13 +304,18 @@ public sealed class GenericHmr : IAsyncDisposable
             return new ReplaceResult(false, generation, "target changed during replacement");
         }
 
-        await RetireAsync(before.Value, token).ConfigureAwait(false);
+        if (superseded is not null)
+        {
+            await RetireAsync(superseded, token).ConfigureAwait(false);
+        }
+
         return new ReplaceResult(true, generation, null);
     }
 
     public async ValueTask DisposeAsync()
     {
         State[] retired;
+        object[] deferred;
         lock (_sync)
         {
             if (_disposed)
@@ -270,14 +325,47 @@ public sealed class GenericHmr : IAsyncDisposable
 
             _disposed = true;
             retired = [.. _bindings.Values];
+            deferred = [.. _pendingRetirements.Values.Select(pending => pending.Value)];
             _bindings.Clear();
+            _pendingRetirements.Clear();
         }
 
         foreach (var state in retired)
         {
             await RetireAsync(state.Value, CancellationToken.None).ConfigureAwait(false);
         }
+
+        foreach (var value in deferred)
+        {
+            await RetireAsync(value, CancellationToken.None).ConfigureAwait(false);
+        }
     }
+
+    /// <summary>Must be called under _sync. Defers retirement while the outgoing
+    /// generation still has usage handles; otherwise returns the value to retire
+    /// immediately.</summary>
+    private object? DetachForRetirement(State outgoing)
+    {
+        // RegisterTarget seeds Value with the target itself as a placeholder;
+        // that is not an activated resource and must not be deactivated.
+        if (!outgoing.Bound)
+        {
+            return null;
+        }
+
+        if (outgoing.UsageCount <= 0)
+        {
+            return outgoing.Value;
+        }
+
+        _pendingRetirements[(outgoing.Target.Id, outgoing.Generation)] =
+            new PendingRetirement(outgoing.Value, outgoing.UsageCount);
+        return null;
+    }
+
+    // Bind and Release are synchronous; retirement is fire-and-forget but still
+    // goes through RetireAsync so deactivation failures stay contained.
+    private void ScheduleRetire(object value) => _ = RetireAsync(value, CancellationToken.None);
 
     private State Require(string targetId)
     {

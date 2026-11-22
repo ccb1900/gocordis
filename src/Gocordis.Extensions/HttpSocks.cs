@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -19,8 +20,11 @@ public sealed class SocksRegistry : IAsyncDisposable
     private int _disposed;
 
     /// <summary>
-    /// Normalizes socks/socks5/socks5h to socks5. socks4/socks4a are explicitly
-    /// unsupported: this implementation only offers SOCKS5 CONNECT.
+    /// Normalizes socks/socks5/socks5h to socks5. Both socks5 and socks5h use
+    /// remote-DNS CONNECT semantics: the (IDNA-encoded) target name is sent to
+    /// the proxy instead of being resolved locally; there is no local-resolution
+    /// variant. socks4/socks4a are explicitly unsupported: this implementation
+    /// only offers SOCKS5 CONNECT.
     /// </summary>
     public static string NormalizeScheme(string scheme)
     {
@@ -30,7 +34,8 @@ public sealed class SocksRegistry : IAsyncDisposable
         {
             "socks" or "socks5" or "socks5h" => "socks5",
             "socks4" or "socks4a" => throw new NotSupportedException(
-                "only SOCKS5 CONNECT is supported; got '" + normalized + "'"),
+                "only SOCKS5 CONNECT is supported (socks/socks5/socks5h forward the " +
+                "target name to the proxy); got '" + normalized + "'"),
             _ => throw new ArgumentException("unsupported proxy scheme '" + scheme + "'", nameof(scheme)),
         };
     }
@@ -175,12 +180,14 @@ public sealed class SocksRegistry : IAsyncDisposable
         if (text.StartsWith('['))
         {
             var close = text.IndexOf(']');
-            if (close < 0 || close == text.Length - 1 || text[close + 1] != ':')
+            if (close <= 1 || close == text.Length - 1 || text[close + 1] != ':')
             {
                 throw new ArgumentException("SOCKS proxy address must be host:port", nameof(address));
             }
 
-            host = text[..(close + 1)];
+            // Brackets are URL syntax for IPv6 literals; TcpClient.ConnectAsync
+            // cannot resolve "[::1]" as a host name, so keep the bare address.
+            host = text[1..close];
             portText = text[(close + 2)..];
         }
         else
@@ -206,6 +213,12 @@ public sealed class SocksRegistry : IAsyncDisposable
     private static async Task<Stream> ConnectSocks5Async(
         string proxyHost, int proxyPort, string targetHost, int targetPort, CancellationToken token)
     {
+        // Callers may forward a target copied from a URL; strip URL brackets
+        // before parsing so a bracketed IPv6 literal is still ATYP=4.
+        var target = targetHost.Length > 1 && targetHost[0] == '[' && targetHost[^1] == ']'
+            ? targetHost[1..^1]
+            : targetHost;
+
         var client = new TcpClient();
         try
         {
@@ -222,18 +235,34 @@ public sealed class SocksRegistry : IAsyncDisposable
             }
 
             var request = new List<byte> { 5, 1, 0 }; // VER, CMD=CONNECT, RSV
-            if (IPAddress.TryParse(targetHost, out var address) &&
-                address.AddressFamily == AddressFamily.InterNetwork)
+            if (IPAddress.TryParse(target, out var address))
             {
-                request.Add(1); // ATYP=IPv4
+                switch (address.AddressFamily)
+                {
+                    case AddressFamily.InterNetwork:
+                        request.Add(1); // ATYP=IPv4
+                        break;
+                    case AddressFamily.InterNetworkV6:
+                        request.Add(4); // ATYP=IPv6
+                        break;
+                    default:
+                        throw new ArgumentException(
+                            $"unsupported target address family {address.AddressFamily}", nameof(targetHost));
+                }
+
                 request.AddRange(address.GetAddressBytes());
             }
             else
             {
-                var name = Encoding.ASCII.GetBytes(targetHost);
+                // socks5 and socks5h share remote-DNS semantics: forward the
+                // IDNA-encoded name to the proxy rather than resolving locally.
+                var ascii = new IdnMapping().GetAscii(target);
+                var name = Encoding.ASCII.GetBytes(ascii);
                 if (name.Length is 0 or > 255)
                 {
-                    throw new ArgumentException("target host name must be 1..255 bytes", nameof(targetHost));
+                    throw new ArgumentException(
+                        "target host name must be 1..255 bytes after IDNA encoding " +
+                        "(socks5/socks5h forward the name to the proxy)", nameof(targetHost));
                 }
 
                 request.Add(3); // ATYP=DOMAINNAME

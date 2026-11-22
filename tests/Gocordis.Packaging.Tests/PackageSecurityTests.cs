@@ -100,6 +100,49 @@ public sealed class PackageSecurityTests
     }
 
     [Fact]
+    public async Task CancelledPackageWriteLeavesNoTempFile()
+    {
+        using var temp = new TempDir();
+        var source = temp.Path("source");
+        Directory.CreateDirectory(source);
+
+        // Incompressible data keeps the archive-writing phase (after .tmp is
+        // created) long enough for cancellation to land there rather than in
+        // the pre-write payload scan.
+        var payload = new byte[PluginPackageLimits.MaxPayloadFileBytes];
+        Random.Shared.NextBytes(payload);
+        for (var i = 0; i < 3; i++)
+        {
+            await File.WriteAllBytesAsync(Path.Combine(source, $"part-{i}.bin"), payload);
+        }
+
+        var package = temp.File("cancelled.gocordis-plugin");
+        var tempPath = package + ".tmp";
+        using var cts = new CancellationTokenSource();
+        var canceller = CancelWhenTempAppears(tempPath, cts);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            PluginPackageWriter.CreateAsync(source,
+                new PluginPackageManifest("cancelled", "1.0.0", "demo", "[1.0,)"),
+                package, cts.Token));
+        await canceller;
+
+        Assert.False(File.Exists(tempPath), "a cancelled write must remove its .tmp file");
+        Assert.False(File.Exists(package), "a cancelled write must not publish a package");
+
+        static async Task CancelWhenTempAppears(string path, CancellationTokenSource source)
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+            while (!File.Exists(path) && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(1);
+            }
+
+            source.Cancel();
+        }
+    }
+
+    [Fact]
     public async Task FailedInstallLeavesNoFinalDirectoryAndNoLockChange()
     {
         using var temp = new TempDir();

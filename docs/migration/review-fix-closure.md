@@ -39,7 +39,7 @@ Web-only client module 在原生 Host 中明确降级，不出现第二套生命
 
 ```text
 Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52; calibrated in final-calibration.md)
-Tests: 369/369, 0 warnings, 3 consecutive full-suite runs
+Tests: 378/378, 0 warnings, 3 consecutive full-suite runs
 ```
 
 ## 修复日志（ub-mode）
@@ -48,5 +48,5 @@ Tests: 369/369, 0 warnings, 3 consecutive full-suite runs
 2. 三个 agent 并行写红测和实现，主线程统一构建，避免 obj/bin 竞争。
 3. 修真实集成错误：HttpdHost 缺 AspNetCore.Hosting using；CLI Console 命名空间冲突；
    ProductGate orphan capability 未声明；CLI 全局 Console 捕获竞争；iterative component 缺 ApplyAsync override。
-4. 全量 369/369 绿后更新账本状态，并把不可跨平台落地的项重新分类为 Divergent，
+4. 全量 378/378 绿后更新账本状态，并把不可跨平台落地的项重新分类为 Divergent，
    不用模糊状态伪装成未完成，也不把边界项伪称 Equivalent。

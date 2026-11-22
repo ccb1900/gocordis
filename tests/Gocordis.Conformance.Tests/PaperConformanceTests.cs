@@ -48,43 +48,6 @@ public sealed class PaperConformanceTests
     }
 
     [Fact]
-    public async Task Thm70_ProviderEpisodeContainsConsumerEpisode()
-    {
-        var key = new Key<int>("shared");
-        var consumerApplied = false;
-
-        await using var runtime = new Runtime();
-        var consumer = new ProbeComponent(
-            "consumer",
-            context =>
-            {
-                consumerApplied = true;
-                Assert.Equal(9, context.Require(key));
-                return ValueTask.FromResult<Cleanup?>(null);
-            },
-            inject: [key]);
-
-        // The consumer is declared first but cannot activate: provider must exist first.
-        var consumerFiber = await runtime.LoadAsync(consumer);
-        Assert.Equal(FiberState.Pending, consumerFiber.State);
-        Assert.False(consumerApplied);
-
-        var provider = new ProbeComponent(
-            "provider",
-            async context =>
-            {
-                context.Provide(key, 9);
-                return null;
-            },
-            provide: [key]);
-        var providerFiber = await runtime.LoadAsync(provider);
-
-        Assert.Equal(FiberState.Active, providerFiber.State);
-        Assert.Equal(FiberState.Active, consumerFiber.State);
-        Assert.True(consumerApplied);
-    }
-
-    [Fact]
     public async Task C22_DependencyLossIsWithdrawalNotFailure()
     {
         var key = new Key<int>("volatile");

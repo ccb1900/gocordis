@@ -45,7 +45,7 @@ public sealed class ProcessRuntimeTests
 
         await runtime.DisposeAsync(fiber);
         Assert.Equal(FiberState.Gone, fiber.State);
-        Assert.Empty(runtime.Snapshot().Fibers.Where(f => f.Name == "process-plugin"));
+        Assert.DoesNotContain(runtime.Snapshot().Fibers, f => f.Name == "process-plugin");
     }
 
 

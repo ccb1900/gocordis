@@ -10,6 +10,13 @@ namespace KoishiCase;
 public sealed class KoishiHost : IAsyncDisposable
 {
     private readonly PluginRegistry _registry;
+    private readonly Dictionary<string, bool> _enabled = new(StringComparer.Ordinal)
+    {
+        ["db"] = true,
+        ["adapter"] = true,
+        ["feature"] = true,
+    };
+    private string _adapterTag = "v1";
 
     public KoishiHost()
     {
@@ -44,23 +51,31 @@ public sealed class KoishiHost : IAsyncDisposable
     public async Task StartAsync()
     {
         await Runtime.LoadAsync(new HostVocabulary(Commands));
-        await _registry.ApplyAsync([
-            Manifest("db", "database", true),
-            Manifest("adapter", "adapter", true),
-            Manifest("feature", "feature", true),
-        ]);
+        await ApplyDeclarationsAsync();
     }
 
-    public Task SetEnabledAsync(string id, bool enabled) => _registry.ApplyAsync([
-        Manifest("db", "database", true),
-        Manifest("adapter", "adapter", true),
-        Manifest("feature", "feature", enabled),
-    ]);
+    /// <summary>Every declaration carries its own enabled flag; Core handles the retraction.</summary>
+    public Task SetEnabledAsync(string id, bool enabled)
+    {
+        if (!_enabled.ContainsKey(id))
+        {
+            throw new InvalidOperationException($"unknown plugin '{id}'");
+        }
 
-    public Task ReplaceAdapterAsync(string tag) => _registry.ApplyAsync([
-        Manifest("db", "database", true),
-        Manifest("adapter", "adapter", true, tag),
-        Manifest("feature", "feature", true),
+        _enabled[id] = enabled;
+        return ApplyDeclarationsAsync();
+    }
+
+    public Task ReplaceAdapterAsync(string tag)
+    {
+        _adapterTag = tag;
+        return ApplyDeclarationsAsync();
+    }
+
+    private Task ApplyDeclarationsAsync() => _registry.ApplyAsync([
+        Manifest("db", "database", _enabled["db"]),
+        Manifest("adapter", "adapter", _enabled["adapter"], _adapterTag),
+        Manifest("feature", "feature", _enabled["feature"]),
     ]);
 
     public async ValueTask DisposeAsync()

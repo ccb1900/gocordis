@@ -67,6 +67,11 @@
 | 58 | 一次执行关闭 G-B1/G-B2 | 用户要求不分阶段 | `samples/KoishiCase` 复现论文 §5.3（服务端 + 浏览器双应用、开关、HMR、provider 切换）；`VersionedKey<T>` + NuGet.Versioning 实现 §6.6 版本路由 |
 | 59 | 闭环自审并修复 | agent 调用被拒，按审查清单直接自审 | 修 Broker 负索引、Scheduler/FS watcher 锁、ConfigWatcher gate 释放、版本化自依赖判环；补回归测试 |
 | 60 | 最终验证 | 证据驱动 | baseline + build + 108 passed |
+| 61 | 批次 C：论文 C01–C40 可证伪覆盖矩阵 | 先写会失败的测试：逐行校验锚点/状态/证据；未覆盖项显式 `待补` / `接受差异`，不写空断言 | `tests/Gocordis.Conformance.Tests/PaperItemMatrixTests.cs`（40 理论行 + 2 Fact）+ `docs/migration/paper-coverage-matrix.md`（最终：已覆盖 38 / 待补 0 / 接受差异 2） |
+| 62 | 批次 C：定理矩阵化与 Thm70 归位 | 每定理至少 3 场景，沿用可运行 Core API；Thm70 从 `PaperConformanceTests` 移入 `TheoremMatrixTests` | `TheoremMatrixTests.cs` 5×3 = 15 用例 + `docs/migration/theorem-matrix.md`；原单点 `TheoremTests` 保留为历史基线 |
+| 63 | 批次 C：JS/接受差异逐项裁决 | 不得空缺：每项给 C# 决定与可执行测试或文档锚点 | `docs/migration/js-cordis-csharp-differences.md`（A1–A5 + AD-01–AD-22 + 已消除差异 7 项） |
+| 64 | 批次 C：统一计数与新文档 | 批次 A 119→123；批次 B/C 完成后统一回填 252/252 | `README.md`、`final-acceptance.md`、`migration-coverage.md`、本文件；新增 `docs/guide/csharp-developer-manual.md`、`docs/migration/koishi-case-study.md` |
+| 65 | 主线程统一构建与验证 | 避免并行写入污染 obj/bin；统一执行 build/test | `dotnet build Gocordis.sln`：0 warning / 0 error；`dotnet test Gocordis.sln`：252/252，连续 5 次全绿 |
 
 ## 验证结果（持续追加）
 
@@ -156,6 +161,22 @@ dotnet test Gocordis.sln --nologo -m:1   → 17 + 10 + 38 = 65 passed
 
 第 1 轮发现的问题已修复并加入回归测试；第 2/3 轮自审修复了 RPC 超时、stderr 洪泛、
 激活状态清理、HTTP 取消与 ALC 生命周期回收，均已加入回归测试。
+
+### 2026-11-22 — 批次 B/C 最终验证（主线程已执行）
+
+主线程在所有并行实现回传后统一构建与验证，避免 `obj/bin` 竞争。最终命令与结果：
+
+```
+bash docs/migration/verify-baseline.sh
+dotnet build Gocordis.sln --nologo -m:1  → 0 warning / 0 error
+dotnet test  Gocordis.sln --nologo --no-build -m:1  → 252/252，连续 5 次全绿
+```
+
+需关注的用例：
+- `PaperItemMatrixTests`（40 + 2）：逐行读 `paper-coverage-matrix.md` 并反射校验测试名；
+- `TheoremMatrixTests`（5×3）：尤其 `Thm64_Matrix["dependency-withdrawal-recovery"]`
+  的恢复后 Active（曾因 Apply 内写死期望值导致 Failed，已改捕获 observed 分别断言 1/2）；
+- `PlatformConvergenceTests` 与 `KoishiCaseTests`（后者由另一个 agent 负责）。
 
 ## 待决策事项（不阻塞阶段 0）
 

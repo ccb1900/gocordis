@@ -60,16 +60,20 @@
 
 阶段 2 出口已满足：Core 语义不依赖插件加载器即可独立运行。
 
-**测试证据（2026-11-22）**：
+**测试证据（2026-11-22，批次 A 基线）**：
 
 ```
 dotnet test Gocordis.sln --nologo
-Core.Tests        16 passed（含并发、Realm、MetaKey）
-Conformance.Tests  5 passed（C06 / Thm70 / C22 / C13 / 确定性重放）
-Runtime.Tests     50 passed（边界 + Manifest/Registry + 三种 Runtime + 贡献 + 审查回归 + 版本化 / 插件系统回归）
-Conformance.Tests  18 passed（含 Thm64/68/73/80 与平台收敛）
-Extensions.Tests   14 passed（event/timer/scheduler/watch/fs/http/server/env/cli/broker/registry/observe/market/package-manager）
+批次 A 冻结计数：119 = Core 22 / Conformance 28 / Extensions 19 / Runtime 50
+                        （119/119 连续 10 次全绿，见 adr-channel-orchestrator.md）
+批次 A 新增回归后：123（连续 10 次全绿）
+批次 B/C 最终：252 = Core 22 / Conformance 113 / Extensions 32 / Runtime 85（连续 5 次全绿）
 ```
+
+历史片段（不得与新计数混用）：阶段 2 首批 Core 16 / Conformance 5（C06 / Thm70 / C22 / C13 /
+确定性重放）；随后 Conformance 18（Thm64/68/73/80 与平台收敛）与
+Extensions 14（event/timer/scheduler/watch/fs/http/server/env/cli/broker/registry/observe/market/package-manager）。
+Thm70 现已归位到 `TheoremMatrixTests.Thm70_Matrix`，不再计入 `PaperConformanceTests`。
 
 ## 4. 阶段 3：Plugin System（状态：已执行（部分缺口））
 
@@ -77,8 +81,8 @@ Extensions.Tests   14 passed（event/timer/scheduler/watch/fs/http/server/env/cl
 | --- | --- | --- | --- | --- | --- | --- |
 | 3.1 | Manifest | 继承 | `extensions/pluginmeta/manifest.go`、`adapters/*`、`extensions/configwatch/toml.go` | 继承字段；版本归一化、校验、严格未知字段、checksum、兼容性；native/WASM/proc 统一形状 | 解析/校验/适配三载体测试 | 已验证 |
 | 3.2 | 声明权威性决策 | 已验证 | `Manifest.Requires/Provides` 仅描述；真实边来自 `Inject/Provide` | 决定 Manifest 是描述性还是权威性；若权威则必须生成真实边 | 决策：Manifest 描述性、真实边来自 Inject/Provide；Registry 按 Provides 字符串排序并交由 Core 校验 typed key | 已验证 |
-| 3.3 | Discovery | .NET 替代 | `extensions/console/procplugin/discover.go`、`market/service.go` | 插件目录扫描、清单发现、错误组件降级 | 缺目录/坏清单/路径逃逸待补 | 进行中 |
-| 3.4 | Registry | 继承 | `extensions/loader/loader_impl.go`、`extensions/registry/registry.go` | 稳定成员、替换原子性；watch/慢消费者待补 | 重复/替换/并发/慢消费者不阻塞 | 进行中 |
+| 3.3 | Discovery | .NET 替代 | `extensions/console/procplugin/discover.go`、`market/service.go` | 插件目录扫描、清单发现、错误组件降级 | `DiscoveryConfigTests`：坏 TOML 隔离并记录诊断、严格 enabled 解析 | 已验证 |
+| 3.4 | Registry | 继承 | `extensions/loader/loader_impl.go`、`extensions/registry/registry.go` | 稳定成员、替换原子性；watch/慢消费者 | `PluginTransactionTests` + `DiscoveryConfigTests`：Prepare/Commit/Rollback、并发串行、坏配置不推进 | 已验证 |
 | 3.5 | Dependency Resolution | 迁移语义 | `extensions/loader/*`、`Core` 依赖图 | 模块依赖解析与实际 fiber 边区分；一个 key 一个提供者 | 依赖丢失消费者 Pending、恢复激活 | 已验证 |
 | 3.6 | Plugin Lifecycle | 迁移语义 | `extensions/config/config.go`、`switch_test.go`、`release_protocol_test.go` | entry（跨 revision 身份）/ fiber（一次 enablement）；commit/abandon 协议；usage owner 集合 | enabled 翻动 = Load/Dispose；替换失败保留旧态 | 已验证 |
 | 3.7 | 与 Core 集成 | 迁移语义 | `cmd/platform/main.go:80-156` | 组合根只装配；插件管理不产生第二套生命周期 | 架构测试：唯一生命周期权威 | 已验证 |
@@ -123,7 +127,7 @@ Extensions.Tests   14 passed（event/timer/scheduler/watch/fs/http/server/env/cl
 | --- | --- | --- | --- | --- | --- |
 | 5.8 | 握手协议 | 继承 | `GORIDIS-PROC-PLUGIN 1`，5s 超时 | 成功握手已测；错误握手/超时代码存在但未测 | 已实现 |
 | 5.9 | 行分隔 JSON-RPC 2.0 | 继承 | `transport/transport.go`、单写锁、单在途调用 | 往返、`-32601` 插件→宿主拒绝、`-32700` 解析错误、并发调用互斥 | 已验证 |
-| 5.10 | 生命周期与错误处理统一 | 迁移语义 | spawn+handshake / 优雅 shutdown → 有界等待 → kill → reap | 握手/RPC/shutdown/生命周期已测；崩溃中调用与替换未测 | 进行中 |
+| 5.10 | 生命周期与错误处理统一 | 迁移语义 | spawn+handshake / 优雅 shutdown → 有界等待 → kill → reap | `BackendLifecycleTests`：三后端统一协议、握手超时回收、调用超时归一化、失败策略显式化 | 已验证 |
 | 5.11 | 一个 backend 一个 typed key | 继承 | `extensions/loader/proc/backend.go` | 能力声明与解析测试 | 已验证 |
 | 5.12 | 降级不阻塞、无自动重启 | 继承 | `plugin_error` 词表、`plugin.degraded` | `plugin_error` + `ProcessDiagnostics`，启动失败 fiber 仍 Active | 已验证 |
 | 5.13 | Windows `.exe` 解析与执行位差异 | 继承 | `validateExecutable`、`resolveExecutable` | Windows 测试 | 已实现 |
@@ -138,10 +142,10 @@ Extensions.Tests   14 passed（event/timer/scheduler/watch/fs/http/server/env/cl
 | 6.1 | UI Contribution API（先做契约） | 继承 | `extensions/console/registry/composition.go` | Core 零 UI 依赖；插件可注册 page/panel/client-module | 已验证 |
 | 6.2 | 贡献 owner 防陈旧清理 | 迁移语义 | `ContributionOwner{PluginID,ComponentID,ActivationID}` | 快速 reload、并发注册/清理、陈旧 owner 不误删 | 已验证 |
 | 6.3 | Console host 能力 key | 继承 | `Gocordis.Plugins`（`UiContributionRegistry.Key`、`ApiGateway.Key`）；原 Go 三 key 未逐一同名迁移 | 能力解析与 Dispose 清理已测 | 已验证 |
-| 6.4 | WebUI API / SSE | .NET 替代 | `extensions/console/webui/server.go` | `/api/meta`、`/api/ui/pages`、`/api/query/{**name}`、`/api/command/{**name}`、`/api/stream`；`/api/plugins`、`/api/fleet` 未实现 | 已验证 |
+| 6.4 | WebUI API / SSE | .NET 替代 | `extensions/console/webui/server.go` | `/api/meta`、`/api/ui/pages`、`/api/query`、`/api/command`、`/api/plugins`、`/api/fleet`、`/api/plugins/control|config`、`/api/stream` 持续推送 | 已验证 |
 | 6.5 | 监听安全门 | 继承 | 未跟踪 `webui/listen.go`（默认 loopback，远程需 opt-in） | 默认拒绝远程、显式 opt-in 放行 | 已验证 |
-| 6.6 | Explorer / Insight / Dashboard / Inspector | 继承 | `extensions/console/{explorer,insight,runtime}` | ConsoleHost 提供 `runtime/snapshot`、`insight/graph`、`framework/dashboard`；Explorer/Inspector 前端未迁移 | 进行中 |
-| 6.7 | 运行时状态查询与诊断 | 继承 | `extensions/console/runtime`、`devtools/diagnose.go` | 只读快照查询已测；诊断确定性与失败关闭未测 | 进行中 |
+| 6.6 | Explorer / Insight / Dashboard / Inspector | 继承 | `extensions/console/{explorer,insight,runtime}` | ConsoleHost 三个查询 + WebUI 页面/快照/生命周期 HTTP E2E；完整 Explorer/Inspector 前端仍为接受差异 | 已实现 |
+| 6.7 | 运行时状态查询与诊断 | 继承 | `extensions/console/runtime`、`devtools/diagnose.go` | 只读快照查询与 HTTP/SSE observation；诊断确定性与失败关闭为接受差异 | 已实现 |
 | 6.8 | Console 插件卸载/安装/配置 | 迁移语义 | `extensions/console/lifecycle.go` | 受保护类型不被误停；失败回滚 | 已实现 |
 | 6.9 | 前端资产（`web/console`、`client/`） | .NET 替代 | TS/JS 前端与浏览器侧 client-module 调和循环 | 内嵌 `wwwroot` HTML/JS/CSS，经贡献 API 拉取页面与快照 | 已验证 |
 | 6.10 | 示例插件与开发文档 | 已验证 | `cmd/{example,httpd,collector,backfill,wasmhmr,procplugindemo}` | `samples/` 五类示例可运行并有 README | 已验证 |
@@ -158,7 +162,7 @@ Extensions.Tests   14 passed（event/timer/scheduler/watch/fs/http/server/env/cl
 | --- | --- | --- | --- |
 | C06 严格 LIFO；effect 阶段 | `tests/Gocordis.Core.Tests/CoreSemanticsTests.cs`、`tests/Gocordis.Conformance.Tests/PaperConformanceTests.cs` | 逆序、exactly-once、逆 panic 不阻断、divert 清理 | 已验证 |
 | C13 观察等价；C22 依赖丢失→Pending | `PaperConformanceTests.cs` | 忽略生成 id 的等价比较、Pending 与恢复 | 已验证 |
-| Thm70 provider→consumer 顺序 | `PaperConformanceTests.cs`、`AuditRegressionTests.cs` | provider 先于 consumer、relied guard、consumer 先撤 | 已验证 |
+| Thm70 provider→consumer 顺序 | `TheoremMatrixTests.cs`（`Thm70_Matrix`，原误放 `PaperConformanceTests` 已归位）、`AuditRegressionTests.cs` | provider 先于 consumer、provider 替换重绑定、三级链顺序；relied guard / consumer 先撤在审查回归。主线程已验证 | 已验证 |
 | 生命周期契约（phase2–8） | `CoreSemanticsTests.cs` | Active/Pending/Failed/Gone、幂等 Dispose、Close 排空、失败不重试 | 已验证 |
 | 声明校验与环拒绝 | `CoreSemanticsTests.cs` | 未声明 Require/Provide 拒绝、重复 provider、环链诊断 | 已验证 |
 | 确定性驱动（Go deterministic.go） | `tests/Gocordis.Conformance.Tests/DeterministicDriver.cs` | 种子化重放；非生产调度器 | 已验证 |
@@ -167,9 +171,11 @@ Extensions.Tests   14 passed（event/timer/scheduler/watch/fs/http/server/env/cl
 | WASM（Go wasm backend 与 E2E） | `WasmRuntimeTests.cs` | Wasmtime 宿主调用、ABI create/destroy、Core 生命周期 | 已实现（自定义段/热替换未测） |
 | Process（Go backend、transport） | `ProcessRuntimeTests.cs`、`AuditRegressionTests.cs` | 握手、RPC、shutdown、并发调用、Core 生命周期 | 已实现（崩溃中调用/降级未测） |
 | UI / Console（Go registry、webui） | `ContributionTests.cs`、`Phase6Tests.cs` | owner 防陈旧、查询/命令、HTTP API、监听安全门 | 已验证 |
-| Thm64 / Thm68 / Thm73 / Thm80 逐条 | `tests/Gocordis.Conformance.Tests/TheoremTests.cs` | 保持性、恢复精确性、进展性、汇合性 | 已验证 |
+| Thm64 / Thm68 / Thm73 / Thm80 逐条 | `tests/Gocordis.Conformance.Tests/TheoremTests.cs`（旧单点基线）、`tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs`（新增 5×3 矩阵） | 保持性、恢复精确性、顺序性、进展性、汇合性；Go→C# 逐条映射见 `theorem-matrix.md`。主线程已验证 | 已实现 |
 | 事件五派发模式（Go event conformance） | `tests/Gocordis.Extensions.Tests/ExtensionTests.cs` | serial/bail/parallel/waterfall + 可逆注册 | 已验证 |
-| PC01–PC30 平台收敛 E2E | `tests/Gocordis.Conformance.Tests/PlatformConvergenceTests.cs` | 声明幂等、无第二生命周期、stale 完成隔离、Close 全 Gone | 已验证 |
+| PC01–PC30 平台收敛 E2E | `tests/Gocordis.Conformance.Tests/PlatformConvergenceTests.cs` | 声明幂等、无第二生命周期、stale 完成隔离、Close 全 Gone（方法后缀是本地序号，**不是** Go gate 编号；对应关系见 `paper-coverage-matrix.md` 开头）。主线程已验证 | 已验证 |
+| 论文 C01–C40 可证伪覆盖矩阵 | `tests/Gocordis.Conformance.Tests/PaperItemMatrixTests.cs`、`docs/migration/paper-coverage-matrix.md` | 40 行逐条校验锚点/状态/证据；38 已覆盖、0 待补、2 接受差异；主线程已验证 | 已实现 |
+| 定理 Go→C# 映射与 JS 差异逐项裁决 | `docs/migration/theorem-matrix.md`、`docs/migration/js-cordis-csharp-differences.md` | 5 定理 ≥3 场景；JS/接受差异每项的 C# 决定与证据。主线程已验证 | 已实现 |
 | 竞态检测（Go `-race`） | `dotnet test`（并发压力测试） | 并发 Load/Dispose、Snapshot、进程 RPC 有压力用例；无 .NET 等价 race detector | 已实现 |
 
 ## 9. 明确不迁移清单

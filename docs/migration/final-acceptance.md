@@ -15,20 +15,40 @@
 | 5 WASM / Process Runtime | 已执行（WASM 能力桥等为缺口） | `src/Gocordis.Runtime.Wasm`（Wasmtime 34.0.2）、`src/Gocordis.Runtime.Process`（行分隔 JSON-RPC）；示例进程插件 | WAT ABI create/destroy 调用；进程握手/RPC/shutdown 与 Core 生命周期 |
 | 6 UI / Console / API | 已执行（官方扩展套件未迁移） | `UiContributionRegistry`、`ApiGateway`、`ConsoleHost`、ASP.NET Core `WebUiServer`、监听安全门、UI 示例插件 | 贡献 owner 防陈旧、查询/命令、HTTP API、loopback 默认策略测试 |
 
+上表是阶段执行记录，不表示批次 B/C 已验收；批次 A 收敛后的状态见 `README.md`「当前进度」。
+批次 C 的覆盖账本见 [`paper-coverage-matrix.md`](paper-coverage-matrix.md) 与
+[`theorem-matrix.md`](theorem-matrix.md)，未覆盖项按 `待补` / `接受差异` 显式保留。
+
 ## 2. 最终验证命令与结果
 
 ```
 bash docs/migration/verify-baseline.sh   → BASELINE VERIFIED
 dotnet build Gocordis.sln --nologo -m:1  → Build succeeded, 0 Warning(s), 0 Error(s)
-dotnet test Gocordis.sln --nologo -m:1   → 21 + 28 + 19 + 50 = 118 passed
+dotnet test Gocordis.sln --nologo --no-build -m:1 → 252/252 Passed，连续 5 次零失败、零挂起
 ```
+
+计数口径（批次 A → B/C，禁止用旧数冒充新状态）：
+
+- 118 = 批次 A 之前的历史快照（21 + 28 + 19 + 50，见 `review-closure-2026-11-22.md`）。
+- 119 = 批次 A 冻结基线（Core 22 / Conformance 28 / Extensions 19 / Runtime 50）；
+  新增回归用例后为 **123**，连续 10 次全绿的证据见
+  [`adr-channel-orchestrator.md`](adr-channel-orchestrator.md)。
+- 252 = 批次 B/C 最终全量：Core 22 / Conformance 113 / Extensions 32 / Runtime 85，
+  主线程连续 5 次全绿；批次 A/B/C 全部完成。
+- 批次 C 新增可执行用例：`PaperItemMatrixTests` 40 条理论行 + 2 条 Fact，
+  `TheoremMatrixTests` 5×3 = 15 条理论行；原误放的
+  `PaperConformanceTests.Thm70_ProviderEpisodeContainsConsumerEpisode` 归位到
+  `TheoremMatrixTests.Thm70_Matrix`，不是净新增覆盖。
 
 测试构成：
 
-- `Gocordis.Core.Tests`（21）：声明一致性、严格 LIFO、失败不重试、依赖丢失→Pending、divert、
+- `Gocordis.Core.Tests`（22）：声明一致性、严格 LIFO、失败不重试、依赖丢失→Pending、divert、
   Cleanup 内 Require、所有权级联、事件注销、环拒绝、Realm 隔离、MetaKey 右偏、并发调和。
-- `Gocordis.Conformance.Tests`（28）：C06、C13、C22、Thm70、确定性重放 + 第 1 轮审查回归 5 项 + 第 4 轮 EventKey 解析。
-- `Gocordis.Runtime.Tests`（50）：架构边界、Manifest/Registry、ALC 回收与依赖隔离、
+- `Gocordis.Conformance.Tests`（113）：C06、C13、C22、Thm70（**批次 C 已归位**到
+  `TheoremMatrixTests.Thm70_Matrix`）、确定性重放 + 第 1 轮审查回归 5 项 + 第 4 轮 EventKey 解析；
+  批次 C 另增 PaperItemMatrixTests（40 + 2）、TheoremMatrixTests（15）与
+  PaperGapClosureTests（26）用例；论文矩阵 38 已覆盖 / 0 待补 / 2 接受差异。
+- `Gocordis.Runtime.Tests`（85）：架构边界、Manifest/Registry、ALC 回收与依赖隔离、
   WASM/Process、UI 贡献与 HTTP API、组合与文件监听、第 1 轮审查回归 5 项。
 
 ## 3. 技术选择（成熟库优先）

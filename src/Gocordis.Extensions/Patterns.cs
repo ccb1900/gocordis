@@ -10,27 +10,53 @@ using Microsoft.Extensions.Hosting;
 
 namespace Gocordis.Extensions;
 
-/// <summary>Multi-implementation routing with reversible registration (paper §6.2).</summary>
+/// <summary>Raised by Broker selection/Call when the routing set is empty.</summary>
+public sealed class BrokerNoProviderException : InvalidOperationException
+{
+    public BrokerNoProviderException() : base("broker: no backing provider registered") { }
+}
+
+/// <summary>
+/// Multi-implementation routing with named, reversible registration (paper §6.2).
+/// A provider registers through the returned handle; disposing that handle
+/// withdraws the route, so a retiring owner leaves no residue in the broker.
+/// </summary>
 public sealed class Broker<T>
 {
-    private readonly List<T> _providers = [];
     private readonly object _sync = new();
+    private readonly List<Route> _routes = [];
+    private readonly Func<IReadOnlyList<T>, T>? _policy;
+    private long _ticket;
 
-    public IDisposable Register(T provider)
+    /// <summary>Null policy means round-robin in registration order.</summary>
+    public Broker(Func<IReadOnlyList<T>, T>? policy = null) => _policy = policy;
+
+    public IDisposable Register(string name, T provider)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
         lock (_sync)
         {
-            _providers.Add(provider);
+            if (_routes.Any(route => route.Name == name))
+            {
+                throw new InvalidOperationException($"broker: duplicate provider name {name}");
+            }
+            _routes.Add(new Route(name, provider));
         }
 
         return new Subscription(() =>
         {
             lock (_sync)
             {
-                _providers.Remove(provider);
+                var index = _routes.FindIndex(route => route.Name == name);
+                if (index >= 0)
+                {
+                    _routes.RemoveAt(index);
+                }
             }
         });
     }
+
+    public IDisposable Register(T provider) => Register(Guid.NewGuid().ToString("N"), provider);
 
     public IReadOnlyList<T> Providers
     {
@@ -38,24 +64,84 @@ public sealed class Broker<T>
         {
             lock (_sync)
             {
-                return _providers.ToArray();
+                return _routes.Select(route => route.Provider).ToArray();
             }
         }
     }
 
+    /// <summary>Current routing set names in registration order (oldest first).</summary>
+    public IReadOnlyList<string> Names()
+    {
+        lock (_sync)
+        {
+            return _routes.Select(route => route.Name).ToArray();
+        }
+    }
+
+    public T First()
+    {
+        lock (_sync)
+        {
+            if (_routes.Count == 0)
+            {
+                throw new BrokerNoProviderException();
+            }
+            return _routes[0].Provider;
+        }
+    }
+
+    /// <summary>Stateful round-robin; the first call selects the oldest provider.</summary>
+    public T RoundRobin()
+    {
+        lock (_sync)
+        {
+            if (_routes.Count == 0)
+            {
+                throw new BrokerNoProviderException();
+            }
+            var ticket = Interlocked.Increment(ref _ticket) - 1;
+            var index = (int)((ticket % _routes.Count + _routes.Count) % _routes.Count);
+            return _routes[index].Provider;
+        }
+    }
+
+    /// <summary>
+    /// Legacy stateless round-robin driven by an explicit ticket; throws when
+    /// the routing set is empty, like every other selection entry point.
+    /// </summary>
     public T? RoundRobin(long ticket)
     {
         lock (_sync)
         {
-            if (_providers.Count == 0)
+            if (_routes.Count == 0)
             {
-                return default;
+                throw new BrokerNoProviderException();
             }
-
-            var index = (int)((ticket % _providers.Count + _providers.Count) % _providers.Count);
-            return _providers[index];
+            var index = (int)((ticket % _routes.Count + _routes.Count) % _routes.Count);
+            return _routes[index].Provider;
         }
     }
+
+    public void Call(Action<T> action) => action(Select());
+
+    public TResult Call<TResult>(Func<T, TResult> selector) => selector(Select());
+
+    private T Select()
+    {
+        var snapshot = Providers;
+        if (snapshot.Count == 0)
+        {
+            throw new BrokerNoProviderException();
+        }
+        if (_policy is not null)
+        {
+            return _policy(snapshot);
+        }
+        var ticket = Interlocked.Increment(ref _ticket) - 1;
+        return snapshot[(int)((ticket % snapshot.Count + snapshot.Count) % snapshot.Count)];
+    }
+
+    private sealed record Route(string Name, T Provider);
 
     private sealed class Subscription : IDisposable
     {

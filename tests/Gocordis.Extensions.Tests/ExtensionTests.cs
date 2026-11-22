@@ -265,7 +265,7 @@ public sealed class ExtensionTests
             .Select(_ => scheduler.RunNextAsync(DateTimeOffset.UtcNow)));
 
         Assert.Equal(1, executions);
-        Assert.Single(results.Where(id => id.HasValue));
+        Assert.Single(results, id => id.HasValue);
     }
 
     [Fact]

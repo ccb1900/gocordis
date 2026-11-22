@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json.Nodes;
 using Gocordis.Console.WebUi;
 using Gocordis.Core;
@@ -18,7 +19,7 @@ public sealed class Phase6Tests
 
         var merged = composer.Compose(first, second);
         Assert.Equal(2, merged.Count);
-        Assert.Equal("2", Assert.Single(merged.Where(entry => entry.Id == "b")).Config["value"]);
+        Assert.Equal("2", Assert.Single(merged, entry => entry.Id == "b").Config["value"]);
 
         var patched = composer.ApplyPatches(
             merged,
@@ -122,6 +123,133 @@ public sealed class Phase6Tests
         var fleet = await client.GetStringAsync("/api/fleet");
         Assert.Contains("\"plugins\":1", fleet);
         await server.StopAsync();
+    }
+
+    [Fact]
+    public async Task WebUiUsesDataAndErrorEnvelopesWithBodyLimit()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        var host = new ConsoleHost(runtime);
+        await using var server = new WebUiServer(host);
+        await server.StartAsync();
+        using var client = new HttpClient { BaseAddress = new Uri(server.Address!) };
+
+        var meta = JsonNode.Parse(await client.GetStringAsync("/api/meta"))!;
+        Assert.Equal("1", meta["data"]!["frameworkVersion"]!.GetValue<string>());
+        Assert.NotNull(JsonNode.Parse(await client.GetStringAsync("/api/ui/pages"))!["data"]);
+
+        var unknownQuery = await client.GetAsync("/api/query/no/such/query");
+        Assert.Equal(HttpStatusCode.NotFound, unknownQuery.StatusCode);
+        var queryError = JsonNode.Parse(await unknownQuery.Content.ReadAsStringAsync())!;
+        Assert.Equal("not_found", queryError["code"]!.GetValue<string>());
+        Assert.False(string.IsNullOrWhiteSpace(queryError["message"]!.GetValue<string>()));
+
+        var unknownRoute = await client.GetAsync("/api/not-a-route");
+        Assert.Equal(HttpStatusCode.NotFound, unknownRoute.StatusCode);
+        var routeError = JsonNode.Parse(await unknownRoute.Content.ReadAsStringAsync())!;
+        Assert.Equal("not_found", routeError["code"]!.GetValue<string>());
+
+        using var oversized = new StringContent(new string('x', (1 << 20) + 2));
+        var tooLarge = await client.PostAsync("/api/command/anything", oversized);
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, tooLarge.StatusCode);
+        var bodyError = JsonNode.Parse(await tooLarge.Content.ReadAsStringAsync())!;
+        Assert.Equal("invalid_request", bodyError["code"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task WebUiControlsPluginLifecycleAndConfigOverHttp()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        var host = new ConsoleHost(runtime);
+        await using var registry = new PluginRegistry(runtime);
+        registry.RegisterFactory("echo", _ => new EchoComponent());
+        await registry.ApplyAsync([Manifest("p1", "1")]);
+        await using var server = new WebUiServer(host, registry: registry);
+        await server.StartAsync();
+        using var client = new HttpClient { BaseAddress = new Uri(server.Address!) };
+
+        var disabled = await PostJsonAsync(client, "/api/plugins/control",
+            new JsonObject { ["pluginId"] = "p1", ["enable"] = false });
+        Assert.Equal(HttpStatusCode.OK, disabled.StatusCode);
+        var disabledData = JsonNode.Parse(await disabled.Content.ReadAsStringAsync())!["data"]!;
+        Assert.Equal("p1", disabledData["id"]!.GetValue<string>());
+        Assert.False(disabledData["enabled"]!.GetValue<bool>());
+        Assert.Equal("disabled", await PluginStateAsync(client, "p1"));
+
+        var enabled = await PostJsonAsync(client, "/api/plugins/control",
+            new JsonObject { ["pluginId"] = "p1", ["enable"] = true });
+        Assert.Equal(HttpStatusCode.OK, enabled.StatusCode);
+        Assert.Equal("Active", await PluginStateAsync(client, "p1"));
+
+        var config = JsonNode.Parse(await client.GetStringAsync("/api/plugins/p1/config"))!["data"]!;
+        Assert.Equal("1", config["value"]!.GetValue<string>());
+
+        var changed = await PostJsonAsync(client, "/api/plugins/p1/config",
+            new JsonObject { ["config"] = new JsonObject { ["value"] = "2" } });
+        Assert.Equal(HttpStatusCode.Accepted, changed.StatusCode);
+        var updated = JsonNode.Parse(await client.GetStringAsync("/api/plugins/p1/config"))!["data"]!;
+        Assert.Equal("2", updated["value"]!.GetValue<string>());
+
+        var missing = await client.GetAsync("/api/plugins/missing/config");
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        Assert.Equal("not_found",
+            JsonNode.Parse(await missing.Content.ReadAsStringAsync())!["code"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task WebUiStreamPushesObservationsUntilDisconnect()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        var host = new ConsoleHost(runtime);
+        await using var server = new WebUiServer(host);
+        await server.StartAsync();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var client = new HttpClient { BaseAddress = new Uri(server.Address!) };
+        using var response = await client.GetAsync("/api/stream",
+            HttpCompletionOption.ResponseHeadersRead, cts.Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cts.Token);
+        using var reader = new StreamReader(stream);
+        Assert.Equal(": connected", await ReadLineWithTimeoutAsync(reader));
+        Assert.Equal("event: observation", await ReadLineWithTimeoutAsync(reader));
+        var dataLine = await ReadLineWithTimeoutAsync(reader);
+        Assert.StartsWith("data: ", dataLine);
+        var observation = JsonNode.Parse(dataLine![6..])!;
+        Assert.NotNull(observation["fibers"]);
+
+        cts.Cancel();
+        var ended = reader.ReadLineAsync();
+        var finished = await Task.WhenAny(ended, Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.Same(ended, finished);
+        try
+        {
+            await ended;
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException)
+        {
+            // Client disconnect is the expected end of an SSE subscription.
+        }
+    }
+
+    private static async Task<HttpResponseMessage> PostJsonAsync(
+        HttpClient client, string path, JsonNode body) =>
+        await client.PostAsync(path,
+            new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"));
+
+    private static async Task<string> PluginStateAsync(HttpClient client, string id)
+    {
+        var plugins = JsonNode.Parse(await client.GetStringAsync("/api/plugins"))!["data"]!.AsArray();
+        return plugins.Single(plugin => plugin!["id"]!.GetValue<string>() == id)!["state"]!.GetValue<string>();
+    }
+
+    private static async Task<string?> ReadLineWithTimeoutAsync(StreamReader reader)
+    {
+        var read = reader.ReadLineAsync();
+        var completed = await Task.WhenAny(read, Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.Same(read, completed);
+        return await read;
     }
 
     private sealed class EchoComponent : Component

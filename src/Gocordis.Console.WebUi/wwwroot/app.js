@@ -5,7 +5,8 @@
   const snapshot = document.getElementById('snapshot');
   try {
     const pageResponse = await fetch('/api/ui/pages');
-    const contributed = await pageResponse.json();
+    const pageEnvelope = await pageResponse.json();
+    const contributed = pageEnvelope.data || [];
     pages.innerHTML = contributed.length
       ? '<ul>' + contributed.map(page => '<li>' + escapeHtml(page.name) + '</li>').join('') + '</ul>'
       : '<p>No UI contributions</p>';
@@ -15,7 +16,8 @@
 
   try {
     const response = await fetch('/api/query/runtime/snapshot');
-    const data = await response.json();
+    const envelope = await response.json();
+    const data = envelope.data || {};
     const fibers = data.fibers || [];
     snapshot.innerHTML = '<table><tr><th>Name</th><th>State</th><th>Generation</th></tr>' +
       fibers.map(f => '<tr><td>' + escapeHtml(f.name) + '</td><td>' + escapeHtml(f.state) +

@@ -4,9 +4,9 @@ name: windows-dotnet
 # process plugin .exe resolution and the whole xUnit suite on Windows.
 on:
   push:
-    branches: [main, migration/dotnet]
+    branches: [main, migration/dotnet, migration/dotnet-complete]
   pull_request:
-    branches: [main, migration/dotnet]
+    branches: [main, migration/dotnet, migration/dotnet-complete]
 
 jobs:
   windows-tests:

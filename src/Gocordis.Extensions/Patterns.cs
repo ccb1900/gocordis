@@ -1,4 +1,6 @@
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Gocordis.Plugins;
@@ -9,6 +11,249 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 namespace Gocordis.Extensions;
+
+/// <summary>Raised when typed CLI arguments do not satisfy a command schema.</summary>
+public sealed class CliSchemaException : ArgumentException
+{
+    public CliSchemaException(string message) : base(message) { }
+}
+
+/// <summary>One typed argument of a CLI command.</summary>
+public sealed record CliOption(
+    string Name,
+    string Description,
+    bool Required = false,
+    object? Default = null);
+
+/// <summary>Declarative schema for a CLI command, used for validation and help.</summary>
+public sealed record CliCommandSchema(
+    string Name,
+    string Description,
+    IReadOnlyList<CliOption> Options,
+    IReadOnlyList<string>? Aliases = null);
+
+/// <summary>
+/// Adds typed schema registration and help generation to the existing
+/// quote-aware CliDispatcher. Schemas are attached per dispatcher instance,
+/// so two dispatchers never share command metadata; registration and reads
+/// are serialized to keep concurrent hosts consistent.
+/// </summary>
+public static class CliDispatcherSchemaExtensions
+{
+    private static readonly ConditionalWeakTable<CliDispatcher, CliSchemaRegistry> Schemas = new();
+
+    public static void RegisterTyped(
+        this CliDispatcher dispatcher,
+        CliCommandSchema schema,
+        Func<IReadOnlyDictionary<string, string>, string> handler)
+    {
+        ArgumentNullException.ThrowIfNull(dispatcher);
+        ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(handler);
+        ArgumentException.ThrowIfNullOrWhiteSpace(schema.Name);
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var option in schema.Options)
+        {
+            if (!names.Add(option.Name))
+            {
+                throw new CliSchemaException(
+                    $"duplicate option '--{option.Name}' for command '{schema.Name}'");
+            }
+        }
+
+        var aliases = schema.Aliases?.ToArray() ?? [];
+        var registry = Schemas.GetValue(dispatcher, static _ => new CliSchemaRegistry());
+        registry.Add(schema, aliases);
+        dispatcher.Register(schema.Name, args => handler(ParseArguments(schema, args)), aliases);
+    }
+
+    /// <summary>Parses and validates arguments for a registered typed command.</summary>
+    public static IReadOnlyDictionary<string, string> ParseArgs(
+        this CliDispatcher dispatcher,
+        string commandName,
+        params string[] args)
+    {
+        ArgumentNullException.ThrowIfNull(dispatcher);
+        ArgumentException.ThrowIfNullOrWhiteSpace(commandName);
+        ArgumentNullException.ThrowIfNull(args);
+        if (!Schemas.TryGetValue(dispatcher, out var registry) ||
+            registry.Find(commandName) is not { } schema)
+        {
+            throw new CliSchemaException($"unknown command: {commandName}");
+        }
+
+        return ParseArguments(schema, args);
+    }
+
+    /// <summary>One-line summary of every typed command.</summary>
+    public static string Help(this CliDispatcher dispatcher)
+    {
+        ArgumentNullException.ThrowIfNull(dispatcher);
+        if (!Schemas.TryGetValue(dispatcher, out var registry))
+        {
+            return string.Empty;
+        }
+
+        var lines = new List<string> { "Commands:" };
+        foreach (var schema in registry.Commands())
+        {
+            lines.Add(Describe(schema));
+            AppendOptions(lines, schema);
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    /// <summary>Full help for one command, including every option and requirement.</summary>
+    public static string Help(this CliDispatcher dispatcher, string commandName)
+    {
+        ArgumentNullException.ThrowIfNull(dispatcher);
+        ArgumentException.ThrowIfNullOrWhiteSpace(commandName);
+        if (!Schemas.TryGetValue(dispatcher, out var registry) ||
+            registry.Find(commandName) is not { } schema)
+        {
+            return $"unknown command: {commandName}";
+        }
+
+        var lines = new List<string> { Describe(schema) };
+        AppendOptions(lines, schema);
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static void AppendOptions(List<string> lines, CliCommandSchema schema)
+    {
+        foreach (var option in schema.Options)
+        {
+            var required = option.Required ? " (required)" : string.Empty;
+            var fallback = option.Default is null ? string.Empty : $" (default: {option.Default})";
+            lines.Add($"  --{option.Name}{required}{fallback}  {option.Description}");
+        }
+    }
+
+    private static string Describe(CliCommandSchema schema)
+    {
+        var aliases = schema.Aliases is { Count: > 0 }
+            ? $" (aliases: {string.Join(", ", schema.Aliases)})"
+            : string.Empty;
+        return $"{schema.Name}{aliases} - {schema.Description}";
+    }
+
+    private static IReadOnlyDictionary<string, string> ParseArguments(
+        CliCommandSchema schema,
+        string[] args)
+    {
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var byName = schema.Options.ToDictionary(option => option.Name, StringComparer.OrdinalIgnoreCase);
+        var positional = 0;
+        for (var index = 0; index < args.Length; index++)
+        {
+            var token = args[index];
+            string name;
+            string? value = null;
+            if (token.StartsWith("--", StringComparison.Ordinal))
+            {
+                var body = token[2..];
+                var separator = body.IndexOf('=');
+                if (separator >= 0)
+                {
+                    name = body[..separator];
+                    value = body[(separator + 1)..];
+                }
+                else
+                {
+                    name = body;
+                }
+
+                if (!byName.TryGetValue(name, out var option) || option is null)
+                {
+                    throw new CliSchemaException($"unknown option '--{name}' for command '{schema.Name}'");
+                }
+
+                if (value is null)
+                {
+                    if (index + 1 >= args.Length)
+                    {
+                        throw new CliSchemaException($"option '--{option.Name}' requires a value");
+                    }
+
+                    value = args[++index];
+                }
+
+                values[option.Name] = value;
+            }
+            else
+            {
+                if (positional >= schema.Options.Count)
+                {
+                    throw new CliSchemaException($"unexpected argument '{token}' for command '{schema.Name}'");
+                }
+
+                values[schema.Options[positional++].Name] = token;
+            }
+        }
+
+        foreach (var option in schema.Options)
+        {
+            if (values.ContainsKey(option.Name))
+            {
+                continue;
+            }
+
+            if (option.Required)
+            {
+                throw new CliSchemaException(
+                    $"option '--{option.Name}' is required for command '{schema.Name}'");
+            }
+
+            values[option.Name] = option.Default?.ToString() ?? string.Empty;
+        }
+
+        return values;
+    }
+
+    private sealed class CliSchemaRegistry
+    {
+        private readonly object _sync = new();
+        private readonly Dictionary<string, CliCommandSchema> _byName =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<CliCommandSchema> _commands = [];
+
+        public void Add(CliCommandSchema schema, string[] aliases)
+        {
+            lock (_sync)
+            {
+                _commands.RemoveAll(existing => existing.Name == schema.Name);
+                _byName[schema.Name] = schema;
+                foreach (var alias in aliases)
+                {
+                    if (!string.IsNullOrWhiteSpace(alias))
+                    {
+                        _byName[alias] = schema;
+                    }
+                }
+
+                _commands.Add(schema);
+            }
+        }
+
+        public CliCommandSchema? Find(string name)
+        {
+            lock (_sync)
+            {
+                return _byName.GetValueOrDefault(name);
+            }
+        }
+
+        public IReadOnlyList<CliCommandSchema> Commands()
+        {
+            lock (_sync)
+            {
+                return _commands.OrderBy(schema => schema.Name, StringComparer.Ordinal).ToArray();
+            }
+        }
+    }
+}
 
 /// <summary>Raised by Broker selection/Call when the routing set is empty.</summary>
 public sealed class BrokerNoProviderException : InvalidOperationException
@@ -403,6 +648,89 @@ public sealed class WatchService : IAsyncDisposable
     }
 }
 
+/// <summary>One package recorded in a declaration lockfile.</summary>
+public sealed record LockEntry(string Id, string Version, string? Checksum = null);
+
+/// <summary>Minimal JSON lockfile: a deterministic snapshot of declared versions.</summary>
+public static class PackageLockfile
+{
+    private static readonly JsonSerializerOptions Options = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+
+    public static string Serialize(IEnumerable<PluginManifest> declarations)
+    {
+        ArgumentNullException.ThrowIfNull(declarations);
+        var packages = declarations
+            .OrderBy(manifest => manifest.Id, StringComparer.Ordinal)
+            .Select(manifest => new LockEntry(manifest.Id, manifest.Version, manifest.Checksum))
+            .ToArray();
+        return JsonSerializer.Serialize(new { version = 1, packages }, Options);
+    }
+
+    public static IReadOnlyList<LockEntry> Parse(string json)
+    {
+        ArgumentNullException.ThrowIfNull(json);
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("packages", out var packages) ||
+            packages.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var result = new List<LockEntry>();
+        foreach (var item in packages.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object ||
+                !item.TryGetProperty("id", out var idElement) ||
+                idElement.ValueKind != JsonValueKind.String)
+            {
+                throw new InvalidOperationException("lockfile: package is missing a string 'id'");
+            }
+
+            var version = item.TryGetProperty("version", out var versionElement) &&
+                          versionElement.ValueKind == JsonValueKind.String
+                ? versionElement.GetString()!
+                : "1.0.0";
+            string? checksum = null;
+            if (item.TryGetProperty("checksum", out var checksumElement) &&
+                checksumElement.ValueKind == JsonValueKind.String)
+            {
+                checksum = checksumElement.GetString();
+            }
+
+            result.Add(new LockEntry(idElement.GetString()!, version, checksum));
+        }
+
+        return result;
+    }
+
+    public static void Write(string path, IEnumerable<PluginManifest> declarations)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        File.WriteAllText(path, Serialize(declarations));
+    }
+
+    public static IReadOnlyList<LockEntry> Read(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return Parse(File.ReadAllText(path));
+    }
+}
+
+/// <summary>Before/after version of one changed declaration.</summary>
+public sealed record ChangeDetail(string Id, string Before, string After);
+
+/// <summary>Structured, ordered diff between two declaration snapshots.</summary>
+public sealed record DeclarationDiff(
+    IReadOnlyList<string> Added,
+    IReadOnlyList<string> Removed,
+    IReadOnlyList<string> Updated,
+    IReadOnlyList<ChangeDetail> Details);
+
 /// <summary>Local plugin catalog with checksum and version gates.</summary>
 public sealed class MarketService
 {
@@ -441,8 +769,73 @@ public sealed class MarketService
             return false;
         }
 
-        var checksum = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
-        return string.Equals(checksum, entry.Checksum, StringComparison.OrdinalIgnoreCase);
+        return PluginManifestChecksum.Matches(entry.Manifest with { Checksum = entry.Checksum },
+            File.ReadAllBytes(path));
+    }
+
+    /// <summary>Adds a verified catalog entry; rejects duplicates without editing input.</summary>
+    public IReadOnlyList<PluginManifest> Install(IReadOnlyList<PluginManifest> current, CatalogEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(entry);
+        if (!Verify(entry, entry.Path))
+        {
+            throw new InvalidOperationException(
+                $"market: checksum mismatch for '{entry.Manifest.Id}'");
+        }
+
+        if (current.Any(manifest => manifest.Id == entry.Manifest.Id))
+        {
+            throw new InvalidOperationException(
+                $"market: '{entry.Manifest.Id}' is already installed");
+        }
+
+        return current.Append(entry.Manifest with { Enabled = true }).ToArray();
+    }
+
+    /// <summary>Replaces an installed declaration with a strictly newer version.</summary>
+    public IReadOnlyList<PluginManifest> Upgrade(IReadOnlyList<PluginManifest> current, CatalogEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(entry);
+        if (!Verify(entry, entry.Path))
+        {
+            throw new InvalidOperationException(
+                $"market: checksum mismatch for '{entry.Manifest.Id}'");
+        }
+
+        var staged = current.ToList();
+        var index = staged.FindIndex(manifest => manifest.Id == entry.Manifest.Id);
+        if (index < 0)
+        {
+            throw new InvalidOperationException(
+                $"market: '{entry.Manifest.Id}' is not installed");
+        }
+
+        if (!Version.TryParse(staged[index].Version, out var installed) ||
+            !Version.TryParse(entry.Manifest.Version, out var available) ||
+            available <= installed)
+        {
+            throw new InvalidOperationException(
+                $"market: '{entry.Manifest.Id}' has no newer version than {staged[index].Version}");
+        }
+
+        staged[index] = entry.Manifest with { Enabled = true };
+        return staged;
+    }
+
+    /// <summary>Removes an installed declaration; missing ids are an error.</summary>
+    public IReadOnlyList<PluginManifest> Uninstall(IReadOnlyList<PluginManifest> current, string id)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        var staged = current.Where(manifest => manifest.Id != id).ToArray();
+        if (staged.Length == current.Count)
+        {
+            throw new InvalidOperationException($"market: '{id}' is not installed");
+        }
+
+        return staged;
     }
 }
 
@@ -466,7 +859,7 @@ public sealed class PackageManager
                         Rollback(current);
                     }
 
-                    staged.Add(change.Manifest);
+                    staged.Add(Clone(change.Manifest));
                     break;
                 case "remove":
                     if (staged.RemoveAll(entry => entry.Id == change.Manifest.Id) == 0)
@@ -482,7 +875,7 @@ public sealed class PackageManager
                         Rollback(current);
                     }
 
-                    staged[index] = change.Manifest;
+                    staged[index] = Clone(change.Manifest);
                     break;
                 default:
                     Rollback(current);
@@ -493,8 +886,103 @@ public sealed class PackageManager
         return staged;
     }
 
+    /// <summary>Structured diff between two declaration snapshots.</summary>
+    public DeclarationDiff Diff(IReadOnlyList<PluginManifest> current, IReadOnlyList<PluginManifest> desired)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(desired);
+        var before = current.ToDictionary(manifest => manifest.Id, StringComparer.Ordinal);
+        var after = desired.ToDictionary(manifest => manifest.Id, StringComparer.Ordinal);
+
+        var added = after.Keys.Except(before.Keys, StringComparer.Ordinal)
+            .OrderBy(id => id, StringComparer.Ordinal).ToArray();
+        var removed = before.Keys.Except(after.Keys, StringComparer.Ordinal)
+            .OrderBy(id => id, StringComparer.Ordinal).ToArray();
+        var updated = new List<string>();
+        var details = new List<ChangeDetail>();
+        foreach (var id in before.Keys.Intersect(after.Keys, StringComparer.Ordinal)
+                     .OrderBy(id => id, StringComparer.Ordinal))
+        {
+            var oldVersion = before[id].Version;
+            var newVersion = after[id].Version;
+            if (string.Equals(oldVersion, newVersion, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            updated.Add(id);
+            details.Add(new ChangeDetail(id, oldVersion, newVersion));
+        }
+
+        return new DeclarationDiff(added, removed, updated, details);
+    }
+
+    /// <summary>Begins a reversible transaction over a snapshot of declarations.</summary>
+    public PackageTransaction Begin(IReadOnlyList<PluginManifest> current)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        return new PackageTransaction(this, current.Select(Clone).ToArray());
+    }
+
+    internal static PluginManifest Clone(PluginManifest manifest) => manifest with
+    {
+        Config = new Dictionary<string, object?>(manifest.Config, StringComparer.Ordinal),
+        Requires = manifest.Requires.ToArray(),
+        Provides = manifest.Provides.ToArray(),
+    };
+
     private static void Rollback(IReadOnlyList<PluginManifest> current) =>
         throw new InvalidOperationException("package change rejected; declarations unchanged");
+}
+
+/// <summary>
+/// One reversible package edit session. Apply stages on a private snapshot;
+/// a rejected batch throws before the snapshot advances, and Rollback always
+/// restores the exact baseline. Access is serialized for concurrent hosts.
+/// </summary>
+public sealed class PackageTransaction
+{
+    private readonly PackageManager _manager;
+    private readonly IReadOnlyList<PluginManifest> _baseline;
+    private readonly object _sync = new();
+    private IReadOnlyList<PluginManifest> _current;
+
+    internal PackageTransaction(PackageManager manager, IReadOnlyList<PluginManifest> baseline)
+    {
+        _manager = manager;
+        _baseline = baseline;
+        _current = baseline;
+    }
+
+    public IReadOnlyList<PluginManifest> Current
+    {
+        get { lock (_sync) { return _current; } }
+    }
+
+    public DeclarationDiff Diff
+    {
+        get { lock (_sync) { return _manager.Diff(_baseline, _current); } }
+    }
+
+    public IReadOnlyList<PluginManifest> Apply(IReadOnlyList<PackageManager.Change> changes)
+    {
+        ArgumentNullException.ThrowIfNull(changes);
+        lock (_sync)
+        {
+            var staged = _manager.Apply(_current, changes);
+            _current = staged;
+            return staged;
+        }
+    }
+
+    public IReadOnlyList<PluginManifest> Rollback()
+    {
+        lock (_sync)
+        {
+            _current = _baseline;
+            return _current;
+        }
+    }
 }
 
 /// <summary>Minimal ASP.NET Core server host with reversible route registration.</summary>

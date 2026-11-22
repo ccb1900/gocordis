@@ -4,9 +4,9 @@ name: linux-dotnet
 # assertions as the Windows job, plus POSIX shell plugin fixtures.
 on:
   push:
-    branches: [main, migration/dotnet]
+    branches: [main, migration/dotnet, migration/dotnet-complete]
   pull_request:
-    branches: [main, migration/dotnet]
+    branches: [main, migration/dotnet, migration/dotnet-complete]
 
 jobs:
   linux-tests:

@@ -10,6 +10,9 @@ public sealed record PluginEntry(PluginManifest Manifest, Fiber? Fiber, string C
 /// <summary>
 /// Plugin discovery, declaration reconciliation and lifecycle. All fiber state
 /// transitions are delegated to Core; this class never writes a fiber directly.
+/// A declaration batch is a transaction: prepare validates the whole batch,
+/// commit applies it, and rollback restores the previous declarations if any
+/// commit step fails.
 /// </summary>
 public sealed class PluginRegistry : IAsyncDisposable
 {
@@ -61,13 +64,53 @@ public sealed class PluginRegistry : IAsyncDisposable
     }
 
     /// <summary>
-    /// Reconcile declarations to fibers. Enabled=true loads, false disposes but
-    /// keeps the validated declaration. Changes replace (dispose then load).
+    /// Prepare → Commit → Rollback. The gate covers the whole transaction so
+    /// staging, validation and commit never interleave with another call.
     /// </summary>
     public async Task ApplyAsync(IEnumerable<PluginManifest> declarations)
     {
-        var declarationsArray = declarations.ToArray();
-        var duplicateIds = declarationsArray.GroupBy(manifest => manifest.Id)
+        await _gate.WaitAsync();
+        try
+        {
+            var previous = new Dictionary<string, PluginEntry>(_entries, StringComparer.Ordinal);
+            var batch = Prepare(declarations.ToArray(), rejectProtectedDisable: true);
+            try
+            {
+                await CommitAsync(batch);
+            }
+            catch (Exception commitError)
+            {
+                await RollbackAsync(batch, previous, commitError);
+                throw;
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            foreach (var id in _entries.Keys.ToArray())
+            {
+                await RetireAsync(id);
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    // ---- transaction phases -------------------------------------------------
+
+    private PreparedBatch Prepare(IReadOnlyList<PluginManifest> declarations, bool rejectProtectedDisable)
+    {
+        var duplicateIds = declarations.GroupBy(manifest => manifest.Id)
             .Where(group => group.Count() > 1)
             .Select(group => group.Key)
             .ToArray();
@@ -76,14 +119,18 @@ public sealed class PluginRegistry : IAsyncDisposable
             throw new InvalidOperationException($"duplicate plugin ids: {string.Join(", ", duplicateIds)}");
         }
 
-        var desired = declarationsArray.ToDictionary(manifest => manifest.Id);
-
-        // Stage the whole batch: factory construction and declaration probing
-        // happen before any fiber is touched.
+        var desired = new Dictionary<string, PluginManifest>(StringComparer.Ordinal);
         var staged = new Dictionary<string, Component>(StringComparer.Ordinal);
+        var fingerprints = new Dictionary<string, string>(StringComparer.Ordinal);
         var providedKeys = new Dictionary<ICapabilityKey, string>(ReferenceEqualityComparer.Instance);
-        foreach (var manifest in desired.Values)
+
+        foreach (var manifest in declarations)
         {
+            if (rejectProtectedDisable && ProtectedIds.Contains(manifest.Id) && !manifest.Enabled)
+            {
+                throw new ProtectedPluginException(manifest.Id);
+            }
+
             if (!_factories.TryGetValue(manifest.Type, out var factory))
             {
                 throw new InvalidOperationException(
@@ -113,74 +160,108 @@ public sealed class PluginRegistry : IAsyncDisposable
                 providedKeys[key] = manifest.Id;
             }
 
+            desired[manifest.Id] = manifest;
             staged[manifest.Id] = component;
+            fingerprints[manifest.Id] = Fingerprint(manifest);
         }
 
         var ordered = SortByTypedDependencies(staged);
-
-        await _gate.WaitAsync();
-        try
-        {
-            foreach (var id in _entries.Keys.Except(desired.Keys).ToArray())
-            {
-                if (!ProtectedIds.Contains(id))
-                {
-                    await RetireAsync(id);
-                }
-            }
-
-            foreach (var (id, component) in ordered)
-            {
-                var manifest = desired[id];
-                var configurationKey = Fingerprint(manifest);
-                if (ProtectedIds.Contains(manifest.Id) && !manifest.Enabled &&
-                    _entries.TryGetValue(manifest.Id, out var protectedEntry) &&
-                    protectedEntry.Fiber is not null)
-                {
-                    _entries[manifest.Id] = protectedEntry with { Manifest = manifest };
-                    continue;
-                }
-
-                if (_entries.TryGetValue(manifest.Id, out var current) &&
-                    current.ConfigurationKey == configurationKey)
-                {
-                    continue;
-                }
-
-                if (_entries.ContainsKey(manifest.Id))
-                {
-                    await RetireAsync(manifest.Id);
-                }
-
-                if (!manifest.Enabled)
-                {
-                    _entries[manifest.Id] = new PluginEntry(manifest, null, configurationKey);
-                    continue;
-                }
-
-                var fiber = await _runtime.LoadAsync(component);
-                _entries[manifest.Id] = new PluginEntry(manifest, fiber, configurationKey);
-            }
-        }
-        finally
-        {
-            _gate.Release();
-        }
+        return new PreparedBatch(desired, staged, ordered, fingerprints);
     }
 
-    public async ValueTask DisposeAsync()
+    private async Task CommitAsync(PreparedBatch batch)
     {
-        await _gate.WaitAsync();
-        try
+        foreach (var id in _entries.Keys.Except(batch.Desired.Keys).ToArray())
         {
-            foreach (var id in _entries.Keys.ToArray())
+            if (!ProtectedIds.Contains(id))
             {
                 await RetireAsync(id);
             }
         }
-        finally
+
+        foreach (var (id, component) in batch.Ordered)
         {
-            _gate.Release();
+            var manifest = batch.Desired[id];
+            var configurationKey = batch.Fingerprints[id];
+            if (ProtectedIds.Contains(id) && !manifest.Enabled &&
+                _entries.TryGetValue(id, out var protectedEntry) && protectedEntry.Fiber is not null)
+            {
+                _entries[id] = protectedEntry with { Manifest = manifest };
+                continue;
+            }
+
+            if (_entries.TryGetValue(id, out var current) && current.ConfigurationKey == configurationKey)
+            {
+                continue;
+            }
+
+            if (_entries.ContainsKey(id))
+            {
+                await RetireAsync(id);
+            }
+
+            if (!manifest.Enabled)
+            {
+                _entries[id] = new PluginEntry(manifest, null, configurationKey);
+                continue;
+            }
+
+            var fiber = await _runtime.LoadAsync(component);
+            batch.LoadedFibers.Add(fiber);
+            if (fiber.State == FiberState.Failed)
+            {
+                throw new InvalidOperationException(
+                    $"plugin '{id}' failed to activate", fiber.Failure);
+            }
+
+            _entries[id] = new PluginEntry(manifest, fiber, configurationKey);
+        }
+    }
+
+    private async Task RollbackAsync(
+        PreparedBatch batch,
+        IReadOnlyDictionary<string, PluginEntry> previous,
+        Exception commitError)
+    {
+        var errors = new List<Exception> { commitError };
+        foreach (var fiber in batch.LoadedFibers)
+        {
+            try
+            {
+                await _runtime.DisposeAsync(fiber);
+            }
+            catch (Exception ex)
+            {
+                errors.Add(ex);
+            }
+        }
+
+        _entries.Clear();
+        if (previous.Count == 0)
+        {
+            if (errors.Count > 1)
+            {
+                throw new AggregateException("rollback encountered additional errors", errors);
+            }
+
+            return;
+        }
+
+        try
+        {
+            var restore = Prepare(previous.Values.Select(entry => entry.Manifest).ToArray(),
+                rejectProtectedDisable: false);
+            await CommitAsync(restore);
+        }
+        catch (Exception ex)
+        {
+            errors.Add(ex);
+            _entries.Clear();
+        }
+
+        if (errors.Count > 1)
+        {
+            throw new AggregateException("rollback could not fully restore previous declarations", errors);
         }
     }
 
@@ -200,7 +281,7 @@ public sealed class PluginRegistry : IAsyncDisposable
     }
 
     private IReadOnlyList<(string Id, Component Component)> SortByTypedDependencies(
-        Dictionary<string, Component> staged)
+        IReadOnlyDictionary<string, Component> staged)
     {
         var keyOwner = new Dictionary<ICapabilityKey, string>(ReferenceEqualityComparer.Instance);
         var versionedOwners = new List<(string Id, IVersionedKey Key)>();
@@ -257,9 +338,6 @@ public sealed class PluginRegistry : IAsyncDisposable
                         continue;
                     }
 
-                    // No compatible provider: unified declaration rule with
-                    // plain keys — an explicitly external capability is legal,
-                    // otherwise the declaration is invalid (P1-2).
                     if (!ExternalCapabilities.Contains(requiredVersion))
                     {
                         throw new InvalidOperationException(
@@ -307,13 +385,26 @@ public sealed class PluginRegistry : IAsyncDisposable
     {
         var payload = JsonSerializer.Serialize(new
         {
+            manifest.Id,
             manifest.Type,
             manifest.Enabled,
             manifest.Version,
             manifest.Source,
+            manifest.Checksum,
+            manifest.Requires,
+            manifest.Provides,
             Config = manifest.Config.OrderBy(pair => pair.Key, StringComparer.Ordinal)
                 .ToDictionary(pair => pair.Key, pair => pair.Value),
         });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
+    }
+
+    private sealed record PreparedBatch(
+        IReadOnlyDictionary<string, PluginManifest> Desired,
+        IReadOnlyDictionary<string, Component> Staged,
+        IReadOnlyList<(string Id, Component Component)> Ordered,
+        IReadOnlyDictionary<string, string> Fingerprints)
+    {
+        internal List<Fiber> LoadedFibers { get; } = [];
     }
 }

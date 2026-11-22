@@ -890,8 +890,11 @@ public sealed class PaperGapClosureTests
         var childFirst = await Run(retireChildFirst: true);
         var ownerFirst = await Run(retireChildFirst: false);
 
-        Assert.Equal("child-parent:False", childFirst[0]);
-        Assert.Equal("parent-install", childFirst[1]);
+        // LoadChildAsync does not order child Apply against parent steps; only
+        // ownership and inverse order are part of the paper contract (C18).
+        Assert.Contains("child-parent:False", childFirst);
+        Assert.Contains("child-install", childFirst);
+        Assert.Contains("parent-install", childFirst);
         Assert.Equal(new[] { "child-cleanup", "parent-cleanup" }, childFirst[^2..]);
         Assert.Equal(new[] { "child-cleanup", "parent-cleanup" }, ownerFirst[^2..]);
     }

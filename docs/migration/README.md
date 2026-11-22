@@ -39,7 +39,8 @@
 - 阶段 2：**已验证**（Core 语义内核完整可运行，含 Realm/MetaKey 与确定性重放）。
 - 阶段 3–6：**已执行**（Manifest/Registry、Managed ALC、WASM/Process、UI/Console/API 均有可运行实现）。
 - **原缺口已逐项关闭**：WASM 能力桥/HMR、Process 边界行为、官方扩展套件、内嵌前端、
-  定理与平台收敛测试；Windows runner 实跑由 GitHub Actions `windows-dotnet` job 覆盖并已通过。
+  定理与平台收敛测试；Windows runner 实跑由 GitHub Actions `windows-dotnet` job 覆盖；CI 状态必须按 SHA 核对，
+  不得用历史 SHA 的成功结果代表当前提交。最近独立核对：`62d7de15` 三组 CI 全绿。
   详见 [`final-acceptance.md`](final-acceptance.md) §4。
 - **批次 A（Channel 驱动生命周期决策域）已完成**：冻结基线 119 项测试
   （Core 22 / Conformance 28 / Extensions 19 / Runtime 50）；新增回归用例后为 **123**，
@@ -49,5 +50,5 @@
   共用统一后端协议与世代栅栏。
 - **批次 C（论文矩阵 / 定理矩阵 / JS 差异统一 / 最终验收）已完成**：C01–C40 矩阵
   38 已覆盖 / 0 待补 / 2 接受差异；Thm64/68/70/73/80 每定理 3 场景；
-  Koishi 真实消息链、provider 启停与 HTTP E2E 已覆盖。最终 **256/256**，连续 8 次全绿。
+  Koishi 真实消息链、provider 启停与 HTTP E2E 已覆盖。最终 **259/259**，连续 12 次全绿。
 - 后续阶段状态以 [`migration-coverage.md`](migration-coverage.md) 的逐项状态为准，不在本文件重复维护。

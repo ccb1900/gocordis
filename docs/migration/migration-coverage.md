@@ -67,7 +67,7 @@ dotnet test Gocordis.sln --nologo
 批次 A 冻结计数：119 = Core 22 / Conformance 28 / Extensions 19 / Runtime 50
                         （119/119 连续 10 次全绿，见 adr-channel-orchestrator.md）
 批次 A 新增回归后：123（连续 10 次全绿）
-批次 B/C 最终：256 = Core 26 / Conformance 113 / Extensions 32 / Runtime 85（连续 8 次全绿）
+批次 B/C 最终：259 = Core 26 / Conformance 113 / Extensions 35 / Runtime 85（连续 12 次全绿）
 ```
 
 历史片段（不得与新计数混用）：阶段 2 首批 Core 16 / Conformance 5（C06 / Thm70 / C22 / C13 /
@@ -102,7 +102,7 @@ Thm70 现已归位到 `TheoremMatrixTests.Thm70_Matrix`，不再计入 `PaperCon
 | 4.5 | 停止后清理事件订阅 / 资源 / 后台任务 | 迁移语义 | 对应 Go `ctx.Effect` 逆语义；Core 事件注销已测；进程/WASM 后台任务清理由各自生命周期测试覆盖 | 已验证 |
 | 4.6 | **实际回收验证** | .NET 替代 | `WeakReference` 在 GC 后变 null（不是只验证 `Unload()` 调用成功） | 已验证 |
 | 4.7 | 停用 → 卸载 → 重载 | 迁移语义 | ALC WeakReference 回收与重载行为已测；三次循环计数未单独测 | 已验证 |
-| 4.8 | Windows 通过测试 | .NET 替代 | Windows CI 作业绿 | 已实现 |
+| 4.8 | Windows 通过测试 | .NET 替代 | Windows CI 作业按 SHA 记录；`2ccdaad` 曾因 C18 时序假设失败，`62d7de15` 三组 CI 全绿 | 已验证（按 SHA） |
 | 4.9 | 明确记录 ALC 非沙箱 | 继承（约束） | 文档 + 进程后端保留 | 已验证 |
 
 阶段 4 出口：4.2、4.6、4.7、4.8 四条硬证据齐全。

@@ -24,7 +24,7 @@
 ```
 bash docs/migration/verify-baseline.sh   → BASELINE VERIFIED
 dotnet build Gocordis.sln --nologo -m:1  → Build succeeded, 0 Warning(s), 0 Error(s)
-dotnet test Gocordis.sln --nologo --no-build -m:1 → 256/256 Passed，连续 8 次零失败、零挂起
+dotnet test Gocordis.sln --nologo --no-build -m:1 → 259/259 Passed，连续 12 次零失败、零挂起
 ```
 
 计数口径（批次 A → B/C，禁止用旧数冒充新状态）：
@@ -33,8 +33,8 @@ dotnet test Gocordis.sln --nologo --no-build -m:1 → 256/256 Passed，连续 8 
 - 119 = 批次 A 冻结基线（Core 22 / Conformance 28 / Extensions 19 / Runtime 50）；
   新增回归用例后为 **123**，连续 10 次全绿的证据见
   [`adr-channel-orchestrator.md`](adr-channel-orchestrator.md)。
-- 256 = 批次 B/C 最终全量：Core 26 / Conformance 113 / Extensions 32 / Runtime 85，
-  主线程连续 8 次全绿；批次 A/B/C 全部完成。
+- 259 = 批次 B/C 最终全量：Core 26 / Conformance 113 / Extensions 35 / Runtime 85，
+  主线程连续 12 次全绿；批次 A/B/C 全部完成。
 - 批次 C 新增可执行用例：`PaperItemMatrixTests` 40 条理论行 + 2 条 Fact，
   `TheoremMatrixTests` 5×3 = 15 条理论行；原误放的
   `PaperConformanceTests.Thm70_ProviderEpisodeContainsConsumerEpisode` 归位到
@@ -77,8 +77,9 @@ dotnet test Gocordis.sln --nologo --no-build -m:1 → 256/256 Passed，连续 8 
 5. **JS Cordis 对齐**：新增 `docs/JS-CORDIS-ALIGNMENT.md` §"C# 迁移对齐补充"，把 loader/hmr/group 等
    原"部分等价"项映射到 ALC/Wasmtime/HMR 与扩展套件的具体实现。
 6. **Windows 专项验证**：新增 `.github/workflows/windows-dotnet.yml`，在 `windows-latest` 上构建并运行
-   全量测试（含 collectible ALC 回收与 `.exe` 解析用例）。**Windows runner 已在 GitHub Actions `windows-dotnet` job 实际执行并通过**——
-   这是唯一无法在本地关闭的执行性事项，CI 配置本身已就绪。
+   全量测试（含 collectible ALC 回收与 `.exe` 解析用例）。CI 状态按 SHA 记录，不复用历史结果：
+   `2ccdaad` 的 Windows job 因 `C18` 对安装顺序的并发假设失败；该断言已移除无论文依据的部分，
+   随后 `62d7de15` 的 `windows-dotnet` / `linux-dotnet` / `ci` 三组 job 均为 success。
 7. **Go 基线 flake**：`broker_test.go` 的 race 假失败由外部写入者在冻结后修复，已随基线叠加层提交
    （`0ded6d6`），不再属于 C# 迁移的未达成项。
 
@@ -95,6 +96,6 @@ dotnet test Gocordis.sln --nologo --no-build -m:1 → 256/256 Passed，连续 8 
 - 七个阶段均已执行并留下可运行产物；框架语义（论文优先）在 C# Core 中有可执行测试。
 - 三种 Runtime 共用 Core `Component`/`Key<T>` 契约与生命周期；插件管理没有第二套生命周期。统一 Manifest 仍是缺口（见 `migration-coverage.md` §6 的 5.7）。
 - Core 不引用任何 Runtime Adapter、Console 或 UI（由 `BoundaryTests` 固化）。
-- 原未完成项已逐项收敛；Windows CI 已由 GitHub Actions `windows-dotnet` job 实际执行通过；Go 基线验证继续保留。
+- 原未完成项已逐项收敛；Windows CI 按 SHA 独立核对，历史失败与修复后成功均已留痕；Go 基线验证继续保留。
 - Go 版本仍由 `main` 分支 + `baseline.sha256` 冻结；后续只维护 `migration/dotnet`，
   验收转正时通过 tag/分支保留 Go 历史。

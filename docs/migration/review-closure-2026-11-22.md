@@ -29,7 +29,7 @@
 
 1. **WASM HMR** 是"串行化 warm 验证 + 旧 fiber Gone 后提交"，不是零停机原子提交；文档已下调表述。
 2. **Effect 补偿**只在调用方把 inverse 交给 `ctx.EffectAsync` 时成立；绕过 Context 的外部副作用不在可逆边界内（论文 §6.1 `idΓ`）。
-3. **Windows runner 实跑**：GitHub Actions `windows-dotnet` job 已执行 `dotnet build` + `dotnet test` 并成功。
+3. **Windows runner 实跑**：GitHub Actions `windows-dotnet` job 按 SHA 独立核对；`2ccdaad` 曾失败，`62d7de15` 已成功，不复用历史结果。
 4. ~~论文 §5.3 Koishi 案例（G-B1）与 §6.6 版本化依赖路由（G-B2）~~ 已在同一次连续执行中关闭，见下节。
 
 ## 闭环审查第二轮（同一执行内）
@@ -74,7 +74,7 @@ dotnet test Gocordis.sln -m:1            → 21 + 28 + 19 + 50 = 118 passed
 | P1-2 | 版本化声明校验 | Registry 对版本化依赖采用与普通 Key 一致的 ExternalCapabilities 规则：无 Provider 且未声明 external → 拒绝；声明 external → 合法但保持 Pending；自环仍报环 |
 | P1-3 | Scheduler / WatchService | Scheduler 所有 Job 状态变更统一加锁、取消的运行中任务不复活、Dispose 等待在飞任务并拒绝新任务；WatchService 的 watcher/revision 共享一把锁且 Dispose 幂等；回归 3 项 |
 | P1-4 | 文件系统链接边界 | Mount 前缀按路径边界匹配（Windows 大小写不敏感）；Resolve 对每一段已存在的路径检查链接目标，阻止中间目录 symlink 逃逸（含新建文件场景）；回归 2 项 |
-| P2 | 文档一致性 | 测试数量统一为 118（21+28+19+50）；Windows CI 改为“已由 windows-dotnet job 实跑通过” |
+| P2 | 文档一致性 | 测试数量按批次回填；Windows CI 改为“按 SHA 记录，不复用历史结果” |
 
 状态：以上全部带针对性回归测试并通过；Go 基线保持通过。**迁移分支冻结**。
 

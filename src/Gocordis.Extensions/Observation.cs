@@ -109,7 +109,10 @@ public sealed class ObservationLog<T> : IDisposable
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_ring.Count > 0 && from < _ring.Peek().Sequence)
+            // 0 is the documented "oldest retained" sentinel, never a stale
+            // anchor. Only explicit positive anchors can be too old.
+            var replayFrom = from == 0 && _ring.Count > 0 ? _ring.Peek().Sequence : from;
+            if (from != 0 && _ring.Count > 0 && from < _ring.Peek().Sequence)
             {
                 throw new SequenceTooOldException(from, _ring.Peek().Sequence);
             }
@@ -117,7 +120,7 @@ public sealed class ObservationLog<T> : IDisposable
             var subscription = new ObservationSubscription<T>(this, _queueLimit);
             foreach (var ev in _ring)
             {
-                if (ev.Sequence >= from)
+                if (ev.Sequence >= replayFrom)
                 {
                     subscription.Enqueue(ev, replay: true);
                 }
@@ -137,9 +140,24 @@ public sealed class ObservationLog<T> : IDisposable
 
     public void Dispose()
     {
+        ObservationSubscription<T>[] subscribers;
         lock (_sync)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             _disposed = true;
+            subscribers = [.. _subscribers];
+            _subscribers.Clear();
+        }
+
+        // Close subscribers outside the log lock: a subscription may be
+        // disposing concurrently and will remove itself from this log.
+        foreach (var subscriber in subscribers)
+        {
+            subscriber.CloseFromLog();
         }
     }
 }
@@ -173,6 +191,14 @@ public sealed class ObservationSubscription<T> : IDisposable
             {
                 return _error;
             }
+        }
+    }
+
+    internal void CloseFromLog()
+    {
+        lock (_sync)
+        {
+            _closed = true;
         }
     }
 

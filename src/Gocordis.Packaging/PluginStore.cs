@@ -14,13 +14,19 @@ internal sealed record StoreState(List<InstalledPlugin> Plugins)
     public static StoreState Empty() => new([]);
 }
 
+internal sealed record DirectoryMove(string Source, string Backup);
+
 /// <summary>
-/// Directory-backed plugin store. Installation is serialized, staged outside
-/// the final location, and the lock file is restored on any failure.
+/// Directory-backed plugin store. Installation is serialized; every mutation
+/// uses staging + backup directories so a failed commit restores both bytes
+/// and lock state.
 /// </summary>
 public sealed class PluginStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    private static readonly StringComparison PathComparison =
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly string _root;
     private readonly string _hostVersion;
@@ -96,26 +102,36 @@ public sealed class PluginStore
             }
 
             var backup = await ReadLockBytesAsync(cancellationToken);
+            var transaction = Guid.NewGuid().ToString("N");
+            var backupRoot = EnsureUnderRoot(_root, ".staging", transaction + "-backup");
+            Directory.CreateDirectory(backupRoot);
+            var moves = new List<DirectoryMove>();
+
             try
             {
-                foreach (var target in targets)
+                for (var i = 0; i < targets.Length; i++)
                 {
-                    var directory = Path.Combine(_root, target.Id, target.Version);
-                    if (Directory.Exists(directory))
+                    var source = EnsureUnderRoot(_root, targets[i].Id, targets[i].Version);
+                    var destination = Path.Combine(backupRoot, i.ToString());
+                    if (Directory.Exists(source))
                     {
-                        Directory.Delete(directory, recursive: true);
+                        Directory.Move(source, destination);
+                        moves.Add(new DirectoryMove(source, destination));
                     }
 
-                    state.Plugins.Remove(target);
+                    state.Plugins.Remove(targets[i]);
                 }
 
                 await WriteStateAsync(state, cancellationToken);
+                Directory.Delete(backupRoot, recursive: true);
                 return new PluginStoreResult(targets
                     .Select(p => new PluginChange(PluginChangeKind.Removed, p.Id, p.Version)).ToArray());
             }
             catch
             {
-                await WriteLockBytesAsync(backup, cancellationToken);
+                RestoreDirectories(moves);
+                SafeDeleteDirectory(backupRoot);
+                await WriteLockBytesAsync(backup, CancellationToken.None);
                 throw;
             }
         }
@@ -128,7 +144,6 @@ public sealed class PluginStore
     private async Task<PluginStoreResult> InstallCoreAsync(
         string packagePath, bool upgrade, CancellationToken cancellationToken)
     {
-        // Validation happens before taking the gate: a bad package never touches state.
         var content = await PluginPackageReader.ReadAsync(packagePath, _hostVersion, cancellationToken);
         await _gate.WaitAsync(cancellationToken);
         try
@@ -145,67 +160,88 @@ public sealed class PluginStore
             }
 
             var backup = await ReadLockBytesAsync(cancellationToken);
-            var staging = Path.Combine(_root, ".staging", Guid.NewGuid().ToString("N"));
-            var finalDirectory = Path.Combine(_root, content.Manifest.Id, content.Manifest.Version);
+            var transaction = Guid.NewGuid().ToString("N");
+            var staging = EnsureUnderRoot(_root, ".staging", transaction);
+            var backupRoot = EnsureUnderRoot(_root, ".staging", transaction + "-backup");
+            var finalDirectory = EnsureUnderRoot(_root, content.Manifest.Id, content.Manifest.Version);
+            var moves = new List<DirectoryMove>();
+            var finalMoved = false;
+
             try
             {
                 Directory.CreateDirectory(staging);
                 foreach (var (relative, bytes) in content.Files)
                 {
-                    var target = Path.Combine(staging, relative);
+                    PluginPackageWriter.EnsureSafeRelativePath(relative);
+                    var target = EnsureUnderRoot(staging, relative);
                     Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                     await File.WriteAllBytesAsync(target, bytes, cancellationToken);
                 }
 
-                Directory.CreateDirectory(Path.GetDirectoryName(finalDirectory)!);
-                if (Directory.Exists(finalDirectory))
-                {
-                    Directory.Delete(finalDirectory, recursive: true);
-                }
-
-                Directory.Move(staging, finalDirectory);
-
-                var installed = new InstalledPlugin(content.Manifest, finalDirectory);
-                var changes = new List<PluginChange>();
+                Directory.CreateDirectory(backupRoot);
+                var affected = new List<InstalledPlugin>();
                 if (existing is not null)
                 {
-                    state.Plugins.Remove(existing);
-                    changes.Add(new PluginChange(PluginChangeKind.Updated, existing.Id, existing.Version));
+                    affected.Add(existing);
                 }
 
                 if (upgrade)
                 {
-                    var superseded = state.Plugins.Where(p =>
+                    affected.AddRange(state.Plugins.Where(p =>
                         string.Equals(p.Id, content.Manifest.Id, StringComparison.Ordinal) &&
-                        NuGetVersion.Parse(p.Version) < NuGetVersion.Parse(content.Manifest.Version)).ToArray();
-                    foreach (var old in superseded)
-                    {
-                        var oldDirectory = Path.Combine(_root, old.Id, old.Version);
-                        if (Directory.Exists(oldDirectory))
-                        {
-                            Directory.Delete(oldDirectory, recursive: true);
-                        }
+                        NuGetVersion.Parse(p.Version) < NuGetVersion.Parse(content.Manifest.Version)));
+                }
 
-                        state.Plugins.Remove(old);
-                        changes.Add(new PluginChange(PluginChangeKind.Removed, old.Id, old.Version));
+                var index = 0;
+                foreach (var old in affected.Distinct())
+                {
+                    var source = EnsureUnderRoot(_root, old.Id, old.Version);
+                    var destination = Path.Combine(backupRoot, index.ToString());
+                    if (Directory.Exists(source))
+                    {
+                        Directory.Move(source, destination);
+                        moves.Add(new DirectoryMove(source, destination));
+                        index++;
                     }
                 }
 
+                Directory.CreateDirectory(Path.GetDirectoryName(finalDirectory)!);
+                Directory.Move(staging, finalDirectory);
+                finalMoved = true;
+
+                var changes = new List<PluginChange>();
+                foreach (var old in affected.Distinct())
+                {
+                    state.Plugins.Remove(old);
+                    changes.Add(new PluginChange(PluginChangeKind.Removed, old.Id, old.Version));
+                }
+
+                if (existing is not null)
+                {
+                    changes.Add(new PluginChange(PluginChangeKind.Updated, existing.Id, existing.Version));
+                }
+
+                var installed = new InstalledPlugin(content.Manifest, finalDirectory);
                 state.Plugins.Add(installed);
-                changes.Add(new PluginChange(
-                    existing is null ? PluginChangeKind.Added : PluginChangeKind.Updated,
+                changes.Add(new PluginChange(existing is null ? PluginChangeKind.Added : PluginChangeKind.Updated,
                     installed.Id, installed.Version));
+
                 await WriteStateAsync(state, cancellationToken);
+                Directory.Delete(backupRoot, recursive: true);
+                SafeDeleteDirectory(staging);
                 return new PluginStoreResult(changes.Distinct().ToArray());
             }
             catch
             {
-                if (Directory.Exists(staging))
+                if (finalMoved)
                 {
-                    Directory.Delete(staging, recursive: true);
+                    SafeDeleteDirectory(finalDirectory);
                 }
 
-                await WriteLockBytesAsync(backup, cancellationToken);
+                RestoreDirectories(moves);
+                SafeDeleteDirectory(backupRoot);
+                SafeDeleteDirectory(staging);
+                await WriteLockBytesAsync(backup, CancellationToken.None);
                 throw;
             }
         }
@@ -228,6 +264,44 @@ public sealed class PluginStore
                     $"plugin '{manifest.Id}' requires '{dependency.Id}' {dependency.VersionRange}");
             }
         }
+    }
+
+    private string EnsureUnderRoot(string root, params string[] segments)
+    {
+        var combined = Path.GetFullPath(Path.Combine(root, Path.Combine(segments)));
+        var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!combined.StartsWith(normalizedRoot, PathComparison))
+        {
+            throw new InvalidOperationException($"path '{combined}' escapes store root '{root}'");
+        }
+
+        return combined;
+    }
+
+    private static void RestoreDirectories(IEnumerable<DirectoryMove> moves)
+    {
+        foreach (var move in moves.Reverse())
+        {
+            SafeDeleteDirectory(move.Source);
+            if (Directory.Exists(move.Backup))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(move.Source)!);
+                Directory.Move(move.Backup, move.Source);
+            }
+        }
+    }
+
+    private static void SafeDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     private string LockPath => Path.Combine(_root, "installed.json");

@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using NuGet.Versioning;
 
@@ -61,6 +62,16 @@ public sealed class MissingPluginDependencyException : InvalidPluginPackageExcep
     public MissingPluginDependencyException(string message) : base(message) { }
 }
 
+/// <summary>Formats limits shared by writer and reader; they are deliberately explicit.</summary>
+public static class PluginPackageLimits
+{
+    public const int MaxManifestBytes = 1 << 20;          // 1 MiB
+    public const long MaxPackageBytes = 256L << 20;       // 256 MiB
+    public const long MaxPayloadFileBytes = 16L << 20;    // 16 MiB
+    public const long MaxPayloadBytes = 64L << 20;        // 64 MiB total uncompressed
+    public const int MaxPayloadFiles = 512;
+}
+
 public static class PluginPackageWriter
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
@@ -73,27 +84,49 @@ public static class PluginPackageWriter
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
+        ValidateIdentity(manifest); // reject hostile identity before touching the filesystem
         if (!Directory.Exists(sourceDirectory))
         {
             throw new DirectoryNotFoundException(sourceDirectory);
         }
 
-        ValidateIdentity(manifest);
-
         var files = new List<PackageFile>();
+        long total = 0;
         foreach (var file in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories)
                      .OrderBy(path => RelativePath(sourceDirectory, path), StringComparer.Ordinal))
         {
             var relative = RelativePath(sourceDirectory, file);
-            EnsureSafeRelativePath(relative);
+            var info = new FileInfo(file);
+            if (info.Length > PluginPackageLimits.MaxPayloadFileBytes)
+            {
+                throw new InvalidPluginPackageException(
+                    $"payload file '{relative}' exceeds {PluginPackageLimits.MaxPayloadFileBytes} bytes");
+            }
+
+            total += info.Length;
+            if (total > PluginPackageLimits.MaxPayloadBytes)
+            {
+                throw new InvalidPluginPackageException(
+                    $"payload exceeds total limit of {PluginPackageLimits.MaxPayloadBytes} bytes");
+            }
+
             var bytes = await File.ReadAllBytesAsync(file, cancellationToken);
             files.Add(new PackageFile(relative, Sha256(bytes), bytes.Length));
         }
 
-        var checksum = Sha256(files
-            .SelectMany(file => System.Text.Encoding.UTF8.GetBytes($"{file.Path}:{file.Sha256}\n"))
-            .ToArray());
-        var completed = manifest with { Checksum = checksum, Files = files };
+        if (files.Count > PluginPackageLimits.MaxPayloadFiles)
+        {
+            throw new InvalidPluginPackageException(
+                $"package has {files.Count} payload files; limit is {PluginPackageLimits.MaxPayloadFiles}");
+        }
+
+        var completed = manifest with { Checksum = ComputeIntegrityChecksum(manifest with { Files = files }), Files = files };
+        var manifestJson = JsonSerializer.Serialize(completed, JsonOptions);
+        if (Encoding.UTF8.GetByteCount(manifestJson) > PluginPackageLimits.MaxManifestBytes)
+        {
+            throw new InvalidPluginPackageException("manifest exceeds the size limit");
+        }
+
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
 
         var temp = outputPath + ".tmp";
@@ -104,7 +137,7 @@ public static class PluginPackageWriter
             entry.LastWriteTime = FixedTimestamp;
             await using (var writer = new StreamWriter(entry.Open()))
             {
-                await writer.WriteAsync(JsonSerializer.Serialize(completed, JsonOptions));
+                await writer.WriteAsync(manifestJson);
             }
 
             foreach (var file in files)
@@ -118,6 +151,11 @@ public static class PluginPackageWriter
         }
 
         File.Move(temp, outputPath, overwrite: true);
+        if (new FileInfo(outputPath).Length > PluginPackageLimits.MaxPackageBytes)
+        {
+            throw new InvalidPluginPackageException("package exceeds the size limit");
+        }
+
         return completed;
     }
 
@@ -126,17 +164,98 @@ public static class PluginPackageWriter
     internal static void ValidateIdentity(PluginPackageManifest manifest)
     {
         ArgumentNullException.ThrowIfNull(manifest);
-        ArgumentException.ThrowIfNullOrWhiteSpace(manifest.Id);
-        if (!NuGetVersion.TryParse(manifest.Version, out _))
+        if (!IsValidPluginId(manifest.Id))
+        {
+            throw new InvalidPluginPackageException($"invalid plugin id '{manifest.Id}'");
+        }
+
+        if (!NuGetVersion.TryParse(manifest.Version, out var version))
         {
             throw new InvalidPluginPackageException($"invalid plugin version '{manifest.Version}'");
         }
 
+        EnsureSafeSegment(version.ToNormalizedString(), "version");
         _ = VersionRange.Parse(manifest.HostVersionRange);
         foreach (var dependency in manifest.DependenciesOrEmpty)
         {
+            if (!IsValidPluginId(dependency.Id))
+            {
+                throw new InvalidPluginPackageException($"invalid dependency id '{dependency.Id}'");
+            }
+
             _ = VersionRange.Parse(dependency.VersionRange);
         }
+
+        foreach (var provide in manifest.ProvidesOrEmpty)
+        {
+            if (string.IsNullOrWhiteSpace(provide))
+            {
+                throw new InvalidPluginPackageException("empty capability name in provides");
+            }
+        }
+    }
+
+    private static bool IsValidPluginId(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id) || id.Length > 128)
+        {
+            return false;
+        }
+
+        if (!(char.IsAsciiLetterLower(id[0]) || char.IsAsciiDigit(id[0])))
+        {
+            return false;
+        }
+
+        foreach (var c in id)
+        {
+            if (!(char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c is '-' or '_' or '.'))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    internal static void EnsureSafeSegment(string segment, string field)
+    {
+        if (string.IsNullOrWhiteSpace(segment) ||
+            segment is "." or ".." ||
+            segment.IndexOfAny(['/', '\\']) >= 0 ||
+            Path.IsPathRooted(segment))
+        {
+            throw new InvalidPluginPackageException($"unsafe {field} segment '{segment}'");
+        }
+    }
+
+    internal static string ComputeIntegrityChecksum(PluginPackageManifest manifest)
+    {
+        var text = new StringBuilder();
+        text.Append("id=").Append(manifest.Id).Append('\n');
+        text.Append("version=").Append(NuGetVersion.Parse(manifest.Version).ToNormalizedString()).Append('\n');
+        text.Append("type=").Append(manifest.Type).Append('\n');
+        text.Append("display=").Append(manifest.DisplayName ?? string.Empty).Append('\n');
+        text.Append("host=").Append(VersionRange.Parse(manifest.HostVersionRange).ToString()).Append('\n');
+        foreach (var dependency in manifest.DependenciesOrEmpty
+                     .OrderBy(d => d.Id, StringComparer.Ordinal)
+                     .ThenBy(d => d.VersionRange, StringComparer.Ordinal))
+        {
+            text.Append("dep=").Append(dependency.Id).Append('@').Append(dependency.VersionRange).Append('\n');
+        }
+
+        foreach (var provide in manifest.ProvidesOrEmpty.OrderBy(p => p, StringComparer.Ordinal))
+        {
+            text.Append("provide=").Append(provide).Append('\n');
+        }
+
+        foreach (var file in manifest.FilesOrEmpty.OrderBy(f => f.Path, StringComparer.Ordinal))
+        {
+            text.Append("file=").Append(file.Path).Append(':').Append(file.Sha256)
+                .Append(':').Append(file.Length).Append('\n');
+        }
+
+        return Sha256(Encoding.UTF8.GetBytes(text.ToString()));
     }
 
     internal static string Sha256(byte[] bytes) =>
@@ -163,6 +282,11 @@ public static class PluginPackageReader
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
+    public const long MaxManifestBytes = PluginPackageLimits.MaxManifestBytes;
+    public const long MaxPackageBytes = PluginPackageLimits.MaxPackageBytes;
+    public const long MaxPayloadFileBytes = PluginPackageLimits.MaxPayloadFileBytes;
+    public const int MaxPayloadFiles = PluginPackageLimits.MaxPayloadFiles;
+
     public static async Task<PluginPackageContent> ReadAsync(
         string packagePath,
         string hostVersion,
@@ -174,17 +298,34 @@ public static class PluginPackageReader
             throw new InvalidPluginPackageException($"package not found: {packagePath}");
         }
 
+        if (new FileInfo(packagePath).Length > PluginPackageLimits.MaxPackageBytes)
+        {
+            throw new InvalidPluginPackageException("package exceeds the size limit");
+        }
+
         PluginPackageManifest manifest;
         var files = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        long total = 0;
         try
         {
             using var stream = File.OpenRead(packagePath);
             using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
             var manifestEntry = archive.GetEntry("manifest.json") ??
                                 throw new InvalidPluginPackageException("package is missing manifest.json");
+            if (manifestEntry.Length > PluginPackageLimits.MaxManifestBytes)
+            {
+                throw new InvalidPluginPackageException("manifest exceeds the size limit");
+            }
+
             using (var reader = new StreamReader(manifestEntry.Open()))
             {
-                manifest = JsonSerializer.Deserialize<PluginPackageManifest>(await reader.ReadToEndAsync(), JsonOptions)
+                var json = await reader.ReadToEndAsync(cancellationToken);
+                if (Encoding.UTF8.GetByteCount(json) > PluginPackageLimits.MaxManifestBytes)
+                {
+                    throw new InvalidPluginPackageException("manifest exceeds the size limit");
+                }
+
+                manifest = JsonSerializer.Deserialize<PluginPackageManifest>(json, JsonOptions)
                            ?? throw new InvalidPluginPackageException("manifest.json is empty");
             }
 
@@ -195,13 +336,15 @@ public static class PluginPackageReader
                     $"plugin '{manifest.Id}@{manifest.Version}' requires host {manifest.HostVersionRange}, current {hostVersion}");
             }
 
-            foreach (var entry in archive.Entries)
+            var payloadEntries = archive.Entries.Where(e => e.FullName != "manifest.json").ToArray();
+            if (payloadEntries.Length > PluginPackageLimits.MaxPayloadFiles)
             {
-                if (entry.FullName == "manifest.json")
-                {
-                    continue;
-                }
+                throw new InvalidPluginPackageException(
+                    $"package has {payloadEntries.Length} payload files; limit is {PluginPackageLimits.MaxPayloadFiles}");
+            }
 
+            foreach (var entry in payloadEntries)
+            {
                 if (!entry.FullName.StartsWith("payload/", StringComparison.Ordinal))
                 {
                     throw new InvalidPluginPackageException($"unexpected package entry '{entry.FullName}'");
@@ -209,10 +352,24 @@ public static class PluginPackageReader
 
                 var relative = entry.FullName["payload/".Length..];
                 PluginPackageWriter.EnsureSafeRelativePath(relative);
+                if (entry.Length > PluginPackageLimits.MaxPayloadFileBytes)
+                {
+                    throw new InvalidPluginPackageException($"payload file '{relative}' exceeds the size limit");
+                }
+
+                total += entry.Length;
+                if (total > PluginPackageLimits.MaxPayloadBytes)
+                {
+                    throw new InvalidPluginPackageException("payload exceeds the total size limit");
+                }
+
                 await using var source = entry.Open();
                 using var memory = new MemoryStream();
                 await source.CopyToAsync(memory, cancellationToken);
-                files[relative] = memory.ToArray();
+                if (!files.TryAdd(relative, memory.ToArray()))
+                {
+                    throw new InvalidPluginPackageException($"duplicate payload path '{relative}'");
+                }
             }
         }
         catch (InvalidPluginPackageException)
@@ -249,10 +406,7 @@ public static class PluginPackageReader
             }
         }
 
-        var combined = expected
-            .SelectMany(file => System.Text.Encoding.UTF8.GetBytes($"{file.Path}:{file.Sha256}\n"))
-            .ToArray();
-        if (manifest.Checksum != PluginPackageWriter.Sha256(combined))
+        if (manifest.Checksum != PluginPackageWriter.ComputeIntegrityChecksum(manifest))
         {
             throw new PackageIntegrityException("package checksum mismatch");
         }

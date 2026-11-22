@@ -32,7 +32,7 @@ bash docs/migration/verify-baseline.sh  # Go baseline
 本地 .NET 验证结果：
 
 - Build：0 warning / 0 error
-- Test：338/338，连续 3 次零失败、零挂起
+- Test：349/349，连续 3 次零失败、零挂起
 - 构成：Core 26 / Conformance 113 / Runtime 114 / Extensions 52 / Packaging 8 / UI 3 / Client 2
 
 CI 状态按 SHA 记录在最终交付消息；已知 `6ff30f1c` 的 `ci` workflow 在 Go baseline Race 步骤出现一次

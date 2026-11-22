@@ -25,6 +25,7 @@
 | [`runtime-integrity.md`](runtime-integrity.md) | 批次 4 | Managed/Process/WASM/Go Native 边界、错误策略、64 MiB 上限 | 与 BackendLifecycleTests / WasmRuntimeTests 对齐 |
 | [`multi-host-ui.md`](multi-host-ui.md) | 批次 5 | Web/WinForms/Avalonia 同一插件 UI 契约与降级边界 | 与 `MultiHostUiContractTests` 对齐 |
 | [`review-fix-closure.md`](review-fix-closure.md) | 审查修复 | 最终 Partial/Divergent 收敛、可关闭项与平台边界 | 与 `CliProductTests` / `ProductGateTests` / `Gocordis.Product.Tests` 对齐 |
+| [`package-security.md`](package-security.md) | 安全收敛 | Plugin ID、ZIP 资源上限、checksum 绑定、Store 文件系统事务 | 与 `PackageSecurityTests` 对齐 |
 | [`../guide/csharp-developer-manual.md`](../guide/csharp-developer-manual.md) | 批次 C | C# 开发者手册：十二铁律 → C# API 与反模式 | 与 `AGENTS.md` 十二铁律逐条锚定 |
 | [`migration-coverage.md`](migration-coverage.md) | 全周期 | 每个 Go 模块迁移到哪个 C# 项目；用什么机制替代；什么不迁移 | 清单逐项推进；状态只能由验收证据推进 |
 | [`execution-log.md`](execution-log.md) | 全周期 | 每一步做了什么、为什么、证据是什么 | 持续追加，不回改历史条目 |
@@ -59,5 +60,5 @@
   共用统一后端协议与世代栅栏。
 - **批次 C（论文矩阵 / 定理矩阵 / JS 差异统一 / 最终验收）已完成**：C01–C40 矩阵
   38 已覆盖 / 0 待补 / 2 接受差异；Thm64/68/70/73/80 每定理 3 场景；
-  Koishi 真实消息链、provider 启停与 HTTP E2E 已覆盖。最终 **338/338**，连续 30 次全绿。
+  Koishi 真实消息链、provider 启停与 HTTP E2E 已覆盖。最终 **349/349**，连续 31 次全绿。
 - 后续阶段状态以 [`migration-coverage.md`](migration-coverage.md) 的逐项状态为准，不在本文件重复维护。

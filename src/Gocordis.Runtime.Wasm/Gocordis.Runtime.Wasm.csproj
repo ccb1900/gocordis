@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Wasmtime" Version="34.0.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Gocordis.Core/Gocordis.Core.csproj" />
+    <ProjectReference Include="../Gocordis.Plugins/Gocordis.Plugins.csproj" />
+  </ItemGroup>
+</Project>

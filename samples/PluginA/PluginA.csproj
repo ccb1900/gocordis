@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../../src/Gocordis.Core/Gocordis.Core.csproj" />
+    <ProjectReference Include="../DepV1/DepV1.csproj" />
+  </ItemGroup>
+</Project>

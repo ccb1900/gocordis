@@ -5,6 +5,7 @@ using Xunit;
 
 namespace Gocordis.Packaging.Tests;
 
+[Collection("CLI")]
 public sealed class CliAndSourceTests
 {
     [Fact]
@@ -86,12 +87,12 @@ public sealed class CliAndSourceTests
 
     private static async Task<(int Code, string Out, string Error)> RunAsync(params string[] args)
     {
-        var originalOut = Console.Out;
-        var originalError = Console.Error;
+        var originalOut = System.Console.Out;
+        var originalError = System.Console.Error;
         using var output = new StringWriter();
         using var error = new StringWriter();
-        Console.SetOut(output);
-        Console.SetError(error);
+        System.Console.SetOut(output);
+        System.Console.SetError(error);
         try
         {
             var code = await Program.Main(args);
@@ -99,8 +100,8 @@ public sealed class CliAndSourceTests
         }
         finally
         {
-            Console.SetOut(originalOut);
-            Console.SetError(originalError);
+            System.Console.SetOut(originalOut);
+            System.Console.SetError(originalError);
         }
     }
 

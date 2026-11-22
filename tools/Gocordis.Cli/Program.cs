@@ -1,6 +1,9 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Gocordis.Console.WebUi;
+using Gocordis.Core;
 using Gocordis.Packaging;
+using Gocordis.Plugins;
 
 namespace Gocordis.Cli;
 
@@ -32,7 +35,7 @@ public static class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine(JsonSerializer.Serialize(new { error = ex.Message }, Json));
+            System.Console.Error.WriteLine(JsonSerializer.Serialize(new { error = ex.Message }, Json));
             return 1;
         }
     }
@@ -83,7 +86,7 @@ public static class Program
 
             await using var ui = new WebUiServer(host, registry: registry);
             await ui.StartAsync();
-            Console.WriteLine($"Gocordis app '{{id}}': {ui.Address}");
+            System.Console.WriteLine($"Gocordis app '{{id}}': {ui.Address}");
             await Task.Delay(Timeout.Infinite);
             """;
         await File.WriteAllTextAsync(Path.Combine(output, "Program.cs"), program);
@@ -207,34 +210,206 @@ public static class Program
 
     private static async Task<int> AppAsync(string[] args)
     {
-        if (args.Length == 0 || args[0] != "validate")
+        if (args.Length == 0)
         {
-            return Fail("usage: app validate <manifest> [--store] [--host-version]");
+            return Fail("app requires a subcommand");
         }
 
+        var command = args[0];
         var rest = args[1..];
-        var path = Positional(rest, 0);
+        return command switch
+        {
+            "validate" => await AppValidateAsync(rest),
+            "enable" => await AppToggleAsync(rest, enabled: true),
+            "disable" => await AppToggleAsync(rest, enabled: false),
+            "run" => await AppRunAsync(rest),
+            _ => Fail($"unknown app command '{command}'"),
+        };
+    }
+
+    private static async Task<int> AppToggleAsync(string[] args, bool enabled)
+    {
+        var path = Positional(args, 0);
+        var pluginId = Positional(args, 1);
+        if (path is null || pluginId is null)
+        {
+            return Fail($"usage: app {(enabled ? "enable" : "disable")} <manifest> <pluginId> [--store] [--host-version]");
+        }
+
+        var app = await ApplicationManifest.LoadAsync(path);
+        if (!app.Plugins.Any(plugin => string.Equals(plugin.Id, pluginId, StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException(
+                $"plugin '{pluginId}' is not declared in application manifest '{path}'");
+        }
+
+        var updated = app with
+        {
+            Plugins = app.Plugins
+                .Select(plugin => string.Equals(plugin.Id, pluginId, StringComparison.Ordinal)
+                    ? plugin with { Enabled = enabled }
+                    : plugin)
+                .ToArray(),
+        };
+        await updated.SaveAsync(path); // Atomic temp-file replace from ApplicationManifest.
+        Write(new { id = pluginId, enabled });
+        return 0;
+    }
+
+    private static async Task<int> AppValidateAsync(string[] args)
+    {
+        var path = Positional(args, 0);
         if (path is null)
         {
             return Fail("usage: app validate <manifest> [--store] [--host-version]");
         }
 
-        var storePath = Option(rest, "--store") ??
-                        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".gocordis", "plugins");
-        var hostVersion = Option(rest, "--host-version") ?? "1.0.0";
+        var (app, resolved) = await LoadAndResolveAsync(path, StorePath(args), HostVersion(args));
+        WriteResolution(app, resolved);
+        return 0;
+    }
+
+    private static async Task<int> AppRunAsync(string[] args)
+    {
+        var path = Positional(args, 0);
+        if (path is null)
+        {
+            return Fail("usage: app run <manifest> [--store] [--host-version] [--validate-only] [--address]");
+        }
+
+        var storePath = StorePath(args);
+        var hostVersion = HostVersion(args);
+        var address = Option(args, "--address") ?? "http://127.0.0.1:0";
+        var validateOnly = args.Contains("--validate-only", StringComparer.Ordinal);
+        var (app, resolved) = await LoadAndResolveAsync(path, storePath, hostVersion);
+
+        var runtime = new Runtime();
+        var host = new ConsoleHost(runtime);
+        var registry = new PluginRegistry(runtime);
+        WebUiServer? ui = null;
+        var uiStarted = false;
+        try
+        {
+            // Packages stay platform-neutral: the product host declares a generic
+            // adapter per resolved type instead of executing arbitrary package code.
+            // Declaration, resolution and activation still run through Core.
+            foreach (var type in resolved.Select(item => item.Type).Distinct(StringComparer.Ordinal))
+            {
+                registry.RegisterFactory(type, _ => new ProductPluginComponent(type));
+            }
+
+            await new ApplicationLoader(new PluginStore(storePath, hostVersion), registry).ApplyAsync(app);
+            WriteResolution(app, resolved);
+            if (validateOnly)
+            {
+                return 0;
+            }
+
+            ui = new WebUiServer(host, address, allowRemote: false, registry: registry);
+            await ui.StartAsync();
+            uiStarted = true;
+            System.Console.WriteLine($"Gocordis app '{app.Id}': {ui.Address}");
+            System.Console.WriteLine("Press Ctrl+C to stop.");
+            await WaitForShutdownAsync();
+            return 0;
+        }
+        finally
+        {
+            // LIFO teardown: transport, then declarations/fibers, then the runtime.
+            if (ui is not null)
+            {
+                if (uiStarted)
+                {
+                    await ui.StopAsync();
+                }
+
+                await ui.DisposeAsync();
+            }
+
+            await registry.DisposeAsync();
+            await runtime.DisposeAsync();
+        }
+    }
+
+    private static async Task<(ApplicationManifest App, IReadOnlyList<ResolvedPlugin> Resolved)> LoadAndResolveAsync(
+        string path, string storePath, string hostVersion)
+    {
         var app = await ApplicationManifest.LoadAsync(path);
         var store = new PluginStore(storePath, hostVersion);
-        var resolved = new List<object>();
+        var resolved = new List<ResolvedPlugin>(app.Plugins.Count);
         foreach (var plugin in app.Plugins)
         {
             var installed = await store.ResolveAsync(plugin.Id, plugin.VersionRange)
                             ?? throw new MissingPluginDependencyException(
                                 $"'{plugin.Id}' {plugin.VersionRange} is not installed");
-            resolved.Add(new { installed.Id, installed.Version, plugin.Enabled });
+            resolved.Add(new ResolvedPlugin(plugin.Id, installed.Version, installed.Manifest.Type, plugin.Enabled));
         }
 
-        Write(new { app.Id, app.Version, app.HostVersion, resolved });
-        return 0;
+        return (app, resolved);
+    }
+
+    private static void WriteResolution(ApplicationManifest app, IReadOnlyList<ResolvedPlugin> resolved) =>
+        Write(new
+        {
+            app.Id,
+            app.Version,
+            app.HostVersion,
+            resolved = resolved.Select(item => new { item.Id, item.Version, item.Enabled }),
+        });
+
+    private static string StorePath(string[] args) =>
+        Option(args, "--store") ??
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".gocordis", "plugins");
+
+    private static string HostVersion(string[] args) => Option(args, "--host-version") ?? "1.0.0";
+
+    private static async Task WaitForShutdownAsync()
+    {
+        using var shutdown = new CancellationTokenSource();
+        ConsoleCancelEventHandler handler = (_, signal) =>
+        {
+            signal.Cancel = true;
+            shutdown.Cancel();
+        };
+
+        System.Console.CancelKeyPress += handler;
+        try
+        {
+            await Task.Delay(Timeout.Infinite, shutdown.Token);
+        }
+        catch (OperationCanceledException) when (shutdown.IsCancellationRequested)
+        {
+            // Ctrl+C: orderly teardown happens in the caller's finally block.
+        }
+        finally
+        {
+            System.Console.CancelKeyPress -= handler;
+        }
+    }
+
+    private sealed record ResolvedPlugin(string Id, string Version, string Type, bool Enabled);
+
+    /// <summary>
+    /// Declaration-only adapter used by the product CLI. Package payloads are not
+    /// executed here (backend runtimes own that); activation still goes through
+    /// Core so manifest errors, fibers and enable/disable are real.
+    /// </summary>
+    private sealed class ProductPluginComponent : Component
+    {
+        private readonly Key<string> _key = new($"product-plugin-{Guid.NewGuid():N}");
+        private readonly string _type;
+
+        public ProductPluginComponent(string type) => _type = type;
+
+        public override string Name => $"product-plugin:{_type}";
+
+        public override IReadOnlyList<ICapabilityKey> Provide() => [_key];
+
+        public override ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            context.Provide(_key, _type);
+            return ValueTask.FromResult<Cleanup?>(null);
+        }
     }
 
     private static InstalledPlugin Parse(InstalledPlugin value) => value;
@@ -256,7 +431,11 @@ public static class Program
     {
         var options = new HashSet<string>(StringComparer.Ordinal)
         {
-            "--store", "--host-version", "--id", "--version", "--type", "--host-range", "--source",
+            "--store", "--host-version", "--address", "--id", "--version", "--type", "--host-range", "--source",
+        };
+        var flags = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "--validate-only",
         };
         var values = new List<string>();
         for (var i = 0; i < args.Length; i++)
@@ -265,6 +444,11 @@ public static class Program
             {
                 i++; // skip option value
                 continue;
+            }
+
+            if (flags.Contains(args[i]))
+            {
+                continue; // boolean switch, consumes no value
             }
 
             if (args[i].Contains('=', StringComparison.Ordinal) && args[i].StartsWith("--", StringComparison.Ordinal))
@@ -278,16 +462,16 @@ public static class Program
         return index < values.Count ? values[index] : null;
     }
 
-    private static void Write(object value) => Console.WriteLine(JsonSerializer.Serialize(value, Json));
+    private static void Write(object value) => System.Console.WriteLine(JsonSerializer.Serialize(value, Json));
 
     private static int Fail(string message)
     {
-        Console.Error.WriteLine(message);
+        System.Console.Error.WriteLine(message);
         PrintUsage();
         return 2;
     }
 
-    private static void PrintUsage() => Console.Error.WriteLine("""
+    private static void PrintUsage() => System.Console.Error.WriteLine("""
         gocordis create <outputDir> [--id] [--version] [--host-version]
         gocordis plugin pack <sourceDir> <output> [--id] [--version] [--type] [--host-range]
         gocordis plugin install|upgrade <package> [--store] [--host-version]
@@ -295,5 +479,7 @@ public static class Program
         gocordis plugin list [--store] [--host-version]
         gocordis plugin resolve <id> <range> [--source] [--host-version]
         gocordis app validate <manifest> [--store] [--host-version]
+        gocordis app enable|disable <manifest> <pluginId> [--store] [--host-version]
+        gocordis app run <manifest> [--store] [--host-version] [--validate-only] [--address]
         """);
 }

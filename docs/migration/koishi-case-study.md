@@ -61,7 +61,7 @@ manifest（db / adapter / feature）。启用开关与 adapter 配置改的是**
 - `Koishi_WebUiServesSecondApplicationPagesAndSnapshot`
 
 最终通过数由主线程统一执行 `dotnet build Gocordis.sln --nologo -m:1` 与
-`dotnet test Gocordis.sln --nologo --no-build -m:1` 确定：259/259，连续 12 次全绿；
+`dotnet test Gocordis.sln --nologo --no-build -m:1` 确定：265/265，连续 16 次全绿；
 结果回填 `execution-log.md`「批次 B/C 最终验证」。
 
 ## 5. 明确不宣称的内容
@@ -69,5 +69,5 @@ manifest（db / adapter / feature）。启用开关与 adapter 配置改的是**
 - 案例不实现插件市场、远程分发或浏览器侧真正的 TS/JS 调和循环；Web Console 用内嵌静态资产 +
   贡献 API 表达"第二个应用"（见 `migration-coverage.md` §6.9）。
 - 案例不证明 Thm73 的完整形式化前提（见 `paper-coverage-matrix.md` C29 的证据边界）。
-- `KoishiCaseTests` 中新增用例属另一 agent 的批次范围；本文件只建立语义与铁律的锚点，
-  不以文档代替测试通过。
+- `KoishiCaseTests` 已覆盖消息事件链、provider 启停/恢复、adapter 替换与独立 Web Console，
+  但案例不实现 Koishi 完整插件生态、市场或远程分发；这是产品化边界，不是迁移阻塞项。

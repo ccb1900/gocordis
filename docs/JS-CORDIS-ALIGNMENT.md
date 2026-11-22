@@ -87,6 +87,11 @@ open flags/mode）同样冻结为接受差异，不计入等价范围。
 | market / package-manager | `MarketService`（校验和/版本门）、`PackageManager`（报告/应用/回滚） | 仅本地声明层；插件市场服务端与云端平台仍按范围排除 |
 | WASM 能力桥 | `WasmHostBridge`（`gocordis.report` 导入）、`WasmCustomSections`（`module_type`） | 继承 Go ABI 并补上 Go v0.1 缺失的宿主桥 |
 
+**等价边界**：上表证明的是“能力等价”，不是 JS 公开 API 的逐项行为等价。模块身份采用论文
+Revision（退役→重插）而非 JS 原位替换；公开选项、异常传播、资源关闭、边界条件尚未逐项与 JS
+对齐验证，逐项状态见 [`migration/js-cordis-csharp-differences.md`](migration/js-cordis-csharp-differences.md)
+的“公开行为等价边界”。验收时不得用“已有对应类”替代行为证据。
+
 **刻意不接受差异**（论文优先，非能力缺失）：`ctx.foo` Proxy 动态属性、跨 effect 并发撤销、
 `registry.replace()` 保身份替换。详见 `docs/ACCEPTED-DIFFERENCES.md` 与
 `docs/migration/semantic-mapping.md` §4。

@@ -10,9 +10,9 @@
 | 0 冻结 Go 基线 | 已验证 | `migration-baseline.md`、`semantic-mapping.md`、`migration-coverage.md`、`baseline.sha256`、`verify-baseline.sh` | `BASELINE VERIFIED`；`go build ./...` OK；race 全量通过（含一次已知 flake 复现） |
 | 1 C# 骨架与边界 | 已验证 | `Gocordis.sln`、5 src + 3 test 项目、`global.json`、`Directory.Build.props` | `BoundaryTests` 8 条；`dotnet build` 0 warning/0 error |
 | 2 Core 语义内核 | 已验证 | `src/Gocordis.Core`：能力键、Realm/MetaKey、声明校验、Effect LIFO、Fiber、激活/停用、依赖门控、调和、所有权、事件注册、观察等价、确定性驱动（测试侧） | Core 16 + Conformance 5 测试 |
-| 3 Plugin System | 已执行（部分能力缺口） | `src/Gocordis.Plugins`：Tomlyn Manifest、发现、Registry、依赖排序、enabled 开关/替换、声明分层与补丁、ConfigWatcher | 清单解析、开关、替换、依赖顺序、组合/补丁/文件监听测试 |
+| 3 Plugin System | 已执行（字段级契约已收敛；checksum 内容校验为显式边界） | `src/Gocordis.Plugins`：Tomlyn Manifest、发现、Registry、依赖排序、enabled 开关/替换、声明分层与补丁、ConfigWatcher | 清单解析、开关、替换、依赖顺序、组合/补丁/文件监听测试 |
 | 4 Managed Runtime | 已执行（Windows 未在本机验证） | `PluginLoadContext`（ALC + `AssemblyDependencyResolver`）、`ManagedPluginLoader`、`GenerationTracker`；5 个示例程序集 | `WeakReference` 证明 ALC 实际回收；两个插件分别加载 SharedDep 1.0/2.0 |
-| 5 WASM / Process Runtime | 已执行（WASM 能力桥等为缺口） | `src/Gocordis.Runtime.Wasm`（Wasmtime 34.0.2）、`src/Gocordis.Runtime.Process`（行分隔 JSON-RPC）；示例进程插件 | WAT ABI create/destroy 调用；进程握手/RPC/shutdown 与 Core 生命周期 |
+| 5 WASM / Process Runtime | 已执行（能力桥已实现；非目标项另列） | `src/Gocordis.Runtime.Wasm`（Wasmtime 34.0.2）、`src/Gocordis.Runtime.Process`（行分隔 JSON-RPC）；示例进程插件 | WAT ABI create/destroy 调用；进程握手/RPC/shutdown 与 Core 生命周期 |
 | 6 UI / Console / API | 已执行（官方扩展套件未迁移） | `UiContributionRegistry`、`ApiGateway`、`ConsoleHost`、ASP.NET Core `WebUiServer`、监听安全门、UI 示例插件 | 贡献 owner 防陈旧、查询/命令、HTTP API、loopback 默认策略测试 |
 
 上表是阶段执行记录，不表示批次 B/C 已验收；批次 A 收敛后的状态见 `README.md`「当前进度」。
@@ -24,7 +24,7 @@
 ```
 bash docs/migration/verify-baseline.sh   → BASELINE VERIFIED
 dotnet build Gocordis.sln --nologo -m:1  → Build succeeded, 0 Warning(s), 0 Error(s)
-dotnet test Gocordis.sln --nologo --no-build -m:1 → 259/259 Passed，连续 12 次零失败、零挂起
+dotnet test Gocordis.sln --nologo --no-build -m:1 → 265/265 Passed，连续 16 次零失败、零挂起
 ```
 
 计数口径（批次 A → B/C，禁止用旧数冒充新状态）：
@@ -33,8 +33,8 @@ dotnet test Gocordis.sln --nologo --no-build -m:1 → 259/259 Passed，连续 12
 - 119 = 批次 A 冻结基线（Core 22 / Conformance 28 / Extensions 19 / Runtime 50）；
   新增回归用例后为 **123**，连续 10 次全绿的证据见
   [`adr-channel-orchestrator.md`](adr-channel-orchestrator.md)。
-- 259 = 批次 B/C 最终全量：Core 26 / Conformance 113 / Extensions 35 / Runtime 85，
-  主线程连续 12 次全绿；批次 A/B/C 全部完成。
+- 265 = 批次 B/C 最终全量：Core 26 / Conformance 113 / Extensions 41 / Runtime 85，
+  主线程连续 16 次全绿；批次 A/B/C 全部完成。
 - 批次 C 新增可执行用例：`PaperItemMatrixTests` 40 条理论行 + 2 条 Fact，
   `TheoremMatrixTests` 5×3 = 15 条理论行；原误放的
   `PaperConformanceTests.Thm70_ProviderEpisodeContainsConsumerEpisode` 归位到
@@ -94,7 +94,9 @@ dotnet test Gocordis.sln --nologo --no-build -m:1 → 259/259 Passed，连续 12
 ## 5. 收敛结论
 
 - 七个阶段均已执行并留下可运行产物；框架语义（论文优先）在 C# Core 中有可执行测试。
-- 三种 Runtime 共用 Core `Component`/`Key<T>` 契约与生命周期；插件管理没有第二套生命周期。统一 Manifest 仍是缺口（见 `migration-coverage.md` §6 的 5.7）。
+- 三种 Runtime 共用 Core `Component`/`Key<T>` 契约与生命周期；插件管理没有第二套生命周期。
+  统一 Manifest 的字段级契约已收敛，三后端共用 `PluginManifest.Config`；字段/错误语义与显式边界见
+  [`contract-closure.md`](contract-closure.md)。checksum 内容校验与 Koishi 插件生态不在本次范围。
 - Core 不引用任何 Runtime Adapter、Console 或 UI（由 `BoundaryTests` 固化）。
 - 原未完成项已逐项收敛；Windows CI 按 SHA 独立核对，历史失败与修复后成功均已留痕；Go 基线验证继续保留。
 - Go 版本仍由 `main` 分支 + `baseline.sha256` 冻结；后续只维护 `migration/dotnet`，

@@ -67,7 +67,7 @@ dotnet test Gocordis.sln --nologo
 批次 A 冻结计数：119 = Core 22 / Conformance 28 / Extensions 19 / Runtime 50
                         （119/119 连续 10 次全绿，见 adr-channel-orchestrator.md）
 批次 A 新增回归后：123（连续 10 次全绿）
-批次 B/C 最终：259 = Core 26 / Conformance 113 / Extensions 35 / Runtime 85（连续 12 次全绿）
+批次 B/C 最终：265 = Core 26 / Conformance 113 / Extensions 41 / Runtime 85（连续 16 次全绿）
 ```
 
 历史片段（不得与新计数混用）：阶段 2 首批 Core 16 / Conformance 5（C06 / Thm70 / C22 / C13 /
@@ -75,11 +75,11 @@ dotnet test Gocordis.sln --nologo
 Extensions 14（event/timer/scheduler/watch/fs/http/server/env/cli/broker/registry/observe/market/package-manager）。
 Thm70 现已归位到 `TheoremMatrixTests.Thm70_Matrix`，不再计入 `PaperConformanceTests`。
 
-## 4. 阶段 3：Plugin System（状态：已执行（部分缺口））
+## 4. 阶段 3：Plugin System（状态：已执行；字段级契约已收敛，边界已列）
 
 | # | 项 | 处置 | Go 行为参照 | C# 目标 | 验收证据 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 3.1 | Manifest | 继承 | `extensions/pluginmeta/manifest.go`、`adapters/*`、`extensions/configwatch/toml.go` | 继承字段；版本归一化、校验、严格未知字段、checksum、兼容性；native/WASM/proc 统一形状 | 解析/校验/适配三载体测试 | 已验证 |
+| 3.1 | Manifest | 继承 | `extensions/pluginmeta/manifest.go`、`adapters/*`、`extensions/configwatch/toml.go` | 字段级契约：严格未知字段、类型校验、版本归一化、统一错误语义；三后端共用 `PluginManifest.Config` | `ManifestContractTests`（6 项）+ `DiscoveryConfigTests`；checksum 内容校验未实现，见 `contract-closure.md` | 已验证（边界已列） |
 | 3.2 | 声明权威性决策 | 已验证 | `Manifest.Requires/Provides` 仅描述；真实边来自 `Inject/Provide` | 决定 Manifest 是描述性还是权威性；若权威则必须生成真实边 | 决策：Manifest 描述性、真实边来自 Inject/Provide；Registry 按 Provides 字符串排序并交由 Core 校验 typed key | 已验证 |
 | 3.3 | Discovery | .NET 替代 | `extensions/console/procplugin/discover.go`、`market/service.go` | 插件目录扫描、清单发现、错误组件降级 | `DiscoveryConfigTests`：坏 TOML 隔离并记录诊断、严格 enabled 解析 | 已验证 |
 | 3.4 | Registry | 继承 | `extensions/loader/loader_impl.go`、`extensions/registry/registry.go` | 稳定成员、替换原子性；watch/慢消费者 | `PluginTransactionTests` + `DiscoveryConfigTests`：Prepare/Commit/Rollback、并发串行、坏配置不推进 | 已验证 |
@@ -87,7 +87,7 @@ Thm70 现已归位到 `TheoremMatrixTests.Thm70_Matrix`，不再计入 `PaperCon
 | 3.6 | Plugin Lifecycle | 迁移语义 | `extensions/config/config.go`、`switch_test.go`、`release_protocol_test.go` | entry（跨 revision 身份）/ fiber（一次 enablement）；commit/abandon 协议；usage owner 集合 | enabled 翻动 = Load/Dispose；替换失败保留旧态 | 已验证 |
 | 3.7 | 与 Core 集成 | 迁移语义 | `cmd/platform/main.go:80-156` | 组合根只装配；插件管理不产生第二套生命周期 | 架构测试：唯一生命周期权威 | 已验证 |
 | 3.8 | Bundle / Patch / Compose | 继承 | `extensions/bundle`、`extensions/patch`、`extensions/configwatch/compose.go` | 声明分层合并、行级补丁、原子应用 | 顺序优先、原子失败、未知名拒绝 | 已验证 |
-| 3.9 | Configwatch 语义 | 迁移语义 | `extensions/configwatch/adapter.go`、`tx_guard_test.go` | 外部源变更 → 调和；80ms revision 合并；错误记录；tx guard 未实现 | 初始同步与一次变更合并已测；坏配置保留/Delete/Close 竞态未测 | 已验证 |
+| 3.9 | Configwatch 语义 | 迁移语义 | `extensions/configwatch/adapter.go`、`tx_guard_test.go` | 外部源变更 → 调和；80ms revision 合并；错误记录；坏配置保留、Delete、Close 竞态 | `DiscoveryConfigTests` 覆盖坏配置保留/Delete/Close；tx guard 由 Core 调和承担，无第二套 guard | 已验证（边界已列） |
 
 阶段 3 出口：能发现、解析依赖、注册、激活、停用插件；无第二套生命周期。
 
@@ -114,7 +114,7 @@ Thm70 现已归位到 `TheoremMatrixTests.Thm70_Matrix`，不再计入 `PaperCon
 | # | 项 | 处置 | Go 行为参照 | 验收证据 | 状态 |
 | --- | --- | --- | --- | --- | --- |
 | 5.1 | 复用成熟 WASM Host，不造 VM | .NET 替代 | `extensions/loader/wasm/backend.go`（wazero） | 选定 host 并记录理由；无自研解释器 | 已验证 |
-| 5.2 | ABI 与契约 | 继承 | `extensions/loader/wasm/abi.go`（`runtime_component_create/destroy`） | WAT 导出调用已测；装载期必导出检查未实现 | 已验证 |
+| 5.2 | ABI 与契约 | 继承 | `extensions/loader/wasm/abi.go`（`runtime_component_create/destroy`） | `WasmPluginInstance.ValidateRuntimeExports()` 在装载期校验 create/destroy | `WasmRuntimeTests`、`BackendLifecycleTests.WasmRejectsMissingRequiredExportsAtLoadTime` | 已验证 |
 | 5.3 | 逻辑类型来源 | 继承 | 自定义段 `module_type`，不取 `Artifact.Type` | `WasmCustomSections.ReadFromWat` 读取并断言 | 已验证 |
 | 5.4 | 世代资源协议 | 迁移语义 | `Commit/Abandon/Release`、holder 计数、stale 保护 | `GenerationTracker` + `WasmHotSwapper` 世代栅栏与 warm-load | 已验证 |
 | 5.5 | host imports / 能力桥 | .NET 替代 | Go v0.1 无 host API、无 WASI | `WasmHostBridge` 暴露 `gocordis.report` 能力导入，不提供通用沙箱逃逸 | 已验证 |
@@ -125,7 +125,7 @@ Thm70 现已归位到 `TheoremMatrixTests.Thm70_Matrix`，不再计入 `PaperCon
 
 | # | 项 | 处置 | Go 行为参照 | 验收证据 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| 5.8 | 握手协议 | 继承 | `GORIDIS-PROC-PLUGIN 1`，5s 超时 | 成功握手已测；错误握手/超时代码存在但未测 | 已实现 |
+| 5.8 | 握手协议 | 继承 | `GORIDIS-PROC-PLUGIN 1`，5s 超时 | 握手成功/超时归一化/子进程回收 | `ProcessRuntimeTests`、`BackendLifecycleTests.ProcessHandshakeTimeoutNormalizesAndReapsTheChild` | 已验证 |
 | 5.9 | 行分隔 JSON-RPC 2.0 | 继承 | `transport/transport.go`、单写锁、单在途调用 | 往返、`-32601` 插件→宿主拒绝、`-32700` 解析错误、并发调用互斥 | 已验证 |
 | 5.10 | 生命周期与错误处理统一 | 迁移语义 | spawn+handshake / 优雅 shutdown → 有界等待 → kill → reap | `BackendLifecycleTests`：三后端统一协议、握手超时回收、调用超时归一化、失败策略显式化 | 已验证 |
 | 5.11 | 一个 backend 一个 typed key | 继承 | `extensions/loader/proc/backend.go` | 能力声明与解析测试 | 已验证 |
@@ -168,8 +168,8 @@ Thm70 现已归位到 `TheoremMatrixTests.Thm70_Matrix`，不再计入 `PaperCon
 | 确定性驱动（Go deterministic.go） | `tests/Gocordis.Conformance.Tests/DeterministicDriver.cs` | 种子化重放；非生产调度器 | 已验证 |
 | 审查回归（第 1 轮） | `tests/Gocordis.Conformance.Tests/AuditRegressionTests.cs`、`tests/Gocordis.Runtime.Tests/AuditRegressionTests.cs` | 重入激活、relied guard、Snapshot 并发、ALC 契约身份、进程并发调用、批次原子性 | 已验证 |
 | Loader / HMR（Go loader、release_protocol、hmr） | `PluginSystemTests.cs`、`Phase6Tests.cs` | enabled 开关、替换、组合/补丁、文件监听、世代协议单元 | 已验证 |
-| WASM（Go wasm backend 与 E2E） | `WasmRuntimeTests.cs` | Wasmtime 宿主调用、ABI create/destroy、Core 生命周期 | 已实现（自定义段/热替换未测） |
-| Process（Go backend、transport） | `ProcessRuntimeTests.cs`、`AuditRegressionTests.cs` | 握手、RPC、shutdown、并发调用、Core 生命周期 | 已实现（崩溃中调用/降级未测） |
+| WASM（Go wasm backend 与 E2E） | `WasmRuntimeTests.cs`、`BackendLifecycleTests.cs` | Wasmtime 宿主调用、ABI create/destroy、自定义段、HMR 世代栅栏、Core 生命周期 | 已验证 |
+| Process（Go backend、transport） | `ProcessRuntimeTests.cs`、`BackendLifecycleTests.cs`、`AuditRegressionTests.cs` | 握手/超时回收、RPC、shutdown、崩溃中调用、降级策略、Core 生命周期 | 已验证 |
 | UI / Console（Go registry、webui） | `ContributionTests.cs`、`Phase6Tests.cs` | owner 防陈旧、查询/命令、HTTP API、监听安全门 | 已验证 |
 | Thm64 / Thm68 / Thm73 / Thm80 逐条 | `tests/Gocordis.Conformance.Tests/TheoremTests.cs`（旧单点基线）、`tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs`（新增 5×3 矩阵） | 保持性、恢复精确性、顺序性、进展性、汇合性；Go→C# 逐条映射见 `theorem-matrix.md`。主线程已验证 | 已实现 |
 | 事件五派发模式（Go event conformance） | `tests/Gocordis.Extensions.Tests/ExtensionTests.cs` | serial/bail/parallel/waterfall + 可逆注册 | 已验证 |

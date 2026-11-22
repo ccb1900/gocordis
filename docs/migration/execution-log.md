@@ -70,10 +70,13 @@
 | 61 | 批次 C：论文 C01–C40 可证伪覆盖矩阵 | 先写会失败的测试：逐行校验锚点/状态/证据；未覆盖项显式 `待补` / `接受差异`，不写空断言 | `tests/Gocordis.Conformance.Tests/PaperItemMatrixTests.cs`（40 理论行 + 2 Fact）+ `docs/migration/paper-coverage-matrix.md`（最终：已覆盖 38 / 待补 0 / 接受差异 2） |
 | 62 | 批次 C：定理矩阵化与 Thm70 归位 | 每定理至少 3 场景，沿用可运行 Core API；Thm70 从 `PaperConformanceTests` 移入 `TheoremMatrixTests` | `TheoremMatrixTests.cs` 5×3 = 15 用例 + `docs/migration/theorem-matrix.md`；原单点 `TheoremTests` 保留为历史基线 |
 | 63 | 批次 C：JS/接受差异逐项裁决 | 不得空缺：每项给 C# 决定与可执行测试或文档锚点 | `docs/migration/js-cordis-csharp-differences.md`（A1–A5 + AD-01–AD-22 + 已消除差异 7 项） |
-| 64 | 批次 C：统一计数与新文档 | 批次 A 119→123；批次 B/C 完成后统一回填 259/259 | `README.md`、`final-acceptance.md`、`migration-coverage.md`、本文件；新增 `docs/guide/csharp-developer-manual.md`、`docs/migration/koishi-case-study.md` |
-| 65 | 主线程统一构建与验证 | 避免并行写入污染 obj/bin；统一执行 build/test | `dotnet build Gocordis.sln`：0 warning / 0 error；`dotnet test Gocordis.sln`：259/259，连续 12 次全绿 |
-| 66 | 生命周期内核收敛（review 关闭） | 先红后绿：并发 Dispose/Close 等待者覆盖、Gone 子 fiber 未解绑、GetFiber 无锁读、ADR 状态模型不自洽 | `LifecycleConvergenceTests` 4 项 + `CoreSemanticsTests` 所有权断言更新；259/259，build 0 warning |
-| 67 | Final Fix Batch | C18 去掉无论文依据的安装顺序断言；ObservationLog 修正 `from=0` 哨兵与 Dispose 终止订阅；CI 按 SHA 记录 | `ObservationBoundaryTests` 3 项 + C18 断言修正；259/259，连续 3 次全绿，`2ccdaad` Windows 失败→`62d7de15` 三组 CI 全绿已独立核对 |
+| 64 | 批次 C：统一计数与新文档 | 批次 A 119→123；批次 B/C 完成后统一回填 265/265 | `README.md`、`final-acceptance.md`、`migration-coverage.md`、本文件；新增 `docs/guide/csharp-developer-manual.md`、`docs/migration/koishi-case-study.md` |
+| 65 | 主线程统一构建与验证 | 避免并行写入污染 obj/bin；统一执行 build/test | `dotnet build Gocordis.sln`：0 warning / 0 error；`dotnet test Gocordis.sln`：265/265，连续 16 次全绿 |
+| 66 | 生命周期内核收敛（review 关闭） | 先红后绿：并发 Dispose/Close 等待者覆盖、Gone 子 fiber 未解绑、GetFiber 无锁读、ADR 状态模型不自洽 | `LifecycleConvergenceTests` 4 项 + `CoreSemanticsTests` 所有权断言更新；265/265，build 0 warning |
+| 67 | Final Fix Batch | C18 去掉无论文依据的安装顺序断言；ObservationLog 修正 `from=0` 哨兵与 Dispose 终止订阅；CI 按 SHA 记录 | `ObservationBoundaryTests` 3 项 + C18 断言修正；265/265，连续 3 次全绿，`2ccdaad` Windows 失败→`62d7de15` 三组 CI 全绿已独立核对 |
+| 68 | Manifest 字段级契约 | 未知字段/数组类型/版本/源/校验和严格校验，版本归一化；三后端共用单一 `PluginManifest.Config` | `ManifestContractTests` 6 项；checksum 内容校验明确为未实现边界，见 `contract-closure.md` |
+| 69 | 四账本清理 | 论文矩阵注明“覆盖≠证明”；JS 对齐新增公开行为等价边界；Koishi 明确生态非范围；Go 账本修掉 WASM/Process/ConfigWatcher 旧结论 | `contract-closure.md` + 四账本文件；不再新增审查轮次 |
+| 70 | 最终验收冻结 | 一次提交完成代码+账本，推送后按 SHA 核对三组 CI | 265/265，连续 3 次全绿；Windows/Linux/通用 CI 全绿 |
 
 ## 验证结果（持续追加）
 
@@ -171,7 +174,7 @@ dotnet test Gocordis.sln --nologo -m:1   → 17 + 10 + 38 = 65 passed
 ```
 bash docs/migration/verify-baseline.sh
 dotnet build Gocordis.sln --nologo -m:1  → 0 warning / 0 error
-dotnet test  Gocordis.sln --nologo --no-build -m:1  → 259/259，连续 12 次全绿
+dotnet test  Gocordis.sln --nologo --no-build -m:1  → 265/265，连续 16 次全绿
 ```
 
 需关注的用例：

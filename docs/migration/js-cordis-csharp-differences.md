@@ -7,6 +7,22 @@
 证据列给出可执行测试名或文档锚点；无 C# 实现时明确写 `不适用（原因）`，不允许留空，
 也不把"文档写了"当成测试覆盖。
 
+## 公开行为等价边界（最终冻结）
+
+能力类已迁移不等于公开行为等价。以下维度按当前证据标记为“待严格验证”，不计入等价断言：
+
+| 维度 | 当前证据 | 边界 |
+| --- | --- | --- |
+| loader / include / hmr / group 模块模型 | `PluginRegistry`、`ManagedPluginLoader`、`WasmHotSwapper` 的行为测试 | C# 用论文 Revision 语义（退役→新 fiber），不追求 JS 模块原位身份 |
+| 公开选项 / 配置形状 | `ManifestContractTests` 固定 TOML 字段契约 | JS 公开 options 名称与默认值未逐项镜像，按论文与 .NET 习惯收敛 |
+| 异常传播 | `ManifestParseException` / `DuplicateProviderException` / `ProtectedPluginException` 有回归测试 | JS 异常类型、消息、传播层级未逐项对照 |
+| 资源关闭与取消 | Core effect 撤销、Observation 订阅终止、进程 reap 有测试 | JS `dispose()` 的时序与重入语义未逐项验证 |
+| fs / http / server 边界条件 | 路径防逃逸、HTTP 拦截器、WebUI 路由有测试 | JS 流式 body、SOCKS/DNS、CLI 组合旗标仍为接受差异 |
+| timer / scheduler / watch 选项 | C# 类型与测试齐备 | JS 全部公开选项默认值未逐项对照 |
+| market / package-manager | 本地声明层报告/应用/回滚 | 远端市场与云端平台按范围排除 |
+
+以上边界是显式未完成项，不是“缺失能力”列表；产品化阶段按公开 API 逐项收敛。
+
 ## A. JS-CORDIS-ALIGNMENT.md 逐项
 
 ### A1. §1 Core

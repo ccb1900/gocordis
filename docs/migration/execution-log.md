@@ -83,6 +83,7 @@
 | 74 | UI 批次 A：语义对照 | 论文/JS/Koishi/Go 四参照对照与未迁移边界 | `docs/migration/ui-contribution-lifecycle.md` |
 | 75 | UI 批次 A 验证 | 全量测试连续 3 次绿；win/linux/CI 按 SHA 核对 | 280/280；0 warning |
 | 76 | UI 批次 A：CI 修复 | 首次推送后 Linux/Windows 因未生成 `web/console/dist` 失败；三个 .NET job 增加 npm ci/build | 与 React Console 交付路径一致；等待新 SHA CI 全绿 |
+| 77 | 完整迁移批次 1：事实账本 | 从 Go/C#/JS/Koishi 一手源码盘点 52 个功能域，建立 feature-matrix.md；状态按源码证据填写 | Go main `ed2ef724`；C# `488e959d`；分支 `migration/dotnet-complete` |
 
 ## 验证结果（持续追加）
 

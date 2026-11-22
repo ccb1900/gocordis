@@ -19,6 +19,7 @@
 | [`koishi-case-study.md`](koishi-case-study.md) | 批次 C | 论文 §5.3 双应用组合在 C# 的复现与断言 | 与 `KoishiCaseTests` 对齐 |
 | [`contract-closure.md`](contract-closure.md) | 最终冻结 | Manifest 字段级契约、三后端统一路径、四账本口径与显式边界 | 字段级验收，不把能力清单当实现证据 |
 | [`ui-contribution-lifecycle.md`](ui-contribution-lifecycle.md) | UI 批次 A | Page + Client Module 生命周期闭环、四参照对照与未迁移边界 | 与 `UiCompositionTests` / `WebUiCompositionTests` 对齐 |
+| [`feature-matrix.md`](feature-matrix.md) | 完整迁移 | Go 52 个功能域逐项源码证据、C# 状态、Gap/Target/Acceptance | 批次 1 账本；实施与验收唯一入口 |
 | [`../guide/csharp-developer-manual.md`](../guide/csharp-developer-manual.md) | 批次 C | C# 开发者手册：十二铁律 → C# API 与反模式 | 与 `AGENTS.md` 十二铁律逐条锚定 |
 | [`migration-coverage.md`](migration-coverage.md) | 全周期 | 每个 Go 模块迁移到哪个 C# 项目；用什么机制替代；什么不迁移 | 清单逐项推进；状态只能由验收证据推进 |
 | [`execution-log.md`](execution-log.md) | 全周期 | 每一步做了什么、为什么、证据是什么 | 持续追加，不回改历史条目 |

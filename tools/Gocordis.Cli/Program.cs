@@ -30,6 +30,7 @@ public static class Program
             {
                 "create" => await CreateAsync(args[1..]),
                 "plugin" => await PluginAsync(args[1..]),
+                "registry" => await RegistryAsync(args[1..]),
                 "app" => await AppAsync(args[1..]),
                 _ => Fail($"unknown command '{args[0]}'"),
             };
@@ -127,6 +128,7 @@ public static class Program
             "create" => await PluginCreateAsync(rest),
             "doctor" => await PluginDoctorAsync(rest),
             "sandbox" => await PluginSandboxAsync(rest),
+            "fetch" => await PluginFetchAsync(rest),
             "install" or "upgrade" or "uninstall" or "list" or "resolve" => await PluginStoreAsync(command, rest),
             _ => Fail($"unknown plugin command '{command}'"),
         };
@@ -221,6 +223,102 @@ public static class Program
             default:
                 return Fail($"unknown plugin command '{command}'");
         }
+    }
+
+    /// <summary>
+    /// Downloads a package from a read-only HTTP registry. The returned path is
+    /// an ordinary package file that existing install/doctor commands consume;
+    /// no package code runs here and no store state is touched.
+    /// </summary>
+    private static async Task<int> PluginFetchAsync(string[] args)
+    {
+        var id = Positional(args, 0);
+        var range = Positional(args, 1);
+        var sourceUrl = Option(args, "--source");
+        if (id is null || range is null || sourceUrl is null)
+        {
+            return Fail("usage: plugin fetch <id> <versionRange> --source <url> [--output <path>] [--host-version]");
+        }
+
+        var downloaded = await new HttpPluginPackageSource(sourceUrl).ResolveAsync(id, range);
+        var finalPath = downloaded;
+        try
+        {
+            string? version = null;
+            if (Option(args, "--host-version") is { } hostVersion)
+            {
+                // Host compatibility is opt-in: with no --host-version the file
+                // stays unverified against a host until doctor/install runs.
+                version = (await PluginPackageReader.ReadAsync(downloaded, hostVersion)).Manifest.Version;
+            }
+
+            var output = Option(args, "--output");
+            if (output is not null)
+            {
+                finalPath = Path.GetFullPath(output);
+                var parent = Path.GetDirectoryName(finalPath);
+                if (!string.IsNullOrEmpty(parent))
+                {
+                    Directory.CreateDirectory(parent);
+                }
+
+                File.Move(downloaded, finalPath, overwrite: true);
+            }
+
+            Write(new { path = finalPath, id, versionRange = range, version, source = sourceUrl });
+            return 0;
+        }
+        catch
+        {
+            if (!string.Equals(finalPath, downloaded, StringComparison.Ordinal))
+            {
+                TryDeleteFileQuietly(finalPath);
+            }
+
+            TryDeleteFileQuietly(downloaded);
+            throw;
+        }
+    }
+
+    /// <summary>Serves a directory of packages as a read-only HTTP registry.</summary>
+    private static async Task<int> RegistryAsync(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            return Fail("registry requires a subcommand");
+        }
+
+        var command = args[0];
+        var rest = args[1..];
+        if (!string.Equals(command, "serve", StringComparison.Ordinal))
+        {
+            return Fail($"unknown registry command '{command}'");
+        }
+
+        var directory = Positional(rest, 0);
+        if (directory is null)
+        {
+            return Fail("usage: registry serve <directory> [--address] [--allow-remote]");
+        }
+
+        var address = Option(rest, "--address") ?? "http://127.0.0.1:0";
+        var allowRemote = rest.Contains("--allow-remote", StringComparer.Ordinal) ||
+                          Option(rest, "--allow-remote") is "true" or "1";
+        await using var server = new PluginSourceServer(directory, address, allowRemote);
+        await server.StartAsync();
+        Write(new { address = server.Address, indexUrl = server.IndexUrl, note = "Press Ctrl+C to stop." });
+        await WaitForShutdownAsync();
+        return 0;
+    }
+
+    private static void TryDeleteFileQuietly(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     /// <summary>
@@ -858,10 +956,11 @@ public static class Program
         var options = new HashSet<string>(StringComparer.Ordinal)
         {
             "--store", "--host-version", "--address", "--id", "--name", "--version", "--type", "--host-range", "--source",
+            "--output",
         };
         var flags = new HashSet<string>(StringComparer.Ordinal)
         {
-            "--validate-only",
+            "--validate-only", "--allow-remote",
         };
         var values = new List<string>();
         for (var i = 0; i < args.Length; i++)
@@ -903,6 +1002,8 @@ public static class Program
         gocordis plugin pack|package <sourceDir> <output> [--id] [--version] [--type] [--host-range]
         gocordis plugin doctor <packagePath> [--host-version] [--store]
         gocordis plugin sandbox <packagePath> [--host-version]
+        gocordis plugin fetch <id> <versionRange> --source <url> [--output <path>] [--host-version]
+        gocordis registry serve <directory> [--address] [--allow-remote]
         gocordis plugin install|upgrade <package> [--store] [--host-version]
         gocordis plugin uninstall <id> [--version] [--store] [--host-version]
         gocordis plugin list [--store] [--host-version]

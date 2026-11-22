@@ -46,7 +46,7 @@ Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52)
 
 | 缺口 | 当前决定 | 影响 |
 | --- | --- | --- |
-| 远程 package registry | `IPluginPackageSource` 接口已预留，未实现远程源 | 仅本地目录/本地包安装 |
+| 远程 package registry | 已实现 `HttpPluginPackageSource` + 本地只读 `PluginSourceServer` + `registry serve` / `plugin fetch` | 可自托管只读源；不是 Koishi 市场服务 |
 | 包签名与来源真实性 | checksum 只做完整性，非签名 | 不提供供应链信任保证 |
 | WinForms/Avalonia 原生控件 Renderer | 明确延期，不为此造第二套 Plugin Registry | 两种桌面 Host 目前只消费 RenderPlan |
 | Koishi 完整市场/Console/聊天插件生态 | 有意不迁移 | KoishiCase 只验证组合语义 |
@@ -78,11 +78,11 @@ Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52)
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 385/385
+dotnet test  Gocordis.sln → 388/388
 ```
 
 结论：
 
 - 主体架构冻结：不再重审 Core、PluginRegistry、三后端、UI Profile。
 - 行级 Missing 为 0，可信的剩余清单就是第 3 节。
-- 只有当新增需求明确要求原生桌面 Host、远程 registry、包签名或 Koishi 产品生态时，才重新打开对应范围。
+- 只有当新增需求明确要求原生桌面 Host、包签名或 Koishi 产品生态时，才重新打开对应范围；远程只读源已实现。

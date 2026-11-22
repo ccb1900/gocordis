@@ -9,7 +9,7 @@ Branch: `migration/dotnet-complete`
 - `tests/Gocordis.Packaging.Tests`：7 项端到端测试，覆盖 12 步产品闭环。
 
 插件包是普通 ZIP：`manifest.json` + `payload/**`。NuGet.Versioning 只用于版本与范围解析，
-不是唯一包格式；远程 registry 只需实现 `IPluginPackageSource`。
+不是唯一包格式；远程只读源通过 `IPluginPackageSource` 接入，已有 HTTP 实现。
 
 ## 2. Install / Declare / Enable 的边界
 
@@ -53,6 +53,6 @@ Runtime 仍通过 `PluginRegistry` 和 Core Effect 管理 Fiber，包系统不�
 ## 5. 尚未完成
 
 - `plugin create/doctor/pack|package/sandbox` 全部实现；sandbox 是 declaration-only 加载检查，不是安全沙箱。
-- 远程 package registry（接口已预留 `IPluginPackageSource`）
+- 远程只读插件源已实现：`HttpPluginPackageSource` + `registry serve` + `plugin fetch`；不包含 Koishi 市场服务端
 - checksum 内容校验与包签名的深度整合（当前校验包内文件 checksum）
 - WinForms / Avalonia Host（批次 5）

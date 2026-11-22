@@ -108,4 +108,4 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 | Missing | 0 |
 | **Total acceptance rows** | **52** |
 
-Row-level Missing is 0; remaining sub-capability gaps (remote registry, native UI controls, Koishi ecosystem) are listed in `final-calibration.md`. Divergent rows retain explicit semantic reasons.
+Row-level Missing is 0; remaining sub-capability gaps (native UI controls, Koishi ecosystem, package signing) are listed in `final-calibration.md`. Divergent rows retain explicit semantic reasons.

@@ -75,5 +75,5 @@ Install / Upgrade / Uninstall 统一采用：
 ## 5. 验证
 
 - `dotnet test tests/Gocordis.Packaging.Tests`：24/24
-- `dotnet test Gocordis.sln`：385/385
+- `dotnet test Gocordis.sln`：388/388
 - Build：0 warning / 0 error

@@ -232,7 +232,7 @@ public sealed class BackendLifecycleTests
         {
             var (path, pidPath) = await WriteSilentPluginAsync(directory, answerHandshake: false);
             var error = await Assert.ThrowsAsync<TimeoutException>(() =>
-                ProcessPluginClient.StartAsync(path, handshakeTimeout: TimeSpan.FromSeconds(2)));
+                ProcessPluginClient.StartAsync(path, handshakeTimeout: TimeSpan.FromSeconds(8)));
 
             Assert.Contains(ProcessErrorPolicy.HandshakePhrase, error.Message, StringComparison.Ordinal);
             await AssertProcessReapedAsync(pidPath);

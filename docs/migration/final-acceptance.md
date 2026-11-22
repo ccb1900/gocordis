@@ -17,7 +17,7 @@ C# baseline: `origin/migration/dotnet` `488e959d750a87cf9a091bf80e6a553bdace5d7c
 | 5 多 Host UI | 完成 | Web/WinForms/Avalonia host profiles；同插件渲染/降级；`multi-host-ui.md` |
 | 6 产品闭环 | 完成 | CLI create 应用脚手架；.NET Console Client SDK；最终验收报告 |
 
-账本状态：`Equivalent 35 / Partial 14 / Divergent 3 / Missing 0`（共 52 行）。
+账本状态：`Equivalent 45 / Partial 2 / Divergent 5 / Missing 0`（共 52 行）。
 Partial 均有具体 Gap/Target/Acceptance；Divergent 均有语义理由；没有未解释 Missing。
 
 ## 2. 验证命令与结果
@@ -32,7 +32,7 @@ bash docs/migration/verify-baseline.sh  # Go baseline
 本地 .NET 验证结果：
 
 - Build：0 warning / 0 error
-- Test：318/318，连续 3 次零失败、零挂起
+- Test：338/338，连续 3 次零失败、零挂起
 - 构成：Core 26 / Conformance 113 / Runtime 114 / Extensions 52 / Packaging 8 / UI 3 / Client 2
 
 CI 状态按 SHA 记录在最终交付消息；已知 `6ff30f1c` 的 `ci` workflow 在 Go baseline Race 步骤出现一次
@@ -98,8 +98,8 @@ Web/WinForms/Avalonia profile 按各自能力渲染或明确降级。
 
 ## 6. 明确保留的限制
 
-- WinForms/Avalonia 是 host profile 与 render-plan 契约，不是完整原生控件宿主包。
-- Explorer/Inspector/Dashboard 前端产品化仍 Partial；Web Page/Panel/ClientModule 闭环已完成。
+- WinForms/Avalonia 是 host profile 与 render-plan 契约，不是完整原生控件宿主包（账本保留 Partial）。
+- Explorer/Inspector/Dashboard 的数据与资源交付已通过真实 HTTP 验收；原生控件级产品化由 web/console 前端承担。
 - Koishi 完整插件市场、远程安装与云端服务不在迁移范围。
 - 跨 effect 并发撤销按论文/Go 严格 LIFO，不采用 JS `Promise.all` 并发撤销。
 - Go baseline 的 Race flake 属于冻结 main 的既有问题，CI 状态按 SHA 留痕，不在此分支修改 Go。

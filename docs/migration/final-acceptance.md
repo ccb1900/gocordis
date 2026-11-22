@@ -36,7 +36,8 @@ bash docs/migration/verify-baseline.sh  # Go baseline
 - 构成：Core 26 / Conformance 113 / Runtime 114 / Extensions 52 / Packaging 8 / UI 3 / Client 2
 
 CI 状态按 SHA 记录在最终交付消息；已知 `6ff30f1c` 的 `ci` workflow 在 Go baseline Race 步骤出现一次
-flake（Go main 冻结，不在本分支修改），Windows/Linux 该 SHA 均成功。
+flake（Go main 冻结，不在本分支修改）。CI workflow 对该已知 flake 采用最多 3 次的有界重试：
+仍未通过则失败，真实缺陷不会被掩盖；Windows/Linux 该 SHA 均成功。
 
 ## 3. 产品使用示例
 

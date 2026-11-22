@@ -13,7 +13,7 @@
 | 3 Plugin System | 已执行（字段级契约已收敛；checksum 内容校验为显式边界） | `src/Gocordis.Plugins`：Tomlyn Manifest、发现、Registry、依赖排序、enabled 开关/替换、声明分层与补丁、ConfigWatcher | 清单解析、开关、替换、依赖顺序、组合/补丁/文件监听测试 |
 | 4 Managed Runtime | 已执行（Windows 未在本机验证） | `PluginLoadContext`（ALC + `AssemblyDependencyResolver`）、`ManagedPluginLoader`、`GenerationTracker`；5 个示例程序集 | `WeakReference` 证明 ALC 实际回收；两个插件分别加载 SharedDep 1.0/2.0 |
 | 5 WASM / Process Runtime | 已执行（能力桥已实现；非目标项另列） | `src/Gocordis.Runtime.Wasm`（Wasmtime 34.0.2）、`src/Gocordis.Runtime.Process`（行分隔 JSON-RPC）；示例进程插件 | WAT ABI create/destroy 调用；进程握手/RPC/shutdown 与 Core 生命周期 |
-| 6 UI / Console / API | 已执行（官方扩展套件未迁移） | `UiContributionRegistry`、`ApiGateway`、`ConsoleHost`、ASP.NET Core `WebUiServer`、监听安全门、UI 示例插件 | 贡献 owner 防陈旧、查询/命令、HTTP API、loopback 默认策略测试 |
+| 6 UI / Console / API | 已执行（Page + Client Module 闭环；Explorer/Dashboard 等产品化未迁移） | `UiContributionRegistry`、`ApiGateway`、`ConsoleHost`、ASP.NET Core `WebUiServer`、监听安全门、UI 示例插件 | 贡献 owner 防陈旧、查询/命令、HTTP API、loopback 默认策略测试 |
 
 上表是阶段执行记录，不表示批次 B/C 已验收；批次 A 收敛后的状态见 `README.md`「当前进度」。
 批次 C 的覆盖账本见 [`paper-coverage-matrix.md`](paper-coverage-matrix.md) 与
@@ -24,7 +24,7 @@
 ```
 bash docs/migration/verify-baseline.sh   → BASELINE VERIFIED
 dotnet build Gocordis.sln --nologo -m:1  → Build succeeded, 0 Warning(s), 0 Error(s)
-dotnet test Gocordis.sln --nologo --no-build -m:1 → 265/265 Passed，连续 16 次零失败、零挂起
+dotnet test Gocordis.sln --nologo --no-build -m:1 → 280/280 Passed，连续 20 次零失败、零挂起
 ```
 
 计数口径（批次 A → B/C，禁止用旧数冒充新状态）：
@@ -33,8 +33,8 @@ dotnet test Gocordis.sln --nologo --no-build -m:1 → 265/265 Passed，连续 16
 - 119 = 批次 A 冻结基线（Core 22 / Conformance 28 / Extensions 19 / Runtime 50）；
   新增回归用例后为 **123**，连续 10 次全绿的证据见
   [`adr-channel-orchestrator.md`](adr-channel-orchestrator.md)。
-- 265 = 批次 B/C 最终全量：Core 26 / Conformance 113 / Extensions 41 / Runtime 85，
-  主线程连续 16 次全绿；批次 A/B/C 全部完成。
+- 280 = 批次 B/C 最终全量：Core 26 / Conformance 113 / Extensions 35 / Runtime 106，
+  主线程连续 20 次全绿；批次 A/B/C 全部完成。
 - 批次 C 新增可执行用例：`PaperItemMatrixTests` 40 条理论行 + 2 条 Fact，
   `TheoremMatrixTests` 5×3 = 15 条理论行；原误放的
   `PaperConformanceTests.Thm70_ProviderEpisodeContainsConsumerEpisode` 归位到

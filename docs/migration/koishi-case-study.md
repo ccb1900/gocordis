@@ -61,7 +61,7 @@ manifest（db / adapter / feature）。启用开关与 adapter 配置改的是**
 - `Koishi_WebUiServesSecondApplicationPagesAndSnapshot`
 
 最终通过数由主线程统一执行 `dotnet build Gocordis.sln --nologo -m:1` 与
-`dotnet test Gocordis.sln --nologo --no-build -m:1` 确定：265/265，连续 16 次全绿；
+`dotnet test Gocordis.sln --nologo --no-build -m:1` 确定：280/280，连续 20 次全绿；
 结果回填 `execution-log.md`「批次 B/C 最终验证」。
 
 ## 5. 明确不宣称的内容

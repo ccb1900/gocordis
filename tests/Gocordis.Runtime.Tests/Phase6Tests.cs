@@ -110,7 +110,7 @@ public sealed class Phase6Tests
         using var client = new HttpClient { BaseAddress = new Uri(server.Address!) };
 
         var html = await client.GetStringAsync("/");
-        Assert.Contains("Gocordis Console", html);
+        Assert.Contains("<div id=\"root\">", html);
         Assert.Contains("fetch(", await client.GetStringAsync("/app.js"));
         Assert.Contains("body", await client.GetStringAsync("/app.css"));
 

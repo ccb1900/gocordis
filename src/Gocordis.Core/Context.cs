@@ -15,6 +15,14 @@ public sealed class Context
 
     public CancellationToken CancellationToken => _activation.Cancellation.Token;
 
+    /// <summary>Read-only identity of the fiber owning this activation.</summary>
+    public Guid FiberId => _fiber.Id;
+
+    /// <summary>Read-only identity of this one activation episode.</summary>
+    public long ActivationId => _activation.Id;
+
+    public string ComponentName => _fiber.Component.Name;
+
     public Realm Realm => _fiber.Realm;
 
     public bool IsDiverted =>

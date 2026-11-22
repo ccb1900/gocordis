@@ -67,7 +67,7 @@ dotnet test Gocordis.sln --nologo
 批次 A 冻结计数：119 = Core 22 / Conformance 28 / Extensions 19 / Runtime 50
                         （119/119 连续 10 次全绿，见 adr-channel-orchestrator.md）
 批次 A 新增回归后：123（连续 10 次全绿）
-批次 B/C 最终：265 = Core 26 / Conformance 113 / Extensions 41 / Runtime 85（连续 16 次全绿）
+批次 B/C 最终：280 = Core 26 / Conformance 113 / Extensions 35 / Runtime 106（连续 20 次全绿）
 ```
 
 历史片段（不得与新计数混用）：阶段 2 首批 Core 16 / Conformance 5（C06 / Thm70 / C22 / C13 /
@@ -147,7 +147,7 @@ Thm70 现已归位到 `TheoremMatrixTests.Thm70_Matrix`，不再计入 `PaperCon
 | 6.6 | Explorer / Insight / Dashboard / Inspector | 继承 | `extensions/console/{explorer,insight,runtime}` | ConsoleHost 三个查询 + WebUI 页面/快照/生命周期 HTTP E2E；完整 Explorer/Inspector 前端仍为接受差异 | 已实现 |
 | 6.7 | 运行时状态查询与诊断 | 继承 | `extensions/console/runtime`、`devtools/diagnose.go` | 只读快照查询与 HTTP/SSE observation；诊断确定性与失败关闭为接受差异 | 已实现 |
 | 6.8 | Console 插件卸载/安装/配置 | 迁移语义 | `extensions/console/lifecycle.go` | 受保护类型不被误停；失败回滚 | 已实现 |
-| 6.9 | 前端资产（`web/console`、`client/`） | .NET 替代 | TS/JS 前端与浏览器侧 client-module 调和循环 | 内嵌 `wwwroot` HTML/JS/CSS，经贡献 API 拉取页面与快照 | 已验证 |
+| 6.9 | 前端资产（`web/console`、`client/`） | .NET 替代 | TS/JS 前端与浏览器侧 client-module 调和循环 | C# WebUiServer 交付 React `web/console/dist`，提供 `/api/ui/pages|panels|client-modules` 与 `/client-modules/`；bootstrap 保留为 fallback | 已验证（Page + Client Module 闭环） |
 | 6.10 | 示例插件与开发文档 | 已验证 | `cmd/{example,httpd,collector,backfill,wasmhmr,procplugindemo}` | `samples/` 五类示例可运行并有 README | 已验证 |
 | 6.11 | 官方扩展能力覆盖（event/timer/scheduler/watch/fs/http/server/env/cli/broker/registry/observe） | 继承 | `extensions/*`（见 `migration-baseline.md` §3） | `src/Gocordis.Extensions` 14 类能力 + 11 项测试；对齐补充见 JS-CORDIS-ALIGNMENT.md | 已验证 |
 

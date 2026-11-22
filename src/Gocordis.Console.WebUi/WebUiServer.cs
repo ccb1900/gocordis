@@ -1,11 +1,13 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Gocordis.Plugins;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 
 namespace Gocordis.Console.WebUi;
 
@@ -19,19 +21,33 @@ public sealed class WebUiServer : IAsyncDisposable
     private static readonly TimeSpan StreamInterval = TimeSpan.FromMilliseconds(500);
 
     private readonly WebApplication _app;
+    private readonly ConsoleHost _host;
+    private readonly Func<string, string?> _clientModuleRoot;
+    private readonly string? _reactDist;
 
     public WebUiServer(
         ConsoleHost host,
         string address = "http://127.0.0.1:0",
         bool allowRemote = false,
-        Plugins.PluginRegistry? registry = null)
+        Plugins.PluginRegistry? registry = null,
+        Func<string, string?>? clientModuleRootResolver = null,
+        string? webDistPath = null)
     {
+        _host = host;
+        _clientModuleRoot = clientModuleRootResolver ?? DefaultClientModuleRoot;
+        _reactDist = FindReactDist(webDistPath);
+
         ListenGuard.Validate(address, allowRemote);
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls(address);
         _app = builder.Build();
 
-        _app.MapGet("/", () => Results.Content(WebResources.Read("index.html"), "text/html"));
+        // The built React console is the default UI when its publish output is
+        // present. The embedded bootstrap remains the zero-build fallback.
+        _app.MapGet("/", ServeIndex);
+        _app.MapGet("/assets/{**path}", (string path, HttpContext context) => ServeReactAsset(path, context));
+
+        // Legacy bootstrap endpoints stay available (embedded, always present).
         _app.MapGet("/app.js", () => Results.Content(WebResources.Read("app.js"), "text/javascript"));
         _app.MapGet("/app.css", () => Results.Content(WebResources.Read("app.css"), "text/css"));
 
@@ -68,12 +84,96 @@ public sealed class WebUiServer : IAsyncDisposable
         _app.MapGet("/api/ui/pages", () =>
         {
             var pages = new JsonArray();
-            foreach (var entry in host.Ui.Snapshot().Where(entry => entry.Kind == "page"))
+            foreach (var page in host.Ui.Pages())
             {
-                pages.Add(new JsonObject { ["name"] = entry.Name });
+                var item = new JsonObject
+                {
+                    ["id"] = page.Id,
+                    ["title"] = page.Title,
+                    ["route"] = page.Route,
+                    ["renderer"] = page.Renderer,
+                };
+                if (page.Icon is not null)
+                {
+                    item["icon"] = page.Icon;
+                }
+                if (page.Description is not null)
+                {
+                    item["description"] = page.Description;
+                }
+                if (page.Views is not null)
+                {
+                    item["views"] = page.Views.DeepClone();
+                }
+                if (page.Actions.Count > 0)
+                {
+                    var actions = new JsonArray();
+                    foreach (var action in page.Actions)
+                    {
+                        var entry = new JsonObject
+                        {
+                            ["label"] = action.Label,
+                            ["command"] = action.Command,
+                        };
+                        if (action.DatePicker)
+                        {
+                            entry["datePicker"] = true;
+                        }
+                        actions.Add(entry);
+                    }
+                    item["actions"] = actions;
+                }
+                pages.Add(item);
             }
 
-            return ApiResults.Data(pages);
+            return ApiResults.Data(new JsonObject { ["pages"] = pages });
+        });
+
+        _app.MapGet("/api/ui/panels", () =>
+        {
+            var panels = new JsonArray();
+            foreach (var panel in host.Ui.Panels())
+            {
+                var item = new JsonObject
+                {
+                    ["id"] = panel.Id,
+                    ["title"] = panel.Title,
+                    ["position"] = panel.Position,
+                    ["renderer"] = panel.Renderer,
+                };
+                if (panel.Pages.Count > 0)
+                {
+                    item["pages"] = new JsonArray(
+                        panel.Pages.Select(page => (JsonNode?)JsonValue.Create(page)).ToArray());
+                }
+                if (panel.Views is not null)
+                {
+                    item["views"] = panel.Views.DeepClone();
+                }
+                panels.Add(item);
+            }
+
+            return ApiResults.Data(new JsonObject { ["panels"] = panels });
+        });
+
+        _app.MapGet("/api/ui/client-modules", () =>
+        {
+            var revision = host.Ui.Revision;
+            var modules = new JsonArray();
+            foreach (var module in host.Ui.ClientModules())
+            {
+                modules.Add(new JsonObject
+                {
+                    ["name"] = module.Name,
+                    ["url"] = ClientModuleUrl(module, revision),
+                });
+            }
+
+            return ApiResults.Data(new JsonObject
+            {
+                ["modules"] = modules,
+                ["revision"] = revision,
+            });
         });
 
         _app.MapGet("/api/query/{**name}", (string name) =>
@@ -212,7 +312,16 @@ public sealed class WebUiServer : IAsyncDisposable
             return ApiResults.Data(null, StatusCodes.Status202Accepted);
         });
 
-        // SSE subscription: one observation per tick, and exit when the peer disconnects.
+        // Plugin client modules: only registered names are served, and every
+        // path segment is checked before it touches the filesystem.
+        _app.MapGet("/client-modules/{name}", (string name, HttpContext context) =>
+            ServeClientModule(name, null, context));
+        _app.MapGet("/client-modules/{name}/{**path}", (string name, string path, HttpContext context) =>
+            ServeClientModule(name, path, context));
+
+        // SSE subscription: one observation per tick, plus a ui-manifest frame
+        // whenever the composition registry's revision moves. Existing
+        // observation frames keep their exact wire shape.
         _app.MapGet("/api/stream", async context =>
         {
             var token = context.RequestAborted;
@@ -223,11 +332,22 @@ public sealed class WebUiServer : IAsyncDisposable
             await context.Response.WriteAsync(": connected\n", token);
             await context.Response.Body.FlushAsync(token);
 
+            var lastRevision = host.Ui.Revision;
             using var timer = new PeriodicTimer(StreamInterval);
             try
             {
                 while (!token.IsCancellationRequested)
                 {
+                    var revision = host.Ui.Revision;
+                    if (revision != lastRevision)
+                    {
+                        var manifest = new JsonObject { ["revision"] = revision };
+                        await context.Response.WriteAsync(
+                            $"event: ui-manifest\ndata: {manifest.ToJsonString()}\n\n", token);
+                        await context.Response.Body.FlushAsync(token);
+                        lastRevision = revision;
+                    }
+
                     var observation = host.RuntimeSnapshot();
                     observation["type"] = "runtime.snapshot";
                     await context.Response.WriteAsync(
@@ -244,6 +364,7 @@ public sealed class WebUiServer : IAsyncDisposable
 
         _app.MapFallback("/api/{**path}", () =>
             ApiResults.Error(StatusCodes.Status404NotFound, "not_found", "unknown api route"));
+        _app.MapFallback(ServeIndex);
     }
 
     public string? Address => _app.Urls.FirstOrDefault();
@@ -255,6 +376,144 @@ public sealed class WebUiServer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _app.DisposeAsync();
+    }
+
+    private IResult ServeIndex()
+    {
+        if (_reactDist is not null)
+        {
+            var index = Path.Combine(_reactDist, "index.html");
+            if (File.Exists(index))
+            {
+                return Results.File(index, "text/html; charset=utf-8");
+            }
+        }
+
+        return Results.Content(WebResources.Read("index.html"), "text/html");
+    }
+
+    private static string RawTarget(HttpContext context) =>
+        context.Features.Get<IHttpRequestFeature>()?.RawTarget ??
+        context.Request.Path + context.Request.QueryString;
+
+    private IResult ServeReactAsset(string path, HttpContext context)
+    {
+        if (_reactDist is null || WebAssetPaths.ContainsEncodedTraversal(RawTarget(context)))
+        {
+            return Results.NotFound();
+        }
+
+        var segments = WebAssetPaths.SplitSegments(path);
+        if (!WebAssetPaths.TryResolve(Path.Combine(_reactDist, "assets"), segments, out var file))
+        {
+            return Results.NotFound();
+        }
+
+        return Results.File(file, WebAssetPaths.ContentTypeOf(file), enableRangeProcessing: true);
+    }
+
+    private IResult ServeClientModule(string name, string? path, HttpContext context)
+    {
+        if (IsUnsafeName(name) || WebAssetPaths.ContainsEncodedTraversal(RawTarget(context)))
+        {
+            return Results.NotFound();
+        }
+
+        var module = _host.Ui.ClientModules().FirstOrDefault(item => item.Name == name);
+        if (module is null)
+        {
+            return Results.NotFound();
+        }
+
+        var segments = WebAssetPaths.SplitSegments(path);
+        if (segments.Any(segment => segment is "." or ".."))
+        {
+            return Results.NotFound();
+        }
+        if (segments.Length == 0)
+        {
+            segments = WebAssetPaths.SplitSegments(module.Entry);
+        }
+
+        var root = _clientModuleRoot(name);
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            return Results.NotFound();
+        }
+
+        var mount = Path.GetFullPath(root);
+        var publicRoot = Path.Combine(mount, "public");
+        if (Directory.Exists(publicRoot))
+        {
+            mount = publicRoot;
+        }
+
+        if (!WebAssetPaths.TryResolve(mount, segments, out var file))
+        {
+            return Results.NotFound();
+        }
+
+        var isEntry = segments.SequenceEqual(WebAssetPaths.SplitSegments(module.Entry));
+        return Results.File(
+            file,
+            WebAssetPaths.ContentTypeOf(file, forceJavaScript: isEntry),
+            enableRangeProcessing: true);
+    }
+
+    private static string ClientModuleUrl(UiClientModule module, long revision)
+    {
+        var segments = WebAssetPaths.SplitSegments(module.Entry)
+            .Where(segment => segment is not ("." or "..") && !segment.StartsWith('.'))
+            .ToArray();
+        if (segments.Length == 0)
+        {
+            segments = ["ui.js"];
+        }
+
+        var entry = string.Join('/', segments.Select(Uri.EscapeDataString));
+        // A composition revision is part of the URL so a re-registered module
+        // always gets a fresh ESM identity even when its file bytes are unchanged.
+        var payload = $"{revision}\u001f{module.Name}\u001f{module.Revision}\u001f{entry}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
+        var version = Convert.ToHexString(hash.AsSpan(0, 4)).ToLowerInvariant();
+        return $"/client-modules/{Uri.EscapeDataString(module.Name)}/{entry}?v={version}";
+    }
+
+    private static bool IsUnsafeName(string value) =>
+        string.IsNullOrWhiteSpace(value) ||
+        value is "." or ".." ||
+        value.StartsWith('.') ||
+        value.Contains('/') || value.Contains('\\') || value.Contains(':');
+
+    private static string DefaultClientModuleRoot(string name) =>
+        Path.Combine(AppContext.BaseDirectory, "client-modules", name);
+
+    private static string? FindReactDist(string? explicitPath)
+    {
+        var candidates = new List<string>();
+        if (!string.IsNullOrWhiteSpace(explicitPath))
+        {
+            candidates.Add(explicitPath);
+        }
+
+        var environmentPath = Environment.GetEnvironmentVariable("GOCORDIS_WEB_DIST");
+        if (!string.IsNullOrWhiteSpace(environmentPath))
+        {
+            candidates.Add(environmentPath);
+        }
+        candidates.Add(Path.Combine(AppContext.BaseDirectory, "web-dist"));
+
+        return candidates.FirstOrDefault(path =>
+        {
+            try
+            {
+                return File.Exists(Path.Combine(path, "index.html"));
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+        });
     }
 
     private static IResult Unavailable(string message) =>

@@ -128,7 +128,7 @@ public sealed class BrowserConsoleApp : IAsyncDisposable
     public async Task StartAsync()
     {
         await Runtime.LoadAsync(new UiHost(Console.Ui));
-        await Runtime.LoadAsync(new PagePlugin(Console.Ui));
+        await Runtime.LoadAsync(new PagePlugin());
     }
 
     public async ValueTask DisposeAsync() => await Runtime.DisposeAsync();
@@ -148,11 +148,6 @@ public sealed class BrowserConsoleApp : IAsyncDisposable
 
     private sealed class PagePlugin : Component
     {
-        private readonly UiContributionRegistry _ui;
-        private UiContribution? _page;
-
-        public PagePlugin(UiContributionRegistry ui) => _ui = ui;
-
         public override string Name => "browser-page";
 
         public override IReadOnlyList<ICapabilityKey> Inject() => [UiContributionRegistry.Key];
@@ -160,18 +155,12 @@ public sealed class BrowserConsoleApp : IAsyncDisposable
         public override async ValueTask<Cleanup?> ApplyAsync(Context context)
         {
             var ui = context.Require(UiContributionRegistry.Key);
-            await context.EffectAsync(
-                () => ValueTask.CompletedTask,
-                () =>
-                {
-                    if (_page is not null)
-                    {
-                        ui.Unregister(_page);
-                    }
-
-                    return ValueTask.CompletedTask;
-                });
-            _page = ui.Register("page", "koishi-console", ContributionOwner.For("browser", Name));
+            await context.RegisterUiPageAsync(
+                ui,
+                ContributionOwner.ForContext(context, "browser", Name),
+                new UiPageDefinition(
+                    "koishi-console", "Koishi Console", "/koishi", "generic",
+                    Description: "Koishi-style composed application console"));
             return null;
         }
     }

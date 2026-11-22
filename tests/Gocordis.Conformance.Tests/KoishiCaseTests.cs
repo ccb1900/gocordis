@@ -84,7 +84,7 @@ public sealed class KoishiCaseTests
 
         Assert.Equal(4, server.Runtime.Snapshot().Fibers.Count);
         Assert.Equal(2, browser.Runtime.Snapshot().Fibers.Count);
-        Assert.Equal("koishi-console", Assert.Single(browser.Console.Ui.Snapshot()).Name);
+        Assert.Equal("koishi-console", Assert.Single(browser.Console.Ui.Pages()).Id);
 
         await server.SetEnabledAsync("feature", false);
 
@@ -162,8 +162,8 @@ public sealed class KoishiCaseTests
         await ui.StartAsync();
         using var client = new HttpClient { BaseAddress = new Uri(ui.Address!) };
 
-        var pages = JsonNode.Parse(await client.GetStringAsync("/api/ui/pages"))!["data"]!.AsArray();
-        Assert.Contains(pages, page => page?["name"]?.GetValue<string>() == "koishi-console");
+        var pages = JsonNode.Parse(await client.GetStringAsync("/api/ui/pages"))!["data"]!["pages"]!.AsArray();
+        Assert.Contains(pages, page => page?["id"]?.GetValue<string>() == "koishi-console");
 
         var snapshot = JsonNode.Parse(await client.GetStringAsync("/api/query/runtime/snapshot"))!["data"]!;
         Assert.Contains(snapshot["fibers"]!.AsArray(),

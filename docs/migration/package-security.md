@@ -49,7 +49,8 @@ writer 与 reader 都执行限制；reader 在复制字节前检查 `ZipArchiveE
 - Dependencies（排序后）/ Provides（排序后）
 - Files（排序后的 path + sha256 + length）
 
-payload 文件哈希仍逐项校验。Checksum 是完整性校验，不是数字签名；来源真实性需要未来签名机制。
+payload 文件哈希仍逐项校验。Checksum 是完整性校验；来源真实性由 opt-in RSA-2048 签名提供：
+`plugin keygen` / `plugin sign` / `plugin doctor --public-key`。无签名包仍可读，验签完全 opt-in。
 
 测试：`ManifestMetadataTamperingFailsIntegrityCheck` 验证只改 `Type` 也会失败。
 
@@ -75,5 +76,5 @@ Install / Upgrade / Uninstall 统一采用：
 ## 5. 验证
 
 - `dotnet test tests/Gocordis.Packaging.Tests`：24/24
-- `dotnet test Gocordis.sln`：388/388
+- `dotnet test Gocordis.sln`：392/392
 - Build：0 warning / 0 error

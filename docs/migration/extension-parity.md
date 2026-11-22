@@ -40,5 +40,5 @@ Branch: `migration/dotnet-complete`
 ## 验证
 
 - `dotnet build Gocordis.sln`：0 warning / 0 error
-- `dotnet test Gocordis.sln`：388/388，连续 3 次全绿
+- `dotnet test Gocordis.sln`：392/392，连续 3 次全绿
 - 新增测试：Runtime 113（+7）、Extensions 52（+17）、Packaging 7

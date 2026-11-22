@@ -33,7 +33,8 @@ public sealed record PluginPackageManifest(
 
 public sealed record PluginPackageContent(
     PluginPackageManifest Manifest,
-    IReadOnlyDictionary<string, byte[]> Files);
+    IReadOnlyDictionary<string, byte[]> Files,
+    byte[]? Signature = null);
 
 public sealed record PluginChange(PluginChangeKind Kind, string Id, string Version);
 
@@ -313,6 +314,7 @@ public static class PluginPackageReader
     public const long MaxPackageBytes = PluginPackageLimits.MaxPackageBytes;
     public const long MaxPayloadFileBytes = PluginPackageLimits.MaxPayloadFileBytes;
     public const int MaxPayloadFiles = PluginPackageLimits.MaxPayloadFiles;
+    private const int MaxSignatureBytes = 8 * 1024;
 
     public static async Task<PluginPackageContent> ReadAsync(
         string packagePath,
@@ -332,6 +334,7 @@ public static class PluginPackageReader
 
         PluginPackageManifest manifest;
         var files = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        byte[]? signature = null;
         long total = 0;
         try
         {
@@ -363,7 +366,13 @@ public static class PluginPackageReader
                     $"plugin '{manifest.Id}@{manifest.Version}' requires host {manifest.HostVersionRange}, current {hostVersion}");
             }
 
-            var payloadEntries = archive.Entries.Where(e => e.FullName != "manifest.json").ToArray();
+            // signature.json is package metadata, not a payload file: keep it out
+            // of the "unexpected entry" check and the payload limits, but expose
+            // its raw bytes on the content for provenance inspection.
+            var payloadEntries = archive.Entries
+                .Where(e => e.FullName != "manifest.json" &&
+                            e.FullName != PluginPackageSigner.SignatureEntryName)
+                .ToArray();
             if (payloadEntries.Length > PluginPackageLimits.MaxPayloadFiles)
             {
                 throw new InvalidPluginPackageException(
@@ -398,6 +407,20 @@ public static class PluginPackageReader
                     throw new InvalidPluginPackageException($"duplicate payload path '{relative}'");
                 }
             }
+
+            var signatureEntry = archive.GetEntry(PluginPackageSigner.SignatureEntryName);
+            if (signatureEntry is not null)
+            {
+                if (signatureEntry.Length > MaxSignatureBytes)
+                {
+                    throw new InvalidPluginPackageException("signature.json exceeds the size limit");
+                }
+
+                await using var signatureSource = signatureEntry.Open();
+                using var signatureMemory = new MemoryStream();
+                await signatureSource.CopyToAsync(signatureMemory, cancellationToken);
+                signature = signatureMemory.ToArray();
+            }
         }
         catch (InvalidPluginPackageException)
         {
@@ -409,7 +432,7 @@ public static class PluginPackageReader
         }
 
         Verify(manifest, files);
-        return new PluginPackageContent(manifest, files);
+        return new PluginPackageContent(manifest, files, signature);
     }
 
     private static void Verify(PluginPackageManifest manifest, IReadOnlyDictionary<string, byte[]> files)

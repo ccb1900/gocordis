@@ -54,5 +54,5 @@ Runtime 仍通过 `PluginRegistry` 和 Core Effect 管理 Fiber，包系统不�
 
 - `plugin create/doctor/pack|package/sandbox` 全部实现；sandbox 是 declaration-only 加载检查，不是安全沙箱。
 - 远程只读插件源已实现：`HttpPluginPackageSource` + `registry serve` + `plugin fetch`；不包含 Koishi 市场服务端
-- checksum 内容校验与包签名的深度整合（当前校验包内文件 checksum）
+- 包签名已实现：RSA-2048 keygen/sign/doctor --public-key；无签名包保持兼容
 - WinForms / Avalonia Host（批次 5）

@@ -16,7 +16,7 @@
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 388/388
+dotnet test  Gocordis.sln → 392/392
 npm test                 → 85 passed
 npm run build            → success
 ```

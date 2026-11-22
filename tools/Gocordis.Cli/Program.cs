@@ -126,6 +126,8 @@ public static class Program
         {
             "pack" or "package" => await PluginPackAsync(rest),
             "create" => await PluginCreateAsync(rest),
+            "keygen" => await PluginKeygenAsync(rest),
+            "sign" => await PluginSignAsync(rest),
             "doctor" => await PluginDoctorAsync(rest),
             "sandbox" => await PluginSandboxAsync(rest),
             "fetch" => await PluginFetchAsync(rest),
@@ -150,6 +152,77 @@ public static class Program
             Option(args, "--host-range") ?? "[1.0,)");
         var written = await PluginPackageWriter.CreateAsync(source, manifest, output);
         Write(new { packed = output, written.Id, written.Version, written.Checksum });
+        return 0;
+    }
+
+    /// <summary>
+    /// Generates a signing key pair as two PEM files. Existing files are never
+    /// replaced unless --force is given; a late write failure rolls back any
+    /// file created in this invocation.
+    /// </summary>
+    private static async Task<int> PluginKeygenAsync(string[] args)
+    {
+        var outputDirectory = Option(args, "--out") ?? Directory.GetCurrentDirectory();
+        var name = Option(args, "--name") ?? "plugin-signing";
+        if (string.IsNullOrWhiteSpace(name) || name.Any(c =>
+                !(char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.')))
+        {
+            return Fail($"invalid key name '{name}' (want letters, digits, '.', '_' or '-')");
+        }
+
+        var force = args.Contains("--force", StringComparer.Ordinal);
+        var directory = Path.GetFullPath(outputDirectory);
+        var privatePath = Path.Combine(directory, name + ".private.pem");
+        var publicPath = Path.Combine(directory, name + ".public.pem");
+        if (!force && (File.Exists(privatePath) || File.Exists(publicPath)))
+        {
+            return Fail($"key file already exists for '{name}' in '{directory}' (use --force to overwrite)");
+        }
+
+        var (privatePem, publicPem) = PluginPackageSigner.CreateKeyPair();
+        Directory.CreateDirectory(directory);
+        var written = new List<string>();
+        try
+        {
+            await WriteKeyFileAsync(privatePath, privatePem, force, written);
+            await WriteKeyFileAsync(publicPath, publicPem, force, written);
+        }
+        catch
+        {
+            foreach (var path in written.AsEnumerable().Reverse())
+            {
+                TryDeleteFileQuietly(path);
+            }
+
+            throw;
+        }
+
+        Write(new { privateKey = privatePath, publicKey = publicPath });
+        return 0;
+
+        static async Task WriteKeyFileAsync(string path, string content, bool overwrite, List<string> tracked)
+        {
+            tracked.Add(path); // track before opening so partial writes are rolled back
+            await using var stream = new FileStream(
+                path, overwrite ? FileMode.Create : FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            await using var writer = new StreamWriter(stream);
+            await writer.WriteAsync(content);
+        }
+    }
+
+    /// <summary>Signs a package into a new file; the source package is untouched.</summary>
+    private static async Task<int> PluginSignAsync(string[] args)
+    {
+        var package = Positional(args, 0);
+        var key = Option(args, "--key");
+        if (package is null || key is null)
+        {
+            return Fail("usage: plugin sign <package> --key <privatePem> [--output <path>]");
+        }
+
+        var privateKeyPem = await File.ReadAllTextAsync(key);
+        var signed = await PluginPackageSigner.SignAsync(package, privateKeyPem, Option(args, "--output"));
+        Write(new { signed, algorithm = PluginPackageSigner.Algorithm });
         return 0;
     }
 
@@ -507,10 +580,31 @@ public static class Program
         var package = Positional(args, 0);
         if (package is null)
         {
-            return Fail("usage: plugin doctor <packagePath> [--host-version] [--store]");
+            return Fail("usage: plugin doctor <packagePath> [--host-version] [--store] [--public-key <pem>]");
         }
 
-        var (diagnostics, _) = await InspectPackageAsync(package, HostVersion(args), Option(args, "--store"));
+        var (inspection, _) = await InspectPackageAsync(package, HostVersion(args), Option(args, "--store"));
+        var diagnostics = new List<CliDiagnostic>(inspection);
+        if (Option(args, "--public-key") is { } publicKeyPath)
+        {
+            // Opt-in provenance check: without --public-key doctor behaves exactly
+            // as before, including for unsigned packages.
+            try
+            {
+                var publicKeyPem = await File.ReadAllTextAsync(publicKeyPath);
+                await PluginPackageSigner.VerifyAsync(package, publicKeyPem);
+                diagnostics.Add(Info("SIGNATURE_OK", "package signature is valid"));
+            }
+            catch (PackageSignatureException ex)
+            {
+                diagnostics.Add(Error("SIGNATURE_INVALID", ex.Message));
+            }
+            catch (Exception ex)
+            {
+                diagnostics.Add(Error("SIGNATURE_INVALID", $"cannot verify package signature: {ex.Message}"));
+            }
+        }
+
         WriteDiagnostics(diagnostics);
         return diagnostics.Any(diagnostic => diagnostic.Severity == "error") ? 1 : 0;
     }
@@ -956,11 +1050,11 @@ public static class Program
         var options = new HashSet<string>(StringComparer.Ordinal)
         {
             "--store", "--host-version", "--address", "--id", "--name", "--version", "--type", "--host-range", "--source",
-            "--output",
+            "--output", "--out", "--key", "--public-key",
         };
         var flags = new HashSet<string>(StringComparer.Ordinal)
         {
-            "--validate-only", "--allow-remote",
+            "--validate-only", "--allow-remote", "--force",
         };
         var values = new List<string>();
         for (var i = 0; i < args.Length; i++)
@@ -1000,7 +1094,9 @@ public static class Program
         gocordis create <outputDir> [--id] [--version] [--host-version]
         gocordis plugin create <outputDir> --id <id> --name <name> --type <type> [--version]
         gocordis plugin pack|package <sourceDir> <output> [--id] [--version] [--type] [--host-range]
-        gocordis plugin doctor <packagePath> [--host-version] [--store]
+        gocordis plugin keygen [--out <dir>] [--name <key>] [--force]
+        gocordis plugin sign <package> --key <privatePem> [--output <path>]
+        gocordis plugin doctor <packagePath> [--host-version] [--store] [--public-key <pem>]
         gocordis plugin sandbox <packagePath> [--host-version]
         gocordis plugin fetch <id> <versionRange> --source <url> [--output <path>] [--host-version]
         gocordis registry serve <directory> [--address] [--allow-remote]

@@ -68,10 +68,13 @@ public sealed class ConfigWatcher : IDisposable
     private readonly Timer _debounce;
     private readonly SemaphoreSlim _reconcileGate = new(1, 1);
     private long _revision;
-    private volatile bool _disposed;
+    private Exception? _lastError;
+    private int _disposed;
+
+    private bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
     /// <summary>Last reconcile error observed by the watcher, if any.</summary>
-    public Exception? LastError { get; private set; }
+    public Exception? LastError => Volatile.Read(ref _lastError);
 
     public ConfigWatcher(string path, Func<IReadOnlyList<PluginManifest>, Task> reconcile)
     {
@@ -92,7 +95,12 @@ public sealed class ConfigWatcher : IDisposable
         await _reconcileGate.WaitAsync();
         try
         {
-            await SyncCoreAsync();
+            if (IsDisposed)
+            {
+                return;
+            }
+
+            await ReconcileCoreAsync();
         }
         finally
         {
@@ -100,29 +108,50 @@ public sealed class ConfigWatcher : IDisposable
         }
     }
 
-    private async Task SyncCoreAsync()
+    /// <summary>Returns true when declarations were successfully reconciled.</summary>
+    private async Task<bool> ReconcileCoreAsync()
     {
-        var text = File.Exists(_path) ? await File.ReadAllTextAsync(_path) : string.Empty;
-        await _reconcile(PluginManifest.ParseToml(text));
+        try
+        {
+            var manifests = File.Exists(_path)
+                ? PluginManifest.ParseToml(await File.ReadAllTextAsync(_path))
+                : [];
+            await _reconcile(manifests);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Volatile.Write(ref _lastError, ex);
+            return false;
+        }
     }
 
     public void Start()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
         _watcher.EnableRaisingEvents = true;
     }
 
     private void OnFileChanged(object sender, FileSystemEventArgs e)
     {
-        if (!_disposed)
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        try
         {
             _debounce.Change(TimeSpan.FromMilliseconds(80), Timeout.InfiniteTimeSpan);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Dispose raced with a queued file event.
         }
     }
 
     private async Task FireAsync()
     {
-        if (_disposed)
+        if (IsDisposed)
         {
             return;
         }
@@ -130,33 +159,33 @@ public sealed class ConfigWatcher : IDisposable
         await _reconcileGate.WaitAsync();
         try
         {
-            await SyncCoreAsync();
-        }
-        catch (Exception ex)
-        {
-            LastError = ex;
+            if (IsDisposed)
+            {
+                return;
+            }
+
+            if (await ReconcileCoreAsync())
+            {
+                Interlocked.Increment(ref _revision);
+            }
         }
         finally
         {
-            try
-            {
-                _reconcileGate.Release();
-            }
-            catch (ObjectDisposedException)
-            {
-                // Dispose raced with a queued file event.
-            }
-
-            Interlocked.Increment(ref _revision);
+            _reconcileGate.Release();
         }
     }
 
     public void Dispose()
     {
-        _disposed = true;
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _watcher.EnableRaisingEvents = false;
         _watcher.Dispose();
         _debounce.Dispose();
-        _reconcileGate.Dispose();
+        // The gate deliberately stays alive: a queued FireAsync may still be
+        // waiting on it and must observe _disposed rather than fault.
     }
 }

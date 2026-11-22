@@ -22,6 +22,14 @@ public sealed class ManagedPluginHost : IAsyncDisposable
 
     public IReadOnlyDictionary<string, Fiber> Fibers => _fibers;
 
+    /// <summary>
+    /// Component for declaration-driven hosts (e.g. PluginRegistry). Retiring
+    /// the fiber releases the ALC through the unified protocol; callers no
+    /// longer need to remember a matching Loader.Unload.
+    /// </summary>
+    public Component CreateComponent(string id, string assemblyPath, string typeName) =>
+        new ManagedPluginComponent(Loader, id, assemblyPath, typeName);
+
     public async Task<Fiber> LoadAsync(string id, string assemblyPath, string typeName)
     {
         var plugin = Loader.Load(id, assemblyPath, typeName);

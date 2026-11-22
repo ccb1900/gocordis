@@ -1,0 +1,165 @@
+using Gocordis.Core;
+using Gocordis.Runtime.Contracts;
+
+namespace Gocordis.Runtime.Managed;
+
+/// <summary>Diagnostic capability published by the managed backend itself.</summary>
+public static class ManagedKeys
+{
+    public static readonly Key<string> Instance = new("managed-instance");
+}
+
+/// <summary>
+/// Managed implementation of the unified backend protocol. One instance drives
+/// one activation: the collectible ALC is opened at Prepare, published through
+/// Core at Activate, and released (fenced by generation) by the Core effect
+/// inverse. Retiring a fiber through Core/PluginRegistry therefore reclaims the
+/// ALC without any manual Loader.Unload call by the caller.
+/// </summary>
+public sealed class ManagedBackend : IPluginBackend
+{
+    private readonly ManagedPluginLoader _loader;
+    private readonly string _id;
+    private readonly string _assemblyPath;
+    private readonly string _typeName;
+    private LoadedManagedPlugin? _plugin;
+    private Cleanup? _innerCleanup;
+    private bool _released;
+    private bool _disposed;
+
+    public ManagedBackend(
+        ManagedPluginLoader loader,
+        string id,
+        string assemblyPath,
+        string typeName,
+        LoadedManagedPlugin? staged = null)
+    {
+        _loader = loader;
+        _id = id;
+        _assemblyPath = assemblyPath;
+        _typeName = typeName;
+        _plugin = staged;
+    }
+
+    public string BackendId => "managed";
+
+    public BackendDegradationPolicy DegradationPolicy => BackendDegradationPolicy.FailFiber;
+
+    public BackendHandle? LastHandle { get; private set; }
+
+    public ValueTask<BackendHandle> PrepareAsync(IBackendContext context)
+    {
+        context.ThrowIfDiverted();
+        _plugin ??= _loader.Load(_id, _assemblyPath, _typeName);
+        LastHandle = new BackendHandle(
+            BackendId, _plugin.Generation.Generation, BackendPhase.Prepared, _id);
+        return ValueTask.FromResult(LastHandle);
+    }
+
+    public async ValueTask<BackendHandle> ActivateAsync(IBackendContext context, BackendHandle prepared)
+    {
+        context.ThrowIfDiverted();
+        var plugin = _plugin ?? throw new InvalidOperationException("managed backend is not prepared");
+        if (context is CoreBackendContext core)
+        {
+            // The plugin component is applied through the real Core context so
+            // its Provide calls and effects stay under Runtime authority.
+            _innerCleanup = await plugin.Component.ApplyAsync(core.Core);
+        }
+
+        // The backend itself publishes a stable handle capability. The wrapped
+        // plugin publishes its own keys through the same Core context.
+        context.Provide(ManagedKeys.Instance, _id);
+        LastHandle = prepared.WithPhase(BackendPhase.Activated);
+        return LastHandle;
+    }
+
+    public ValueTask<BackendHandle> RollbackAsync(
+        IBackendContext context, BackendHandle? prepared, Exception reason)
+    {
+        if (_plugin is not null)
+        {
+            _loader.Unload(_id, _plugin.Generation);
+            _plugin = null;
+        }
+
+        var handle = prepared ?? new BackendHandle(BackendId, 0, BackendPhase.Prepared, _id);
+        LastHandle = handle.WithPhase(BackendPhase.RolledBack, reason.Message);
+        return ValueTask.FromResult(LastHandle);
+    }
+
+    public async ValueTask<BackendHandle> ReleaseAsync(IBackendContext context, BackendHandle active)
+    {
+        if (_released)
+        {
+            LastHandle = active.WithPhase(BackendPhase.Released);
+            return LastHandle;
+        }
+
+        _released = true;
+        try
+        {
+            if (_innerCleanup is not null)
+            {
+                await _innerCleanup();
+                _innerCleanup = null;
+            }
+        }
+        finally
+        {
+            if (_plugin is not null)
+            {
+                _loader.Unload(_id, _plugin.Generation);
+                _plugin = null;
+            }
+        }
+
+        LastHandle = active.WithPhase(BackendPhase.Released);
+        return LastHandle;
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        _disposed = true;
+        return ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>
+/// Core component adapter for a managed plugin. It declares the staged
+/// component's capabilities up front (Core enforces declarations at Apply) and
+/// delegates the whole lifecycle to <see cref="ManagedBackend"/>.
+/// </summary>
+public sealed class ManagedPluginComponent : Component
+{
+    private readonly ManagedPluginLoader _loader;
+    private readonly string _id;
+    private readonly string _assemblyPath;
+    private readonly string _typeName;
+    private readonly LoadedManagedPlugin _plugin;
+
+    public ManagedPluginComponent(
+        ManagedPluginLoader loader, string id, string assemblyPath, string typeName)
+    {
+        _loader = loader;
+        _id = id;
+        _assemblyPath = assemblyPath;
+        _typeName = typeName;
+        _plugin = loader.Load(id, assemblyPath, typeName);
+    }
+
+    public override string Name => "managed-plugin";
+
+    public override IReadOnlyList<ICapabilityKey> Inject() => _plugin.Component.Inject();
+
+    public override IReadOnlyList<ICapabilityKey> Provide() =>
+        [.. _plugin.Component.Provide(), ManagedKeys.Instance];
+
+    public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
+        BackendProtocol.RunAsync(new ManagedBackend(_loader, _id, _assemblyPath, _typeName, _plugin), context);
+}

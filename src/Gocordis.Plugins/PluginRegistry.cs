@@ -7,6 +7,9 @@ namespace Gocordis.Plugins;
 
 public sealed record PluginEntry(PluginManifest Manifest, Fiber? Fiber, string ConfigurationKey);
 
+/// <summary>A declaration file that could not be discovered, with its error.</summary>
+public sealed record ManifestDiagnostic(string Path, Exception Error);
+
 /// <summary>
 /// Plugin discovery, declaration reconciliation and lifecycle. All fiber state
 /// transitions are delegated to Core; this class never writes a fiber directly.
@@ -20,6 +23,7 @@ public sealed class PluginRegistry : IAsyncDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<string, Func<IReadOnlyDictionary<string, object?>, Component>> _factories = [];
     private readonly Dictionary<string, PluginEntry> _entries = [];
+    private IReadOnlyList<ManifestDiagnostic> _diagnostics = [];
 
     public PluginRegistry(Runtime runtime)
     {
@@ -27,6 +31,9 @@ public sealed class PluginRegistry : IAsyncDisposable
     }
 
     public IReadOnlyDictionary<string, PluginEntry> Entries => _entries;
+
+    /// <summary>Diagnostics from the most recent discovery pass.</summary>
+    public IReadOnlyList<ManifestDiagnostic> Diagnostics => Volatile.Read(ref _diagnostics);
 
     /// <summary>Platform-declared ids cannot be disabled by a catalog action.</summary>
     public HashSet<string> ProtectedIds { get; } = new(StringComparer.Ordinal);
@@ -49,17 +56,27 @@ public sealed class PluginRegistry : IAsyncDisposable
     {
         if (!Directory.Exists(directory))
         {
+            Volatile.Write(ref _diagnostics, Array.Empty<ManifestDiagnostic>());
             return [];
         }
 
         var manifests = new List<PluginManifest>();
+        var diagnostics = new List<ManifestDiagnostic>();
         foreach (var path in Directory.EnumerateFiles(directory, "*.toml", SearchOption.TopDirectoryOnly)
                      .OrderBy(path => path, StringComparer.Ordinal))
         {
-            var text = await File.ReadAllTextAsync(path);
-            manifests.AddRange(PluginManifest.ParseToml(text));
+            try
+            {
+                var text = await File.ReadAllTextAsync(path);
+                manifests.AddRange(PluginManifest.ParseToml(text));
+            }
+            catch (Exception ex)
+            {
+                diagnostics.Add(new ManifestDiagnostic(path, ex));
+            }
         }
 
+        Volatile.Write(ref _diagnostics, diagnostics.ToArray());
         return manifests;
     }
 

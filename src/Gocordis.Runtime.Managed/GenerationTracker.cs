@@ -47,7 +47,7 @@ public sealed class GenerationTracker
 public sealed class GenerationHandle : IDisposable
 {
     private readonly GenerationTracker _tracker;
-    private bool _settled;
+    private int _settled;
 
     internal GenerationHandle(GenerationTracker tracker, int generation)
     {
@@ -59,16 +59,17 @@ public sealed class GenerationHandle : IDisposable
 
     public bool Release()
     {
-        if (_settled)
+        // Settling is one-shot even under concurrent unwind: only the first
+        // caller may attempt the fenced release.
+        if (Interlocked.Exchange(ref _settled, 1) != 0)
         {
             return false;
         }
 
-        _settled = true;
         return _tracker.TryRelease(Generation);
     }
 
-    public void Abandon() => _settled = true;
+    public void Abandon() => Interlocked.Exchange(ref _settled, 1);
 
     public void Dispose() => Abandon();
 }

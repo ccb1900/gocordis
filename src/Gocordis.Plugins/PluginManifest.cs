@@ -21,21 +21,34 @@ public sealed record PluginManifest(
     public static IReadOnlyList<PluginManifest> ParseToml(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
-        var model = TomlSerializer.Deserialize<TomlTable>(text)
-                    ?? throw new InvalidDataException("manifest is empty");
-        if (!model.TryGetValue("components", out var value) || value is not TomlTableArray components)
+        TomlTable model;
+        try
+        {
+            model = TomlSerializer.Deserialize<TomlTable>(text)
+                    ?? throw new ManifestParseException("manifest is empty");
+        }
+        catch (TomlException ex)
+        {
+            throw new ManifestParseException("manifest is not valid TOML", ex);
+        }
+
+        if (!model.TryGetValue("components", out var value))
         {
             return [];
+        }
+
+        if (value is not TomlTableArray components)
+        {
+            throw new ManifestParseException("manifest 'components' must be an array of tables");
         }
 
         var result = new List<PluginManifest>();
         foreach (var component in components)
         {
             var id = ReadString(component, "id") ??
-                     throw new InvalidDataException("manifest component is missing 'id'");
+                     throw new ManifestParseException("manifest component is missing 'id'");
             var type = ReadString(component, "type") ?? id;
-            var enabled = component.TryGetValue("enabled", out var enabledValue) &&
-                          enabledValue is bool enabledFlag && enabledFlag;
+            var enabled = ReadBool(component, "enabled", id);
             var config = component.TryGetValue("config", out var configValue) && configValue is TomlTable table
                 ? table.ToDictionary(pair => pair.Key, pair => ConvertValue(pair.Value))
                 : new Dictionary<string, object?>();
@@ -59,6 +72,18 @@ public sealed record PluginManifest(
 
     private static string? ReadString(TomlTable table, string key) =>
         table.TryGetValue(key, out var value) && value is string text ? text : null;
+
+    private static bool ReadBool(TomlTable table, string key, string id)
+    {
+        if (!table.TryGetValue(key, out var value))
+        {
+            return false;
+        }
+
+        return value is bool flag
+            ? flag
+            : throw new ManifestParseException($"manifest component '{id}' has non-boolean '{key}'");
+    }
 
     private static IReadOnlyList<string> ReadStringArray(TomlTable table, string key)
     {

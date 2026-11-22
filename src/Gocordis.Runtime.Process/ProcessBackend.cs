@@ -1,0 +1,122 @@
+using Gocordis.Core;
+using Gocordis.Runtime.Contracts;
+
+namespace Gocordis.Runtime.Process;
+
+/// <summary>
+/// Process implementation of the unified backend protocol. The child is
+/// spawned and handshaken at Prepare/Activate, published through Core at
+/// Activate, and reclaimed by the Core effect inverse. Unlike the other two
+/// backends, a failed start degrades to an explicit error vocabulary instead
+/// of failing the fiber — declared via <see cref="DegradationPolicy"/>.
+/// </summary>
+public sealed class ProcessBackend : IPluginBackend
+{
+    private readonly string _executable;
+    private readonly Key<string> _key;
+    private ProcessPluginClient? _client;
+    private ProcessDiagnostics? _diagnostics;
+    private bool _released;
+    private bool _disposed;
+
+    public ProcessBackend(string executable, Key<string> key)
+    {
+        _executable = executable;
+        _key = key;
+    }
+
+    public string BackendId => "process";
+
+    public BackendDegradationPolicy DegradationPolicy => BackendDegradationPolicy.ErrorVocabulary;
+
+    public BackendHandle? LastHandle { get; private set; }
+
+    public ValueTask<BackendHandle> PrepareAsync(IBackendContext context)
+    {
+        context.ThrowIfDiverted();
+        _diagnostics = new ProcessDiagnostics();
+        context.Provide(ProcessKeys.Diagnostics, _diagnostics);
+        LastHandle = new BackendHandle(BackendId, 0, BackendPhase.Prepared, _executable);
+        return ValueTask.FromResult(LastHandle);
+    }
+
+    public async ValueTask<BackendHandle> ActivateAsync(IBackendContext context, BackendHandle prepared)
+    {
+        context.ThrowIfDiverted();
+        try
+        {
+            _client = await ProcessPluginClient.StartAsync(_executable);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+            var result = await _client.CallAsync("echo", new { text = "ready" }, timeout.Token);
+            context.Provide(_key, result?["text"]?.GetValue<string>() ?? "unavailable");
+            context.Provide(ProcessKeys.ErrorVocabulary, "ok");
+            LastHandle = prepared.WithPhase(BackendPhase.Activated, resourceId: _client.ProcessId.ToString());
+            return LastHandle;
+        }
+        catch (Exception ex)
+        {
+            if (_client is not null)
+            {
+                await _client.DisposeAsync();
+                _client = null;
+            }
+
+            // Explicit degradation: declaration stays Active, consumers get a
+            // stable error vocabulary and diagnostics carry the raw message.
+            if (_diagnostics is not null)
+            {
+                _diagnostics.LastError = ex.Message;
+            }
+
+            context.Provide(_key, ProcessErrorPolicy.ErrorVocabulary);
+            context.Provide(ProcessKeys.ErrorVocabulary, ProcessErrorPolicy.ErrorVocabulary);
+            LastHandle = prepared.WithPhase(BackendPhase.Activated, ProcessErrorPolicy.ErrorVocabulary);
+            return LastHandle;
+        }
+    }
+
+    public async ValueTask<BackendHandle> RollbackAsync(
+        IBackendContext context, BackendHandle? prepared, Exception reason)
+    {
+        if (_client is not null)
+        {
+            await _client.DisposeAsync();
+            _client = null;
+        }
+
+        var handle = prepared ?? new BackendHandle(BackendId, 0, BackendPhase.Prepared, _executable);
+        LastHandle = handle.WithPhase(BackendPhase.RolledBack, reason.Message);
+        return LastHandle;
+    }
+
+    public async ValueTask<BackendHandle> ReleaseAsync(IBackendContext context, BackendHandle active)
+    {
+        if (_released)
+        {
+            LastHandle = active.WithPhase(BackendPhase.Released);
+            return LastHandle;
+        }
+
+        _released = true;
+        if (_client is not null)
+        {
+            await _client.DisposeAsync();
+            _client = null;
+        }
+
+        LastHandle = active.WithPhase(BackendPhase.Released);
+        return LastHandle;
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        _disposed = true;
+        return ValueTask.CompletedTask;
+    }
+}

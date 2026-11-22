@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.Loader;
 
@@ -50,14 +51,24 @@ public sealed class PluginLoadContext : AssemblyLoadContext
     }
 }
 
-public sealed record LoadedManagedPlugin(string Id, PluginLoadContext Context, Core.Component Component);
+public sealed record LoadedManagedPlugin(
+    string Id,
+    PluginLoadContext Context,
+    Core.Component Component,
+    GenerationHandle Generation);
 
 /// <summary>Managed runtime adapter: load, instantiate and reclaim plugin assemblies.</summary>
 public sealed class ManagedPluginLoader
 {
     private readonly Dictionary<string, LoadedManagedPlugin> _plugins = [];
+    private readonly ConcurrentDictionary<string, GenerationTracker> _generations =
+        new(StringComparer.Ordinal);
 
     public IReadOnlyDictionary<string, LoadedManagedPlugin> Plugins => _plugins;
+
+    /// <summary>The fence for one plugin id. Reused across retire/reload cycles.</summary>
+    public GenerationTracker GenerationsFor(string id) =>
+        _generations.GetOrAdd(id, _ => new GenerationTracker());
 
     public LoadedManagedPlugin Load(string id, string assemblyPath, string typeName)
     {
@@ -67,9 +78,12 @@ public sealed class ManagedPluginLoader
             throw new InvalidOperationException($"plugin '{id}' is already loaded");
         }
 
-        var context = new PluginLoadContext(assemblyPath);
+        GenerationHandle? generation = null;
+        PluginLoadContext? context = null;
         try
         {
+            generation = GenerationsFor(id).Begin();
+            context = new PluginLoadContext(assemblyPath);
             var assembly = context.LoadFromAssemblyPath(Path.GetFullPath(assemblyPath));
             var type = assembly.GetType(typeName, throwOnError: true)!;
             if (!typeof(Core.Component).IsAssignableFrom(type))
@@ -78,25 +92,40 @@ public sealed class ManagedPluginLoader
             }
 
             var component = (Core.Component)Activator.CreateInstance(type)!;
-            var plugin = new LoadedManagedPlugin(id, context, component);
+            var plugin = new LoadedManagedPlugin(id, context, component, generation);
+            context = null; // ownership transferred to the plugin record
             _plugins[id] = plugin;
             return plugin;
         }
         catch
         {
-            context.Unload();
+            generation?.Abandon();
+            context?.Unload();
             throw;
         }
     }
 
-    public void Unload(string id)
+    /// <summary>Unfenced unload retained for explicit host-driven teardown.</summary>
+    public void Unload(string id) => Unload(id, expected: null);
+
+    /// <summary>
+    /// Fenced unload. A stale generation (one superseded by a newer load) can
+    /// never unload the ALC that belongs to the newer generation.
+    /// </summary>
+    public bool Unload(string id, GenerationHandle? expected)
     {
+        if (expected is not null && !expected.Release())
+        {
+            return false;
+        }
+
         if (!_plugins.Remove(id, out var plugin))
         {
-            return;
+            return false;
         }
 
         plugin.Context.Unload();
+        return true;
     }
 
     public async ValueTask DisposeAsync()

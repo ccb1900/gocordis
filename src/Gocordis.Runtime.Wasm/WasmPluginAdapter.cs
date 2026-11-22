@@ -1,4 +1,6 @@
 using Gocordis.Core;
+using Gocordis.Runtime.Contracts;
+using Gocordis.Runtime.Managed;
 using Wasmtime;
 
 namespace Gocordis.Runtime.Wasm;
@@ -72,6 +74,23 @@ public sealed class WasmPluginInstance : IDisposable
         return function.Invoke(boxes);
     }
 
+    /// <summary>
+    /// Load-time ABI check. Verified before any capability is published, so a
+    /// module missing an export fails activation instead of failing at unwind.
+    /// </summary>
+    public void ValidateRuntimeExports()
+    {
+        if (_instance.GetFunction("runtime_component_create") is null)
+        {
+            throw new MissingMethodException("WASM module has no export 'runtime_component_create'");
+        }
+
+        if (_instance.GetFunction("runtime_component_destroy") is null)
+        {
+            throw new MissingMethodException("WASM module has no export 'runtime_component_destroy'");
+        }
+    }
+
     private static ValueBox ToBox(object value) => value switch
     {
         int number => (ValueBox)number,
@@ -94,45 +113,24 @@ public sealed class WasmComponent : Component
     private readonly string _wat;
     private readonly Key<int> _key;
     private readonly WasmHostBridge? _bridge;
+    private readonly GenerationTracker? _tracker;
 
-    public WasmComponent(string wat, Key<int> key, WasmHostBridge? bridge = null)
+    public WasmComponent(
+        string wat,
+        Key<int> key,
+        WasmHostBridge? bridge = null,
+        GenerationTracker? tracker = null)
     {
         _wat = wat;
         _key = key;
         _bridge = bridge;
+        _tracker = tracker;
     }
 
     public override string Name => "wasm-plugin";
 
     public override IReadOnlyList<ICapabilityKey> Provide() => [_key];
 
-    public override async ValueTask<Cleanup?> ApplyAsync(Context context)
-    {
-        var instance = WasmPluginInstance.FromWat(_wat, bridge: _bridge);
-        var value = 0;
-        try
-        {
-            value = Convert.ToInt32(instance.Invoke("runtime_component_create"));
-            context.Provide(_key, value);
-        }
-        catch
-        {
-            instance.Dispose();
-            throw;
-        }
-
-        return () =>
-        {
-            try
-            {
-                instance.Invoke("runtime_component_destroy", value);
-            }
-            finally
-            {
-                instance.Dispose();
-            }
-
-            return ValueTask.CompletedTask;
-        };
-    }
+    public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
+        BackendProtocol.RunAsync(new WasmBackend(_wat, _key, _bridge, _tracker), context);
 }

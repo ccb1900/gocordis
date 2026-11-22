@@ -24,7 +24,7 @@
 ```
 bash docs/migration/verify-baseline.sh   → BASELINE VERIFIED
 dotnet build Gocordis.sln --nologo -m:1  → Build succeeded, 0 Warning(s), 0 Error(s)
-dotnet test Gocordis.sln --nologo --no-build -m:1 → 252/252 Passed，连续 5 次零失败、零挂起
+dotnet test Gocordis.sln --nologo --no-build -m:1 → 256/256 Passed，连续 8 次零失败、零挂起
 ```
 
 计数口径（批次 A → B/C，禁止用旧数冒充新状态）：
@@ -33,8 +33,8 @@ dotnet test Gocordis.sln --nologo --no-build -m:1 → 252/252 Passed，连续 5 
 - 119 = 批次 A 冻结基线（Core 22 / Conformance 28 / Extensions 19 / Runtime 50）；
   新增回归用例后为 **123**，连续 10 次全绿的证据见
   [`adr-channel-orchestrator.md`](adr-channel-orchestrator.md)。
-- 252 = 批次 B/C 最终全量：Core 22 / Conformance 113 / Extensions 32 / Runtime 85，
-  主线程连续 5 次全绿；批次 A/B/C 全部完成。
+- 256 = 批次 B/C 最终全量：Core 26 / Conformance 113 / Extensions 32 / Runtime 85，
+  主线程连续 8 次全绿；批次 A/B/C 全部完成。
 - 批次 C 新增可执行用例：`PaperItemMatrixTests` 40 条理论行 + 2 条 Fact，
   `TheoremMatrixTests` 5×3 = 15 条理论行；原误放的
   `PaperConformanceTests.Thm70_ProviderEpisodeContainsConsumerEpisode` 归位到

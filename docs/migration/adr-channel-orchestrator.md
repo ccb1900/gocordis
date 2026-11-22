@@ -1,6 +1,6 @@
 # ADR: Channel 驱动的生命周期决策域（批次 A 实施记录）
 
-Status: **已实施并收敛，待合入**
+Status: **已合入并冻结（批次 B/C 均已完成）**
 Date: 2026-11-22
 Branch: `migration/dotnet`,基线 `b3371fe5`
 
@@ -15,7 +15,10 @@ Branch: `migration/dotnet`,基线 `b3371fe5`
 
 ## 设计
 
-- `Channel<RuntimeCommand>` 单一决策队列；所有生命周期状态只由决策循环写。
+- `Channel<RuntimeCommand>` 单一决策队列独占生命周期决策（Load/Dispose/Close/
+  Reconcile/Unwind）。`Context` 侧的能力绑定、元数据、effect 登记通过短临界区
+  `Mutate` 写入共享表；这是 Channel 决策 + 短锁保护的混合模型，不是"所有状态
+  只由决策循环写"。公开回复统一在快照发布后完成。`GetFiber` 等公开读也走同一短锁。
 - 内部命令：`LoadCommand` / `DisposeCommand` / `CloseCommand` / `MutateCommand` /
   `StepRequestCommand` / `StepInstalledCommand` / `ApplyCompletedCommand` /
   `UnwindCompletedCommand`。
@@ -49,6 +52,10 @@ Branch: `migration/dotnet`,基线 `b3371fe5`
    新增 `GcAssert.Reclaimed`，使用阻塞压缩式强制回收；不改变“ALC 必须可回收”的断言。
 5. **决策循环生命周期**：`Runtime.DisposeAsync` 在 `CloseAsync` 后 await `_loop`，
    避免决策循环任务在处理完最后一个命令后仍短暂钉住插件对象。
+6. **并发 Dispose/Close 与子 fiber 所有权**（review 收敛）：`_disposeWaiters` 与
+   `_closeWaiters` 从单回复改为等待者集合，避免第二个调用覆盖第一个回复；所有
+   fiber 进入 Gone 的路径统一 `Parent.RemoveChild(child)`，父 fiber 不再长期持有
+   已终止子组件的 Component/ALC；`GetFiber` 加 `_stateLock`，公开读与决策写入线性化。
 
 ## 回归测试
 
@@ -63,17 +70,19 @@ Branch: `migration/dotnet`,基线 `b3371fe5`
 
 - `dotnet build Gocordis.sln`：0 error。
 - `dotnet test Gocordis.sln`（`DOTNET_ROLL_FORWARD=LatestMajor`，本机仅安装 .NET 11 SDK
-  运行 net10 目标）：**连续 10 次全绿**，119 项测试
-  （Core 22 / Conformance 28 / Extensions 19 / Runtime 50），无失败、无挂起。
-- 新增回归测试后再次全量：119/119 通过。
+  运行 net10 目标）：批次 A 连续 10 次全绿，119 项测试
+  （Core 22 / Conformance 28 / Extensions 19 / Runtime 50）。
+- 批次 A/B/C 最终全量：**256/256**，连续 8 次零失败、零挂起
+  （Core 26 / Conformance 113 / Extensions 32 / Runtime 85）；build 0 warning / 0 error。
 
 ## 合入前置条件（批次 A 完成）
 
 - [x] 全量 `dotnet test Gocordis.sln` 连续三次零失败、零挂起（本机 10 次）。
 - [x] Koishi disable/re-enable、PC19 陈旧完成、Thm68 恢复等价在并行压力下稳定。
 - [x] `LoadAsync` / `LoadChildAsync` 的返回语义与 Go 基线逐项对照测试。
-- [x] 用户侧不持有 `_stateLock`；公开回复在决策域外完成。
+- [x] Channel 独占生命周期决策；`Context` 侧写入走短锁 `Mutate`，公开读走 `_stateLock`；
+      公开回复在快照发布后完成。
 - [x] 测试结束后不残留决策循环 / 插件子进程。
 
 批次 B（PluginRegistry 事务、Discovery/Config、三后端统一协议）与批次 C
-（Extensions/Console/四方矩阵/最终验收）仍待后续执行。
+（Extensions/Console/四方矩阵/最终验收）均已完成并推送。

@@ -63,7 +63,7 @@ public sealed class Runtime : IAsyncDisposable
     private readonly Dictionary<ICapabilityKey, List<Handler>> _handlers =
         new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<long, Activation> _activations = [];
-    private readonly Dictionary<Guid, TaskCompletionSource> _disposeWaiters = [];
+    private readonly Dictionary<Guid, List<TaskCompletionSource>> _disposeWaiters = [];
     private readonly List<LoadCommand> _awaitingLoads = [];
     private readonly Dictionary<long, int> _unwindWaiters = [];
     private readonly HashSet<long> _unwinding = [];
@@ -81,7 +81,7 @@ public sealed class Runtime : IAsyncDisposable
     private bool _bindingsChanged;
     private bool _closing;
     private bool _closed;
-    private TaskCompletionSource? _closeReply;
+    private readonly List<TaskCompletionSource> _closeWaiters = [];
     private volatile RuntimeSnapshot _snapshot = new([]);
 
     public Runtime() { }
@@ -155,7 +155,13 @@ public sealed class Runtime : IAsyncDisposable
 
     public RuntimeSnapshot Snapshot() => _snapshot;
 
-    public Fiber? GetFiber(Guid id) => _fibers.TryGetValue(id, out var fiber) ? fiber : null;
+    public Fiber? GetFiber(Guid id)
+    {
+        lock (_stateLock)
+        {
+            return _fibers.TryGetValue(id, out var fiber) ? fiber : null;
+        }
+    }
 
     // ---- decision loop ------------------------------------------------------
 
@@ -320,14 +326,23 @@ public sealed class Runtime : IAsyncDisposable
         {
             fiber.State = FiberState.Gone;
             _fibers.Remove(fiber.Id);
+            fiber.Parent?.RemoveChild(fiber);
             fiber.SignalGone();
             _pendingReplies.Add(() => command.Reply.TrySetResult());
             _bindingsChanged = true;
             return;
         }
 
+        if (_disposeWaiters.TryGetValue(fiber.Id, out var waiters))
+        {
+            // A second Dispose joins the in-flight teardown instead of
+            // replacing the first caller's completion.
+            waiters.Add(command.Reply);
+            return;
+        }
+
         StartUnwind(fiber, dependencyLoss: false);
-        _disposeWaiters[fiber.Id] = command.Reply;
+        _disposeWaiters[fiber.Id] = [command.Reply];
     }
 
     private void HandleClose(CloseCommand command)
@@ -339,7 +354,7 @@ public sealed class Runtime : IAsyncDisposable
         }
 
         _closing = true;
-        _closeReply = command.Reply;
+        _closeWaiters.Add(command.Reply);
         foreach (var fiber in _fibers.Values.ToArray())
         {
             fiber.Intent = LifecycleIntent.Retired;
@@ -348,6 +363,7 @@ public sealed class Runtime : IAsyncDisposable
             {
                 fiber.State = FiberState.Gone;
                 _fibers.Remove(fiber.Id);
+                fiber.Parent?.RemoveChild(fiber);
                 fiber.SignalGone();
                 CompleteDispose(fiber);
             }
@@ -506,6 +522,7 @@ public sealed class Runtime : IAsyncDisposable
         {
             fiber.State = FiberState.Gone;
             _fibers.Remove(fiber.Id);
+            fiber.Parent?.RemoveChild(fiber);
             fiber.SignalGone();
             CompleteDispose(fiber);
         }
@@ -571,9 +588,12 @@ public sealed class Runtime : IAsyncDisposable
 
     private void CompleteDispose(Fiber fiber)
     {
-        if (_disposeWaiters.Remove(fiber.Id, out var reply))
+        if (_disposeWaiters.Remove(fiber.Id, out var waiters))
         {
-            _pendingReplies.Add(() => reply.TrySetResult());
+            foreach (var reply in waiters)
+            {
+                _pendingReplies.Add(() => reply.TrySetResult());
+            }
         }
     }
 
@@ -597,15 +617,19 @@ public sealed class Runtime : IAsyncDisposable
 
     private void CheckCloseComplete()
     {
-        if (!_closing || _closeReply is null || _applying.Count > 0 || _unwinding.Count > 0 || _fibers.Count > 0)
+        if (!_closing || _closeWaiters.Count == 0 || _applying.Count > 0 ||
+            _unwinding.Count > 0 || _fibers.Count > 0)
         {
             return;
         }
 
         _closed = true;
-        var closeReply = _closeReply;
-        _pendingReplies.Add(() => closeReply.TrySetResult());
-        _closeReply = null;
+        foreach (var reply in _closeWaiters)
+        {
+            _pendingReplies.Add(() => reply.TrySetResult());
+        }
+
+        _closeWaiters.Clear();
 
         // Release plugin assemblies as soon as the last fiber is gone. The
         // Runtime may still be alive for a short teardown window, but it must

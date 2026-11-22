@@ -195,15 +195,17 @@ public sealed class CoreSemanticsTests
     public async Task ParentFailureCascadesToOwnedChildren()
     {
         await using var runtime = new Runtime();
+        Fiber? childFiber = null;
         var child = new DelegateComponent("child", _ => ValueTask.FromResult<Cleanup?>(null));
         var parent = new DelegateComponent("parent", async context =>
         {
-            await context.LoadChildAsync(child);
+            childFiber = await context.LoadChildAsync(child);
             throw new InvalidOperationException("parent failed");
         });
 
         var fiber = await runtime.LoadAsync(parent);
-        var childFiber = Assert.Single(fiber.Children);
+        Assert.NotNull(childFiber);
+        Assert.Empty(fiber.Children); // Gone children are detached from their owner.
 
         Assert.Equal(FiberState.Failed, fiber.State);
         Assert.Equal(FiberState.Gone, childFiber.State);

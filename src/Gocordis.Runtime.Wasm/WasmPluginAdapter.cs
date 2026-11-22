@@ -1,9 +1,22 @@
+using System.Text;
 using Gocordis.Core;
 using Gocordis.Runtime.Contracts;
 using Gocordis.Runtime.Managed;
 using Wasmtime;
 
 namespace Gocordis.Runtime.Wasm;
+
+/// <summary>Go WASM backend parity: modules larger than 64 MiB are refused at load time.</summary>
+public sealed class WasmModuleTooLargeException : Exception
+{
+    public WasmModuleTooLargeException(long size)
+        : base($"WASM module is {size} bytes; limit is {WasmPluginInstance.MaxModuleBytes} bytes")
+    {
+        Size = size;
+    }
+
+    public long Size { get; }
+}
 
 /// <summary>
 /// WASM backend built on the mature Wasmtime runtime. It keeps the Go ABI:
@@ -12,6 +25,9 @@ namespace Gocordis.Runtime.Wasm;
 /// </summary>
 public sealed class WasmPluginInstance : IDisposable
 {
+    /// <summary>Go loader/wasm maximum module size (64 MiB).</summary>
+    public const long MaxModuleBytes = 64L * 1024 * 1024;
+
     private readonly Engine _engine;
     private readonly Module _module;
     private readonly Store _store;
@@ -27,41 +43,75 @@ public sealed class WasmPluginInstance : IDisposable
         _linker = linker;
     }
 
+    public static void EnsureModuleSize(long size)
+    {
+        if (size > MaxModuleBytes)
+        {
+            throw new WasmModuleTooLargeException(size);
+        }
+    }
+
     public static WasmPluginInstance FromWat(string wat, string name = "plugin", WasmHostBridge? bridge = null)
     {
+        ArgumentNullException.ThrowIfNull(wat);
+        EnsureModuleSize(Encoding.UTF8.GetByteCount(wat));
+
         var engine = new Engine();
         try
         {
             var module = Module.FromText(engine, name, wat);
+            return Create(engine, module, bridge);
+        }
+        catch
+        {
+            engine.Dispose();
+            throw;
+        }
+    }
+
+    public static WasmPluginInstance FromBytes(byte[] wasm, string name = "plugin", WasmHostBridge? bridge = null)
+    {
+        ArgumentNullException.ThrowIfNull(wasm);
+        EnsureModuleSize(wasm.LongLength);
+
+        var engine = new Engine();
+        try
+        {
+            var module = Module.FromBytes(engine, name, wasm);
+            return Create(engine, module, bridge);
+        }
+        catch
+        {
+            engine.Dispose();
+            throw;
+        }
+    }
+
+    private static WasmPluginInstance Create(Engine engine, Module module, WasmHostBridge? bridge)
+    {
+        try
+        {
+            var store = new Store(engine);
             try
             {
-                var store = new Store(engine);
-                try
+                if (bridge is null)
                 {
-                    if (bridge is null)
-                    {
-                        return new WasmPluginInstance(engine, module, store, new Instance(store, module, []), null);
-                    }
+                    return new WasmPluginInstance(engine, module, store, new Instance(store, module, []), null);
+                }
 
-                    var linker = new Linker(engine);
-                    linker.DefineFunction("gocordis", "report", new Action<int>(bridge.Report));
-                    return new WasmPluginInstance(engine, module, store, linker.Instantiate(store, module), linker);
-                }
-                catch
-                {
-                    store.Dispose();
-                    throw;
-                }
+                var linker = new Linker(engine);
+                linker.DefineFunction("gocordis", "report", new Action<int>(bridge.Report));
+                return new WasmPluginInstance(engine, module, store, linker.Instantiate(store, module), linker);
             }
             catch
             {
-                module.Dispose();
+                store.Dispose();
                 throw;
             }
         }
         catch
         {
-            engine.Dispose();
+            module.Dispose();
             throw;
         }
     }

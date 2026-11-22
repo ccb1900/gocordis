@@ -70,10 +70,19 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 | integration gates | integration/e2e_*; platform_convergence_* | 21 files | Thm64/68/70/73/80 | no direct | E2E | tests/Gocordis.Conformance.Tests | Partial | subset ported; no full PC gate | Port PC01–PC30 + theorem gates | TheoremMatrixTests + PlatformConvergenceTests + `(new) PCGateParity` |
 | deterministic theorem facility | runtime/deterministic.go:17; theorem_evidence_test.go | fuzz/property tests | Thm64/68/70/73/80 | no direct | no direct | tests/Gocordis.Conformance.Tests/DeterministicDriver.cs | Partial | test-only, not production | Keep test-only; port missing Thm73 quiescence | `(new) Thm73InstallingQuiescence` |
 
+## 3b. Runtime backend domains (batch 4)
+
+| Feature | Go Source | Go Tests | Paper Semantics | JS Cordis | Koishi | C# Source | Status | Gap | Target | Acceptance |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Managed runtime | extensions/loader/builtin.go:12 | loader_test.go:78 | C39/C40 | in-process modules | in-process plugins | src/Gocordis.Runtime.Managed/* | Divergent | ALC is not a sandbox and has no Go equivalent | Collectible ALC + generation fence + documented boundary | BackendLifecycleTests + ManagedRuntimeTests |
+| Process runtime | extensions/loader/proc/backend.go:71 | transport/transport_test.go:1 | §6.2/C35 | no direct | external plugin process | src/Gocordis.Runtime.Process/* | Equivalent | plugin→host call unsupported in both Go/C# | Handshake/RPC/shutdown/reap/error policy | BackendLifecycleTests + ProcessRuntimeTests |
+| WASM runtime | extensions/loader/wasm/backend.go:57 | wasm/backend_test.go:1 | §6.3/C39 | no direct | no direct | src/Gocordis.Runtime.Wasm/* | Equivalent | 64 MiB limit now enforced; HMR warm-swap divergence tracked in hmr row | Wasmtime ABI + custom section + size guard + host bridge | WasmRuntimeTests.ModuleLargerThanSixtyFourMiBIsRejectedBeforeCompilation |
+| Go Native runtime | Go native backend (compile-time registry) | integration wasm/proc gates | C39 | no direct | no direct | Process backend substitute | Divergent | .NET cannot load Go native plugins without interop; no equivalent required | Document Process backend as isolation substitute; do not fake equivalence | docs/migration/runtime-integrity.md |
+
 ## 4. Explicit decisions and unresolved rules
 
 1. **Accepted differences** (must stay documented, not hidden): C34 Rehome, C38 nominal K×P namespace, strict serial LIFO vs JS concurrent unwind, no JS Proxy `ctx.foo`, retire→reinsert instead of identity-preserving replace.
-2. **Missing rows are blocking for batch 3/6**: `devtools`, `http-socks`, plugin CLI, create scaffold, client SDK. They have concrete Target/Acceptance and must be implemented or replaced by an equally capable .NET-native mechanism with documented rationale.
+2. **Missing rows are blocking for batch 6**: create scaffold and client SDK. They have concrete Target/Acceptance and must be implemented or replaced by an equally capable .NET-native mechanism with documented rationale.
 3. **Partial rows are not complete**: each has a concrete Gap and a `(new)` acceptance test to add in the named batch; no row may be silently promoted.
 4. **Koishi is product reference only**: Koishi uses Cordis 3.x ForkScope; C# follows Go/Cordis-4 Fiber. Do not port `ctx.plugin`, `ns-require`, `require.cache`, or vite toolchain into C# runtime.
 5. **JS Cordis 4 conflicts resolved by paper/Go**: committed-after-Apply, strict LIFO, declaration enforcement, and no automatic retry on Failed are kept in C#.
@@ -84,10 +93,10 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 
 | Status | Count |
 | --- | ---: |
-| Equivalent | 30 |
+| Equivalent | 32 |
 | Partial | 12 |
-| Divergent | 1 |
+| Divergent | 3 |
 | Missing | 2 |
-| **Total acceptance rows** | **45** |
+| **Total acceptance rows** | **49** |
 
 "Missing" count includes extension/product/front-end domains; none are unexplained. Each row above has Gap, Target, and Acceptance. Batch implementation order follows Go dependency order: Runtime → Plugin/Declaration → Extensions → Runtimes → UI/Product → Final gates.

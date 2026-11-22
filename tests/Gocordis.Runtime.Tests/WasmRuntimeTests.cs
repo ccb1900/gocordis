@@ -159,6 +159,20 @@ public sealed class WasmRuntimeTests
         Assert.Single(runtime.Snapshot().Fibers);
     }
 
+    [Fact]
+    public void ModuleLargerThanSixtyFourMiBIsRejectedBeforeCompilation()
+    {
+        Assert.Equal(64L * 1024 * 1024, WasmPluginInstance.MaxModuleBytes);
+
+        Assert.Throws<WasmModuleTooLargeException>(() =>
+            WasmPluginInstance.EnsureModuleSize(WasmPluginInstance.MaxModuleBytes + 1));
+
+        var oversized = new byte[WasmPluginInstance.MaxModuleBytes + 1];
+        var error = Assert.Throws<WasmModuleTooLargeException>(() =>
+            WasmPluginInstance.FromBytes(oversized));
+        Assert.Equal(oversized.LongLength, error.Size);
+    }
+
     private sealed class ProbeComponent : Component
     {
         private readonly Action<Context> _apply;

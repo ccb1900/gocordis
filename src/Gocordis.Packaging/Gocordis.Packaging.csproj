@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="NuGet.Versioning" Version="8.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Gocordis.Core/Gocordis.Core.csproj" />
+    <ProjectReference Include="../Gocordis.Plugins/Gocordis.Plugins.csproj" />
+  </ItemGroup>
+</Project>

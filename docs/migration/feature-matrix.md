@@ -84,10 +84,10 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 
 | Status | Count |
 | --- | ---: |
-| Equivalent | 19 |
-| Partial | 23 |
-| Divergent | 4 |
-| Missing | 6 |
-| **Total domains** | **52** |
+| Equivalent | 14 |
+| Partial | 25 |
+| Divergent | 2 |
+| Missing | 4 |
+| **Total acceptance rows** | **45** |
 
 "Missing" count includes extension/product/front-end domains; none are unexplained. Each row above has Gap, Target, and Acceptance. Batch implementation order follows Go dependency order: Runtime → Plugin/Declaration → Extensions → Runtimes → UI/Product → Final gates.

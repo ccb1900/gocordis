@@ -1,232 +1,943 @@
-using System.Collections.Concurrent;
+using System.Threading.Channels;
 using NuGet.Versioning;
 
 namespace Gocordis.Core;
 
 /// <summary>
-/// The single lifecycle authority. External code submits declarations (Load/Dispose);
-/// only reconciliation writes fiber state. All transitions are serialized.
+/// The single lifecycle authority. A Channel-backed decision loop owns lifecycle
+/// state; component Apply/Unwind code runs in independent Tasks and reports back
+/// with commands carrying an ActivationId. Stale completions are ignored.
 /// </summary>
 public sealed class Runtime : IAsyncDisposable
 {
-    private readonly SemaphoreSlim _gate = new(1, 1);
-    // Revocable lease (not an inheritable bool): background tasks inherit
-    // ExecutionContext; a stale lease must not keep bypassing the gate (P0-2).
-    private readonly AsyncLocal<GateLease?> _gateLease = new();
-    private readonly ConcurrentDictionary<Guid, Fiber> _fibers = [];
-    private readonly ConcurrentDictionary<ICapabilityKey, Fiber> _providers =
+    // ---- internal command protocol -----------------------------------------
+
+    private abstract record RuntimeCommand;
+
+    private sealed record MutateCommand(Action Mutation, TaskCompletionSource Reply) : RuntimeCommand;
+
+    private sealed record LoadCommand(
+        Component Component, Fiber? Parent, Realm? Realm,
+        TaskCompletionSource<Fiber> Reply, bool AwaitActivation) : RuntimeCommand
+    {
+        internal Fiber? Created { get; set; }
+    }
+
+    private sealed record DisposeCommand(Fiber Fiber, TaskCompletionSource Reply) : RuntimeCommand;
+    private sealed record CloseCommand(TaskCompletionSource Reply) : RuntimeCommand;
+
+    private sealed record StepRequestCommand(
+        Activation Activation, TaskCompletionSource<bool> Reply) : RuntimeCommand;
+
+    private sealed record StepInstalledCommand(
+        Activation Activation, Func<ValueTask>? Inverse, TaskCompletionSource Reply) : RuntimeCommand;
+
+    private sealed record ApplyCompletedCommand(Activation Activation, Exception? Error) : RuntimeCommand;
+    private sealed record UnwindCompletedCommand(Activation Activation, Exception? Error) : RuntimeCommand;
+
+    private sealed record VersionedBinding(
+        Realm Realm, string Name, Type ValueType, NuGetVersion Version,
+        Fiber Provider, long ActivationId, object Value);
+
+    private sealed record Handler(Fiber Owner, long ActivationId, Func<object?, ValueTask> Invoke);
+
+    // ---- state (decision domain; short lock shared with user-side writes) ---
+
+    private readonly Channel<RuntimeCommand> _commands =
+        Channel.CreateUnbounded<RuntimeCommand>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            AllowSynchronousContinuations = false,
+        });
+    private Task? _loop;
+    private readonly object _loopGate = new();
+
+    private readonly object _stateLock = new();
+
+    private readonly Dictionary<Guid, Fiber> _fibers = [];
+    private readonly Dictionary<ICapabilityKey, Fiber> _providers =
         new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<Realm, Dictionary<ICapabilityKey, Fiber>> _realmProviders = [];
     private readonly List<VersionedBinding> _versionedProviders = [];
-
-    private sealed record VersionedBinding(
-        Realm Realm,
-        string Name,
-        Type ValueType,
-        NuGetVersion Version,
-        Fiber Provider,
-        object Value);
     private readonly Dictionary<ICapabilityKey, List<Handler>> _handlers =
         new(ReferenceEqualityComparer.Instance);
-    private bool _closed;
+    private readonly Dictionary<long, Activation> _activations = [];
+    private readonly Dictionary<Guid, TaskCompletionSource> _disposeWaiters = [];
+    private readonly List<LoadCommand> _awaitingLoads = [];
+    private readonly Dictionary<long, int> _unwindWaiters = [];
+    private readonly HashSet<long> _unwinding = [];
+    private readonly HashSet<long> _unwindRunning = [];
+    private readonly HashSet<long> _applying = [];
+    private readonly HashSet<long> _justCommitted = [];
+
+    /// <summary>
+    /// Public replies are completed only after Reconcile/PublishSnapshot, so an
+    /// awaited Dispose/Load/Close never observes a stale snapshot.
+    /// </summary>
+    private readonly List<Action> _pendingReplies = [];
+
+    private long _nextActivationId;
     private bool _bindingsChanged;
-    private readonly HashSet<Guid> _withdrawing = [];
+    private bool _closing;
+    private bool _closed;
+    private TaskCompletionSource? _closeReply;
+    private volatile RuntimeSnapshot _snapshot = new([]);
 
-    private sealed record Handler(Fiber Owner, Func<object?, ValueTask> Invoke);
+    public Runtime() { }
 
-    /// <summary>Reentrant lease: Apply may create owned children without deadlocking.</summary>
-    private sealed class GateLease : IDisposable
+    private void EnsureLoop()
     {
-        internal static readonly GateLease Reentrant = new(null, null, false);
-
-        private readonly SemaphoreSlim? _gate;
-        private readonly Action? _restore;
-        private bool _active;
-
-        internal GateLease(SemaphoreSlim? gate, Action? restore, bool active)
+        if (_loop is not null)
         {
-            _gate = gate;
-            _restore = restore;
-            _active = active;
+            return;
         }
 
-        internal bool Active => _active;
-
-        public void Dispose()
+        lock (_loopGate)
         {
-            _active = false;
-            if (_gate is not null)
-            {
-                _restore?.Invoke();
-                _gate.Release();
-            }
+            _loop ??= Task.Run(RunAsync);
         }
     }
 
-    private async Task<GateLease> EnterAsync()
+    private bool TryWrite(RuntimeCommand command)
     {
-        var inherited = _gateLease.Value;
-        if (inherited is not null && inherited.Active)
-        {
-            return GateLease.Reentrant; // explicit reentrant child-creation path
-        }
-
-        await _gate.WaitAsync();
-        var previous = inherited;
-        var lease = new GateLease(_gate, () => _gateLease.Value = previous, active: true);
-        _gateLease.Value = lease;
-        return lease;
+        EnsureLoop();
+        return _commands.Writer.TryWrite(command);
     }
 
-    public async Task<Fiber> LoadAsync(Component component, Fiber? parent = null, Realm? realm = null)
+    // ---- public API ---------------------------------------------------------
+
+    public Task<Fiber> LoadAsync(Component component, Fiber? parent = null, Realm? realm = null)
     {
         ArgumentNullException.ThrowIfNull(component);
-
-        var lease = await EnterAsync();
-        // AsyncLocal changes inside EnterAsync do not flow back to the caller;
-        // publish the lease here for nested child creation on this frame.
-        if (!ReferenceEquals(lease, GateLease.Reentrant))
+        var reply = new TaskCompletionSource<Fiber>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!TryWrite(new LoadCommand(component, parent, realm, reply, AwaitActivation: true)))
         {
-            _gateLease.Value = lease;
+            throw new ObjectDisposedException(nameof(Runtime));
         }
+
+        return reply.Task;
+    }
+
+    internal Task<Fiber> LoadChildAsync(Component component, Fiber parent)
+    {
+        var reply = new TaskCompletionSource<Fiber>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!TryWrite(new LoadCommand(component, parent, null, reply, AwaitActivation: false)))
+        {
+            throw new ObjectDisposedException(nameof(Runtime));
+        }
+
+        return reply.Task;
+    }
+
+    public Task DisposeAsync(Fiber fiber)
+    {
+        ArgumentNullException.ThrowIfNull(fiber);
+        var reply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!TryWrite(new DisposeCommand(fiber, reply)))
+        {
+            return Task.CompletedTask;
+        }
+
+        return reply.Task;
+    }
+
+    public Task CloseAsync()
+    {
+        var reply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!TryWrite(new CloseCommand(reply)))
+        {
+            return Task.CompletedTask;
+        }
+
+        return reply.Task;
+    }
+
+    public RuntimeSnapshot Snapshot() => _snapshot;
+
+    public Fiber? GetFiber(Guid id) => _fibers.TryGetValue(id, out var fiber) ? fiber : null;
+
+    // ---- decision loop ------------------------------------------------------
+
+    private async Task RunAsync()
+    {
         try
         {
-            ObjectDisposedException.ThrowIf(_closed, this);
-            if (parent is not null && !_fibers.ContainsKey(parent.Id))
+            await foreach (var command in _commands.Reader.ReadAllAsync())
             {
-                throw new InvalidOperationException("parent fiber does not belong to this runtime");
+                try
+                {
+                    _pendingReplies.Clear();
+                    lock (_stateLock)
+                    {
+                        _justCommitted.Clear();
+                        switch (command)
+                        {
+                            case MutateCommand mutate:
+                                mutate.Mutation();
+                                _pendingReplies.Add(() => mutate.Reply.TrySetResult());
+                                break;
+                            case LoadCommand load:
+                                HandleLoad(load);
+                                break;
+                            case DisposeCommand dispose:
+                                HandleDispose(dispose);
+                                break;
+                            case CloseCommand close:
+                                HandleClose(close);
+                                break;
+                            case StepRequestCommand request:
+                                HandleStepRequest(request);
+                                break;
+                            case StepInstalledCommand installed:
+                                HandleStepInstalled(installed);
+                                break;
+                            case ApplyCompletedCommand applied:
+                                HandleApplyCompleted(applied);
+                                break;
+                            case UnwindCompletedCommand unwound:
+                                HandleUnwindCompleted(unwound);
+                                break;
+                        }
+
+                        Reconcile();
+                        PublishSnapshot();
+                        FlushAwaitingLoads();
+                    }
+
+                    CompletePendingReplies();
+                }
+                catch (Exception ex)
+                {
+                    Fail(command, ex);
+                    CompletePendingReplies();
+                }
             }
-
-            ValidateDeclarations(component, realm ?? Realm.Default);
-            var fiber = new Fiber(Guid.NewGuid(), component, parent, generation: 0)
-            {
-                Realm = realm ?? Realm.Default,
-            };
-            _fibers[fiber.Id] = fiber;
-            parent?.AddChild(fiber);
-
-            var cycle = FindCycle();
-            if (cycle is not null)
-            {
-                _fibers.TryRemove(fiber.Id, out _);
-                parent?.RemoveChild(fiber);
-                throw new DependencyCycleException($"dependency cycle: {cycle}");
-            }
-
-            await ReconcileCoreAsync();
-            return fiber;
         }
         finally
         {
-            lease.Dispose();
+            _closed = true;
         }
     }
 
-    /// <summary>Retire a fiber. The entry disappears; declaration validation already happened.</summary>
-    public async Task DisposeAsync(Fiber fiber)
+    private static void Fail(RuntimeCommand command, Exception ex)
     {
-        ArgumentNullException.ThrowIfNull(fiber);
-
-        // Set the target before taking the gate so an in-flight activation can divert.
-        fiber.Intent = LifecycleIntent.Retired;
-        CancelActivation(fiber);
-
-        var lease = await EnterAsync();
-        // AsyncLocal changes inside EnterAsync do not flow back to the caller;
-        // publish the lease here for nested child creation on this frame.
-        if (!ReferenceEquals(lease, GateLease.Reentrant))
+        switch (command)
         {
-            _gateLease.Value = lease;
+            case LoadCommand load:
+                load.Reply.TrySetException(ex);
+                break;
+            case DisposeCommand dispose:
+                dispose.Reply.TrySetException(ex);
+                break;
+            case CloseCommand close:
+                close.Reply.TrySetException(ex);
+                break;
+            case StepRequestCommand request:
+                request.Reply.TrySetResult(false);
+                break;
+            case StepInstalledCommand installed:
+                installed.Reply.TrySetException(ex);
+                break;
         }
-        try
+    }
+
+    private Fiber HandleLoad(LoadCommand command)
+    {
+        if (_closing)
         {
-            if (fiber.State == FiberState.Gone)
+            throw new ObjectDisposedException(nameof(Runtime));
+        }
+
+        if (command.Parent is not null && !_fibers.ContainsKey(command.Parent.Id))
+        {
+            throw new InvalidOperationException("parent fiber does not belong to this runtime");
+        }
+
+        // Child inherits the PARENT realm and per-key routes (paper §4.4, Go baseline).
+        var realm = command.Realm ?? command.Parent?.Realm ?? Realm.Default;
+        ValidateDeclarations(command.Component, realm);
+
+        var fiber = new Fiber(Guid.NewGuid(), command.Component, command.Parent, generation: 0)
+        {
+            Realm = realm,
+        };
+        if (command.Parent is not null)
+        {
+            foreach (var pair in command.Parent.RealmOverrides)
             {
+                fiber.RealmOverrides[pair.Key] = pair.Value;
+            }
+
+            foreach (var pair in command.Parent.Metadata)
+            {
+                fiber.Metadata[pair.Key] = new Fiber.MetaState
+                {
+                    Declared = pair.Value.Declared,
+                    Override = pair.Value.Override,
+                };
+            }
+        }
+
+        _fibers[fiber.Id] = fiber;
+        command.Parent?.AddChild(fiber);
+
+        var cycle = FindCycle();
+        if (cycle is not null)
+        {
+            _fibers.Remove(fiber.Id);
+            command.Parent?.RemoveChild(fiber);
+            throw new DependencyCycleException($"dependency cycle: {cycle}");
+        }
+
+        command.Created = fiber;
+        if (command.AwaitActivation)
+        {
+            _awaitingLoads.Add(command);
+        }
+        else
+        {
+            _pendingReplies.Add(() => command.Reply.TrySetResult(fiber));
+        }
+
+        _bindingsChanged = true;
+        return fiber;
+    }
+
+    private void HandleDispose(DisposeCommand command)
+    {
+        var fiber = command.Fiber;
+        if (!_fibers.TryGetValue(fiber.Id, out var current) || !ReferenceEquals(current, fiber))
+        {
+            _pendingReplies.Add(() => command.Reply.TrySetResult());
+            return;
+        }
+
+        fiber.Intent = LifecycleIntent.Retired;
+        var activation = fiber.CurrentActivation;
+        if (activation is null || activation.Phase == ActivationPhase.Unwound ||
+            fiber.State is FiberState.Gone or FiberState.Failed or FiberState.Pending)
+        {
+            fiber.State = FiberState.Gone;
+            _fibers.Remove(fiber.Id);
+            fiber.SignalGone();
+            _pendingReplies.Add(() => command.Reply.TrySetResult());
+            _bindingsChanged = true;
+            return;
+        }
+
+        StartUnwind(fiber, dependencyLoss: false);
+        _disposeWaiters[fiber.Id] = command.Reply;
+    }
+
+    private void HandleClose(CloseCommand command)
+    {
+        if (_closed)
+        {
+            _pendingReplies.Add(() => command.Reply.TrySetResult());
+            return;
+        }
+
+        _closing = true;
+        _closeReply = command.Reply;
+        foreach (var fiber in _fibers.Values.ToArray())
+        {
+            fiber.Intent = LifecycleIntent.Retired;
+            var activation = fiber.CurrentActivation;
+            if (activation is null || activation.Phase == ActivationPhase.Unwound)
+            {
+                fiber.State = FiberState.Gone;
+                _fibers.Remove(fiber.Id);
+                fiber.SignalGone();
+                CompleteDispose(fiber);
+            }
+            else
+            {
+                StartUnwind(fiber, dependencyLoss: false);
+            }
+        }
+
+        CheckCloseComplete();
+    }
+
+    private void HandleStepRequest(StepRequestCommand command)
+    {
+        var activation = command.Activation;
+        var fiber = activation.Fiber;
+        var allowed = fiber.CurrentActivation == activation &&
+                      activation.Phase == ActivationPhase.Installing &&
+                      fiber.Intent == LifecycleIntent.Load &&
+                      !activation.Cancellation.IsCancellationRequested &&
+                      Satisfied(activation);
+        command.Reply.TrySetResult(allowed);
+    }
+
+    private void HandleStepInstalled(StepInstalledCommand command)
+    {
+        var activation = command.Activation;
+        if (!activation.IsCurrent || activation.Phase != ActivationPhase.Installing)
+        {
+            if (command.Inverse is not null)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await command.Inverse();
+                    }
+                    catch
+                    {
+                        // best-effort compensation for obsolete step
+                    }
+                });
+            }
+
+            command.Reply.TrySetResult();
+            return;
+        }
+
+        if (command.Inverse is not null)
+        {
+            activation.Effects.Add(new EffectSlot(command.Inverse) { State = EffectState.Committed });
+        }
+
+        if (activation.Cancellation.IsCancellationRequested)
+        {
+            StartUnwind(activation.Fiber, dependencyLoss: true);
+        }
+
+        command.Reply.TrySetResult();
+    }
+
+    private void HandleApplyCompleted(ApplyCompletedCommand command)
+    {
+        var activation = command.Activation;
+        if (!activation.IsCurrent || activation.Phase != ActivationPhase.Installing)
+        {
+            return;
+        }
+
+        _applying.Remove(activation.Id);
+        activation.ApplyLanded = true;
+        if (activation.UnwindRequested || command.Error is DivertedException ||
+            activation.Cancellation.IsCancellationRequested)
+        {
+            BeginUnwindExecution(activation);
+            return;
+        }
+
+        if (command.Error is not null)
+        {
+            // Apply has LANDED: this failure must not take the in-flight divert
+            // deferral path in StartUnwind, or no unwind would ever run.
+            activation.Fiber.Failure = command.Error;
+            StartUnwind(activation.Fiber, dependencyLoss: false);
+            return;
+        }
+
+        foreach (var key in activation.Fiber.Component.Provide())
+        {
+            if (!activation.Fiber.Provided.TryGetValue(key, out var value))
+            {
+                continue;
+            }
+
+            var realm = EffectiveRealm(activation.Fiber, key);
+            var existing = FindProvider(realm, key);
+            if (existing is not null && !ReferenceEquals(existing, activation.Fiber))
+            {
+                activation.Fiber.Failure = new DuplicateProviderException(
+                    $"key '{key.Name}' is already provided by '{existing.Component.Name}'");
+                StartUnwind(activation.Fiber, dependencyLoss: false);
                 return;
             }
 
-            await DeactivateAsync(fiber);
-            fiber.State = FiberState.Gone;
-            _fibers.TryRemove(fiber.Id, out _);
-            fiber.Parent?.RemoveChild(fiber);
-            fiber.SignalGone();
-            _bindingsChanged = true;
-            await ReconcileCoreAsync();
+            SetProvider(realm, key, activation.Fiber);
         }
-        finally
+
+        _justCommitted.Add(activation.Id);
+        activation.Dependencies = [.. activation.Fiber.Committed.Values];
+        activation.Phase = ActivationPhase.Committed;
+        activation.Fiber.State = FiberState.Active;
+        _bindingsChanged = true;
+    }
+
+    private void HandleUnwindCompleted(UnwindCompletedCommand command)
+    {
+        var activation = command.Activation;
+        _unwinding.Remove(activation.Id);
+        _applying.Remove(activation.Id);
+        _unwindRunning.Remove(activation.Id);
+        if (!activation.IsCurrent || activation.Phase != ActivationPhase.Unwinding)
         {
-            lease.Dispose();
+            ForgetActivation(activation);
+            CheckCloseComplete();
+            return;
+        }
+
+        var fiber = activation.Fiber;
+        var providerActivations = fiber.Committed.Values.Select(b => b.ActivationId).Distinct().ToArray();
+        var providedRealms = new Dictionary<ICapabilityKey, Realm>(ReferenceEqualityComparer.Instance);
+        foreach (var key in fiber.Component.Provide())
+        {
+            providedRealms[key] = EffectiveRealm(fiber, key);
+        }
+
+        fiber.Provided.Clear();
+        fiber.Committed.Clear();
+        fiber.Metadata.Clear();
+        _versionedProviders.RemoveAll(b => b.ActivationId == activation.Id && ReferenceEquals(b.Provider, fiber));
+        foreach (var key in fiber.Component.Provide())
+        {
+            var realm = providedRealms[key];
+            if (ReferenceEquals(FindProvider(realm, key), fiber))
+            {
+                RemoveProvider(realm, key);
+            }
+        }
+
+        foreach (var list in _handlers.Values)
+        {
+            list.RemoveAll(h => h.ActivationId == activation.Id);
+        }
+
+        activation.Phase = ActivationPhase.Unwound;
+        if (fiber.Intent == LifecycleIntent.Retired || _closing)
+        {
+            fiber.State = FiberState.Gone;
+            _fibers.Remove(fiber.Id);
+            fiber.SignalGone();
+            CompleteDispose(fiber);
+        }
+        else if (fiber.Failure is not null)
+        {
+            fiber.State = FiberState.Failed;
+        }
+        else
+        {
+            fiber.State = FiberState.Pending;
+        }
+
+        foreach (var providerId in providerActivations)
+        {
+            ReleaseWaiters(providerId);
+        }
+
+        if (fiber.Parent?.CurrentActivation is { } parentActivation)
+        {
+            ReleaseWaiters(parentActivation.Id);
+        }
+
+        ForgetActivation(activation);
+        _bindingsChanged = true;
+        CheckCloseComplete();
+    }
+
+    /// <summary>
+    /// Drop strong references from retired bookkeeping so an unloaded plugin's
+    /// AssemblyLoadContext is not pinned by a still-live Runtime or a Pending
+    /// consumer's old dependency snapshot.
+    /// </summary>
+    private void ForgetActivation(Activation activation)
+    {
+        _activations.Remove(activation.Id);
+        activation.Dependencies.Clear();
+        activation.Effects.Clear();
+        if (activation.Fiber.CurrentActivation == activation)
+        {
+            activation.Fiber.CurrentActivation = null;
         }
     }
 
-    public async Task CloseAsync()
+    private void ReleaseWaiters(long providerActivationId)
     {
-        var lease = await EnterAsync();
-        // AsyncLocal changes inside EnterAsync do not flow back to the caller;
-        // publish the lease here for nested child creation on this frame.
-        if (!ReferenceEquals(lease, GateLease.Reentrant))
+        if (!_unwindWaiters.TryGetValue(providerActivationId, out var count))
         {
-            _gateLease.Value = lease;
+            return;
         }
+
+        if (count > 1)
+        {
+            _unwindWaiters[providerActivationId] = count - 1;
+            return;
+        }
+
+        _unwindWaiters.Remove(providerActivationId);
+        if (_activations.TryGetValue(providerActivationId, out var provider))
+        {
+            BeginUnwindExecution(provider);
+        }
+    }
+
+    private void CompleteDispose(Fiber fiber)
+    {
+        if (_disposeWaiters.Remove(fiber.Id, out var reply))
+        {
+            _pendingReplies.Add(() => reply.TrySetResult());
+        }
+    }
+
+    private void FlushAwaitingLoads()
+    {
+        if (_applying.Count > 0 || _unwinding.Count > 0 || _awaitingLoads.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var load in _awaitingLoads)
+        {
+            if (load.Created is not null)
+            {
+                _pendingReplies.Add(() => load.Reply.TrySetResult(load.Created!));
+            }
+        }
+
+        _awaitingLoads.Clear();
+    }
+
+    private void CheckCloseComplete()
+    {
+        if (!_closing || _closeReply is null || _applying.Count > 0 || _unwinding.Count > 0 || _fibers.Count > 0)
+        {
+            return;
+        }
+
+        _closed = true;
+        var closeReply = _closeReply;
+        _pendingReplies.Add(() => closeReply.TrySetResult());
+        _closeReply = null;
+
+        // Release plugin assemblies as soon as the last fiber is gone. The
+        // Runtime may still be alive for a short teardown window, but it must
+        // not pin an unloaded ALC through activation/bookkeeping state.
+        _activations.Clear();
+        _versionedProviders.Clear();
+        _handlers.Clear();
+        _providers.Clear();
+        _realmProviders.Clear();
+        _disposeWaiters.Clear();
+        _unwindWaiters.Clear();
+    }
+
+    private void CompletePendingReplies()
+    {
+        foreach (var complete in _pendingReplies)
+        {
+            complete();
+        }
+
+        _pendingReplies.Clear();
+    }
+
+    // ---- reconciliation -----------------------------------------------------
+
+    private void Reconcile()
+    {
+        var guard = 0;
+        do
+        {
+            _bindingsChanged = false;
+            if (++guard > 64)
+            {
+                throw new InvalidOperationException("reconciliation did not converge");
+            }
+
+            foreach (var fiber in _fibers.Values.ToArray())
+            {
+                var activation = fiber.CurrentActivation;
+                if (activation is null || !activation.IsCurrent ||
+                    activation.Phase != ActivationPhase.Committed ||
+                    _justCommitted.Contains(activation.Id) ||
+                    _unwinding.Contains(activation.Id))
+                {
+                    continue;
+                }
+
+                if (fiber.Intent == LifecycleIntent.Retired || !Satisfied(activation))
+                {
+                    StartUnwind(fiber, dependencyLoss: fiber.Intent != LifecycleIntent.Retired);
+                }
+            }
+
+            foreach (var fiber in _fibers.Values.ToArray())
+            {
+                if (fiber.State == FiberState.Pending && fiber.Failure is null &&
+                    fiber.Intent == LifecycleIntent.Load &&
+                    fiber.CurrentActivation?.Phase != ActivationPhase.Installing &&
+                    Satisfied(new PendingProbe(fiber)))
+                {
+                    StartActivation(fiber);
+                }
+            }
+        }
+        while (_bindingsChanged);
+    }
+
+    private readonly record struct PendingProbe(Fiber Fiber);
+
+    private bool Satisfied(Activation activation)
+    {
+        foreach (var key in activation.Fiber.Component.Inject().Where(k => k is not IMetaKey))
+        {
+            if (!SatisfiedKey(activation.Fiber, key, activation))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool Satisfied(PendingProbe probe)
+    {
+        foreach (var key in probe.Fiber.Component.Inject().Where(k => k is not IMetaKey))
+        {
+            if (!SatisfiedKey(probe.Fiber, key, null))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool SatisfiedKey(Fiber fiber, ICapabilityKey key, Activation? consumer)
+    {
+        if (key is IVersionedKey versioned)
+        {
+            var target = TargetVersioned(versioned, fiber);
+            if (target is null)
+            {
+                return false;
+            }
+
+            return consumer is null ||
+                   !fiber.Committed.TryGetValue(key, out var bound) ||
+                   (bound.FiberId == target.Provider.Id && bound.ActivationId == target.ActivationId);
+        }
+
+        var provider = FindProvider(EffectiveRealm(fiber, key), key);
+        if (provider is null || provider.State != FiberState.Active ||
+            provider.CurrentActivation?.Phase != ActivationPhase.Committed ||
+            ReferenceEquals(provider, fiber))
+        {
+            return false;
+        }
+
+        return consumer is null ||
+               !fiber.Committed.TryGetValue(key, out var current) ||
+               (current.FiberId == provider.Id && current.ActivationId == provider.ActivationId);
+    }
+
+    private void StartActivation(Fiber fiber)
+    {
+        var id = ++_nextActivationId;
+        var cts = new CancellationTokenSource();
+        var activation = new Activation(id, fiber, this, cts);
+        fiber.Generation++;
+        fiber.CurrentActivation = activation;
+        fiber.Failure = null;
+        fiber.State = FiberState.Loading;
+        activation.Phase = ActivationPhase.Installing;
+        _activations[id] = activation;
+        _applying.Add(id);
+        _bindingsChanged = true;
+        _ = Task.Run(() => RunApplyAsync(activation));
+    }
+
+    private async Task RunApplyAsync(Activation activation)
+    {
+        Exception? error = null;
         try
         {
-            _closed = true;
-            foreach (var fiber in _fibers.Values)
+            await foreach (var step in StepsAsync(activation))
             {
-                fiber.Intent = LifecycleIntent.Retired;
-                CancelActivation(fiber);
-            }
+                var proceed = await RequestStepAsync(activation);
+                if (!proceed)
+                {
+                    error = new DivertedException();
+                    break;
+                }
 
-            foreach (var fiber in _fibers.Values.OrderByDescending(f => f.Parent is null ? 0 : 1).ToArray())
-            {
-                await DeactivateAsync(fiber);
-                fiber.State = FiberState.Gone;
-                fiber.SignalGone();
-            }
+                var inverse = await step.Install();
+                var reply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                if (!TryWrite(new StepInstalledCommand(activation, inverse, reply)))
+                {
+                    throw new ObjectDisposedException(nameof(Runtime));
+                }
 
-            _fibers.Clear();
-            _providers.Clear();
-            _realmProviders.Clear();
-            _versionedProviders.Clear();
-            _handlers.Clear();
+                await reply.Task;
+                if (!activation.IsCurrent || activation.Phase != ActivationPhase.Installing)
+                {
+                    error = new DivertedException();
+                    break;
+                }
+            }
         }
-        finally
+        catch (Exception ex)
         {
-            lease.Dispose();
+            error = ex;
         }
+
+        TryWrite(new ApplyCompletedCommand(activation, error));
     }
 
-    public RuntimeSnapshot Snapshot()
+    private async Task<bool> RequestStepAsync(Activation activation)
     {
-        return new RuntimeSnapshot(_fibers.Values.Select(f => new FiberSnapshot(
-            f.Id,
-            f.Component.Name,
-            f.State,
-            f.Generation,
-            f.Parent?.Id,
-            f.Component.Inject().Select(k => k.Name).ToArray(),
-            f.Component.Provide().Select(k => k.Name).ToArray(),
-            f.Committed.Select(pair => $"{pair.Key.Name}->{pair.Value.Id}").ToArray(),
-            f.Failure?.Message)).ToArray());
+        var reply = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!TryWrite(new StepRequestCommand(activation, reply)))
+        {
+            throw new ObjectDisposedException(nameof(Runtime));
+        }
+
+        return await reply.Task;
     }
 
-    /// <summary>Read-only lookup of a fiber, including one still activating.</summary>
-    public Fiber? GetFiber(Guid id) => _fibers.TryGetValue(id, out var fiber) ? fiber : null;
+    private static async IAsyncEnumerable<EffectRegistration> StepsAsync(Activation activation)
+    {
+        if (activation.Fiber.Component is IIterativeComponent iterative)
+        {
+            await foreach (var step in iterative.IterateAsync(activation.Context))
+            {
+                yield return step;
+            }
+
+            yield break;
+        }
+
+        // Single-step component: Apply itself is the install — the decision
+        // point happens BEFORE user code runs (paper Iterator / Divert).
+        yield return new EffectRegistration(async () =>
+        {
+            var cleanup = await activation.Fiber.Component.ApplyAsync(activation.Context);
+            if (cleanup is not null)
+            {
+                activation.Effects.Add(new EffectSlot(() => cleanup())
+                {
+                    State = EffectState.Committed,
+                });
+            }
+
+            return null;
+        });
+    }
+
+    private void StartUnwind(Fiber fiber, bool dependencyLoss)
+    {
+        var activation = fiber.CurrentActivation;
+        if (activation is null || !activation.IsCurrent ||
+            activation.Phase is ActivationPhase.Unwinding or ActivationPhase.Unwound)
+        {
+            return;
+        }
+
+        if (activation.Phase == ActivationPhase.Installing && !activation.ApplyLanded)
+        {
+            // Inertial divert (paper §4.4): let the in-flight Apply land, then
+            // its inverse is registered by StepInstalled before unwind runs.
+            activation.UnwindRequested = true;
+            activation.Cancellation.Cancel();
+            return;
+        }
+
+        // Relied guard (paper Def 54): provider stays Active/Committed until
+        // consumers and children finished teardown, so their Cleanup can
+        // still Require the dependency.
+        activation.Cancellation.Cancel();
+
+        var consumers = _fibers.Values.Count(other =>
+            !ReferenceEquals(other, fiber) &&
+            other.Committed.Values.Any(b =>
+                b.FiberId == fiber.Id && b.ActivationId == activation.Id));
+        var children = fiber.ChildList.Count(c => c.State != FiberState.Gone);
+        var waiting = consumers + children;
+
+        if (waiting > 0)
+        {
+            _unwindWaiters[activation.Id] = waiting;
+            foreach (var child in fiber.ChildList.ToArray())
+            {
+                if (child.State == FiberState.Gone)
+                {
+                    continue;
+                }
+
+                child.Intent = LifecycleIntent.Retired;
+                StartUnwind(child, dependencyLoss: false);
+            }
+
+            foreach (var other in _fibers.Values.ToArray())
+            {
+                if (!ReferenceEquals(other, fiber) &&
+                    other.Committed.Values.Any(b =>
+                        b.FiberId == fiber.Id && b.ActivationId == activation.Id))
+                {
+                    StartUnwind(other, dependencyLoss: true);
+                }
+            }
+
+            return;
+        }
+
+        BeginUnwindExecution(activation);
+    }
+
+    private void BeginUnwindExecution(Activation activation)
+    {
+        if (activation.Phase is ActivationPhase.Unwinding or ActivationPhase.Unwound ||
+            !_unwindRunning.Add(activation.Id))
+        {
+            return;
+        }
+
+        activation.Phase = ActivationPhase.Unwinding;
+        activation.Fiber.State = FiberState.Unloading;
+        _unwinding.Add(activation.Id);
+        _ = Task.Run(() => RunUnwindAsync(activation));
+    }
+
+    private async Task RunUnwindAsync(Activation activation)
+    {
+        try
+        {
+            for (var i = activation.Effects.Count - 1; i >= 0; i--)
+            {
+                var slot = activation.Effects[i];
+                if (slot.State == EffectState.Undone || slot.Inverse is null)
+                {
+                    continue;
+                }
+
+                slot.State = EffectState.Undoing;
+                try
+                {
+                    await slot.Inverse();
+                }
+                catch
+                {
+                    // a failing inverse must not prevent the remaining inverses
+                }
+
+                slot.State = EffectState.Undone;
+            }
+        }
+        catch
+        {
+            // best effort
+        }
+
+        TryWrite(new UnwindCompletedCommand(activation, null));
+    }
+
+    // ---- capability resolution ---------------------------------------------
 
     private static Realm EffectiveRealm(Fiber fiber, ICapabilityKey key) =>
         fiber.RealmOverrides.TryGetValue(key, out var realm) ? realm : fiber.Realm;
 
-    private Fiber? FindProvider(Realm realm, ICapabilityKey key)
-    {
-        if (ReferenceEquals(realm, Realm.Default))
-        {
-            return _providers.GetValueOrDefault(key);
-        }
-
-        return _realmProviders.TryGetValue(realm, out var table)
-            ? table.GetValueOrDefault(key)
-            : null;
-    }
+    private Fiber? FindProvider(Realm realm, ICapabilityKey key) =>
+        ReferenceEquals(realm, Realm.Default)
+            ? _providers.GetValueOrDefault(key)
+            : _realmProviders.TryGetValue(realm, out var table) ? table.GetValueOrDefault(key) : null;
 
     private void SetProvider(Realm realm, ICapabilityKey key, Fiber fiber)
     {
@@ -249,7 +960,7 @@ public sealed class Runtime : IAsyncDisposable
     {
         if (ReferenceEquals(realm, Realm.Default))
         {
-            _providers.TryRemove(key, out _);
+            _providers.Remove(key);
             return;
         }
 
@@ -263,139 +974,145 @@ public sealed class Runtime : IAsyncDisposable
         }
     }
 
-
-    internal void RegisterVersioned<T>(VersionedKey<T> key, T value, Fiber provider)
+    /// <summary>Short critical section for user-side registry/binding writes.</summary>
+    internal void Mutate(Action mutation)
     {
-        var realm = EffectiveRealm(provider, key);
-        var duplicate = _versionedProviders.FirstOrDefault(binding =>
-            ReferenceEquals(binding.Realm, realm) &&
-            binding.Name == key.Name &&
-            binding.ValueType == typeof(T) &&
-            binding.Version == key.Version &&
-            !ReferenceEquals(binding.Provider, provider));
-        if (duplicate is not null)
+        lock (_stateLock)
         {
-            throw new DuplicateProviderException(
-                $"key '{key.Name}' version {key.Version} is already provided by '{duplicate.Provider.Component.Name}'");
+            mutation();
+        }
+    }
+
+    internal T RequireValue<T>(CapabilityKey key, Activation consumer)
+    {
+        T result = default!;
+        Exception? failure = null;
+        Mutate(() =>
+        {
+            try
+            {
+                var provider = FindProvider(EffectiveRealm(consumer.Fiber, key), key);
+                if (provider is null || provider.State != FiberState.Active ||
+                    provider.CurrentActivation?.Phase != ActivationPhase.Committed ||
+                    ReferenceEquals(provider, consumer.Fiber) ||
+                    !provider.Provided.TryGetValue(key, out var value))
+                {
+                    throw new DependencyMissingException(
+                        $"'{consumer.Fiber.Component.Name}' requires '{key.Name}' but no active provider exists");
+                }
+
+                consumer.Fiber.Committed[key] = new ProviderBinding(
+                    key, provider.Id, provider.ActivationId, provider, value);
+                result = (T)value!;
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+        if (failure is not null)
+        {
+            throw failure;
         }
 
-        _versionedProviders.RemoveAll(binding =>
-            ReferenceEquals(binding.Provider, provider) &&
-            binding.Name == key.Name &&
-            binding.ValueType == typeof(T));
-        _versionedProviders.Add(new VersionedBinding(realm, key.Name, typeof(T), key.Version, provider, value!));
-        MarkBindingsChanged(); // a higher compatible version can change consumers' target
+        return result;
     }
 
-    internal void RemoveVersioned(Fiber provider, ICapabilityKey key)
-    {
-        _versionedProviders.RemoveAll(binding =>
-            ReferenceEquals(binding.Provider, provider) && binding.Name == key.Name);
-        MarkBindingsChanged();
-    }
+    internal void RegisterVersioned<T>(VersionedKey<T> key, T value, Activation provider) =>
+        Mutate(() =>
+        {
+            var realm = EffectiveRealm(provider.Fiber, key);
+            var duplicate = _versionedProviders.FirstOrDefault(b =>
+                b.Realm == realm && b.Name == key.Name && b.ValueType == typeof(T) &&
+                b.Version == key.Version && b.ActivationId != provider.Id);
+            if (duplicate is not null)
+            {
+                throw new DuplicateProviderException($"key '{key.Name}' version {key.Version} already provided");
+            }
 
-    // Single source of truth for the target binding: highest compatible
-    // version in the consumer realm (paper §6.6). Used by both Resolve and
-    // Satisfied so reconciliation can detect a stale committed binding.
-    private VersionedBinding? TargetVersioned(IVersionedKey key, Fiber consumer)
-    {
-        var realm = EffectiveRealm(consumer, (ICapabilityKey)key);
-        return _versionedProviders
-            .Where(binding => ReferenceEquals(binding.Realm, realm) &&
-                              binding.Name == key.Name &&
-                              binding.ValueType == key.ValueType &&
-                              key.Accepts(binding.Version) &&
-                              !ReferenceEquals(binding.Provider, consumer) &&
-                              binding.Provider.State == FiberState.Active)
-            .OrderByDescending(binding => binding.Version)
+            _versionedProviders.RemoveAll(b =>
+                b.ActivationId == provider.Id && b.Name == key.Name && b.ValueType == typeof(T));
+            _versionedProviders.Add(new VersionedBinding(
+                realm, key.Name, typeof(T), key.Version, provider.Fiber, provider.Id, value!));
+            _bindingsChanged = true;
+        });
+
+    internal void RemoveVersioned(Activation provider, ICapabilityKey key) =>
+        Mutate(() => _versionedProviders.RemoveAll(b =>
+            b.ActivationId == provider.Id && b.Name == key.Name));
+
+    internal void MarkBindingsChanged() => Mutate(() => _bindingsChanged = true);
+
+    private VersionedBinding? TargetVersioned(IVersionedKey key, Fiber consumer) =>
+        _versionedProviders
+            .Where(b => b.Realm == EffectiveRealm(consumer, (ICapabilityKey)key) &&
+                        b.Name == key.Name && b.ValueType == key.ValueType &&
+                        key.Accepts(b.Version) &&
+                        b.Provider.State == FiberState.Active &&
+                        b.ActivationId != consumer.ActivationId)
+            .OrderByDescending(b => b.Version)
             .FirstOrDefault();
+
+    internal T ResolveVersioned<T>(VersionedKey<T> key, Activation consumer)
+    {
+        T result = default!;
+        Exception? failure = null;
+        Mutate(() =>
+        {
+            try
+            {
+                var binding = TargetVersioned(key, consumer.Fiber);
+                if (binding is null)
+                {
+                    throw new DependencyMissingException(
+                        $"'{consumer.Fiber.Component.Name}' requires '{key.Name}' matching " +
+                        $"'{key.Constraint ?? (IFormattable)key.Version}' but no active provider exists");
+                }
+
+                consumer.Fiber.Committed[key] = new ProviderBinding(
+                    key, binding.Provider.Id, binding.ActivationId, binding.Provider, binding.Value);
+                result = (T)binding.Value;
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+        if (failure is not null)
+        {
+            throw failure;
+        }
+
+        return result;
     }
 
-    internal T ResolveVersioned<T>(VersionedKey<T> key, Fiber consumer)
+    internal ValueTask RegisterHandler<T>(EventKey<T> key, Func<T, ValueTask> handler, Activation owner)
     {
-        var binding = TargetVersioned(key, consumer);
-        if (binding is null)
+        Mutate(() =>
         {
-            throw new DependencyMissingException(
-                $"'{consumer.Component.Name}' requires '{key.Name}' matching '{key.Constraint ?? (IFormattable)key.Version}' " +
-                $"but no active provider exists");
-        }
+            if (!_handlers.TryGetValue(key, out var list))
+            {
+                list = [];
+                _handlers[key] = list;
+            }
 
-        consumer.Committed[key] = binding.Provider;
-        return (T)binding.Value;
-    }
-
-    private bool HasVersionedProvider(IVersionedKey key, Fiber consumer)
-    {
-        var target = TargetVersioned(key, consumer);
-        if (target is null)
-        {
-            return false;
-        }
-
-        // A consumer committed to a lower compatible provider is NOT satisfied
-        // once a higher compatible version appears: it must unwind and
-        // re-activate against the new target (P1-1).
-        if (consumer.Committed.TryGetValue((ICapabilityKey)key, out var current) &&
-            !ReferenceEquals(current, target.Provider))
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    internal T RequireValue<T>(CapabilityKey key, Fiber consumer)
-    {
-        var provider = FindProvider(EffectiveRealm(consumer, key), key);
-        if (provider is null ||
-            provider.State != FiberState.Active ||
-            ReferenceEquals(provider, consumer) ||
-            !provider.Provided.TryGetValue(key, out var value))
-        {
-            throw new DependencyMissingException(
-                $"'{consumer.Component.Name}' requires '{key.Name}' but no active provider exists");
-        }
-
-        consumer.Committed[key] = provider;
-        return (T)value!;
-    }
-
-    internal void MarkBindingsChanged() => _bindingsChanged = true;
-
-    internal ValueTask RegisterHandler<T>(EventKey<T> key, Func<T, ValueTask> handler, Fiber owner)
-    {
-        if (!_handlers.TryGetValue(key, out var list))
-        {
-            list = [];
-            _handlers[key] = list;
-        }
-
-        var entry = new Handler(owner, payload => handler((T)payload!));
-        list.Add(entry);
-        owner.AddInverse(() =>
-        {
-            list.Remove(entry);
-            return ValueTask.CompletedTask;
+            list.Add(new Handler(owner.Fiber, owner.Id, p => handler((T)p!)));
+            owner.Effects.Add(new EffectSlot(() =>
+            {
+                list.RemoveAll(h => h.ActivationId == owner.Id);
+                return ValueTask.CompletedTask;
+            }) { State = EffectState.Committed });
         });
         return ValueTask.CompletedTask;
     }
 
-    internal async ValueTask EmitAsync<T>(EventKey<T> key, T payload, Fiber emitter)
+    internal async ValueTask EmitAsync<T>(EventKey<T> key, T payload, Activation emitter)
     {
-        if (!_handlers.TryGetValue(key, out var handlers))
-        {
-            return;
-        }
-
+        Handler[] handlers = [];
+        Mutate(() => handlers = _handlers.TryGetValue(key, out var list) ? list.ToArray() : []);
         Exception? failure = null;
-        foreach (var handler in handlers.ToArray())
+        foreach (var handler in handlers)
         {
-            if (handler.Owner.State is FiberState.Gone or FiberState.Unloading)
-            {
-                continue;
-            }
-
             try
             {
                 await handler.Invoke(payload);
@@ -412,280 +1129,12 @@ public sealed class Runtime : IAsyncDisposable
         }
     }
 
-    private async Task ReconcileCoreAsync()
-    {
-        do
-        {
-            _bindingsChanged = false;
-
-            // A nested reconcile (child creation from Apply) must never touch a
-            // fiber whose own activation frame is still live.
-            foreach (var fiber in _fibers.Values
-                         .Where(f => (f.State is FiberState.Active or FiberState.Loading) && !f.IsActivating)
-                         .ToArray())
-            {
-                if (!Satisfied(fiber))
-                {
-                    await DeactivateAsync(fiber);
-                    fiber.State = FiberState.Pending;
-                    _bindingsChanged = true;
-                }
-            }
-
-            foreach (var fiber in _fibers.Values
-                         .Where(f => f.State == FiberState.Pending &&
-                                     !f.IsActivating &&
-                                     f.Failure is null &&
-                                     f.Intent == LifecycleIntent.Load)
-                         .ToArray())
-            {
-                if (Satisfied(fiber))
-                {
-                    await ActivateAsync(fiber);
-                }
-            }
-        }
-        while (_bindingsChanged);
-    }
-
-    private bool Satisfied(Fiber fiber)
-    {
-        foreach (var key in fiber.Component.Inject().Where(key => key is not IMetaKey))
-        {
-            if (key is IVersionedKey versioned)
-            {
-                if (!HasVersionedProvider(versioned, fiber))
-                {
-                    return false;
-                }
-
-                continue;
-            }
-
-            var provider = FindProvider(EffectiveRealm(fiber, key), key);
-            if (provider is null ||
-                provider.State != FiberState.Active ||
-                ReferenceEquals(provider, fiber))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private async Task ActivateAsync(Fiber fiber)
-    {
-        fiber.IsActivating = true;
-        try
-        {
-            await ActivateCoreAsync(fiber);
-        }
-        finally
-        {
-            fiber.IsActivating = false;
-        }
-    }
-
-    private async Task ActivateCoreAsync(Fiber fiber)
-    {
-        fiber.State = FiberState.Loading;
-        fiber.Generation++;
-        var generation = fiber.Generation;
-        fiber.ActivationCancellation?.Dispose();
-        fiber.ActivationCancellation = new CancellationTokenSource();
-        var context = new Context(fiber, this, generation);
-
-        try
-        {
-            Func<ValueTask>? directInverse = null;
-            await foreach (var step in StepsAsync(fiber.Component, context, inverse =>
-                           {
-                               // Single Apply already installed its effect; record the
-                               // inverse immediately so a later divert cannot drop it.
-                               directInverse = inverse;
-                               if (inverse is not null)
-                               {
-                                   fiber.AddInverse(inverse);
-                               }
-                           }))
-            {
-                context.ThrowIfDiverted();
-                var inverse = await step.Install();
-                if (context.IsDiverted)
-                {
-                    if (inverse is not null && !ReferenceEquals(inverse, directInverse))
-                    {
-                        await inverse();
-                    }
-
-                    throw new DivertedException();
-                }
-
-                if (inverse is not null && !ReferenceEquals(inverse, directInverse))
-                {
-                    fiber.AddInverse(inverse);
-                }
-            }
-
-            foreach (var key in fiber.Component.Provide())
-            {
-                if (!fiber.Provided.ContainsKey(key))
-                {
-                    continue;
-                }
-
-                var realm = EffectiveRealm(fiber, key);
-                var existing = FindProvider(realm, key);
-                if (existing is not null && !ReferenceEquals(existing, fiber))
-                {
-                    throw new DuplicateProviderException(
-                        $"key '{key.Name}' is already provided by '{existing.Component.Name}' in realm '{realm.Name}'");
-                }
-
-                SetProvider(realm, key, fiber);
-            }
-
-            fiber.State = FiberState.Active;
-            _bindingsChanged = true;
-        }
-        catch (Exception) when (context.IsDiverted)
-        {
-            await UnwindAsync(fiber);
-            fiber.State = FiberState.Pending;
-        }
-        catch (Exception ex)
-        {
-            fiber.Failure = ex;
-            await UnwindAsync(fiber);
-            fiber.State = FiberState.Failed;
-        }
-    }
-
-    private static async IAsyncEnumerable<EffectRegistration> StepsAsync(
-        Component component,
-        Context context,
-        Action<Func<ValueTask>?> registerDirectInverse)
-    {
-        if (component is IIterativeComponent iterative)
-        {
-            await foreach (var step in iterative.IterateAsync(context))
-            {
-                yield return step;
-            }
-
-            yield break;
-        }
-
-        var cleanup = await component.ApplyAsync(context);
-        Func<ValueTask>? inverse = cleanup is null ? null : () => cleanup();
-        registerDirectInverse(inverse);
-        yield return new EffectRegistration(() => new ValueTask<Func<ValueTask>?>(inverse));
-    }
-
-    private async Task DeactivateAsync(Fiber fiber)
-    {
-        if (!_withdrawing.Add(fiber.Id))
-        {
-            return;
-        }
-
-        try
-        {
-            CancelActivation(fiber);
-
-            // Relied guard (paper Def 54): consumers that committed to this
-            // provider must finish their teardown while it is still Active.
-            foreach (var consumer in _fibers.Values
-                         .Where(f => !ReferenceEquals(f, fiber) &&
-                                     f.State is FiberState.Active or FiberState.Loading &&
-                                     f.Committed.Values.Any(provider => ReferenceEquals(provider, fiber)))
-                         .ToArray())
-            {
-                await DeactivateAsync(consumer);
-                consumer.State = FiberState.Pending;
-                _bindingsChanged = true;
-            }
-
-            fiber.State = FiberState.Unloading;
-            await UnwindAsync(fiber);
-        }
-        finally
-        {
-            _withdrawing.Remove(fiber.Id);
-        }
-    }
-
-    private static void CancelActivation(Fiber fiber)
-    {
-        try
-        {
-            fiber.ActivationCancellation?.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-            // An earlier activation already replaced this token source.
-        }
-    }
-
-    private async Task UnwindAsync(Fiber fiber)
-    {
-        for (var i = fiber.ChildList.Count - 1; i >= 0; i--)
-        {
-            var child = fiber.ChildList[i];
-            if (child.State == FiberState.Gone)
-            {
-                continue;
-            }
-
-            await DeactivateAsync(child);
-            child.State = FiberState.Gone;
-            _fibers.TryRemove(child.Id, out _);
-            child.SignalGone();
-        }
-
-        // LIFO: the inverse of the last installed effect runs first.
-        for (var i = fiber.Inverses.Count - 1; i >= 0; i--)
-        {
-            fiber.EffectStates[i] = EffectState.Undoing;
-            try
-            {
-                await fiber.Inverses[i]();
-            }
-            catch
-            {
-                // A failing inverse must not prevent the remaining inverses.
-            }
-
-            fiber.EffectStates[i] = EffectState.Undone;
-        }
-
-        var providedRealms = fiber.Component.Provide()
-            .ToDictionary(key => key, key => EffectiveRealm(fiber, key), ReferenceEqualityComparer.Instance);
-        fiber.Inverses.Clear();
-        fiber.EffectStates.Clear();
-        fiber.Provided.Clear();
-        // P0-3: clear committed provider references AFTER inverses ran so a
-        // Pending consumer cannot keep a disposed provider's ALC alive.
-        fiber.Committed.Clear();
-        _versionedProviders.RemoveAll(binding => ReferenceEquals(binding.Provider, fiber));
-        fiber.Metadata.Clear();
-        foreach (var key in fiber.Component.Provide())
-        {
-            var realm = providedRealms[key];
-            var provider = FindProvider(realm, key);
-            if (ReferenceEquals(provider, fiber))
-            {
-                RemoveProvider(realm, key);
-            }
-        }
-    }
+    // ---- declarations / cycles ---------------------------------------------
 
     private void ValidateDeclarations(Component component, Realm realm)
     {
         EnsureUnique(component.Inject(), "inject");
         EnsureUnique(component.Provide(), "provide");
-
         foreach (var key in component.Provide())
         {
             foreach (var fiber in _fibers.Values.Where(f => f.State != FiberState.Gone))
@@ -693,8 +1142,7 @@ public sealed class Runtime : IAsyncDisposable
                 if (fiber.Component.Provide().Any(k =>
                         ReferenceEquals(k, key) && ReferenceEquals(EffectiveRealm(fiber, k), realm)))
                 {
-                    throw new DuplicateProviderException(
-                        $"key '{key.Name}' is already provided by '{fiber.Component.Name}' in realm '{realm.Name}'");
+                    throw new DuplicateProviderException($"key '{key.Name}' is already provided by '{fiber.Component.Name}'");
                 }
             }
         }
@@ -719,25 +1167,21 @@ public sealed class Runtime : IAsyncDisposable
         var visiting = new HashSet<Guid>();
         var visited = new HashSet<Guid>();
         var chain = new List<string>();
-
-        // Cycle detection reads declarations, not current bindings: a cycle can
-        // never be satisfied, so it must be rejected at the mount boundary.
-        var versionedDeclarations = _fibers.Values
-            .SelectMany(fiber => fiber.Component.Provide().OfType<IVersionedKey>()
-                .Select(key => (Fiber: fiber, Key: key)))
-            .ToArray();
-        var declaredProviders = new Dictionary<(Realm, ICapabilityKey), Fiber>();
+        var versioned = _fibers.Values
+            .SelectMany(f => f.Component.Provide().OfType<IVersionedKey>()
+                .Select(k => (Fiber: f, Key: k))).ToArray();
+        var declared = new Dictionary<(Realm, ICapabilityKey), Fiber>();
         foreach (var fiber in _fibers.Values)
         {
-            foreach (var key in fiber.Component.Provide())
+            foreach (var k in fiber.Component.Provide())
             {
-                declaredProviders.TryAdd((EffectiveRealm(fiber, key), key), fiber);
+                declared.TryAdd((EffectiveRealm(fiber, k), k), fiber);
             }
         }
 
         bool Visit(Fiber fiber)
         {
-            if (visiting.Contains(fiber.Id))
+            if (!visiting.Add(fiber.Id))
             {
                 chain.Add(fiber.Component.Name);
                 return true;
@@ -745,32 +1189,27 @@ public sealed class Runtime : IAsyncDisposable
 
             if (!visited.Add(fiber.Id))
             {
+                visiting.Remove(fiber.Id);
                 return false;
             }
 
-            visiting.Add(fiber.Id);
-            foreach (var key in fiber.Component.Inject().Where(key => key is not IMetaKey))
+            foreach (var key in fiber.Component.Inject().Where(k => k is not IMetaKey))
             {
-                if (key is IVersionedKey requiredVersion)
+                Fiber? provider = null;
+                if (key is IVersionedKey required)
                 {
-                    var best = versionedDeclarations
-                        .Where(candidate => candidate.Key.Name == requiredVersion.Name &&
-                                            candidate.Key.ValueType == requiredVersion.ValueType &&
-                                            requiredVersion.Accepts(candidate.Key.Version))
-                        .OrderByDescending(candidate => candidate.Key.Version)
-                        .Select(candidate => candidate.Fiber)
-                        .FirstOrDefault();
-                    if (best is not null && Visit(best))
-                    {
-                        chain.Add(fiber.Component.Name);
-                        return true;
-                    }
-
-                    continue;
+                    provider = versioned
+                        .Where(c => c.Key.Name == required.Name && c.Key.ValueType == required.ValueType &&
+                                    required.Accepts(c.Key.Version))
+                        .OrderByDescending(c => c.Key.Version)
+                        .Select(c => c.Fiber).FirstOrDefault();
+                }
+                else
+                {
+                    declared.TryGetValue((EffectiveRealm(fiber, key), key), out provider);
                 }
 
-                if (declaredProviders.TryGetValue((EffectiveRealm(fiber, key), key), out var provider) &&
-                    Visit(provider))
+                if (provider is not null && Visit(provider))
                 {
                     chain.Add(fiber.Component.Name);
                     return true;
@@ -794,10 +1233,28 @@ public sealed class Runtime : IAsyncDisposable
         return null;
     }
 
+    private void PublishSnapshot()
+    {
+        _snapshot = new RuntimeSnapshot(_fibers.Values.Select(f => new FiberSnapshot(
+            f.Id, f.Component.Name, f.State, (int)f.ActivationId, f.Parent?.Id,
+            f.Component.Inject().Select(k => k.Name).ToArray(),
+            f.Component.Provide().Select(k => k.Name).ToArray(),
+            f.Committed.Values.Select(b => $"{b.Key.Name}->{b.FiberId}").ToArray(),
+            f.Failure?.Message)).ToArray());
+    }
+
     public async ValueTask DisposeAsync()
     {
         await CloseAsync();
-        _gate.Dispose();
+        // CloseAsync reached a terminal state for every fiber; join the
+        // decision loop so no command can pin a plugin assembly after return.
+        _commands.Writer.TryComplete();
+        if (_loop is not null)
+        {
+            await _loop;
+            _loop = null;
+        }
+
         GC.SuppressFinalize(this);
     }
 }

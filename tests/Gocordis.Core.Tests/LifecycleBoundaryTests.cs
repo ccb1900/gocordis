@@ -94,4 +94,42 @@ public sealed class LifecycleBoundaryTests
         Assert.DoesNotContain(fibers, f => f.Name.StartsWith("bg-", StringComparison.Ordinal));
         Assert.Contains(fibers, f => f.Name == "spawner" && f.State == FiberState.Active);
     }
+
+    [Fact]
+    public async Task DisposingAnAlreadyWoundDownFiberCompletesAndPublishesRemoval()
+    {
+        await using var runtime = new Runtime();
+        var key = new Key<int>("dep");
+
+        var provider = await runtime.LoadAsync(new DelegateComponent(
+            "provider",
+            context =>
+            {
+                context.Provide(key, 1);
+                return ValueTask.FromResult<Cleanup?>(null);
+            },
+            provide: [key]));
+
+        var consumer = await runtime.LoadAsync(new DelegateComponent(
+            "consumer",
+            context =>
+            {
+                context.Require(key);
+                return ValueTask.FromResult<Cleanup?>(null);
+            },
+            inject: [key]));
+
+        // The relied guard keeps the provider alive until the consumer's
+        // cleanup has read the dependency. The awaited Dispose must not return
+        // before that teardown and the following snapshot are published.
+        await runtime.DisposeAsync(provider).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(FiberState.Pending, consumer.State);
+        Assert.DoesNotContain(runtime.Snapshot().Fibers, f => f.Name == "provider");
+
+        // The consumer is now Pending/Unwound. Disposing a terminal fiber used
+        // to leave its Dispose reply uncompleted, hanging the caller forever.
+        await runtime.DisposeAsync(consumer).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(FiberState.Gone, consumer.State);
+        Assert.DoesNotContain(runtime.Snapshot().Fibers, f => f.Name == "consumer");
+    }
 }

@@ -93,11 +93,7 @@ public sealed class AuditRegressionTests
     public async Task AlcIsReclaimedAfterARealPluginLifecycle()
     {
         var reference = await LoadActivateDisposeUnload();
-        for (var attempt = 0; attempt < 10 && reference.IsAlive; attempt++)
-        {
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-        }
+        GcAssert.Reclaimed(reference);
 
         Assert.False(reference.IsAlive, "ALC was not reclaimed after plugin lifecycle");
 
@@ -124,11 +120,7 @@ public sealed class AuditRegressionTests
     public async Task ManagedUnloadIsBoundedToFiberGone()
     {
         var reference = await LoadThroughRegistryThenUnload();
-        for (var attempt = 0; attempt < 12 && reference.IsAlive; attempt++)
-        {
-            GC.Collect(2, GCCollectionMode.Forced);
-            GC.WaitForPendingFinalizers();
-        }
+        GcAssert.Reclaimed(reference);
 
         Assert.False(reference.IsAlive, "ALC still referenced after fiber Gone");
 

@@ -28,11 +28,7 @@ public sealed class ManagedRuntimeTests
         await using var loader = new ManagedPluginLoader();
         var reference = LoadAndUnload(loader, SamplePath("SamplePlugin"));
 
-        for (var attempt = 0; attempt < 10 && reference.IsAlive; attempt++)
-        {
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-        }
+        GcAssert.Reclaimed(reference);
 
         Assert.False(reference.IsAlive, "AssemblyLoadContext was not reclaimed");
         await ValueTask.CompletedTask;
@@ -55,11 +51,7 @@ public sealed class ManagedRuntimeTests
         // provider Fiber (which owns the plugin Component / its ALC).
         var weak = await LoadProviderConsumerUnload();
 
-        for (var attempt = 0; attempt < 10 && weak.IsAlive; attempt++)
-        {
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-        }
+        GcAssert.Reclaimed(weak);
 
         Assert.False(weak.IsAlive, "pending consumer kept the provider plugin ALC alive");
 

@@ -67,7 +67,7 @@ dotnet test Gocordis.sln --nologo
 批次 A 冻结计数：119 = Core 22 / Conformance 28 / Extensions 19 / Runtime 50
                         （119/119 连续 10 次全绿，见 adr-channel-orchestrator.md）
 批次 A 新增回归后：123（连续 10 次全绿）
-批次 B/C 最终：392 = Core 26 / Conformance 113 / Extensions 52 / Runtime 113 / Packaging 7（连续 38 次全绿）
+批次 B/C 最终：396 = Core 26 / Conformance 113 / Extensions 52 / Runtime 113 / Packaging 7（连续 39 次全绿）
 ```
 
 历史片段（不得与新计数混用）：阶段 2 首批 Core 16 / Conformance 5（C06 / Thm70 / C22 / C13 /

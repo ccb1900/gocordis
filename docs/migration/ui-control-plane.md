@@ -79,7 +79,7 @@ npm run build → success
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 392/392
+dotnet test  Gocordis.sln → 396/396
 ```
 
 ## 5. 明确边界

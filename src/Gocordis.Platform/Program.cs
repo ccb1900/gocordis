@@ -70,6 +70,7 @@ public static class PlatformRunner
         var allowRemote = false;
         var host = UiHostKind.Web;
         var hostVersion = "1.0.0";
+        var allowedHosts = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -90,6 +91,9 @@ public static class PlatformRunner
                 case "--host-version":
                     hostVersion = Value(args, ref i);
                     break;
+                case "--allowed-host":
+                    allowedHosts.Add(Value(args, ref i));
+                    break;
                 case "--host":
                     var value = Value(args, ref i);
                     if (!Enum.TryParse<UiHostKind>(value, ignoreCase: true, out host))
@@ -103,7 +107,7 @@ public static class PlatformRunner
             }
         }
 
-        return new PlatformHostOptions(manifest, store, address, allowRemote, host, hostVersion);
+        return new PlatformHostOptions(manifest, store, address, allowRemote, host, hostVersion, allowedHosts);
     }
 
     private static string Value(string[] args, ref int index)
@@ -119,7 +123,7 @@ public static class PlatformRunner
     private static void PrintUsage() => System.Console.Error.WriteLine("""
         gocordis-platform [--manifest <file>] [--store <dir>] [--address <url>]
                           [--allow-remote] [--host web|winforms|avalonia]
-                          [--host-version <semver>]
+                          [--host-version <semver>] [--allowed-host <host> ...]
         """);
 }
 }

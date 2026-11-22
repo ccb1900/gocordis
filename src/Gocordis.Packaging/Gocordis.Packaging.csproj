@@ -4,6 +4,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Gocordis.Core/Gocordis.Core.csproj" />
+    <ProjectReference Include="../Gocordis.Extensions/Gocordis.Extensions.csproj" />
     <ProjectReference Include="../Gocordis.Plugins/Gocordis.Plugins.csproj" />
   </ItemGroup>
 </Project>

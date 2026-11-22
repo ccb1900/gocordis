@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json.Nodes;
 using Gocordis.Console.WebUi;
 using Gocordis.Core;
+using Gocordis.Extensions;
 using Gocordis.Packaging;
 using Gocordis.Plugins;
 using Xunit;
@@ -86,6 +87,68 @@ public sealed class WebUiPolicyTests
         Assert.Equal("Active", (await PluginAsync(client, "p1"))["state"]!.GetValue<string>());
         var configRead = JsonNode.Parse(await client.GetStringAsync("/api/plugins/p1/config"))!["data"]!;
         Assert.Equal("1", configRead["value"]!.GetValue<string>());
+    }
+
+    /// <summary>
+    /// Inbound Host ACL is the existing extensions-level guard, wired in as an
+    /// opt-in middleware rather than a second ACL inside WebUiServer. A denied
+    /// host sees the 404 of a route that was never registered; allow-listed
+    /// hosts and loopback keep their normal behavior.
+    /// </summary>
+    [Fact]
+    public async Task HostAclDeniesNonAllowlistedHostAs404AndKeepsLoopback()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        var host = new ConsoleHost(runtime);
+
+        await using var guard = new ServerRouteGuard();
+        var allowConsole = HostAcl.Policy(["console.example.com"], []);
+        guard.Add(allowConsole, "GET /api/meta");
+        guard.Add(allowConsole, "GET /api/stream");
+
+        await using var server = new WebUiServer(host, routeGuard: guard);
+        await server.StartAsync();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var client = NewClient(server);
+
+        // Two distinct route keys: a plain API route and the SSE stream route.
+        foreach (var path in new[] { "/api/meta", "/api/stream" })
+        {
+            using var denied = await GetWithHostAsync(client, path, "evil.example", cts.Token);
+            Assert.Equal(HttpStatusCode.NotFound, denied.StatusCode);
+
+            // A port on the allow-listed host is stripped before matching.
+            using var listed = await GetWithHostAsync(client, path, "console.example.com:8443", cts.Token);
+            Assert.Equal(HttpStatusCode.OK, listed.StatusCode);
+
+            using var loopback = await GetWithHostAsync(client, path, null, cts.Token);
+            Assert.Equal(HttpStatusCode.OK, loopback.StatusCode);
+        }
+
+        // Guard registrations stay route-key scoped: an unregistered key is
+        // untouched, so the ACL never silently becomes a blanket policy.
+        using var unguarded = await GetWithHostAsync(client, "/api/fleet", "evil.example", cts.Token);
+        Assert.Equal(HttpStatusCode.OK, unguarded.StatusCode);
+
+        // Opt-in: with no guard supplied the existing transport behavior stands,
+        // even for the host the policy above rejects.
+        await using var plain = new WebUiServer(host);
+        await plain.StartAsync();
+        using var plainClient = NewClient(plain);
+        using var withoutGuard = await GetWithHostAsync(plainClient, "/api/meta", "evil.example", cts.Token);
+        Assert.Equal(HttpStatusCode.OK, withoutGuard.StatusCode);
+    }
+
+    private static async Task<HttpResponseMessage> GetWithHostAsync(
+        HttpClient client, string path, string? host, CancellationToken token)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        if (host is not null)
+        {
+            request.Headers.Host = host;
+        }
+        // The stream route never completes its body; headers are all we assert.
+        return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
     }
 
     private static HttpClient NewClient(WebUiServer server) =>

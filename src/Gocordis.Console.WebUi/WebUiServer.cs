@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Gocordis.Extensions;
 using Gocordis.Packaging;
 using Gocordis.Plugins;
 using Microsoft.AspNetCore.Builder;
@@ -52,7 +53,8 @@ public sealed class WebUiServer : IAsyncDisposable
         Func<string, string?>? clientModuleRootResolver = null,
         string? webDistPath = null,
         PluginControlService? control = null,
-        ConsoleAccessPolicy? accessPolicy = null)
+        ConsoleAccessPolicy? accessPolicy = null,
+        ServerRouteGuard? routeGuard = null)
     {
         _host = host;
         _allowRemote = allowRemote;
@@ -74,6 +76,14 @@ public sealed class WebUiServer : IAsyncDisposable
         builder.WebHost.ConfigureKestrel(options =>
             options.Limits.MaxRequestBodySize = PluginPackageLimits.MaxPackageBytes);
         _app = builder.Build();
+
+        // Optional inbound route guard (e.g. HostAcl via ServerRouteGuard).
+        // It is never installed by default, so existing listeners keep their
+        // behavior; denials are the guard's own 404, ahead of any route mapping.
+        if (routeGuard is not null)
+        {
+            _app.Use(routeGuard.Middleware);
+        }
 
         // The built React console is the default UI when its publish output is
         // present. The embedded bootstrap remains the zero-build fallback.

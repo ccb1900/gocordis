@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Gocordis.Extensions;
 using NuGet.Versioning;
 
 namespace Gocordis.Packaging;
@@ -21,8 +22,9 @@ public sealed class HttpPluginPackageSource : IPluginPackageSource
     private readonly Uri _baseUri;
     private readonly string _baseUrl;
     private readonly HttpClient _client;
+    private readonly HttpService? _httpService;
 
-    public HttpPluginPackageSource(string baseUrl, HttpClient? client = null)
+    public HttpPluginPackageSource(string baseUrl, HttpClient? client = null, HttpService? httpService = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(baseUrl);
         var normalized = baseUrl.TrimEnd('/');
@@ -33,10 +35,25 @@ public sealed class HttpPluginPackageSource : IPluginPackageSource
             throw new ArgumentException($"invalid registry base url '{baseUrl}' (want an absolute http/https url)", nameof(baseUrl));
         }
 
+        if (client is not null && httpService is not null)
+        {
+            throw new ArgumentException(
+                "specify either an HttpClient or an HttpService, not both", nameof(httpService));
+        }
+
         _baseUri = parsed;
         _baseUrl = normalized;
         _client = client ?? SharedClient;
+        _httpService = httpService;
     }
+
+    /// <summary>
+    /// Routes registry requests through a caller-owned HttpService, so its
+    /// reversible interceptor chain (including SOCKS transport links) applies to
+    /// remote package resolution. The service stays owned by the caller.
+    /// </summary>
+    public HttpPluginPackageSource(string baseUrl, HttpService httpService)
+        : this(baseUrl, client: null, httpService: httpService) { }
 
     public async Task<string> ResolveAsync(
         string id, string versionRange, CancellationToken cancellationToken = default)
@@ -119,15 +136,30 @@ public sealed class HttpPluginPackageSource : IPluginPackageSource
         string json;
         try
         {
-            using var response = await _client.GetAsync(
-                _baseUrl + "/index.json", HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+            if (_httpService is not null)
             {
-                throw new InvalidPluginPackageException(
-                    $"registry index request failed: {(int)response.StatusCode} {response.ReasonPhrase}");
-            }
+                using var request = new HttpRequestMessage(HttpMethod.Get, _baseUrl + "/index.json");
+                using var response = await _httpService.SendAsync(request, cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new InvalidPluginPackageException(
+                        $"registry index request failed: {(int)response.StatusCode} {response.ReasonPhrase}");
+                }
 
-            json = await response.Content.ReadAsStringAsync(cancellationToken);
+                json = await response.Content.ReadAsStringAsync(cancellationToken);
+            }
+            else
+            {
+                using var response = await _client.GetAsync(
+                    _baseUrl + "/index.json", HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new InvalidPluginPackageException(
+                        $"registry index request failed: {(int)response.StatusCode} {response.ReasonPhrase}");
+                }
+
+                json = await response.Content.ReadAsStringAsync(cancellationToken);
+            }
         }
         catch (InvalidPluginPackageException)
         {
@@ -194,56 +226,39 @@ public sealed class HttpPluginPackageSource : IPluginPackageSource
         var temp = Path.Combine(Path.GetTempPath(), $"gocordis-remote-{Guid.NewGuid():N}.gocordis-plugin");
         try
         {
-            using var response = await _client.GetAsync(
-                uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+            if (_httpService is not null)
             {
-                throw new InvalidPluginPackageException(
-                    $"package download failed: {(int)response.StatusCode} {response.ReasonPhrase}");
-            }
-
-            if (response.Content.Headers.ContentLength > PluginPackageLimits.MaxPackageBytes)
-            {
-                throw new InvalidPluginPackageException("remote package exceeds the size limit");
-            }
-
-            await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
-            await using var target = new FileStream(
-                temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, useAsync: true);
-            using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-            var buffer = new byte[81920];
-            long total = 0;
-            while (true)
-            {
-                var read = await source.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
-                if (read == 0)
+                // Stream bodies stay service-owned until closed: the await-using
+                // releases the lease on success and on every failure path.
+                var streamResponse = await _httpService.GetStreamAsync(uri.AbsoluteUri, cancellationToken);
+                await using (streamResponse)
                 {
-                    break;
+                    if (streamResponse.StatusCode is < 200 or >= 300)
+                    {
+                        throw new InvalidPluginPackageException(
+                            $"package download failed: {streamResponse.StatusCode}");
+                    }
+
+                    await WriteAndVerifyAsync(streamResponse.Body, temp, sha256, cancellationToken);
+                }
+            }
+            else
+            {
+                using var response = await _client.GetAsync(
+                    uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new InvalidPluginPackageException(
+                        $"package download failed: {(int)response.StatusCode} {response.ReasonPhrase}");
                 }
 
-                total += read;
-                if (total > PluginPackageLimits.MaxPackageBytes)
+                if (response.Content.Headers.ContentLength > PluginPackageLimits.MaxPackageBytes)
                 {
                     throw new InvalidPluginPackageException("remote package exceeds the size limit");
                 }
 
-                hasher.AppendData(buffer, 0, read);
-                await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
-            }
-
-            if (!string.IsNullOrWhiteSpace(sha256))
-            {
-                if (sha256.Length != 64 || !sha256.All(Uri.IsHexDigit))
-                {
-                    throw new PackageIntegrityException("registry returned an invalid sha256 value");
-                }
-
-                var actual = Convert.ToHexString(hasher.GetHashAndReset());
-                if (!string.Equals(actual, sha256, StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new PackageIntegrityException(
-                        $"sha256 mismatch for remote package: expected {sha256}, got {actual.ToLowerInvariant()}");
-                }
+                await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
+                await WriteAndVerifyAsync(source, temp, sha256, cancellationToken);
             }
 
             return temp;
@@ -252,6 +267,48 @@ public sealed class HttpPluginPackageSource : IPluginPackageSource
         {
             DeleteQuietly(temp);
             throw;
+        }
+    }
+
+    private static async Task WriteAndVerifyAsync(
+        Stream source, string temp, string? sha256, CancellationToken cancellationToken)
+    {
+        await using var target = new FileStream(
+            temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[81920];
+        long total = 0;
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
+            if (read == 0)
+            {
+                break;
+            }
+
+            total += read;
+            if (total > PluginPackageLimits.MaxPackageBytes)
+            {
+                throw new InvalidPluginPackageException("remote package exceeds the size limit");
+            }
+
+            hasher.AppendData(buffer, 0, read);
+            await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+        }
+
+        if (!string.IsNullOrWhiteSpace(sha256))
+        {
+            if (sha256.Length != 64 || !sha256.All(Uri.IsHexDigit))
+            {
+                throw new PackageIntegrityException("registry returned an invalid sha256 value");
+            }
+
+            var actual = Convert.ToHexString(hasher.GetHashAndReset());
+            if (!string.Equals(actual, sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new PackageIntegrityException(
+                    $"sha256 mismatch for remote package: expected {sha256}, got {actual.ToLowerInvariant()}");
+            }
         }
     }
 

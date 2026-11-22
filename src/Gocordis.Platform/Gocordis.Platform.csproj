@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Gocordis.Core/Gocordis.Core.csproj" />
+    <ProjectReference Include="../Gocordis.Extensions/Gocordis.Extensions.csproj" />
     <ProjectReference Include="../Gocordis.Plugins/Gocordis.Plugins.csproj" />
     <ProjectReference Include="../Gocordis.Packaging/Gocordis.Packaging.csproj" />
     <ProjectReference Include="../Gocordis.Console.WebUi/Gocordis.Console.WebUi.csproj" />

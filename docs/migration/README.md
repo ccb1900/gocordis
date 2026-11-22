@@ -22,6 +22,7 @@
 | [`feature-matrix.md`](feature-matrix.md) | 完整迁移 | Go 52 个功能域逐项源码证据、C# 状态、Gap/Target/Acceptance | 批次 1 账本；实施与验收唯一入口 |
 | [`plugin-package-lifecycle.md`](plugin-package-lifecycle.md) | 批次 2 | 插件包/安装/声明/启停/升级/卸载闭环与 CLI | 与 `PluginPackageLifecycleTests` / `CliAndSourceTests` 对齐 |
 | [`extension-parity.md`](extension-parity.md) | 批次 3 | Go 24 扩展缺口关闭、仍保留差异与新增验收测试 | 按 `feature-matrix.md` 的 Gap/Target 逐项关闭 |
+| [`extension-integration.md`](extension-integration.md) | 扩展使用面 | 哪些扩展进入产品组合、哪些仅测试及理由 | 诊断 / Host ACL / 出向 HTTP 已真实接线 |
 | [`runtime-integrity.md`](runtime-integrity.md) | 批次 4 | Managed/Process/WASM/Go Native 边界、错误策略、64 MiB 上限 | 与 BackendLifecycleTests / WasmRuntimeTests 对齐 |
 | [`multi-host-ui.md`](multi-host-ui.md) | 批次 5 | Web/WinForms/Avalonia 同一插件 UI 契约与降级边界 | 与 `MultiHostUiContractTests` 对齐 |
 | [`review-fix-closure.md`](review-fix-closure.md) | 审查修复 | Adapted/Divergent 收敛、可关闭项与平台边界 | 与 `CliProductTests` / `ProductGateTests` / `Gocordis.Product.Tests` 对齐 |
@@ -67,5 +68,5 @@
   共用统一后端协议与世代栅栏。
 - **批次 C（论文矩阵 / 定理矩阵 / JS 差异统一 / 最终验收）已完成**：C01–C40 矩阵
   38 已覆盖 / 0 待补 / 2 接受差异；Thm64/68/70/73/80 每定理 3 场景；
-  Koishi 真实消息链、provider 启停与 HTTP E2E 已覆盖。最终 **392/392**，连续 38 次全绿。
+  Koishi 真实消息链、provider 启停与 HTTP E2E 已覆盖。最终 **396/396**，连续 39 次全绿。
 - 后续阶段状态以 [`migration-coverage.md`](migration-coverage.md) 的逐项状态为准，不在本文件重复维护。

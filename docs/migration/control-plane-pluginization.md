@@ -70,7 +70,7 @@ PlatformApplication (组合根)
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 397/397（本批完成时）；Round 7 后 404/404，连续 3 次全绿
+dotnet test  Gocordis.sln → 397/397（本批完成时）；Round 7 后 404/404；R8 后 412/412，连续 3 次全绿
 npm test                 → 85 passed
 npm run build            → success
 ```

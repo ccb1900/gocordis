@@ -3,7 +3,7 @@
 // filtering, missing-data handling) is unit-testable under vitest's node
 // environment — the .tsx renderer only turns these results into antd nodes.
 
-import type { MarketCatalogEntry } from "../types";
+import type { MarketCatalogEntry, StorePluginEntry } from "../types";
 
 export type CatalogAction = "install" | "upgrade" | "remove";
 export type CatalogField =
@@ -87,6 +87,45 @@ export function mapEntries(entries: unknown): CatalogRow[] {
     out.push(mapEntry(raw));
   }
   return out;
+}
+
+/** Local store entries are a *local inventory*, not a remote marketplace.
+ * They are mapped into the same row shape so the read-only renderer can reuse
+ * its filter/sort logic without ever talking to an external registry. */
+export interface StoreRow extends CatalogRow {
+  hostVersionRange: string;
+  installPath: string;
+  checksum: string;
+  dependencies: string;
+  declared: boolean;
+  running: boolean;
+}
+
+export function mapStoreEntry(raw: unknown): StoreRow {
+  const e = (raw && typeof raw === "object" ? raw : {}) as Partial<StorePluginEntry>;
+  const deps = Array.isArray(e.dependencies) ? e.dependencies : [];
+  const name = e.displayName ? String(e.displayName) : text(e.id);
+  return {
+    id: text(e.id),
+    name,
+    version: text(e.version),
+    backend: "local",
+    moduleType: text(e.id),
+    description: text(e.installPath),
+    source: "local store",
+    trust: "local",
+    installed: flag(e.declared) || flag(e.running),
+    compatible: true,
+    native: false,
+    declared: flag(e.declared),
+    running: flag(e.running),
+    hostVersionRange: text(e.hostVersionRange),
+    installPath: text(e.installPath),
+    checksum: text(e.checksum),
+    dependencies: deps.length
+      ? deps.map((d) => `${text(d?.id)} ${text(d?.versionRange)}`).join(", ")
+      : MISSING,
+  };
 }
 
 /** Parses the `market/catalog` query payload. Accepts the described
@@ -186,7 +225,7 @@ export interface CatalogFilter {
   compatible?: boolean;
 }
 
-export function filterRows(rows: CatalogRow[], filter: CatalogFilter): CatalogRow[] {
+export function filterRows<T extends CatalogRow>(rows: T[], filter: CatalogFilter): T[] {
   const q = (filter.search ?? "").trim().toLowerCase();
   const backend = (filter.backend ?? "").trim().toLowerCase();
   return rows.filter((r) => {

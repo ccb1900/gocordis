@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Gocordis.Packaging;
 using Gocordis.Plugins;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -22,6 +23,7 @@ public sealed class WebUiServer : IAsyncDisposable
 
     private readonly WebApplication _app;
     private readonly ConsoleHost _host;
+    private readonly PluginControlService? _control;
     private readonly Func<string, string?> _clientModuleRoot;
     private readonly string? _reactDist;
 
@@ -31,15 +33,26 @@ public sealed class WebUiServer : IAsyncDisposable
         bool allowRemote = false,
         Plugins.PluginRegistry? registry = null,
         Func<string, string?>? clientModuleRootResolver = null,
-        string? webDistPath = null)
+        string? webDistPath = null,
+        PluginControlService? control = null)
     {
         _host = host;
+        _control = control;
         _clientModuleRoot = clientModuleRootResolver ?? DefaultClientModuleRoot;
         _reactDist = FindReactDist(webDistPath);
 
         ListenGuard.Validate(address, allowRemote);
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls(address);
+        // Package uploads are streamed to the control service; both the multipart
+        // reader and Kestrel must admit the same explicit package size limit.
+        builder.Services.Configure<FormOptions>(options =>
+        {
+            options.MultipartBodyLengthLimit = PluginPackageLimits.MaxPackageBytes;
+            options.MemoryBufferThreshold = 1 << 20;
+        });
+        builder.WebHost.ConfigureKestrel(options =>
+            options.Limits.MaxRequestBodySize = PluginPackageLimits.MaxPackageBytes);
         _app = builder.Build();
 
         // The built React console is the default UI when its publish output is
@@ -51,8 +64,14 @@ public sealed class WebUiServer : IAsyncDisposable
         _app.MapGet("/app.js", () => Results.Content(WebResources.Read("app.js"), "text/javascript"));
         _app.MapGet("/app.css", () => Results.Content(WebResources.Read("app.css"), "text/css"));
 
-        _app.MapGet("/api/plugins", () =>
+        _app.MapGet("/api/plugins", async (HttpContext context) =>
         {
+            if (_control is not null)
+            {
+                var entries = await _control.ListAsync(context.RequestAborted);
+                return ApiResults.Data(new JsonArray(entries.Select(entry => (JsonNode?)ToJson(entry)).ToArray()));
+            }
+
             var plugins = new JsonArray();
             foreach (var (id, entry) in registry?.Entries ?? new Dictionary<string, Plugins.PluginEntry>())
             {
@@ -66,6 +85,30 @@ public sealed class WebUiServer : IAsyncDisposable
             }
 
             return ApiResults.Data(plugins);
+        });
+
+        _app.MapGet("/api/plugins/store", async (HttpContext context) =>
+        {
+            if (_control is null)
+            {
+                return Unavailable("plugin control service is not configured");
+            }
+
+            var installed = await _control.StoreAsync(context.RequestAborted);
+            return ApiResults.Data(new JsonArray(installed.Select(item => (JsonNode?)ToJson(item)).ToArray()));
+        });
+
+        _app.MapGet("/api/plugins/{id}/dependencies", async (string id, HttpContext context) =>
+        {
+            if (_control is null)
+            {
+                return Unavailable("plugin control service is not configured");
+            }
+
+            var view = await _control.DependenciesAsync(id, context.RequestAborted);
+            return view is null
+                ? ApiResults.Error(StatusCodes.Status404NotFound, "not_found", $"unknown plugin '{id}'")
+                : ApiResults.Data(ToJson(view));
         });
 
         _app.MapGet("/api/fleet", () => ApiResults.Data(new JsonObject
@@ -202,8 +245,182 @@ public sealed class WebUiServer : IAsyncDisposable
                 : ApiResults.Error(StatusCodes.Status404NotFound, "not_found", $"unknown command '{name}'");
         });
 
+        // Multipart package upload. IFormFile is backed by a buffered stream, so
+        // the control service still receives a forward-only stream and enforces
+        // the package limit itself; FormOptions/Kestrel admit the full size.
+        _app.MapPost("/api/plugins/packages", async (HttpContext context) =>
+        {
+            if (_control is null)
+            {
+                return Unavailable("plugin control service is not configured");
+            }
+
+            if (context.Request.ContentLength > PluginPackageLimits.MaxPackageBytes + (1 << 20))
+            {
+                return ApiResults.Error(StatusCodes.Status413RequestEntityTooLarge, "invalid_request",
+                    "package exceeds the size limit");
+            }
+
+            IFormFile? file;
+            try
+            {
+                file = (await context.Request.ReadFormAsync(context.RequestAborted))
+                    .Files["package"];
+            }
+            catch (InvalidDataException ex)
+            {
+                return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request", ex.Message);
+            }
+
+            if (file is null || file.Length == 0)
+            {
+                return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request", "package file is required");
+            }
+
+            if (file.Length > PluginPackageLimits.MaxPackageBytes)
+            {
+                return ApiResults.Error(StatusCodes.Status413RequestEntityTooLarge, "invalid_request",
+                    "package exceeds the size limit");
+            }
+
+            try
+            {
+                await using var stream = file.OpenReadStream();
+                var upload = await _control.UploadAsync(stream, file.FileName, context.RequestAborted);
+                return ApiResults.Data(ToJson(upload));
+            }
+            catch (PluginUploadTooLargeException ex)
+            {
+                return ApiResults.Error(StatusCodes.Status413RequestEntityTooLarge, "invalid_request", ex.Message);
+            }
+            catch (InvalidPluginPackageException ex)
+            {
+                return ApiResults.Error(StatusCodes.Status422UnprocessableEntity, "invalid_package", ex.Message);
+            }
+            catch (Exception ex) when (ex is ArgumentException or IOException)
+            {
+                return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request", ex.Message);
+            }
+        });
+
+        _app.MapPost("/api/plugins/install", async (HttpContext context) =>
+        {
+            if (_control is null)
+            {
+                return Unavailable("plugin control service is not configured");
+            }
+
+            JsonNode? payload;
+            try
+            {
+                payload = await ReadBodyAsync(context);
+            }
+            catch (ApiRequestException ex)
+            {
+                return ApiResults.Error(ex.Status, "invalid_request", ex.Message);
+            }
+
+            var body = payload as JsonObject;
+            var uploadKey = body?["uploadKey"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(uploadKey))
+            {
+                return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request", "uploadKey is required");
+            }
+
+            var enable = true;
+            if (body?["enable"] is JsonValue enableValue && !enableValue.TryGetValue(out enable))
+            {
+                return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request", "enable must be a boolean");
+            }
+
+            return MutationResult(await _control.InstallAsync(uploadKey, enable, context.RequestAborted));
+        });
+
+        _app.MapPost("/api/plugins/upgrade", async (HttpContext context) =>
+        {
+            if (_control is null)
+            {
+                return Unavailable("plugin control service is not configured");
+            }
+
+            JsonNode? payload;
+            try
+            {
+                payload = await ReadBodyAsync(context);
+            }
+            catch (ApiRequestException ex)
+            {
+                return ApiResults.Error(ex.Status, "invalid_request", ex.Message);
+            }
+
+            var body = payload as JsonObject;
+            var id = body?["id"]?.GetValue<string>();
+            var uploadKey = body?["uploadKey"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(uploadKey))
+            {
+                return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request",
+                    "id and uploadKey are required");
+            }
+
+            var versionRange = body?["versionRange"]?.GetValue<string>();
+            return MutationResult(await _control.UpgradeAsync(id, uploadKey, versionRange, context.RequestAborted));
+        });
+
+        _app.MapPost("/api/plugins/uninstall", async (HttpContext context) =>
+        {
+            if (_control is null)
+            {
+                return Unavailable("plugin control service is not configured");
+            }
+
+            JsonNode? payload;
+            try
+            {
+                payload = await ReadBodyAsync(context);
+            }
+            catch (ApiRequestException ex)
+            {
+                return ApiResults.Error(ex.Status, "invalid_request", ex.Message);
+            }
+
+            var body = payload as JsonObject;
+            var id = body?["id"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request", "id is required");
+            }
+
+            var version = body?["version"]?.GetValue<string>();
+            return MutationResult(await _control.UninstallAsync(id, version, context.RequestAborted));
+        });
+
         _app.MapPost("/api/plugins/control", async (HttpContext context) =>
         {
+            if (_control is not null)
+            {
+                JsonNode? controlPayload;
+                try
+                {
+                    controlPayload = await ReadBodyAsync(context);
+                }
+                catch (ApiRequestException ex)
+                {
+                    return ApiResults.Error(ex.Status, "invalid_request", ex.Message);
+                }
+
+                var body = controlPayload as JsonObject;
+                var pluginId = body?["pluginId"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(pluginId) ||
+                    body?["enable"] is not JsonValue controlEnableValue ||
+                    !controlEnableValue.TryGetValue<bool>(out var enabled))
+                {
+                    return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request",
+                        "pluginId and boolean enable are required");
+                }
+
+                return MutationResult(await _control.SetEnabledAsync(pluginId, enabled, context.RequestAborted));
+            }
+
             if (registry is null)
             {
                 return Unavailable("plugin registry is not configured");
@@ -266,11 +483,6 @@ public sealed class WebUiServer : IAsyncDisposable
 
         _app.MapPost("/api/plugins/{id}/config", async (string id, HttpContext context) =>
         {
-            if (registry is null)
-            {
-                return Unavailable("plugin registry is not configured");
-            }
-
             JsonNode? payload;
             try
             {
@@ -286,15 +498,25 @@ public sealed class WebUiServer : IAsyncDisposable
                 return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request", "config object required");
             }
 
-            if (!registry.Entries.TryGetValue(id, out var entry))
-            {
-                return ApiResults.Error(StatusCodes.Status404NotFound, "not_found", $"unknown plugin '{id}'");
-            }
-
             var values = new Dictionary<string, object?>();
             foreach (var (key, value) in config)
             {
                 values[key] = ToClr(value);
+            }
+
+            if (_control is not null)
+            {
+                return MutationResult(await _control.SetConfigAsync(id, values, context.RequestAborted));
+            }
+
+            if (registry is null)
+            {
+                return Unavailable("plugin registry is not configured");
+            }
+
+            if (!registry.Entries.TryGetValue(id, out var entry))
+            {
+                return ApiResults.Error(StatusCodes.Status404NotFound, "not_found", $"unknown plugin '{id}'");
             }
 
             var declarations = registry.Entries.Values
@@ -320,8 +542,9 @@ public sealed class WebUiServer : IAsyncDisposable
             ServeClientModule(name, path, context));
 
         // SSE subscription: one observation per tick, plus a ui-manifest frame
-        // whenever the composition registry's revision moves. Existing
-        // observation frames keep their exact wire shape.
+        // whenever the composition registry's revision moves and a plugin-state
+        // frame whenever the declaration control service commits a mutation.
+        // Existing observation frames keep their exact wire shape.
         _app.MapGet("/api/stream", async context =>
         {
             var token = context.RequestAborted;
@@ -333,6 +556,7 @@ public sealed class WebUiServer : IAsyncDisposable
             await context.Response.Body.FlushAsync(token);
 
             var lastRevision = host.Ui.Revision;
+            var lastPluginRevision = _control?.Revision ?? 0;
             using var timer = new PeriodicTimer(StreamInterval);
             try
             {
@@ -346,6 +570,23 @@ public sealed class WebUiServer : IAsyncDisposable
                             $"event: ui-manifest\ndata: {manifest.ToJsonString()}\n\n", token);
                         await context.Response.Body.FlushAsync(token);
                         lastRevision = revision;
+                    }
+
+                    if (_control is not null)
+                    {
+                        var pluginRevision = _control.Revision;
+                        if (pluginRevision != lastPluginRevision)
+                        {
+                            var mutation = new JsonObject
+                            {
+                                ["revision"] = pluginRevision,
+                                ["action"] = "mutation",
+                            };
+                            await context.Response.WriteAsync(
+                                $"event: plugin-state\ndata: {mutation.ToJsonString()}\n\n", token);
+                            await context.Response.Body.FlushAsync(token);
+                            lastPluginRevision = pluginRevision;
+                        }
                     }
 
                     var observation = host.RuntimeSnapshot();
@@ -515,6 +756,137 @@ public sealed class WebUiServer : IAsyncDisposable
             }
         });
     }
+
+    // ---- plugin control wire shapes (lowercase fields are the fixed contract) --
+
+    private static JsonObject ToJson(PluginControlEntry entry) => new()
+    {
+        ["id"] = entry.Id,
+        ["name"] = entry.Name,
+        ["type"] = entry.Type,
+        ["enabled"] = entry.Enabled,
+        ["state"] = entry.State,
+        ["error"] = JsonValue.Create(entry.Error),
+        ["version"] = entry.Version,
+        ["installedVersion"] = JsonValue.Create(entry.InstalledVersion),
+        ["protected"] = entry.Protected,
+        ["controllable"] = entry.Controllable,
+        ["declared"] = entry.Declared,
+        ["config"] = ConfigNode(entry.Config),
+        ["components"] = StringArray(entry.Components),
+        ["capabilities"] = StringArray(entry.Capabilities),
+        ["requires"] = StringArray(entry.Requires),
+        ["provides"] = StringArray(entry.Provides),
+    };
+
+    private static JsonObject ToJson(StorePluginEntry entry) => new()
+    {
+        ["id"] = entry.Id,
+        ["version"] = entry.Version,
+        ["displayName"] = entry.DisplayName,
+        ["hostVersionRange"] = entry.HostVersionRange,
+        ["installPath"] = entry.InstallPath,
+        ["dependencies"] = DependencyArray(entry.Dependencies),
+        ["provides"] = StringArray(entry.Provides),
+        ["checksum"] = entry.Checksum,
+        ["declared"] = entry.Declared,
+        ["running"] = entry.Running,
+    };
+
+    private static JsonObject ToJson(PluginDependencyView view) => new()
+    {
+        ["id"] = view.Id,
+        ["version"] = view.Version,
+        ["packageDependencies"] = new JsonArray(view.PackageDependencies.Select(dependency =>
+            (JsonNode?)new JsonObject
+            {
+                ["id"] = dependency.Id,
+                ["versionRange"] = dependency.VersionRange,
+                ["installedVersion"] = JsonValue.Create(dependency.InstalledVersion),
+                ["satisfied"] = dependency.Satisfied,
+            }).ToArray()),
+        ["dependents"] = StringArray(view.Dependents),
+        ["capabilityRequires"] = StringArray(view.CapabilityRequires),
+        ["capabilityProvides"] = StringArray(view.CapabilityProvides),
+        ["diagnostics"] = StringArray(view.Diagnostics),
+    };
+
+    private static JsonObject ToJson(PluginUploadResult result) => new()
+    {
+        ["uploadKey"] = result.UploadKey,
+        ["id"] = result.Id,
+        ["version"] = result.Version,
+        ["type"] = result.Type,
+        ["hostVersionRange"] = result.HostVersionRange,
+        ["checksum"] = result.Checksum,
+        ["dependencies"] = DependencyArray(result.Dependencies),
+    };
+
+    private static JsonObject ToJson(PluginMutationResult result) => new()
+    {
+        ["accepted"] = result.Accepted,
+        ["code"] = result.Code,
+        ["error"] = JsonValue.Create(result.Error),
+        ["id"] = result.Id,
+        ["state"] = JsonValue.Create(result.State),
+        ["persisted"] = result.Persisted,
+        ["changes"] = new JsonArray(result.Changes.Select(change =>
+            (JsonNode?)new JsonObject
+            {
+                ["kind"] = change.Kind.ToString(),
+                ["id"] = change.Id,
+                ["version"] = change.Version,
+            }).ToArray()),
+    };
+
+    private static IResult MutationResult(PluginMutationResult result)
+    {
+        if (result.Accepted)
+        {
+            return ApiResults.Data(ToJson(result));
+        }
+
+        var status = result.Code switch
+        {
+            "invalid_request" => StatusCodes.Status400BadRequest,
+            "not_found" => StatusCodes.Status404NotFound,
+            "conflict" => StatusCodes.Status409Conflict,
+            "invalid_package" or "invalid_config" => StatusCodes.Status422UnprocessableEntity,
+            "forbidden" => StatusCodes.Status403Forbidden,
+            "unavailable" => StatusCodes.Status503ServiceUnavailable,
+            _ => StatusCodes.Status400BadRequest,
+        };
+        // Keep the machine-readable code at the root for the unified transport
+        // error shape and the full mutation result inside `data` for clients that
+        // inspect `accepted`/`changes` even on a rejected command.
+        return Results.Json(new JsonObject
+        {
+            ["data"] = ToJson(result),
+            ["code"] = result.Code,
+            ["message"] = result.Error ?? "mutation rejected",
+        }, statusCode: status);
+    }
+
+    private static JsonObject ConfigNode(IReadOnlyDictionary<string, object?> config)
+    {
+        var node = new JsonObject();
+        foreach (var (key, value) in config)
+        {
+            node[key] = JsonSerializer.SerializeToNode(value);
+        }
+
+        return node;
+    }
+
+    private static JsonArray StringArray(IReadOnlyList<string> values) =>
+        new(values.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray());
+
+    private static JsonArray DependencyArray(IReadOnlyList<PluginDependency> dependencies) =>
+        new(dependencies.Select(dependency => (JsonNode?)new JsonObject
+        {
+            ["id"] = dependency.Id,
+            ["versionRange"] = dependency.VersionRange,
+        }).ToArray());
 
     private static IResult Unavailable(string message) =>
         ApiResults.Error(StatusCodes.Status503ServiceUnavailable, "unavailable", message);

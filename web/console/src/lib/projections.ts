@@ -6,7 +6,7 @@
 // 250ms window (snapshot batching), so a burst of file events costs one
 // render pass, not one per event.
 import { useSyncExternalStore } from "react";
-import type { UIObservation } from "../types";
+import type { PluginStateEvent, UIManifestEvent, UIObservation } from "../types";
 
 export interface Projection<S> {
   /** Stable identity; registering twice with one id replaces. */
@@ -62,6 +62,10 @@ export function useProjection<S>(id: string): S | undefined {
 // composition edit no longer re-fetches every data table.
 
 export const ALL = "all";
+/** Plugin control-plane domain, driven by the SSE `plugin-state` frame — not
+ * by observation events. */
+export const PLUGIN = "plugin";
+export const COMPOSITION = "composition";
 
 export function domainsOf(ev: UIObservation): string[] {
   // Started 事件只是时间线锚点（"正在采"）：读取模型不消费它们，数据域
@@ -129,6 +133,11 @@ function flush() {
   dirtyDomains.clear();
 }
 
+function scheduleDomains(domains: string[]): void {
+  for (const d of domains) dirtyDomains.add(d);
+  if (!timer) timer = setTimeout(flush, coalesceMs);
+}
+
 /** ingestObservation folds one event into every interested projection and
  * marks its domains dirty; notification happens at most once per window. */
 export function ingestObservation(ev: UIObservation): void {
@@ -141,8 +150,21 @@ export function ingestObservation(ev: UIObservation): void {
       dirtyProjections.add(p.id);
     }
   }
-  for (const d of domainsOf(ev)) dirtyDomains.add(d);
-  if (!timer) timer = setTimeout(flush, coalesceMs);
+  scheduleDomains(domainsOf(ev));
+}
+
+/** SSE `plugin-state`: invalidate the plugin control-plane read model and the
+ * runtime snapshot/composition derived from it. A plugin enable/disable or
+ * install/upgrade is a declaration change (iron law 7/9): the durable source
+ * is the manifest, so consumers re-query rather than trust the event payload.
+ * This path deliberately does NOT depend on observation events. */
+export function ingestPluginState(_ev: PluginStateEvent): void {
+  scheduleDomains([PLUGIN, COMPOSITION, ALL]);
+}
+
+/** SSE `ui-manifest`: the composition/client-module manifest changed. */
+export function ingestUIManifest(_ev: UIManifestEvent): void {
+  scheduleDomains([COMPOSITION]);
 }
 
 /** testFlush forces the pending coalesced notification (vitest helper). */

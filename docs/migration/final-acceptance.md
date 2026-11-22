@@ -15,7 +15,7 @@ C# calibrated target: `migration/dotnet-complete` HEAD `60b13311`（历史基线
 | 3 扩展 parity | 完成 | Go 24 扩展缺口关闭；bundle/cli/config/configwatch/devtools/env/fs/http/socks/market/patch/pluginmeta/server/timer/watch + 通用 HMR |
 | 4 运行时完整性 | 完成 | Managed/Process/WASM/Go Native 边界；WASM 64 MiB 上限；`runtime-integrity.md` |
 | 5 多 Host UI | 完成 | Web/WinForms/Avalonia host profiles；同插件渲染/降级；`multi-host-ui.md` |
-| 6 产品闭环 | 完成 | `src/Gocordis.Platform` 正式产品宿主；CLI create/app run；.NET Console Client SDK；最终验收报告 |
+| 6 产品闭环 | 完成 | `src/Gocordis.Platform` 正式产品宿主；CLI create/app run；UI 插件管理控制面；.NET Console Client SDK；最终验收报告 |
 
 账本状态：`Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0`（共 52 行），以 `final-calibration.md` 为准。
 Adapted 均有具体 Gap/Target/Acceptance；Divergent 均有语义理由；没有未解释 Missing。
@@ -32,7 +32,7 @@ bash docs/migration/verify-baseline.sh  # Go baseline
 本地 .NET 验证结果：
 
 - Build：0 warning / 0 error
-- Test：352/352，连续 3 次零失败、零挂起
+- Test：358/358，连续 3 次零失败、零挂起
 - 构成：Core 26 / Conformance 113 / Runtime 114 / Extensions 52 / Packaging 8 / UI 3 / Client 2
 
 CI 状态按 SHA 记录在最终交付消息；已知 `6ff30f1c` 的 `ci` workflow 在 Go baseline Race 步骤出现一次

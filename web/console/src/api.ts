@@ -1,13 +1,42 @@
 // Console API: the single integration surface. The console only speaks the
 // hub contract — composition (/api/ui/*), named queries/commands
-// (/api/query/<name>, /api/command/<name>), plugin lifecycle (/api/plugins*)
-// and the observation stream (/api/stream).
+// (/api/query/<name>, /api/command/<name>), the plugin control plane
+// (/api/plugins*) and the observation/control stream (/api/stream).
+//
+// Every response is `{data: ...}`; every transport error is `{code,message}`.
+// Command results are *inside* `data`: an unaccepted mutation still returns
+// HTTP 200 with `{accepted:false, code, error}` — callers MUST inspect it.
+
+import type {
+  ExplorerPlugin, PluginDependencyView, PluginMutationResult,
+  StorePluginEntry, UploadedPackage,
+} from "./types";
+import {
+  normalizeDependencyView, normalizeMutation, normalizePlugins,
+  normalizeStorePlugins, normalizeUpload,
+} from "./lib/plugin-control";
+
+export class ApiError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(code ? `${code}: ${message}` : message);
+    this.name = "ApiError";
+    this.code = code;
+  }
+}
+
+function failure(status: number, body: unknown): ApiError {
+  const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const code = typeof b.code === "string" && b.code ? b.code : "error";
+  const message = typeof b.message === "string" && b.message ? b.message : `HTTP ${status}`;
+  return new ApiError(code, message);
+}
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path);
-  const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(`${body?.code ?? "error"}: ${body?.message ?? res.statusText}`);
-  return (body as { data: T }).data;
+  const j = await res.json().catch(() => null);
+  if (!res.ok) throw failure(res.status, j);
+  return (j as { data: T }).data;
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -17,7 +46,17 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body ?? {}),
   });
   const j = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(`${j?.code ?? "error"}: ${j?.message ?? res.statusText}`);
+  if (!res.ok) throw failure(res.status, j);
+  return (j as { data: T }).data;
+}
+
+async function upload<T>(path: string, field: string, file: File): Promise<T> {
+  const form = new FormData();
+  form.append(field, file, file.name);
+  // No Content-Type header: the browser must add the multipart boundary.
+  const res = await fetch(path, { method: "POST", body: form });
+  const j = await res.json().catch(() => null);
+  if (!res.ok) throw failure(res.status, j);
   return (j as { data: T }).data;
 }
 
@@ -27,28 +66,99 @@ const qs = (params?: Record<string, string | number>) =>
     .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
     .join("&");
 
+const enc = (id: string) => encodeURIComponent(id);
+
+// ---- composition / named queries --------------------------------------------
+
+export function pages() {
+  return get<{ pages: import("./types").UIPage[] }>("/api/ui/pages").then((r) => r.pages);
+}
+
+export function panels() {
+  return get<{ panels: import("./types").UIPanel[] }>("/api/ui/panels").then((r) => r.panels);
+}
+
+export function hubQuery<T = unknown>(name: string, params?: Record<string, string | number>) {
+  const query = qs(params);
+  return get<T>(`/api/query/${name}${query ? `?${query}` : ""}`);
+}
+
+export function hubCommand(name: string, body?: unknown) {
+  return post<void>(`/api/command/${name}`, body);
+}
+
+// ---- plugin control plane ---------------------------------------------------
+
+/** GET /api/plugins → {data: PluginControlEntry[]} (nil slices normalize). */
+export function plugins(): Promise<ExplorerPlugin[]> {
+  return get<unknown>("/api/plugins").then(normalizePlugins);
+}
+
+/** GET /api/plugins/store → local package inventory, never a remote market. */
+export function storePlugins(): Promise<StorePluginEntry[]> {
+  return get<unknown>("/api/plugins/store").then(normalizeStorePlugins);
+}
+
+/** GET /api/plugins/{id}/dependencies → package + capability dependency view. */
+export function dependencies(id: string): Promise<PluginDependencyView> {
+  return get<unknown>(`/api/plugins/${enc(id)}/dependencies`).then((raw) =>
+    normalizeDependencyView(raw, id)
+  );
+}
+
+/** POST /api/plugins/packages — multipart field `package`. */
+export function uploadPackage(file: File): Promise<UploadedPackage> {
+  return upload<unknown>("/api/plugins/packages", "package", file).then(normalizeUpload);
+}
+
+export function installPlugin(uploadKey: string, enable?: boolean): Promise<PluginMutationResult> {
+  return post<unknown>("/api/plugins/install", { uploadKey, enable }).then(normalizeMutation);
+}
+
+export function upgradePlugin(
+  id: string,
+  uploadKey: string,
+  versionRange?: string
+): Promise<PluginMutationResult> {
+  return post<unknown>("/api/plugins/upgrade", { id, uploadKey, versionRange }).then(normalizeMutation);
+}
+
+export function uninstallPlugin(id: string, version?: string): Promise<PluginMutationResult> {
+  return post<unknown>("/api/plugins/uninstall", { id, version }).then(normalizeMutation);
+}
+
+export function controlPlugin(pluginId: string, enable: boolean): Promise<PluginMutationResult> {
+  return post<unknown>("/api/plugins/control", { pluginId, enable }).then(normalizeMutation);
+}
+
+/** POST /api/plugins/{id}/config — the desired-state override. There is no
+ * dedicated GET: the current config travels on the plugin list entry, so the
+ * editor reads it from there without hitting a 404 endpoint. */
+export function savePluginConfig(
+  id: string,
+  config: Record<string, unknown>
+): Promise<PluginMutationResult> {
+  return post<unknown>(`/api/plugins/${enc(id)}/config`, { config }).then(normalizeMutation);
+}
+
+export async function pluginConfig(id: string): Promise<Record<string, unknown>> {
+  const list = await plugins();
+  return list.find((p) => p.id === id)?.config ?? {};
+}
+
 export const api = {
-  pages: () => get<{ pages: import("./types").UIPage[] }>("/api/ui/pages").then((r) => r.pages),
-  panels: () => get<{ panels: import("./types").UIPanel[] }>("/api/ui/panels").then((r) => r.panels),
-  hubQuery: <T = unknown>(name: string, params?: Record<string, string | number>) =>
-    get<T>(`/api/query/${name}${qs(params) ? `?${qs(params)}` : ""}`),
-  hubCommand: (name: string, body?: unknown) => post<void>(`/api/command/${name}`, body),
-  // Typed market catalog read. The catalog renderer uses ViewContext.hubQuery
-  // (same endpoint) so it stays composable; this helper is the direct surface
-  // for callers that do not go through a view block.
-  marketCatalog: () => get<import("./types").MarketCatalogQuery>("/api/query/market/catalog"),
-  // List endpoints coerce null → []: Go marshals a nil slice as null, and a
-  // nil return from an application PluginLifecycle is idiomatic — the
-  // boundary normalizes so consumers never see null arrays.
-  plugins: () =>
-    get<{ plugins: import("./types").ExplorerPlugin[] }>("/api/plugins").then((r) => r?.plugins ?? []),
-  removedPlugins: () =>
-    get<{ id: string; name: string }[]>("/api/plugins/removed").then((r) => r ?? []),
-  uninstallPlugin: (id: string) => post<void>("/api/plugins/uninstall", { pluginId: id }),
-  installPlugin: (id: string) => post<void>("/api/plugins/install", { pluginId: id }),
-  controlPlugin: (pluginId: string, enable: boolean) =>
-    post<import("./types").ExplorerControlResult>("/api/plugins/control", { pluginId, enable }),
-  pluginConfig: (id: string) => get<Record<string, unknown>>(`/api/plugins/${encodeURIComponent(id)}/config`),
-  setPluginConfig: (id: string, config: Record<string, unknown>) =>
-    post<void>(`/api/plugins/${encodeURIComponent(id)}/config`, { config }),
+  pages,
+  panels,
+  hubQuery,
+  hubCommand,
+  plugins,
+  storePlugins,
+  dependencies,
+  uploadPackage,
+  installPlugin,
+  upgradePlugin,
+  uninstallPlugin,
+  controlPlugin,
+  savePluginConfig,
+  pluginConfig,
 };

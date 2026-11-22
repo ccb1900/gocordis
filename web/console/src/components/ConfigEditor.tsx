@@ -2,7 +2,7 @@
 // known declarative shapes (views/actions/columns/filters/...) become
 // structured card/row editors, and anything unknown stays editable as JSON.
 // Unknown keys are always preserved on save — the editor narrows nothing.
-import { Alert, Button, Input, InputNumber, Select, Space, Switch, Typography } from "antd";
+import { Alert, Button, Input, InputNumber, Select, Space, Switch, Tag, Typography } from "antd";
 import { DeleteOutlined, ArrowUpOutlined, ArrowDownOutlined, PlusOutlined } from "@ant-design/icons";
 import React, { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -12,6 +12,7 @@ import {
   fieldSpecsFor, inferFieldSpecs, schemaForType,
   type ConfigSchemaDTO, type FieldSpec,
 } from "../lib/schema-form";
+import { errorCodeOf } from "../lib/plugin-control";
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -328,12 +329,16 @@ export function ConfigEditor({ pluginId, componentType }: { pluginId: string; co
   const [tab, setTab] = useState("form");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveCode, setSaveCode] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [persisted, setPersisted] = useState<boolean | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [schemas, setSchemas] = useState<ConfigSchemaDTO | null>(null);
 
   useEffect(() => {
-    setDraft(null); setRaw(""); setTab("form"); setSavedAt(null); setSaveError(null); setLoadError(null);
+    setDraft(null); setRaw(""); setTab("form"); setSavedAt(null);
+    setSaveError(null); setSaveCode(undefined); setLoadError(null); setPersisted(null);
     api.pluginConfig(pluginId)
       .then((cfg) => {
         const obj = cfg ?? {};
@@ -341,7 +346,7 @@ export function ConfigEditor({ pluginId, componentType }: { pluginId: string; co
         setRaw(JSON.stringify(obj, null, 2));
       })
       .catch((e) => setLoadError(errText(e)));
-  }, [pluginId]);
+  }, [pluginId, reloadKey]);
 
   // Schema is advisory: an application that does not publish config/schema
   // (or a failing query) simply keeps the legacy value-typed form.
@@ -365,16 +370,16 @@ export function ConfigEditor({ pluginId, componentType }: { pluginId: string; co
   const setViews = (k: "views" | "actions") => (v: Row[]) => setDraft((d) => ({ ...d!, [k]: v }));
 
   const switchTab = (next: string) => {
-    if (next === "json") { setRaw(JSON.stringify(draft ?? {}, null, 2)); setSaveError(null); setTab(next); return; }
+    if (next === "json") { setRaw(JSON.stringify(draft ?? {}, null, 2)); setSaveError(null); setSaveCode(undefined); setTab(next); return; }
     try {
       const parsed = JSON.parse(raw);
       if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("配置必须是 JSON 对象");
-      setDraft(parsed); setSaveError(null); setTab(next);
-    } catch (e) { setSaveError(errText(e)); }
+      setDraft(parsed); setSaveError(null); setSaveCode(undefined); setTab(next);
+    } catch (e) { setSaveError(errText(e)); setSaveCode(undefined); }
   };
 
   const save = async () => {
-    setSaving(true); setSaveError(null);
+    setSaving(true); setSaveError(null); setSaveCode(undefined);
     try {
       let cfg = draft;
       if (tab === "json") {
@@ -382,13 +387,29 @@ export function ConfigEditor({ pluginId, componentType }: { pluginId: string; co
         if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("配置必须是 JSON 对象");
         cfg = parsed; setDraft(parsed);
       }
-      await api.setPluginConfig(pluginId, cfg as Record<string, unknown>);
+      const result = await api.savePluginConfig(pluginId, cfg as Record<string, unknown>);
+      setPersisted(result.persisted ?? null);
+      if (!result.accepted) {
+        const code = result.code || undefined;
+        setSaveCode(code);
+        setSaveError(result.error || `保存未接受${code ? ` (${code})` : ""}`);
+        return;
+      }
       setSavedAt(new Date().toLocaleTimeString());
-    } catch (e) { setSaveError(errText(e)); } finally { setSaving(false); }
+    } catch (e) {
+      const code = errorCodeOf(e);
+      setSaveCode(code);
+      setSaveError(errText(e));
+    } finally { setSaving(false); }
   };
 
   const isComposition = /(^|:)(ui-page|ui-panel|ui-contribution)/.test(pluginId) ||
     (draft !== null && ("views" in draft || "actions" in draft));
+
+  const saveHint =
+    saveCode === "invalid_config" ? "配置校验失败：请修正字段后重新保存。"
+    : saveCode === "conflict" ? "声明已被其他变更更新（conflict）：请重新加载后再保存，避免覆盖。"
+    : undefined;
 
   const body = useMemo(() => {
     if (!draft) return null;
@@ -446,11 +467,27 @@ export function ConfigEditor({ pluginId, componentType }: { pluginId: string; co
           rows={Math.min(18, Math.max(6, raw.split("\n").length + 1))}
           style={{ fontFamily: "monospace", fontSize: 12 }} />
       ) : body}
-      <Space align="center" style={{ marginTop: 10 }}>
+      <Space align="center" style={{ marginTop: 10 }} wrap>
         <Button size="small" type="primary" loading={saving} onClick={() => void save()}>保存配置</Button>
-        {savedAt && <Typography.Text type="secondary" style={{ fontSize: 12 }}>已保存 {savedAt}（持久化为期望态覆盖）</Typography.Text>}
+        {savedAt && <Typography.Text type="secondary" style={{ fontSize: 12 }}>已保存 {savedAt}</Typography.Text>}
+        {persisted !== null && (
+          <Tag color={persisted ? "success" : "warning"}>
+            {persisted ? "已持久化（期望态覆盖）" : "未持久化（临时，调和会覆盖）"}
+          </Tag>
+        )}
       </Space>
-      {saveError && <Alert style={{ marginTop: 8 }} type="error" showIcon message={saveError} />}
+      {saveError && (
+        <Alert
+          style={{ marginTop: 8 }}
+          type={saveCode ? "warning" : "error"}
+          showIcon
+          message={saveError}
+          description={saveHint}
+          action={saveCode === "conflict" ? (
+            <Button size="small" onClick={() => setReloadKey((k) => k + 1)}>重新加载</Button>
+          ) : undefined}
+        />
+      )}
     </>
   );
 }

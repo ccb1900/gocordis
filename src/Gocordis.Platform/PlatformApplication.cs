@@ -62,12 +62,14 @@ public sealed class PlatformApplication : IAsyncDisposable
         Console = new ConsoleHost(Runtime);
         Registry = new PluginRegistry(Runtime);
         Store = new PluginStore(options.StorePath, options.HostVersion);
+        Control = new PluginControlService(options.ManifestPath, Store, Registry, Console.Ui);
     }
 
     public Runtime Runtime { get; }
     public ConsoleHost Console { get; }
     public PluginRegistry Registry { get; }
     public PluginStore Store { get; }
+    public PluginControlService Control { get; }
     public WebUiServer? WebUi { get; private set; }
     public Uri? Address => WebUi?.Address is { } address ? new Uri(address) : null;
 
@@ -85,27 +87,15 @@ public sealed class PlatformApplication : IAsyncDisposable
                 $"application host version '{manifest.HostVersion}' does not match store host '{Store.HostVersion}'");
         }
 
-        var registeredTypes = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var plugin in manifest.Plugins)
-        {
-            var installed = await Store.ResolveAsync(plugin.Id, plugin.VersionRange, cancellationToken)
-                            ?? throw new MissingPluginDependencyException(
-                                $"'{plugin.Id}' {plugin.VersionRange} is not installed");
-            if (registeredTypes.Add(installed.Manifest.Type))
-            {
-                var type = installed.Manifest.Type;
-                Registry.RegisterFactory(type, _ => new ProductPluginComponent(type, Console.Ui));
-            }
-        }
-
-        await new ApplicationLoader(Store, Registry).ApplyAsync(manifest, cancellationToken);
+        await Control.ApplyAllAsync(cancellationToken);
         if (_options.Host == UiHostKind.Web)
         {
             WebUi = new WebUiServer(
                 Console,
                 address: _options.Address,
                 allowRemote: _options.AllowRemote,
-                registry: Registry);
+                registry: Registry,
+                control: Control);
             await WebUi.StartAsync(cancellationToken);
         }
 
@@ -138,40 +128,6 @@ public sealed class PlatformApplication : IAsyncDisposable
         if (!_stopped)
         {
             await StopAsync();
-        }
-    }
-
-    /// <summary>
-    /// Adapter that turns an installed package declaration into a real Core
-    /// fiber. The actual backend payload is still loaded by Managed/Process/WASM
-    /// adapters; the product host only supplies the declaration adapter here.
-    /// </summary>
-    private sealed class ProductPluginComponent : Component
-    {
-        private readonly Key<string> _key = new($"product-plugin-{Guid.NewGuid():N}");
-        private readonly string _type;
-        private readonly UiContributionRegistry _ui;
-
-        public ProductPluginComponent(string type, UiContributionRegistry ui)
-        {
-            _type = type;
-            _ui = ui;
-        }
-
-        public override string Name => $"product-plugin:{_type}";
-
-        public override IReadOnlyList<ICapabilityKey> Provide() => [_key];
-
-        public override async ValueTask<Cleanup?> ApplyAsync(Context context)
-        {
-            context.Provide(_key, _type);
-            await context.RegisterUiPageAsync(
-                _ui,
-                ContributionOwner.ForContext(context, _type, Name),
-                new UiPageDefinition(
-                    $"plugin-{_type}", _type, $"/plugins/{_type}", "generic",
-                    Description: "Installed plugin contribution"));
-            return null;
         }
     }
 }

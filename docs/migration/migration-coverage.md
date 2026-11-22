@@ -185,14 +185,14 @@ Thm70 现已归位到 `TheoremMatrixTests.Thm70_Matrix`，不再计入 `PaperCon
 | `industrial-data-collector` | 用户明确冻结；不是框架前置条件 |
 | Go 实现代码本身 | 只作参照；最终只维护 C# 版本 |
 | 第二个 Host | 明确不设计 |
-| Application Package | 明确不设计 |
+| Application Package | 已实现：`Gocordis.Packaging` + `Gocordis.Cli` + `ApplicationLoader` |
 | 插件市场服务端 / 云端插件管理平台 | 不在范围内 |
 | 新 WASM 虚拟机 | 复用成熟 runtime |
 | 自研程序集加载器 | 使用 `AssemblyLoadContext` |
 | NativeAOT | 明确不引入 |
 | 为 DDD 拆分大量微型项目 | 与"不过度拆分"约束冲突 |
 | 业务状态持久化框架 | 业务成果走组件 journal + 幂等重放；runtime 派生状态永不持久化 |
-| Go 前端资产（`web/console`、`client/`） | 不搬运；C# 侧提供内嵌 HTML/JS 通过贡献 API 渲染 |
+| Go 前端资产（`web/console`、`client/`） | `web/console/dist` 由 C# WebUiServer 交付；TS 为产品前端资产，客户端契约由 `Gocordis.Client` 替代 |
 | 官方扩展大套件 | 已在 `Gocordis.Extensions` 实现并测试（event 五模式亦含） |
 | ~~WASM 自定义段 / host imports / HMR~~ | 已由 `WasmCustomSections`、`WasmHostBridge`、`WasmHotSwapper` 实现 |
 | ~~进程降级词表、崩溃中调用~~ | 已实现并测试；Windows `.exe` 路径由 `windows-dotnet` CI 覆盖（未在 Linux 实跑） |

@@ -60,7 +60,7 @@ gocordis .NET
 └── Extensions      业务插件 · UI 插件 · Console/API 插件 · 基础设施插件
 ```
 
-**明确不做**：不增加第二个 Host，不增加 Application Package，不再创造一套独立的插件生命周期。
+**历史计划注记**：早期“不增加 Application Package”已由 `Gocordis.Packaging` + CLI supersede；当前仍不增加第二个 Plugin Registry 或第二套插件生命周期。
 Go 的 Native Runtime 不原样移植，由 C# Managed Runtime 接替。
 三种执行模式保留，但插件的身份、Manifest、依赖、生命周期与贡献语义**不因执行后端改变**。
 
@@ -197,7 +197,7 @@ migration/dotnet  C# 迁移工作（当前分支）
 
 - 不迁移 `industrial-data-collector`。
 - 不设计第二个 Host。
-- 不设计 Application Package。
+- Application Package 已实现（原计划 superseded）；见 `final-calibration.md`。
 - 不开发插件市场服务端。
 - 不开发云端插件管理平台。
 - 不开发新的 WASM 虚拟机。

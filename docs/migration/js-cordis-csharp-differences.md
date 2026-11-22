@@ -49,9 +49,9 @@
 | `env` | compose-go dotenv 解析、4 文件优先级、栈式 Populate | 等价实现：按优先级解析并可通过 Effect 逆回滚。 | `ExtensionTests.EnvParsePrecedenceAndRollback`。 |
 | `package-manager` | `x/mod/modfile`、原子 temp+rename、Report/Apply 同锁 | 接受差异的 .NET 定位：本地声明层报告/应用/回滚，不实现 npm Agent。 | `ExtensionTests.MarketAndPackageManagerVerifyAndRollBack`；AD-09。 |
 | `http` | 拦截器链、身份代理、SOCKS、流式上传、`State()`、`RoundTrip` | 用 `HttpClient` 风格拦截器与 ASP.NET Core 传输；file:/data: URL 与有界关闭差异冻结。 | `ExtensionTests.HttpInterceptorsAndServerHostWorkTogether`；AD-12、AD-14。 |
-| `http-socks` | socks4/4a/5/5h 真实拨号 | 继承 Go 的远端 DNS 语义，不承诺 socks5 本地 DNS。 | `docs/JS-CORDIS-ALIGNMENT.md` §2 `http-socks` 行；AD-08（C# 不新增 socks 后端）。 |
+| `http-socks` | socks4/4a/5/5h 真实拨号 | SOCKS5 CONNECT 已实现；socks4/4a 与 socks5 本地 DNS 语义不移植。 | `InfrastructureGapTests.SocksProxyRegistrationAndUndo`；`src/Gocordis.Extensions/HttpSocks.cs`。 |
 | `server` | stdlib `ServeMux` catch-all、Handle/All/Use/Serve/ServeRange | ASP.NET Core `WebUiServer` 承担 catch-all 与状态/头语义。 | `Phase6Tests.WebUiServesQueriesOverHttp`、`WebUiUsesDataAndErrorEnvelopesWithBodyLimit`。 |
-| `server-echo`/`static` | `http.FileServerFS` + `io/fs.FS` 适配器 | 内嵌 `wwwroot` 静态资产，由 `WebUiServer` 直接提供，不搬运 Go 前端。 | `Phase6Tests.WebUiServesQueriesOverHttp`；`migration-coverage.md` §7 6.9。 |
+| `server-echo`/`static` | `http.FileServerFS` + `io/fs.FS` 适配器 | `web/console/dist` 由 C# WebUiServer 交付；TS 作为产品前端资产。 | `ProductGateTests.ExplorerDashboardConformance_*`；`migration-coverage.md` §7 6.9。 |
 | `server-acl`/`proxy` | ACL loopback/点前缀/路由覆写；ReverseProxy WS 双向代理 | 监听安全门默认拒绝远程 + opt-in；代理路由由 ASP.NET Core 管线实现。 | `Phase6Tests.ListenGuardRejectsRemoteBindingByDefault`；`migration-coverage.md` §7 6.4–6.5。 |
 | `cli` / `cli-cordis` | tokenizer（Windows 路径、引号、组合旗标、别名/help） | 命令文本 tokenizer；不引入 shell 参数 schema。 | `ExtensionTests.CliTokenizerAndAliasesWork`；AD-11。 |
 | `create-cordis` | 空目录校验、回滚、生成项目 tidy/build/run | 本地静态模板 + 回滚；远程 registry tarball 不在范围。 | `migration-coverage.md` §9「官方扩展大套件」；AD-10。 |
@@ -104,7 +104,7 @@
 | AD-05 异步安装取消协议 | epoch + async generator `return()` | `CancellationToken`/`IsDiverted` 合作式取消，无 generator close 协议。 | `CoreSemanticsTests.DivertDuringActivationUnwindsWithoutFailure`；`AuditRegressionTests.SingleStepDivertStillRunsTheApplyCleanup`。 |
 | AD-06 Event `Parallel` 同批移除 | 同步 map 启动保证移除即跳过 | goroutine 启动检查 Active 的等价语义；同批并发移除受调度影响，由测试固定。 | `EventDispatchGapTests.DispatchSkipsHandlerDisposedInsideSnapshot`、`ParallelAggregatesErrorsInRegistrationOrder`。 |
 | AD-07 Event 旧 `Bail` | 值短路 | 保留 fail-fast-on-error；`BailValue` 承担值短路。 | `EventDispatchGapTests.BailValueStopsAtFirstPresentResult`、`BailValueContinuesWhenResultIsAbsent`。 |
-| AD-08 `http-socks` DNS 语义 | socks5 本地 DNS、socks5h 远端 DNS | 不新增 socks 后端；若经代理则继承远端 DNS 语义。 | `docs/JS-CORDIS-ALIGNMENT.md` C# 迁移对齐补充；`ExtensionTests.HttpInterceptorsAndServerHostWorkTogether`。 |
+| AD-08 `http-socks` DNS 语义 | socks5 本地 DNS、socks5h 远端 DNS | SOCKS5 CONNECT 已实现；socks4/4a 与本地 DNS 选项为接受差异。 | `InfrastructureGapTests.SocksProxyRegistrationAndUndo`；`src/Gocordis.Extensions/HttpSocks.cs`。 |
 | AD-09 `package-manager` Agent | lockfile / install / restore | 本地声明层报告/应用/回滚，不解析 npm lockfile。 | `ExtensionTests.MarketAndPackageManagerVerifyAndRollBack`。 |
 | AD-10 `create-cordis` 远程模板 | 下载 tarball、交互提示、git init | 不移植；本地静态模板 + 回滚。 | `migration-coverage.md` §9；`docs/migration/README.md`。 |
 | AD-11 CLI 输入形态 | shell 风格完整 token/参数 schema | 命令文本 tokenizer（Windows 路径保留反斜杠）+ 组合旗标/引号。 | `ExtensionTests.CliTokenizerAndAliasesWork`。 |

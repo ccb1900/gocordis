@@ -41,4 +41,4 @@ Host 只负责渲染或明确降级，不拥有插件生命周期，不建立第
 - WinForms/Avalonia profile 目前是契约与渲染计划层，不包含真实原生控件包与窗口宿主实现。
   这是有意的成熟度边界：不为了名称一致引入重型 UI 依赖或自研 UI 框架。
 - Koishi 完整插件市场与控制台生态不属于本批。
-- Web React Console 的产品化 Explorer/Inspector 仍在 feature-matrix 中保留 Partial。
+- Web React Console 的 Explorer/Inspector 数据与资产交付已验收；原生控件级产品化属于 Adapted 边界。

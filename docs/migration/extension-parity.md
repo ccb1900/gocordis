@@ -31,10 +31,10 @@ Branch: `migration/dotnet-complete`
 ## 仍保留的差异
 
 - WASM `WasmHotSwapper` 仍是 warm-validate + 旧 Fiber Gone 后提交，不是零停机原子替换；
-  通用 HMR 协议已迁移，WASM 适配层仍标 Partial。
+  通用 HMR 协议已迁移，WASM 适配层标 Divergent。
 - Console 的 Explorer/Inspector/Dashboard 产品化属于批次 5，不在本批宣称完成。
-- `cmd/create-cordis` 与 Koishi client SDK 仍 Missing；已有 `Gocordis.Cli plugin pack`
-  与 `web/console` 可作为替代路径，但账本保持 Missing，不以名称相似冒充。
+- `cmd/create-cordis` 已由 `Gocordis.Cli create` 实现；Koishi client SDK 已由 `Gocordis.Client`
+  作为 .NET 原生替代实现。两者证据见 `final-calibration.md`。
 - 跨 effect 并发撤销仍按论文/Go 的严格 LIFO，不采用 JS Cordis 的 `Promise.all` 并发撤销。
 
 ## 验证

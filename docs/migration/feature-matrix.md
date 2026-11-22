@@ -3,12 +3,13 @@
 Baseline (re-confirmed 2026-11-22):
 
 - Go `origin/main`: `ed2ef724a24331ecc3fa21974539315fd90212bf`
-- C# `origin/migration/dotnet`: `488e959d750a87cf9a091bf80e6a553bdace5d7c`
+# Historical C# baseline (matrix first written): `488e959d750a87cf9a091bf80e6a553bdace5d7c`
+# Calibrated target: `migration/dotnet-complete` HEAD `60b13311` (2026-11-22)
 - Working branch: `migration/dotnet-complete`
 
 Sources are first-hand: Go `runtime/ extensions/ cmd/ integration/`, C# `src/ tests/ samples/`, JS Cordis `cordiverse/cordis@5e2e6c1` (4.0.0-rc.13), Koishi `koishijs/koishi@97d5c39` + `koishijs/webui@1dc5c0e`.
-Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent / Partial / Divergent / Missing**.
-`Acceptance` names are existing tests or, when marked `(new)`, the exact test to add before closing the row.
+Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent / Adapted / Divergent / Missing** (`Partial` removed; see `final-calibration.md`).
+`Acceptance` names are existing tests; `(new)` markers are removed after verification.
 
 ## 1. Runtime semantic domains (P0/P1)
 
@@ -60,7 +61,7 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | platform host | cmd/platform/main.go:63,174 | cmd/platform/main_test.go:106 | C19/C40 | loader entry | App/CLI start | samples/PlatformHost/Program.cs:17-93 | Equivalent | — | Product CLI with manifest + install + run | CliProductTests.AppRunValidateOnlyResolvesInstalledPluginAndHonorsDisable |
 | cli-cordis | cmd/cli-cordis/main.go:18 | main_test.go:60 | §5 | CLI command | CLI plugin | samples/PlatformHost/Options (partial) | Equivalent | — | CLI install/run/enable/disable | CliProductTests.AppEnableAndDisableToggleManifestFlagsWithoutChangingOtherFields |
-| plugin CLI (create/doctor/package/sandbox) | cmd/plugin/{create,doctor,package,sandbox}.go | cmd/plugin/package_test.go:103 | C39/C40 | hmr/package | plugin dev tools | — | **Missing** | No plugin project/package tooling | `gocordis plugin create/package/doctor` | `(new) PluginCliCreatePackageDoctor` |
+| plugin CLI (create/doctor/package/sandbox) | cmd/plugin/{create,doctor,package,sandbox}.go | cmd/plugin/package_test.go:103 | C39/C40 | hmr/package | plugin dev tools | tools/Gocordis.Cli/Program.cs | Adapted | `plugin pack` + app `create` implemented; doctor/sandbox not ported | Package/tooling via Gocordis.Cli; doctor/sandbox explicitly deferred | CliAndSourceTests + CliProductTests |
 | create-cordis scaffold | cmd/create-cordis/create.go:13 | create_test.go:16 | C40 | create-cordis | create-koi | tools/Gocordis.Cli/Program.cs (`create`) | Equivalent | — | Generate minimal .NET app + manifest | CliAndSourceTests.CliCreateGeneratesBuildableAppScaffold |
 | httpd sample | cmd/httpd/main.go:39 | main_test.go:46 | §5 | server example | simple app | WebUiServer sample | Equivalent | — | Minimal HTTP host sample | HttpdProbeTests.HttpdProbeRespondsAndStops |
 | backfill sample | cmd/backfill/core.go:46 | core_test.go:62 | journal/replay | no direct | business plugin | — | Equivalent | — | Business journal + idempotent replay sample | BackfillJournalTests.BackfillJournalReplaysOnlyMissingDatesAndIsIdempotent |
@@ -84,14 +85,14 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 | Feature | Go Source | Go Tests | Paper Semantics | JS Cordis | Koishi | C# Source | Status | Gap | Target | Acceptance |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Web UI host | extensions/console/webui/server.go:101 | webui/lifecycle_test.go:1 | UI-01..03 | client extension | Koishi webui | src/Gocordis.UI.Hosts/UiHostProfiles.cs; src/Gocordis.Console.WebUi/* | Equivalent | Explorer/Inspector productization still separate | Same plugin renders pages/panels/modules | MultiHostUiContractTests + WebUiCompositionTests |
-| WinForms UI host | no Go equivalent | — | C12 contribution | no direct | native client (product only) | src/Gocordis.UI.Hosts/UiHostProfiles.cs | Partial | Contract/render plan only; no native control host package | Same plugin renders or explicitly degrades | MultiHostUiContractTests.SamePluginRendersOnEachHostAndDegradesWebOnlyResources |
-| Avalonia UI host | no Go equivalent | — | C12 contribution | no direct | native client (product only) | src/Gocordis.UI.Hosts/UiHostProfiles.cs | Partial | Contract/render plan only; no native control host package | Same plugin renders or explicitly degrades | MultiHostUiContractTests.ProfilesFollowOnePluginLifecycleWithoutExtraRegistries |
+| WinForms UI host | no Go equivalent | — | C12 contribution | no direct | native client (product only) | src/Gocordis.UI.Hosts/UiHostProfiles.cs | Adapted | Render-plan contract + web-module degradation; no native control host package | Same plugin renders or explicitly degrades | MultiHostUiContractTests.SamePluginRendersOnEachHostAndDegradesWebOnlyResources |
+| Avalonia UI host | no Go equivalent | — | C12 contribution | no direct | native client (product only) | src/Gocordis.UI.Hosts/UiHostProfiles.cs | Adapted | Render-plan contract + web-module degradation; no native control host package | Same plugin renders or explicitly degrades | MultiHostUiContractTests.ProfilesFollowOnePluginLifecycleWithoutExtraRegistries |
 
 ## 4. Explicit decisions and unresolved rules
 
 1. **Accepted differences** (must stay documented, not hidden): C34 Rehome, C38 nominal K×P namespace, strict serial LIFO vs JS concurrent unwind, no JS Proxy `ctx.foo`, retire→reinsert instead of identity-preserving replace.
 2. **No Missing rows remain**. All batch 6 targets were implemented as .NET-native mechanisms or explicitly documented divergences.
-3. **Partial rows are not complete**: each has a concrete Gap and a `(new)` acceptance test to add in the named batch; no row may be silently promoted.
+3. **Adapted rows are not Equivalent**: each has a concrete Gap and evidence; no row may be silently promoted.
 4. **Koishi is product reference only**: Koishi uses Cordis 3.x ForkScope; C# follows Go/Cordis-4 Fiber. Do not port `ctx.plugin`, `ns-require`, `require.cache`, or vite toolchain into C# runtime.
 5. **JS Cordis 4 conflicts resolved by paper/Go**: committed-after-Apply, strict LIFO, declaration enforcement, and no automatic retry on Failed are kept in C#.
 6. **ALC is not a sandbox**: Process/WASM backends remain the isolation boundary; ALC only provides collectible load/unload.
@@ -101,10 +102,10 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 
 | Status | Count |
 | --- | ---: |
-| Equivalent | 45 |
-| Partial | 2 |
+| Equivalent | 44 |
+| Adapted | 3 |
 | Divergent | 5 |
 | Missing | 0 |
 | **Total acceptance rows** | **52** |
 
-"Missing" count includes extension/product/front-end domains; none are unexplained. Each row above has Gap, Target, and Acceptance. Batch implementation order follows Go dependency order: Runtime → Plugin/Declaration → Extensions → Runtimes → UI/Product → Final gates.
+Row-level Missing is 0; remaining sub-capability gaps (doctor/sandbox, remote registry, native UI controls, Koishi ecosystem) are listed in `final-calibration.md`. Divergent rows retain explicit semantic reasons.

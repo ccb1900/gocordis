@@ -2,7 +2,7 @@
 
 Branch: `migration/dotnet-complete`
 
-本轮不是新一轮全局审查，只处理上一轮账本中仍可落地的 Partial/Divergent。
+本轮不是新一轮全局审查，只处理上一轮账本中仍可落地的 Adapted/Divergent。
 目标：把“有具体验收缺口”的行关闭，把“平台/语言边界”的行明确重新分类为 Divergent，不伪造完成。
 
 ## 关闭的项
@@ -27,7 +27,7 @@ Branch: `migration/dotnet-complete`
 - Managed runtime：ALC 不是安全沙箱，Go 无等价物。
 - Go Native runtime：.NET 不加载 Go native plugin，Process backend 作为隔离替代。
 
-## 仍保留 Partial（2 项）
+## 仍保留 Adapted（2 项）
 
 - WinForms UI host：契约与 render-plan 已实现，但不含原生控件宿主包。
 - Avalonia UI host：同上。
@@ -38,7 +38,7 @@ Web-only client module 在原生 Host 中明确降级，不出现第二套生命
 ## 完成度
 
 ```text
-Equivalent 45 / Partial 2 / Divergent 5 / Missing 0   (total 52)
+Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52; calibrated in final-calibration.md)
 Tests: 349/349, 0 warnings, 3 consecutive full-suite runs
 ```
 
@@ -49,4 +49,4 @@ Tests: 349/349, 0 warnings, 3 consecutive full-suite runs
 3. 修真实集成错误：HttpdHost 缺 AspNetCore.Hosting using；CLI Console 命名空间冲突；
    ProductGate orphan capability 未声明；CLI 全局 Console 捕获竞争；iterative component 缺 ApplyAsync override。
 4. 全量 349/349 绿后更新账本状态，并把不可跨平台落地的项重新分类为 Divergent，
-   不用“Partial”伪装成未完成，也不把边界项伪称 Equivalent。
+   不用模糊状态伪装成未完成，也不把边界项伪称 Equivalent。

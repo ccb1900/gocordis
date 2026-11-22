@@ -242,14 +242,30 @@ public sealed class PluginRegistry : IAsyncDisposable
                                             requiredVersion.Accepts(candidate.Key.Version))
                         .OrderByDescending(candidate => candidate.Key.Version)
                         .FirstOrDefault();
-                    if (best.Id == id)
+                    if (best.Id is not null && ReferenceEquals(best.Id, id))
                     {
                         throw new DependencyCycleException($"plugin '{id}' depends on its own versioned capability");
                     }
 
-                    if (best.Id is not null && !visited.Contains(best.Id))
+                    if (best.Id is not null)
                     {
-                        Visit(best.Id);
+                        if (!visited.Contains(best.Id))
+                        {
+                            Visit(best.Id);
+                        }
+
+                        continue;
+                    }
+
+                    // No compatible provider: unified declaration rule with
+                    // plain keys — an explicitly external capability is legal,
+                    // otherwise the declaration is invalid (P1-2).
+                    if (!ExternalCapabilities.Contains(requiredVersion))
+                    {
+                        throw new InvalidOperationException(
+                            $"plugin '{id}' requires versioned capability '{requiredVersion.Name}' " +
+                            $"matching '{requiredVersion.Constraint ?? (IFormattable)requiredVersion.Version}' " +
+                            "with no provider");
                     }
 
                     continue;

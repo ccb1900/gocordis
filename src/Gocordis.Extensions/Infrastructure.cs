@@ -16,6 +16,14 @@ public sealed class FileSystemService : IAsyncDisposable
         _mounts[prefix] = Path.GetFullPath(root);
     }
 
+    // Mount prefixes must match on a path BOUNDARY, not as a raw string prefix:
+    // "data" must not capture "database/config". Windows paths are
+    // case-insensitive (P1-4).
+    private static bool PrefixMatches(string path, string prefix, StringComparison comparison) =>
+        path.Equals(prefix, comparison) ||
+        path.StartsWith(prefix + "/", comparison) ||
+        path.StartsWith(prefix + "\\", comparison);
+
     public async Task WriteAsync(string path, byte[] content)
     {
         var resolved = Resolve(path);
@@ -64,8 +72,11 @@ public sealed class FileSystemService : IAsyncDisposable
 
     private string Resolve(string path)
     {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
         var match = _mounts
-            .Where(pair => path.StartsWith(pair.Key, StringComparison.Ordinal))
+            .Where(pair => PrefixMatches(path, pair.Key, comparison))
             .OrderByDescending(pair => pair.Key.Length)
             .FirstOrDefault();
         if (match.Key is null)
@@ -73,18 +84,40 @@ public sealed class FileSystemService : IAsyncDisposable
             throw new InvalidOperationException($"no mount matches '{path}'");
         }
 
+        var root = match.Value;
         var relative = path[match.Key.Length..].TrimStart('/', '\\');
-        var resolved = Path.GetFullPath(Path.Combine(match.Value, relative));
-        EnsureWithin(match.Value, resolved);
+        var resolved = Path.GetFullPath(Path.Combine(root, relative));
+        EnsureWithin(root, resolved);
 
-        // Path.GetFullPath does not resolve symlinks; check the final target too.
-        var info = new FileInfo(resolved);
-        if (info.Exists)
+        // P1-4: resolve EVERY existing path segment, not just the final target.
+        // A symlink in an intermediate directory can escape the mount even
+        // when the final file does not exist yet (write-new-file case).
+        var cursor = root;
+        foreach (var segment in relative.Split('/', '\\', StringSplitOptions.RemoveEmptyEntries))
         {
+            cursor = Path.GetFullPath(Path.Combine(cursor, segment));
+            EnsureWithin(root, cursor);
+
+            FileSystemInfo? info = null;
+            if (Directory.Exists(cursor))
+            {
+                info = new DirectoryInfo(cursor);
+            }
+            else if (File.Exists(cursor))
+            {
+                info = new FileInfo(cursor);
+            }
+
+            if (info is null)
+            {
+                continue; // new leaf: no link to resolve yet
+            }
+
             var target = info.ResolveLinkTarget(returnFinalTarget: true);
             if (target is not null)
             {
-                EnsureWithin(match.Value, target.FullName);
+                EnsureWithin(root, target.FullName);
+                cursor = target.FullName;
             }
         }
 

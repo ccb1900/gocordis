@@ -10,7 +10,9 @@ namespace Gocordis.Core;
 public sealed class Runtime : IAsyncDisposable
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly AsyncLocal<bool> _ownsGate = new();
+    // Revocable lease (not an inheritable bool): background tasks inherit
+    // ExecutionContext; a stale lease must not keep bypassing the gate (P0-2).
+    private readonly AsyncLocal<GateLease?> _gateLease = new();
     private readonly ConcurrentDictionary<Guid, Fiber> _fibers = [];
     private readonly ConcurrentDictionary<ICapabilityKey, Fiber> _providers =
         new(ReferenceEqualityComparer.Instance);
@@ -35,32 +37,45 @@ public sealed class Runtime : IAsyncDisposable
     /// <summary>Reentrant lease: Apply may create owned children without deadlocking.</summary>
     private sealed class GateLease : IDisposable
     {
+        internal static readonly GateLease Reentrant = new(null, null, false);
+
         private readonly SemaphoreSlim? _gate;
         private readonly Action? _restore;
+        private bool _active;
 
-        public GateLease(SemaphoreSlim? gate, Action? restore)
+        internal GateLease(SemaphoreSlim? gate, Action? restore, bool active)
         {
             _gate = gate;
             _restore = restore;
+            _active = active;
         }
+
+        internal bool Active => _active;
 
         public void Dispose()
         {
-            _restore?.Invoke();
-            _gate?.Release();
+            _active = false;
+            if (_gate is not null)
+            {
+                _restore?.Invoke();
+                _gate.Release();
+            }
         }
     }
 
     private async Task<GateLease> EnterAsync()
     {
-        if (_ownsGate.Value)
+        var inherited = _gateLease.Value;
+        if (inherited is not null && inherited.Active)
         {
-            return new GateLease(null, null);
+            return GateLease.Reentrant; // explicit reentrant child-creation path
         }
 
         await _gate.WaitAsync();
-        var previous = _ownsGate.Value;
-        return new GateLease(_gate, () => _ownsGate.Value = previous);
+        var previous = inherited;
+        var lease = new GateLease(_gate, () => _gateLease.Value = previous, active: true);
+        _gateLease.Value = lease;
+        return lease;
     }
 
     public async Task<Fiber> LoadAsync(Component component, Fiber? parent = null, Realm? realm = null)
@@ -68,9 +83,12 @@ public sealed class Runtime : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(component);
 
         var lease = await EnterAsync();
-        // AsyncLocal must be set in the caller's context, not inside EnterAsync,
-        // so nested LoadChildAsync can observe the reentrant lease.
-        _ownsGate.Value = true;
+        // AsyncLocal changes inside EnterAsync do not flow back to the caller;
+        // publish the lease here for nested child creation on this frame.
+        if (!ReferenceEquals(lease, GateLease.Reentrant))
+        {
+            _gateLease.Value = lease;
+        }
         try
         {
             ObjectDisposedException.ThrowIf(_closed, this);
@@ -114,9 +132,12 @@ public sealed class Runtime : IAsyncDisposable
         CancelActivation(fiber);
 
         var lease = await EnterAsync();
-        // AsyncLocal must be set in the caller's context, not inside EnterAsync,
-        // so nested LoadChildAsync can observe the reentrant lease.
-        _ownsGate.Value = true;
+        // AsyncLocal changes inside EnterAsync do not flow back to the caller;
+        // publish the lease here for nested child creation on this frame.
+        if (!ReferenceEquals(lease, GateLease.Reentrant))
+        {
+            _gateLease.Value = lease;
+        }
         try
         {
             if (fiber.State == FiberState.Gone)
@@ -141,9 +162,12 @@ public sealed class Runtime : IAsyncDisposable
     public async Task CloseAsync()
     {
         var lease = await EnterAsync();
-        // AsyncLocal must be set in the caller's context, not inside EnterAsync,
-        // so nested LoadChildAsync can observe the reentrant lease.
-        _ownsGate.Value = true;
+        // AsyncLocal changes inside EnterAsync do not flow back to the caller;
+        // publish the lease here for nested child creation on this frame.
+        if (!ReferenceEquals(lease, GateLease.Reentrant))
+        {
+            _gateLease.Value = lease;
+        }
         try
         {
             _closed = true;
@@ -260,24 +284,36 @@ public sealed class Runtime : IAsyncDisposable
             binding.Name == key.Name &&
             binding.ValueType == typeof(T));
         _versionedProviders.Add(new VersionedBinding(realm, key.Name, typeof(T), key.Version, provider, value!));
+        MarkBindingsChanged(); // a higher compatible version can change consumers' target
     }
 
-    internal void RemoveVersioned(Fiber provider, ICapabilityKey key) =>
+    internal void RemoveVersioned(Fiber provider, ICapabilityKey key)
+    {
         _versionedProviders.RemoveAll(binding =>
             ReferenceEquals(binding.Provider, provider) && binding.Name == key.Name);
+        MarkBindingsChanged();
+    }
 
-    internal T ResolveVersioned<T>(VersionedKey<T> key, Fiber consumer)
+    // Single source of truth for the target binding: highest compatible
+    // version in the consumer realm (paper §6.6). Used by both Resolve and
+    // Satisfied so reconciliation can detect a stale committed binding.
+    private VersionedBinding? TargetVersioned(IVersionedKey key, Fiber consumer)
     {
-        var realm = EffectiveRealm(consumer, key);
-        var binding = _versionedProviders
+        var realm = EffectiveRealm(consumer, (ICapabilityKey)key);
+        return _versionedProviders
             .Where(binding => ReferenceEquals(binding.Realm, realm) &&
                               binding.Name == key.Name &&
-                              binding.ValueType == typeof(T) &&
+                              binding.ValueType == key.ValueType &&
                               key.Accepts(binding.Version) &&
                               !ReferenceEquals(binding.Provider, consumer) &&
                               binding.Provider.State == FiberState.Active)
             .OrderByDescending(binding => binding.Version)
             .FirstOrDefault();
+    }
+
+    internal T ResolveVersioned<T>(VersionedKey<T> key, Fiber consumer)
+    {
+        var binding = TargetVersioned(key, consumer);
         if (binding is null)
         {
             throw new DependencyMissingException(
@@ -291,14 +327,22 @@ public sealed class Runtime : IAsyncDisposable
 
     private bool HasVersionedProvider(IVersionedKey key, Fiber consumer)
     {
-        var realm = EffectiveRealm(consumer, key);
-        return _versionedProviders.Any(binding =>
-            ReferenceEquals(binding.Realm, realm) &&
-            binding.Name == key.Name &&
-            binding.ValueType == key.ValueType &&
-            key.Accepts(binding.Version) &&
-            !ReferenceEquals(binding.Provider, consumer) &&
-            binding.Provider.State == FiberState.Active);
+        var target = TargetVersioned(key, consumer);
+        if (target is null)
+        {
+            return false;
+        }
+
+        // A consumer committed to a lower compatible provider is NOT satisfied
+        // once a higher compatible version appears: it must unwind and
+        // re-activate against the new target (P1-1).
+        if (consumer.Committed.TryGetValue((ICapabilityKey)key, out var current) &&
+            !ReferenceEquals(current, target.Provider))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     internal T RequireValue<T>(CapabilityKey key, Fiber consumer)
@@ -621,6 +665,9 @@ public sealed class Runtime : IAsyncDisposable
         fiber.Inverses.Clear();
         fiber.EffectStates.Clear();
         fiber.Provided.Clear();
+        // P0-3: clear committed provider references AFTER inverses ran so a
+        // Pending consumer cannot keep a disposed provider's ALC alive.
+        fiber.Committed.Clear();
         _versionedProviders.RemoveAll(binding => ReferenceEquals(binding.Provider, fiber));
         fiber.Metadata.Clear();
         foreach (var key in fiber.Component.Provide())

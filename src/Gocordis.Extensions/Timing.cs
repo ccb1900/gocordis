@@ -150,6 +150,8 @@ public sealed class Scheduler : IAsyncDisposable
 {
     private readonly Dictionary<Guid, Job> _jobs = [];
     private readonly HashSet<Guid> _running = [];
+    private readonly HashSet<Guid> _cancelled = [];
+    private bool _disposed;
 
     public IReadOnlyCollection<Job> Jobs
     {
@@ -165,18 +167,37 @@ public sealed class Scheduler : IAsyncDisposable
     public Guid ScheduleOnce(DateTimeOffset at, Func<ValueTask> action)
     {
         var id = Guid.NewGuid();
-        _jobs[id] = new Job(id, at, null, action);
+        lock (_jobs)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _jobs[id] = new Job(id, at, null, action);
+        }
+
         return id;
     }
 
     public Guid ScheduleInterval(TimeSpan period, Func<ValueTask> action)
     {
         var id = Guid.NewGuid();
-        _jobs[id] = new Job(id, DateTimeOffset.UtcNow + period, period, action);
+        lock (_jobs)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _jobs[id] = new Job(id, DateTimeOffset.UtcNow + period, period, action);
+        }
+
         return id;
     }
 
-    public bool Cancel(Guid id) => _jobs.Remove(id);
+    public bool Cancel(Guid id)
+    {
+        lock (_jobs)
+        {
+            // A running interval job must stay cancelled after its action
+            // completes: the completion path consults _cancelled.
+            _cancelled.Add(id);
+            return _jobs.Remove(id);
+        }
+    }
 
     public async Task<Guid?> RunNextAsync(DateTimeOffset now)
     {
@@ -211,6 +232,11 @@ public sealed class Scheduler : IAsyncDisposable
         }
         lock (_jobs)
         {
+            if (_disposed || _cancelled.Contains(due.Id))
+            {
+                return due.Id; // cancelled / disposed while running: no resurrection
+            }
+
             if (due.Period is { } period)
             {
                 _jobs[due.Id] = due with { Next = now + period };
@@ -226,8 +252,26 @@ public sealed class Scheduler : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        _jobs.Clear();
-        await ValueTask.CompletedTask;
+        lock (_jobs)
+        {
+            _disposed = true;
+            _jobs.Clear();
+        }
+
+        // No job may re-enter _jobs after disposal; wait for in-flight actions
+        // to leave so a later RunNextAsync cannot observe a half-disposed state.
+        while (true)
+        {
+            lock (_jobs)
+            {
+                if (_running.Count == 0)
+                {
+                    break;
+                }
+            }
+
+            await Task.Delay(1);
+        }
     }
 
     public sealed record Job(Guid Id, DateTimeOffset Next, TimeSpan? Period, Func<ValueTask> Action);

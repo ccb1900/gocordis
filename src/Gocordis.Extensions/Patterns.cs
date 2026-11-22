@@ -224,13 +224,28 @@ public sealed class ObserveStream<T> : IAsyncDisposable
 /// <summary>File watch with revision coalescing, built on FileSystemWatcher.</summary>
 public sealed class WatchService : IAsyncDisposable
 {
+    // One lock for BOTH maps: watcher registration, revision reads and
+    // disposal must be serialized (FileSystemService pattern).
+    private readonly object _sync = new();
     private readonly Dictionary<string, FileSystemWatcher> _watchers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _revisions = new(StringComparer.Ordinal);
+    private bool _disposed;
 
-    public long Revision(string path) => _revisions.GetValueOrDefault(path);
+    public long Revision(string path)
+    {
+        lock (_sync)
+        {
+            return _revisions.GetValueOrDefault(path);
+        }
+    }
 
     public IDisposable Watch(string path, Action<string, long> onChange)
     {
+        lock (_sync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+        }
+
         var full = Path.GetFullPath(path);
         var directory = Directory.Exists(full) ? full : Path.GetDirectoryName(full)!;
         var filter = Directory.Exists(full) ? "*" : Path.GetFileName(full);
@@ -250,24 +265,45 @@ public sealed class WatchService : IAsyncDisposable
         watcher.Changed += handler;
         watcher.Created += handler;
         watcher.EnableRaisingEvents = true;
-        _watchers[full] = watcher;
+        lock (_sync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _watchers[full] = watcher;
+        }
+
         return new Subscription(() =>
         {
+            lock (_sync)
+            {
+                _watchers.Remove(full);
+            }
+
             watcher.EnableRaisingEvents = false;
-            _watchers.Remove(full);
             watcher.Dispose();
         });
     }
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var watcher in _watchers.Values)
+        FileSystemWatcher[] watchers;
+        lock (_sync)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            watchers = [.. _watchers.Values];
+            _watchers.Clear();
+        }
+
+        foreach (var watcher in watchers)
         {
             watcher.EnableRaisingEvents = false;
             watcher.Dispose();
         }
 
-        _watchers.Clear();
         await ValueTask.CompletedTask;
     }
 

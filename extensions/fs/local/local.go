@@ -647,8 +647,35 @@ func (w *watcher) eventPath(p, rel string) string {
 // insideRoot reports whether p is contained in rootPath. It is used to keep
 // fsnotify's recursive walk and dynamic subdirectory registration inside the
 // provider root even if a symlink appears mid-watch.
+// physicalPath resolves the longest existing prefix of p. macOS temp roots
+// are reached through /var -> /private/var; callers pass the /var spelling
+// while EvalSymlinks returns the /private/var spelling. Normalizing both
+// sides by the SAME rule keeps containment checks honest without weakening
+// the symlink-escape guard.
+func physicalPath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	cur := filepath.Clean(p)
+	var tail []string
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			for i := len(tail) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, tail[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p
+		}
+		tail = append(tail, filepath.Base(cur))
+		cur = parent
+	}
+}
+
 func insideRoot(rootPath, p string) bool {
-	rel, err := filepath.Rel(rootPath, p)
+	rel, err := filepath.Rel(physicalPath(rootPath), physicalPath(p))
 	if err != nil {
 		return false
 	}
@@ -713,8 +740,14 @@ func newWatcher(ctx context.Context, name, rp, filter string, cb func(contract.W
 	if err != nil {
 		return nil, err
 	}
+	// Keep the CALLER's path spelling for emitted events: rp is physical
+	// (/private/var/... on macOS) but the watch URI uses /var/...
+	callerPrefix := rp
+	if strings.HasPrefix(name, "file://") {
+		callerPrefix = strings.TrimPrefix(name, "file://")
+	}
 	w := &watcher{
-		watcher: fsw, ctx: ctx, name: name, prefix: filepath.Clean(rp),
+		watcher: fsw, ctx: ctx, name: name, prefix: filepath.Clean(callerPrefix),
 		filter: filter, cb: cb, rootPath: rootPath,
 		events: make(chan contract.WatchEvent, 64), errors: make(chan error, 16),
 		ready: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{}),
@@ -772,11 +805,16 @@ func (w *watcher) run() {
 				}
 			}
 			p := filepath.Clean(ev.Name)
-			rel, err := filepath.Rel(w.prefix, p)
+			// fsnotify reports the physical path (/private/var/... on macOS)
+			// while the watcher prefix uses the caller's spelling (/var/...).
+			// Compare RELATIVE to the physical prefix, then rebuild the
+			// caller-spelled path for the emitted event.
+			rel, err := filepath.Rel(physicalPath(w.prefix), physicalPath(p))
 			if err != nil || (rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel)) {
 				continue // not the target or one of its descendants
 			}
-			ep := w.eventPath(p, rel)
+			callerPath := filepath.Join(w.prefix, rel)
+			ep := w.eventPath(callerPath, rel)
 			if !contract.MatchFilter(w.filter, contract.WatchRelative(w.name, ep)) {
 				continue
 			}

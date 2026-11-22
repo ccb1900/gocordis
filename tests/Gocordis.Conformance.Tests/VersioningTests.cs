@@ -28,6 +28,36 @@ public sealed class VersioningTests
     }
 
     [Fact]
+    public async Task HigherCompatibleProviderRebindsRunningConsumer()
+    {
+        // Migration review P1-1: first activation picks the highest compatible
+        // version; a later higher version must cause the consumer to withdraw
+        // and re-activate instead of staying on its stale committed binding.
+        var v14 = new VersionedKey<string>("storage", "1.4.0");
+        var v18 = new VersionedKey<string>("storage", "1.8.0");
+        var need = new VersionedKey<string>("storage", "1.0.0", "[1.0,2.0)");
+
+        await using var runtime = new Gocordis.Core.Runtime();
+        await runtime.LoadAsync(Provider("old", v14, "legacy"));
+
+        var observed = string.Empty;
+        var consumer = await runtime.LoadAsync(new Consumer(
+            "consumer", context => observed = context.Require(need), need));
+        Assert.Equal("legacy", observed);
+
+        await runtime.LoadAsync(Provider("new", v18, "modern"));
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (observed != "modern" && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        Assert.Equal("modern", observed);
+        Assert.Equal(FiberState.Active, consumer.State);
+    }
+
+    [Fact]
     public async Task MultipleVersionsOfOneInterfaceCoexist()
     {
         var v1 = new VersionedKey<string>("storage", "1.0.0");

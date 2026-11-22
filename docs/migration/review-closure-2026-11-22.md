@@ -29,7 +29,7 @@
 
 1. **WASM HMR** 是"串行化 warm 验证 + 旧 fiber Gone 后提交"，不是零停机原子提交；文档已下调表述。
 2. **Effect 补偿**只在调用方把 inverse 交给 `ctx.EffectAsync` 时成立；绕过 Context 的外部副作用不在可逆边界内（论文 §6.1 `idΓ`）。
-3. **Windows runner 实跑**：CI 配置已就绪，本机 Linux 未执行。
+3. **Windows runner 实跑**：GitHub Actions `windows-dotnet` job 已执行 `dotnet build` + `dotnet test` 并成功。
 4. ~~论文 §5.3 Koishi 案例（G-B1）与 §6.6 版本化依赖路由（G-B2）~~ 已在同一次连续执行中关闭，见下节。
 
 ## 闭环审查第二轮（同一执行内）
@@ -58,5 +58,28 @@
 ```
 bash docs/migration/verify-baseline.sh   → BASELINE VERIFIED
 dotnet build Gocordis.sln -m:1           → 0 Warning / 0 Error
-dotnet test Gocordis.sln -m:1            → 19 + 27 + 48 + 14 = 108 passed
+dotnet test Gocordis.sln -m:1            → 21 + 28 + 19 + 50 = 118 passed
 ```
+
+## 最终质量修复批次（同日收敛）
+
+按审查给出的唯一最终批次执行，不再扩范围：
+
+| 优先 | 项 | 落地 |
+|---|---|---|
+| P0-1 | Context 失效边界 | Context 绑定创建时激活令牌；写操作统一校验 Generation / LifecycleIntent / Cancellation；读操作保留 Cleanup 期 Require 的论文语义；回归：撤销中的旧 Context 不得注册能力/事件/子 Fiber |
+| P0-2 | 重入锁继承 | `AsyncLocal<bool>` → 可撤销 GateLease；后台任务继承 ExecutionContext 后拿到的是已撤销租约，不再绕过串行化；回归：后台任务继承后 Load/Dispose |
+| P0-3 | Committed 引用清理 | `UnwindAsync` 在所有逆执行后清空 Committed，Pending Consumer 不再持有 Provider Fiber/ALC；回归：Managed Provider + 常驻 Consumer，卸载后 ALC 可回收 |
+| P1-1 | 版本化重绑定 | `TargetVersioned` 成为解析与 Satisfied 的唯一目标绑定来源：更高兼容版本出现时旧 Consumer 撤销重激活；注册/移除版本化能力触发重新调和；回归测试 |
+| P1-2 | 版本化声明校验 | Registry 对版本化依赖采用与普通 Key 一致的 ExternalCapabilities 规则：无 Provider 且未声明 external → 拒绝；声明 external → 合法但保持 Pending；自环仍报环 |
+| P1-3 | Scheduler / WatchService | Scheduler 所有 Job 状态变更统一加锁、取消的运行中任务不复活、Dispose 等待在飞任务并拒绝新任务；WatchService 的 watcher/revision 共享一把锁且 Dispose 幂等；回归 3 项 |
+| P1-4 | 文件系统链接边界 | Mount 前缀按路径边界匹配（Windows 大小写不敏感）；Resolve 对每一段已存在的路径检查链接目标，阻止中间目录 symlink 逃逸（含新建文件场景）；回归 2 项 |
+| P2 | 文档一致性 | 测试数量统一为 118（21+28+19+50）；Windows CI 改为“已由 windows-dotnet job 实跑通过” |
+
+状态：以上全部带针对性回归测试并通过；Go 基线保持通过。**迁移分支冻结**。
+
+补充：在 macOS 上执行 Go 基线时发现 `extensions/fs/local` 的 watch 路径把
+`/var` 与 `/private/var` 两种拼写混用，导致 watch 目录被误判越界、事件无法
+匹配。已在 `insideRoot` 对两侧统一做“最长存在前缀物理化”、事件路径回映
+为调用方拼写；Go 全量 53 包测试通过。此修复属于“Go 基线验证仍然通过”
+的完成条件，不涉及 .NET 迁移语义。

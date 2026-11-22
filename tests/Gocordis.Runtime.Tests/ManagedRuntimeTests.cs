@@ -48,6 +48,54 @@ public sealed class ManagedRuntimeTests
     }
 
     [Fact]
+    public async Task UnloadingProviderLeavesPendingConsumerWithoutKeepingAlcAlive()
+    {
+        // Migration review P0-3: after the provider fiber is disposed the
+        // consumer stays Pending. Its Committed map must no longer hold the
+        // provider Fiber (which owns the plugin Component / its ALC).
+        var weak = await LoadProviderConsumerUnload();
+
+        for (var attempt = 0; attempt < 10 && weak.IsAlive; attempt++)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+        }
+
+        Assert.False(weak.IsAlive, "pending consumer kept the provider plugin ALC alive");
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static async Task<WeakReference> LoadProviderConsumerUnload()
+        {
+            await using var runtime = new Gocordis.Core.Runtime();
+            await using var loader = new ManagedPluginLoader();
+
+            var plugin = loader.Load("provider", SamplePath("SamplePlugin"), "SamplePlugin.SampleComponent");
+            var key = (Key<string>)plugin.Component.GetType()
+                .GetField("SampleKey", BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
+            var weak = new WeakReference(plugin.Context);
+
+            var provider = await runtime.LoadAsync(plugin.Component);
+            string? observed = null;
+            var consumer = await runtime.LoadAsync(new ProbeComponent(
+                "consumer", context => observed = context.Require(key), [key]));
+
+            if (consumer.State != FiberState.Active || observed is null)
+            {
+                throw new InvalidOperationException("consumer did not bind the managed provider");
+            }
+
+            await runtime.DisposeAsync(provider);
+            if (consumer.State != FiberState.Pending)
+            {
+                throw new InvalidOperationException($"consumer should be Pending, got {consumer.State}");
+            }
+
+            loader.Unload("provider");
+            return weak;
+        }
+    }
+
+    [Fact]
     public async Task TwoPluginsCanUseDifferentVersionsOfAPrivateDependency()
     {
         await using var runtime = new Gocordis.Core.Runtime();

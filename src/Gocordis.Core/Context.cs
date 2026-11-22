@@ -9,16 +9,21 @@ public sealed class Context
     private readonly Fiber _fiber;
     private readonly Runtime _runtime;
     private readonly int _generation;
+    // Bound at activation creation: a Context belongs to ONE activation token.
+    // Reading Fiber.ActivationCancellation dynamically would let a stale
+    // context observe (and mutate through) a newer activation.
+    private readonly CancellationTokenSource? _activation;
 
     internal Context(Fiber fiber, Runtime runtime, int generation)
     {
         _fiber = fiber;
         _runtime = runtime;
         _generation = generation;
+        _activation = fiber.ActivationCancellation;
     }
 
     public CancellationToken CancellationToken =>
-        _fiber.ActivationCancellation?.Token ?? CancellationToken.None;
+        _activation?.Token ?? CancellationToken.None;
 
     /// <summary>The fiber's default realm; per-key overrides are applied by <see cref="Isolate{T}"/>.</summary>
     public Realm Realm => _fiber.Realm;
@@ -56,7 +61,7 @@ public sealed class Context
     /// <summary>Publish a versioned capability; the inverse removes the binding.</summary>
     public void Provide<T>(VersionedKey<T> key, T value)
     {
-        EnsureGeneration();
+        EnsureWritable();
         RequireDeclared(key, _fiber.Component.Provide());
         _runtime.RegisterVersioned(key, value, _fiber);
         _fiber.AddInverse(() =>
@@ -81,7 +86,7 @@ public sealed class Context
 
     private void ProvideCore(CapabilityKey key, object? value)
     {
-        EnsureGeneration();
+        EnsureWritable();
         RequireDeclared(key, _fiber.Component.Provide());
         if (_fiber.Provided.ContainsKey(key))
         {
@@ -103,7 +108,7 @@ public sealed class Context
     /// </summary>
     public void Isolate<T>(Key<T> key, Realm realm)
     {
-        EnsureGeneration();
+        EnsureWritable();
         RequireDeclared(key, _fiber.Component.Inject().Concat(_fiber.Component.Provide()).ToArray());
         ArgumentNullException.ThrowIfNull(realm);
         // Realm reassignment is a persistent interface change (paper C34), not
@@ -116,7 +121,7 @@ public sealed class Context
     /// <summary>Component's declared metadata contribution (left side of the monoid).</summary>
     public void DeclareMeta<T, M>(MetaKey<T, M> key, M value)
     {
-        EnsureGeneration();
+        EnsureWritable();
         RequireDeclared(key, _fiber.Component.Inject());
         var state = GetOrCreateMeta(key);
         var hadPrevious = state.Declared is not null;
@@ -136,7 +141,7 @@ public sealed class Context
     /// <summary>Context override, always applied last: σ(k)(μ ⊕ ι(k)).</summary>
     public void OverrideMeta<T, M>(MetaKey<T, M> key, M value)
     {
-        EnsureGeneration();
+        EnsureWritable();
         var state = GetOrCreateMeta(key);
         state.Override = value;
         _fiber.AddInverse(() =>
@@ -161,9 +166,28 @@ public sealed class Context
     /// A context belongs to one activation generation. Stale contexts must not
     /// mutate the fiber after a divert or a new activation has begun.
     /// </summary>
+    // Read path: a context belongs to one activation generation. Reads during
+    // Cleanup must remain legal (paper §4.4: the consumer can still read its
+    // declared coeffect while its inverse runs), so cancellation/Retired are
+    // NOT rejected here. A stale generation is always invalid.
     private void EnsureGeneration()
     {
-        if (_fiber.Generation != _generation)
+        if (_fiber.Generation != _generation || _fiber.State == FiberState.Gone)
+        {
+            throw new DivertedException();
+        }
+    }
+
+    // Write path: every state mutation MUST validate all three signals.
+    // Dispose marks the fiber Retired and cancels its activation token BEFORE
+    // taking the lifecycle gate and WITHOUT bumping Generation; a stale
+    // context would otherwise keep writing during teardown (P0-1).
+    private void EnsureWritable()
+    {
+        EnsureGeneration();
+        if (_fiber.Intent == LifecycleIntent.Retired ||
+            _fiber.State is FiberState.Unloading or FiberState.Failed ||
+            (_activation is not null && _activation.IsCancellationRequested))
         {
             throw new DivertedException();
         }
@@ -183,7 +207,7 @@ public sealed class Context
     /// <summary>Install a reversible effect. The inverse is recorded for LIFO unwind.</summary>
     public async ValueTask EffectAsync(Func<ValueTask> install, Func<ValueTask> inverse)
     {
-        EnsureGeneration();
+        EnsureWritable();
         ThrowIfDiverted();
         try
         {
@@ -217,7 +241,7 @@ public sealed class Context
     /// <summary>Register a reversible event handler owned by this fiber.</summary>
     public ValueTask OnAsync<T>(EventKey<T> key, Func<T, ValueTask> handler)
     {
-        EnsureGeneration();
+        EnsureWritable();
         RequireDeclared(key, _fiber.Component.Inject());
         return _runtime.RegisterHandler(key, handler, _fiber);
     }
@@ -232,7 +256,7 @@ public sealed class Context
     /// <summary>Create an owned child fiber; parent teardown cascades to it.</summary>
     public Task<Fiber> LoadChildAsync(Component child)
     {
-        EnsureGeneration();
+        EnsureWritable();
         return _runtime.LoadAsync(child, _fiber);
     }
 

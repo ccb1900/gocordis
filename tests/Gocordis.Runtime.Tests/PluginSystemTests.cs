@@ -147,6 +147,40 @@ public sealed class PluginSystemTests
         ]));
     }
 
+    [Fact]
+    public async Task VersionedDependencyWithoutProviderNeedsExternalDeclaration()
+    {
+        var key = new VersionedKey<string>("storage", "1.0.0", "[1.0,2.0)");
+        var manifest = new PluginManifest(
+            "consumer", "versioned", true,
+            new Dictionary<string, object?>(), [], []);
+
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        registry.RegisterFactory("versioned", _ => new VersionedConsumer(key));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => registry.ApplyAsync([manifest]));
+        Assert.Contains("versioned capability 'storage'", error.Message);
+
+        // Declared external: same versioned dependency is now legal.
+        registry.ExternalCapabilities.Add(key);
+        await registry.ApplyAsync([manifest]);
+        // External declaration is a validation exemption, not a fake provider:
+        // the fiber remains Pending until a real compatible provider appears.
+        Assert.Equal(FiberState.Pending, registry.Entries["consumer"].Fiber!.State);
+    }
+
+    private sealed class VersionedConsumer : Component
+    {
+        private readonly IVersionedKey _key;
+        public VersionedConsumer(IVersionedKey key) => _key = key;
+        public override string Name => "versioned-consumer";
+        public override IReadOnlyList<ICapabilityKey> Inject() => [_key];
+        public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
+            ValueTask.FromResult<Cleanup?>(null);
+    }
+
     private sealed class KeyedComponent : Component
     {
         private readonly IReadOnlyList<ICapabilityKey> _inject;

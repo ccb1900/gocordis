@@ -55,7 +55,7 @@ public sealed class PlatformHostOptions
 /// the package store and a host-specific UI renderer. It is not a second
 /// plugin lifecycle authority.
 /// </summary>
-public sealed class PlatformApplication : IAsyncDisposable
+public class PlatformApplication : IAsyncDisposable
 {
     private readonly PlatformHostOptions _options;
     private readonly DiagnosticsService _diagnostics;
@@ -259,43 +259,61 @@ public sealed class PlatformApplication : IAsyncDisposable
 
     public UiRenderPlan RenderPlan() => UiHostProfiles.Get(_options.Host).Plan(Console.Ui);
 
+    /// <summary>Test seams for disposal faults; production uses the real resources.</summary>
+    protected virtual Task StopWebUiAsync(CancellationToken cancellationToken) =>
+        WebUi?.StopAsync(cancellationToken) ?? Task.CompletedTask;
+
+    protected virtual ValueTask DisposeWebUiAsync() =>
+        WebUi?.DisposeAsync() ?? ValueTask.CompletedTask;
+
+    protected virtual ValueTask DisposeRegistryAsync() => Registry.DisposeAsync();
+
+    protected virtual ValueTask DisposeRuntimeAsync() => Runtime.DisposeAsync();
+
+    protected virtual ValueTask DisposeRouteGuardAsync() =>
+        _routeGuard?.DisposeAsync() ?? ValueTask.CompletedTask;
+
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
+        // _stopped means all resources were released, not merely that a stop
+        // was requested. A failed step leaves it false so callers can retry.
         if (_stopped)
         {
             return;
         }
 
-        // Mark stopped before any await so a failed start or a re-entrant call
-        // cannot leave partially constructed resources behind.
-        _stopped = true;
-        try
+        var errors = new List<Exception>();
+        await AttemptAsync(errors, "webui stop", async () => await StopWebUiAsync(cancellationToken));
+        await AttemptAsync(errors, "webui dispose", async () =>
         {
             if (WebUi is not null)
             {
-                await WebUi.StopAsync(cancellationToken);
-            }
-        }
-        finally
-        {
-            if (WebUi is not null)
-            {
-                await WebUi.DisposeAsync();
+                await DisposeWebUiAsync();
                 WebUi = null;
             }
+        });
+        await AttemptAsync(errors, "registry", async () => await DisposeRegistryAsync());
+        await AttemptAsync(errors, "runtime", async () => await DisposeRuntimeAsync());
+        await AttemptAsync(errors, "route guard", async () => await DisposeRouteGuardAsync());
 
-            try
-            {
-                await Registry.DisposeAsync();
-            }
-            finally
-            {
-                await Runtime.DisposeAsync();
-                if (_routeGuard is not null)
-                {
-                    await _routeGuard.DisposeAsync();
-                }
-            }
+        if (errors.Count > 0)
+        {
+            throw new AggregateException("platform cleanup was incomplete", errors);
+        }
+
+        _stopped = true;
+    }
+
+    private static async Task AttemptAsync(
+        List<Exception> errors, string step, Func<Task> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            errors.Add(new InvalidOperationException($"{step} cleanup failed", ex));
         }
     }
 

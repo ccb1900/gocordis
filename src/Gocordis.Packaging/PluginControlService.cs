@@ -482,7 +482,24 @@ public sealed class PluginControlService : IPluginControlPlane
 
                 var installedBefore = await _store.ListAsync(token);
                 var oldInstalled = await _store.ResolveAsync(id, declaration.VersionRange, token);
-                var dependents = await FindInstalledDependentsAsync(id, new[] { parsedNewVersion }, token);
+
+                // An upgrade removes the old resolved version, not the new one.
+                // Dependents are unsatisfied only when a dependency range matched
+                // a removed version and no surviving version still matches.
+                var removedVersions = oldInstalled is not null &&
+                                      !string.Equals(oldInstalled.Version, newVersion, StringComparison.Ordinal)
+                    ? new[] { NuGetVersion.Parse(oldInstalled.Version) }
+                    : Array.Empty<NuGetVersion>();
+                var survivingVersions = installedBefore
+                    .Where(package => string.Equals(package.Id, id, StringComparison.Ordinal) &&
+                                      (oldInstalled is null ||
+                                       !string.Equals(package.Version, oldInstalled.Version, StringComparison.Ordinal)))
+                    .Select(package => NuGetVersion.Parse(package.Version))
+                    .Append(parsedNewVersion)
+                    .Distinct()
+                    .ToArray();
+                var dependents = await FindInstalledDependentsAsync(
+                    id, removedVersions, token, survivingVersions);
                 if (dependents.Length > 0)
                 {
                     return Rejected(id, "conflict",

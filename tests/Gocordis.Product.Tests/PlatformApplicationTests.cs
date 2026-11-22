@@ -127,6 +127,47 @@ public sealed class PlatformApplicationTests
         await Assert.ThrowsAsync<ObjectDisposedException>(() => app.Runtime.LoadAsync(new ProbeComponent()));
     }
 
+    [Theory]
+    [InlineData("webui", "webui dispose")]
+    [InlineData("registry", "registry cleanup")]
+    [InlineData("runtime", "runtime cleanup")]
+    [InlineData("routeGuard", "route guard cleanup")]
+    public async Task CleanupFailureIsIsolatedAndRetried(string fault, string expectedMessage)
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var options = new PlatformHostOptions(manifestPath, temp.Path("store"),
+            Address: "http://127.0.0.1:0", HostVersion: "1.5.0",
+            AllowedHosts: ["console.example.com"]);
+
+        var app = new FaultyPlatformApplication(options, fault);
+        await app.StartAsync();
+
+        var failure = await Assert.ThrowsAsync<AggregateException>(() => app.StopAsync());
+        var inner = Assert.Single(failure.InnerExceptions);
+        Assert.Contains(expectedMessage, inner.Message, StringComparison.OrdinalIgnoreCase);
+
+        // Every other resource was still attempted, and a failed step leaves the
+        // host stoppable rather than marking cleanup as complete.
+        Assert.Equal(1, app.WebUiDisposeCalls);
+        Assert.Equal(1, app.RegistryDisposeCalls);
+        Assert.Equal(1, app.RuntimeDisposeCalls);
+        Assert.Equal(1, app.RouteGuardDisposeCalls);
+
+        await app.StopAsync();
+        Assert.Equal(fault == "webui" ? 2 : 1, app.WebUiDisposeCalls);
+        Assert.Equal(2, app.RegistryDisposeCalls);
+        Assert.Equal(2, app.RuntimeDisposeCalls);
+        Assert.Equal(2, app.RouteGuardDisposeCalls);
+
+        var callsBeforeDispose = app.WebUiDisposeCalls + app.RegistryDisposeCalls +
+                                 app.RuntimeDisposeCalls + app.RouteGuardDisposeCalls;
+        await app.DisposeAsync();
+        Assert.Equal(callsBeforeDispose, app.WebUiDisposeCalls + app.RegistryDisposeCalls +
+            app.RuntimeDisposeCalls + app.RouteGuardDisposeCalls);
+        Assert.Empty(app.Runtime.Snapshot().Fibers);
+    }
+
     [Fact]
     public async Task ProductHostHonorsAllowedHostPolicyWhenConfigured()
     {
@@ -273,6 +314,75 @@ public sealed class PlatformApplicationTests
             },
         };
         await File.WriteAllTextAsync(Path.Combine(store, "installed.json"), JsonSerializer.Serialize(state));
+    }
+
+    private sealed class FaultyPlatformApplication : PlatformApplication
+    {
+        private readonly string _fault;
+        private bool _faultInjected;
+
+        public FaultyPlatformApplication(PlatformHostOptions options, string fault) : base(options) =>
+            _fault = fault;
+
+        public int WebUiDisposeCalls { get; private set; }
+        public int RegistryDisposeCalls { get; private set; }
+        public int RuntimeDisposeCalls { get; private set; }
+        public int RouteGuardDisposeCalls { get; private set; }
+
+        protected override ValueTask DisposeWebUiAsync()
+        {
+            WebUiDisposeCalls++;
+            if (ShouldFail("webui"))
+            {
+                throw new IOException("injected webui dispose failure");
+            }
+
+            return base.DisposeWebUiAsync();
+        }
+
+        protected override ValueTask DisposeRegistryAsync()
+        {
+            RegistryDisposeCalls++;
+            if (ShouldFail("registry"))
+            {
+                throw new IOException("injected registry dispose failure");
+            }
+
+            return base.DisposeRegistryAsync();
+        }
+
+        protected override ValueTask DisposeRuntimeAsync()
+        {
+            RuntimeDisposeCalls++;
+            if (ShouldFail("runtime"))
+            {
+                throw new IOException("injected runtime dispose failure");
+            }
+
+            return base.DisposeRuntimeAsync();
+        }
+
+        protected override ValueTask DisposeRouteGuardAsync()
+        {
+            RouteGuardDisposeCalls++;
+            if (ShouldFail("routeGuard"))
+            {
+                throw new IOException("injected route guard dispose failure");
+            }
+
+            return base.DisposeRouteGuardAsync();
+        }
+
+        private bool ShouldFail(string step)
+        {
+            if (_fault != step || _faultInjected)
+            {
+                return false;
+            }
+
+            _faultInjected = true;
+            return true;
+        }
     }
 
     private sealed class ProbeComponent : Component

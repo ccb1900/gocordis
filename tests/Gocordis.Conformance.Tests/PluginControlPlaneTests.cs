@@ -23,6 +23,8 @@ public sealed class PluginControlPlaneTests
     private const string HostVersion = "1.5.0";
     private const string RangeV1 = "[1.0,2.0)";
     private const string RangeV2 = "[2.0,3.0)";
+    private const string RangeWide = "[1.0,3.0)";
+    private const string RangeOldOnly = "[1.0,1.5)";
 
     private static readonly Key<string> DemoCapability = new("demo.capability");
 
@@ -520,6 +522,133 @@ public sealed class PluginControlPlaneTests
         AssertContainsStoreEntry(store, "provider", "1.0.0");
         Assert.DoesNotContain(store.OfType<JsonObject>(),
             item => Str(item, "id") == "provider" && Str(item, "version") == "2.0.0");
+        Assert.Equal("Active", Str(AssertPlugin(await GetDataArrayAsync(fx.Client, "/api/plugins"), "consumer"), "state"));
+    }
+
+    [Fact]
+    public async Task UpgradeAllowsWhenNewVersionStillSatisfiesDependentRange()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        var providerV1 = await BuildPackageAsync(fx.Temp, "provider", "1.0.0", "provider",
+            provides: [DemoCapability.Name]);
+        var key = await UploadAndGetKeyAsync(fx.Client, providerV1, "provider-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = key, ["enable"] = true })), "install provider v1");
+
+        var consumer = await BuildPackageAsync(fx.Temp, "consumer", "1.0.0", "consumer",
+            dependencies: [new PluginDependency("provider", RangeWide)]);
+        var consumerKey = await UploadAndGetKeyAsync(fx.Client, consumer, "consumer-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = consumerKey, ["enable"] = true })), "install consumer");
+
+        var providerV2 = await BuildPackageAsync(fx.Temp, "provider", "2.0.0", "provider",
+            provides: [DemoCapability.Name]);
+        var v2Key = await UploadAndGetKeyAsync(fx.Client, providerV2, "provider-2.0.0.gocordis-plugin");
+        var upgraded = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/upgrade",
+            new JsonObject { ["id"] = "provider", ["uploadKey"] = v2Key, ["versionRange"] = RangeV2 }));
+        AssertAccepted(upgraded, "upgrade provider within dependent range");
+
+        AssertContainsStoreEntry(await GetDataArrayAsync(fx.Client, "/api/plugins/store"), "provider", "2.0.0");
+        Assert.Equal("Active", Str(AssertPlugin(await GetDataArrayAsync(fx.Client, "/api/plugins"), "consumer"), "state"));
+    }
+
+    [Fact]
+    public async Task UpgradeRejectsWhenDependentRangeOnlyMatchesRemovedVersion()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        var providerV1 = await BuildPackageAsync(fx.Temp, "provider", "1.0.0", "provider",
+            provides: [DemoCapability.Name]);
+        var key = await UploadAndGetKeyAsync(fx.Client, providerV1, "provider-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = key, ["enable"] = true })), "install provider v1");
+
+        var consumer = await BuildPackageAsync(fx.Temp, "consumer", "1.0.0", "consumer",
+            dependencies: [new PluginDependency("provider", RangeOldOnly)]);
+        var consumerKey = await UploadAndGetKeyAsync(fx.Client, consumer, "consumer-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = consumerKey, ["enable"] = true })), "install consumer");
+
+        var manifestBefore = await File.ReadAllTextAsync(fx.ManifestPath);
+        var providerV15 = await BuildPackageAsync(fx.Temp, "provider", "1.5.0", "provider",
+            provides: [DemoCapability.Name]);
+        var v15Key = await UploadAndGetKeyAsync(fx.Client, providerV15, "provider-1.5.0.gocordis-plugin");
+        var rejected = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/upgrade",
+            new JsonObject { ["id"] = "provider", ["uploadKey"] = v15Key, ["versionRange"] = "[1.5,2.0)" }));
+        AssertRejected(rejected, "conflict", "upgrade removing the only satisfying provider version");
+
+        Assert.Equal(manifestBefore, await File.ReadAllTextAsync(fx.ManifestPath));
+        var store = await GetDataArrayAsync(fx.Client, "/api/plugins/store");
+        AssertContainsStoreEntry(store, "provider", "1.0.0");
+        Assert.DoesNotContain(store.OfType<JsonObject>(),
+            item => Str(item, "id") == "provider" && Str(item, "version") == "1.5.0");
+    }
+
+    [Fact]
+    public async Task UpgradeAllowsSameVersionWithInstalledDependent()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        var providerV1 = await BuildPackageAsync(fx.Temp, "provider", "1.0.0", "provider",
+            provides: [DemoCapability.Name]);
+        var key = await UploadAndGetKeyAsync(fx.Client, providerV1, "provider-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = key, ["enable"] = true })), "install provider v1");
+
+        var consumer = await BuildPackageAsync(fx.Temp, "consumer", "1.0.0", "consumer",
+            dependencies: [new PluginDependency("provider", RangeV1)]);
+        var consumerKey = await UploadAndGetKeyAsync(fx.Client, consumer, "consumer-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = consumerKey, ["enable"] = true })), "install consumer");
+
+        var repeat = await UploadAndGetKeyAsync(fx.Client, providerV1, "provider-repeat.gocordis-plugin");
+        var result = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/upgrade",
+            new JsonObject { ["id"] = "provider", ["uploadKey"] = repeat, ["versionRange"] = "1.0.0" }));
+        AssertAccepted(result, "same-version upgrade removes nothing");
+        Assert.Equal("Active", Str(AssertPlugin(await GetDataArrayAsync(fx.Client, "/api/plugins"), "consumer"), "state"));
+    }
+
+    [Fact]
+    public async Task UpgradeAllowsWhenAnotherInstalledVersionSatisfiesDependent()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        var providerV1 = await BuildPackageAsync(fx.Temp, "provider", "1.0.0", "provider",
+            provides: [DemoCapability.Name]);
+        var key = await UploadAndGetKeyAsync(fx.Client, providerV1, "provider-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = key, ["enable"] = true })), "install provider v1");
+
+        // A second installed version is deliberately an orphan: the declaration
+        // still resolves v1, but dependents can survive removal of v1.
+        var providerV15 = await BuildPackageAsync(fx.Temp, "provider", "1.5.0", "provider",
+            provides: [DemoCapability.Name]);
+        await fx.Store.InstallAsync(fx.Temp.Path("provider-1.5.0.gocordis-plugin"));
+        Assert.NotNull(await fx.Store.ResolveAsync("provider", "1.5.0"));
+
+        var consumer = await BuildPackageAsync(fx.Temp, "consumer", "1.0.0", "consumer",
+            dependencies: [new PluginDependency("provider", RangeWide)]);
+        var consumerKey = await UploadAndGetKeyAsync(fx.Client, consumer, "consumer-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = consumerKey, ["enable"] = true })), "install consumer");
+
+        var providerV2 = await BuildPackageAsync(fx.Temp, "provider", "2.0.0", "provider",
+            provides: [DemoCapability.Name]);
+        var v2Key = await UploadAndGetKeyAsync(fx.Client, providerV2, "provider-2.0.0.gocordis-plugin");
+        var upgraded = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/upgrade",
+            new JsonObject { ["id"] = "provider", ["uploadKey"] = v2Key, ["versionRange"] = RangeV2 }));
+        AssertAccepted(upgraded, "upgrade with surviving provider versions");
+
+        var store = await GetDataArrayAsync(fx.Client, "/api/plugins/store");
+        // A bare NuGet range "1.0.0" means >=1.0.0, so the declaration resolved
+        // v1.5 before the upgrade; v1.5 is removed while v1 and v2 survive.
+        Assert.Contains(store.OfType<JsonObject>(),
+            item => Str(item, "id") == "provider" && Str(item, "version") == "1.0.0");
+        Assert.Contains(store.OfType<JsonObject>(),
+            item => Str(item, "id") == "provider" && Str(item, "version") == "2.0.0");
+        Assert.DoesNotContain(store.OfType<JsonObject>(),
+            item => Str(item, "id") == "provider" && Str(item, "version") == "1.5.0");
         Assert.Equal("Active", Str(AssertPlugin(await GetDataArrayAsync(fx.Client, "/api/plugins"), "consumer"), "state"));
     }
 

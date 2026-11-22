@@ -79,6 +79,14 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 | WASM runtime | extensions/loader/wasm/backend.go:57 | wasm/backend_test.go:1 | §6.3/C39 | no direct | no direct | src/Gocordis.Runtime.Wasm/* | Equivalent | 64 MiB limit now enforced; HMR warm-swap divergence tracked in hmr row | Wasmtime ABI + custom section + size guard + host bridge | WasmRuntimeTests.ModuleLargerThanSixtyFourMiBIsRejectedBeforeCompilation |
 | Go Native runtime | Go native backend (compile-time registry) | integration wasm/proc gates | C39 | no direct | no direct | Process backend substitute | Divergent | .NET cannot load Go native plugins without interop; no equivalent required | Document Process backend as isolation substitute; do not fake equivalence | docs/migration/runtime-integrity.md |
 
+## 3c. UI host domains (batch 5)
+
+| Feature | Go Source | Go Tests | Paper Semantics | JS Cordis | Koishi | C# Source | Status | Gap | Target | Acceptance |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Web UI host | extensions/console/webui/server.go:101 | webui/lifecycle_test.go:1 | UI-01..03 | client extension | Koishi webui | src/Gocordis.UI.Hosts/UiHostProfiles.cs; src/Gocordis.Console.WebUi/* | Equivalent | Explorer/Inspector productization still separate | Same plugin renders pages/panels/modules | MultiHostUiContractTests + WebUiCompositionTests |
+| WinForms UI host | no Go equivalent | — | C12 contribution | no direct | native client (product only) | src/Gocordis.UI.Hosts/UiHostProfiles.cs | Partial | Contract/render plan only; no native control host package | Same plugin renders or explicitly degrades | MultiHostUiContractTests.SamePluginRendersOnEachHostAndDegradesWebOnlyResources |
+| Avalonia UI host | no Go equivalent | — | C12 contribution | no direct | native client (product only) | src/Gocordis.UI.Hosts/UiHostProfiles.cs | Partial | Contract/render plan only; no native control host package | Same plugin renders or explicitly degrades | MultiHostUiContractTests.ProfilesFollowOnePluginLifecycleWithoutExtraRegistries |
+
 ## 4. Explicit decisions and unresolved rules
 
 1. **Accepted differences** (must stay documented, not hidden): C34 Rehome, C38 nominal K×P namespace, strict serial LIFO vs JS concurrent unwind, no JS Proxy `ctx.foo`, retire→reinsert instead of identity-preserving replace.
@@ -93,10 +101,10 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 
 | Status | Count |
 | --- | ---: |
-| Equivalent | 32 |
-| Partial | 12 |
+| Equivalent | 33 |
+| Partial | 14 |
 | Divergent | 3 |
 | Missing | 2 |
-| **Total acceptance rows** | **49** |
+| **Total acceptance rows** | **52** |
 
 "Missing" count includes extension/product/front-end domains; none are unexplained. Each row above has Gap, Target, and Acceptance. Batch implementation order follows Go dependency order: Runtime → Plugin/Declaration → Extensions → Runtimes → UI/Product → Final gates.

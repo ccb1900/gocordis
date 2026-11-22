@@ -343,6 +343,116 @@ public sealed class PluginControlPlaneTests
     }
 
     [Fact]
+    public async Task ManifestSaveFailureDuringInstallRollsBackStoreAndRuntime()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        var package = await BuildPackageAsync(fx.Temp, "alpha", "1.0.0", "demo");
+        var uploadKey = await UploadAndGetKeyAsync(fx.Client, package, "alpha-1.0.0.gocordis-plugin");
+        var manifestBefore = await File.ReadAllTextAsync(fx.ManifestPath);
+        var revisionBefore = fx.Control.Revision;
+
+        // The forward write and the old rollback shared this exact temp path.
+        // Poisoning it used to abort the whole compensation chain after the
+        // package had already been committed to the store.
+        var poisoned = fx.ManifestPath + ".tmp";
+        Directory.CreateDirectory(poisoned);
+        try
+        {
+            var failed = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+                new JsonObject { ["uploadKey"] = uploadKey, ["enable"] = true }));
+            AssertRejected(failed, "unavailable", "install with poisoned manifest temp");
+
+            Assert.Equal(manifestBefore, await File.ReadAllTextAsync(fx.ManifestPath));
+            Assert.Equal(revisionBefore, fx.Control.Revision);
+            Assert.DoesNotContain((await GetDataArrayAsync(fx.Client, "/api/plugins/store")).OfType<JsonObject>(),
+                item => Str(item, "id") == "alpha");
+            Assert.DoesNotContain(fx.Runtime.Snapshot().Fibers, fiber => fiber.Name == "alpha");
+        }
+        finally
+        {
+            Directory.Delete(poisoned, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ManifestSaveFailureDuringUpgradeLeavesOnlyOriginalPackage()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        var v1 = await BuildPackageAsync(fx.Temp, "alpha", "1.0.0", "demo");
+        var v1Key = await UploadAndGetKeyAsync(fx.Client, v1, "alpha-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = v1Key, ["enable"] = true })), "install alpha v1");
+
+        var manifestBefore = await File.ReadAllTextAsync(fx.ManifestPath);
+        var revisionBefore = fx.Control.Revision;
+        var generationBefore = fx.GenerationOf("demo");
+
+        var v2 = await BuildPackageAsync(fx.Temp, "alpha", "2.0.0", "demo");
+        var v2Key = await UploadAndGetKeyAsync(fx.Client, v2, "alpha-2.0.0.gocordis-plugin");
+        var poisoned = fx.ManifestPath + ".tmp";
+        Directory.CreateDirectory(poisoned);
+        try
+        {
+            var failed = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/upgrade",
+                new JsonObject { ["id"] = "alpha", ["uploadKey"] = v2Key, ["versionRange"] = RangeV2 }));
+            AssertRejected(failed, "unavailable", "upgrade with poisoned manifest temp");
+
+            Assert.Equal(manifestBefore, await File.ReadAllTextAsync(fx.ManifestPath));
+            Assert.Equal(revisionBefore, fx.Control.Revision);
+            Assert.Equal(generationBefore, fx.GenerationOf("demo"));
+
+            var store = await GetDataArrayAsync(fx.Client, "/api/plugins/store");
+            AssertContainsStoreEntry(store, "alpha", "1.0.0");
+            Assert.DoesNotContain(store.OfType<JsonObject>(),
+                item => Str(item, "id") == "alpha" && Str(item, "version") == "2.0.0");
+        }
+        finally
+        {
+            Directory.Delete(poisoned, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task StoreInverseFailureIsReportedAndRecoverableAfterFaultClears()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        // The factory poisons the store lock temp during Apply, after the
+        // package has committed and before the compensation inverse runs.
+        var package = await BuildPackageAsync(fx.Temp, "alpha", "1.0.0", "crash-store");
+        var uploadKey = await UploadAndGetKeyAsync(fx.Client, package, "alpha-1.0.0.gocordis-plugin");
+        var revisionBefore = fx.Control.Revision;
+        var poisoned = Path.Combine(fx.StoreRoot, "installed.json.tmp");
+
+        var failed = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = uploadKey, ["enable"] = true }));
+        AssertRejected(failed, "conflict", "install with failing Apply and poisoned store temp");
+
+        // Manifest and runtime compensation must still run even though the
+        // store inverse cannot write while its lock temp is poisoned.
+        Assert.DoesNotContain(await File.ReadAllTextAsync(fx.ManifestPath), "alpha", StringComparison.Ordinal);
+        Assert.Equal(revisionBefore, fx.Control.Revision);
+        var error = Str(failed.Data, "error") ?? string.Empty;
+        Assert.Contains("compensation", error, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("store", error, StringComparison.OrdinalIgnoreCase);
+
+        if (Directory.Exists(poisoned))
+        {
+            Directory.Delete(poisoned, recursive: true);
+        }
+
+        // Once the injected fault clears, the orphan left by the failed inverse
+        // is removable through the normal control surface.
+        var cleanup = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/uninstall",
+            new JsonObject { ["id"] = "alpha", ["version"] = "1.0.0" }));
+        AssertAccepted(cleanup, "clean up orphan after store inverse failure");
+        Assert.DoesNotContain((await GetDataArrayAsync(fx.Client, "/api/plugins/store")).OfType<JsonObject>(),
+            item => Str(item, "id") == "alpha");
+    }
+
+    [Fact]
     public async Task UploadKeyIsServerGeneratedAndUploadFileIsConsumed()
     {
         await using var fx = await Fixture.CreateAsync();
@@ -767,6 +877,8 @@ public sealed class PluginControlPlaneTests
             var registry = new PluginRegistry(runtime);
             registry.RegisterFactory("demo", _ => new NoopComponent("demo"));
             registry.RegisterFactory("crash", _ => new CrashComponent());
+            registry.RegisterFactory("crash-store", _ => new StorePoisoningCrashComponent(
+                Path.Combine(temp.Path("store"), "installed.json.tmp")));
             registry.RegisterFactory("provider", _ => new ProviderComponent());
             registry.RegisterFactory("consumer", _ => new ConsumerComponent());
 
@@ -807,6 +919,17 @@ public sealed class PluginControlPlaneTests
         public override string Name => "crash";
         public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
             throw new InvalidOperationException("crash plugin cannot activate");
+    }
+
+    private sealed class StorePoisoningCrashComponent(string poisonPath) : Component
+    {
+        public override string Name => "crash-store";
+
+        public override ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            Directory.CreateDirectory(poisonPath);
+            throw new InvalidOperationException("crash-store plugin cannot activate");
+        }
     }
 
     private sealed class ProviderComponent : Component

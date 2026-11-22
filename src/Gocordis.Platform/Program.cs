@@ -8,6 +8,14 @@ namespace Gocordis.Platform
 
 public static class PlatformRunner
 {
+    public const string UsageText = """
+        gocordis-platform [--manifest <file>] [--store <dir>] [--address <url>]
+                          [--allow-remote] [--host web|winforms|avalonia]
+                          [--host-version <semver>] [--allowed-host <host> ...]
+
+        winforms/avalonia are render-plan profiles only: no native UI window and no web console.
+        """;
+
     public static async Task<int> RunAsync(string[] args)
     {
         if (args.Contains("--help") || args.Contains("-h"))
@@ -22,11 +30,20 @@ public static class PlatformRunner
             await using var app = new PlatformApplication(options);
             await app.StartAsync();
 
-            System.Console.WriteLine(
-                $"Gocordis Platform [{options.Host}] started: manifest={options.ManifestPath}, store={options.StorePath}");
-            if (app.Address is not null)
+            if (options.Host == UiHostKind.Web)
             {
-                System.Console.WriteLine($"Web console: {app.Address}");
+                System.Console.WriteLine(
+                    $"Gocordis Platform [web] started: manifest={options.ManifestPath}, store={options.StorePath}");
+                if (app.Address is not null)
+                {
+                    System.Console.WriteLine($"Web console: {app.Address}");
+                }
+            }
+            else
+            {
+                System.Console.WriteLine(
+                    $"Gocordis Platform [{options.Host}] backend started " +
+                    "(render-plan profile only; no native UI window and no web console)");
             }
 
             System.Console.WriteLine("Press Ctrl+C to stop.");
@@ -98,7 +115,9 @@ public static class PlatformRunner
                     var value = Value(args, ref i);
                     if (!Enum.TryParse<UiHostKind>(value, ignoreCase: true, out host))
                     {
-                        throw new ArgumentException($"unknown host '{value}'");
+                        throw new ArgumentException(
+                            $"unknown host '{value}'; use web|winforms|avalonia " +
+                            "(winforms/avalonia are render-plan profiles, not native UI hosts)");
                     }
 
                     break;
@@ -120,10 +139,6 @@ public static class PlatformRunner
         return args[index];
     }
 
-    private static void PrintUsage() => System.Console.Error.WriteLine("""
-        gocordis-platform [--manifest <file>] [--store <dir>] [--address <url>]
-                          [--allow-remote] [--host web|winforms|avalonia]
-                          [--host-version <semver>] [--allowed-host <host> ...]
-        """);
+    private static void PrintUsage() => System.Console.Error.WriteLine(UsageText);
 }
 }

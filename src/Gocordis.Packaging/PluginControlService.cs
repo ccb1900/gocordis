@@ -389,7 +389,7 @@ public sealed class PluginControlService : IPluginControlPlane
 
     public Task<PluginMutationResult> InstallAsync(
         string uploadKey, bool enable = true, CancellationToken ct = default) =>
-        MutateAsync(uploadKey ?? string.Empty, async token =>
+        MutateAsync(uploadKey ?? string.Empty, async (baseline, token) =>
         {
             var key = uploadKey ?? string.Empty;
             var path = await ResolveUploadAsync(key, token);
@@ -420,13 +420,13 @@ public sealed class PluginControlService : IPluginControlPlane
                 Func<Task>? undoStore = null;
                 if (addedPackage)
                 {
-                    undoStore = () => _store.UninstallAsync(id, version, CancellationToken.None);
+                    undoStore = () => _store.UninstallExactAsync(id, version, CancellationToken.None);
                 }
 
-                var apply = await PersistAndApplyAsync(application, updated, token, undoStore);
+                var apply = await PersistAndApplyAsync(baseline, updated, token, Inverses(undoStore));
                 if (!apply.Success)
                 {
-                    return Failure(id, apply.Failure!);
+                    return Failure(id, apply.Failure!, apply.CompensationError);
                 }
 
                 Interlocked.Increment(ref _revision);
@@ -440,7 +440,7 @@ public sealed class PluginControlService : IPluginControlPlane
 
     public Task<PluginMutationResult> UpgradeAsync(
         string id, string uploadKey, string? versionRange = null, CancellationToken ct = default) =>
-        MutateAsync(id, async token =>
+        MutateAsync(id, async (baseline, token) =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(id);
             var key = uploadKey ?? string.Empty;
@@ -513,18 +513,19 @@ public sealed class PluginControlService : IPluginControlPlane
                 if (addedPackage)
                 {
                     var installedVersion = installedNew.Version;
-                    undoStore = () => _store.UninstallAsync(id, installedVersion, CancellationToken.None);
+                    undoStore = () => _store.UninstallExactAsync(id, installedVersion, CancellationToken.None);
                 }
 
+                var inverses = Inverses(undoStore);
                 var replacement = declaration with { VersionRange = range };
                 var updated = application with
                 {
                     Plugins = application.Plugins.Select(item => item.Id == id ? replacement : item).ToArray(),
                 };
-                var apply = await PersistAndApplyAsync(application, updated, token, undoStore);
+                var apply = await PersistAndApplyAsync(baseline, updated, token, inverses);
                 if (!apply.Success)
                 {
-                    return Failure(id, apply.Failure!);
+                    return Failure(id, apply.Failure!, apply.CompensationError);
                 }
 
                 var oldVersion = oldInstalled?.Version;
@@ -539,16 +540,8 @@ public sealed class PluginControlService : IPluginControlPlane
                     {
                         // Removing v1 is part of the transaction: undo v2 and the
                         // declaration before reporting the failure.
-                        try
-                        {
-                            await TryRestoreAsync(application, undoStore);
-                        }
-                        catch
-                        {
-                            // The original error is the one worth reporting.
-                        }
-
-                        return Failure(id, ex);
+                        var compensation = await CompensateAsync(baseline, inverses);
+                        return Failure(id, ex, compensation);
                     }
                 }
 
@@ -563,7 +556,7 @@ public sealed class PluginControlService : IPluginControlPlane
 
     public Task<PluginMutationResult> UninstallAsync(
         string id, string? version = null, CancellationToken ct = default) =>
-        MutateAsync(id, async token =>
+        MutateAsync(id, async (baseline, token) =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(id);
             // The UI sends the declaration's versionRange verbatim, which may be
@@ -610,10 +603,10 @@ public sealed class PluginControlService : IPluginControlPlane
             {
                 Plugins = application.Plugins.Where(item => item.Id != id).ToArray(),
             };
-            var apply = await PersistAndApplyAsync(application, updated, token);
+            var apply = await PersistAndApplyAsync(baseline, updated, token);
             if (!apply.Success)
             {
-                return Failure(id, apply.Failure!);
+                return Failure(id, apply.Failure!, apply.CompensationError);
             }
 
             try
@@ -624,22 +617,14 @@ public sealed class PluginControlService : IPluginControlPlane
             }
             catch (Exception ex)
             {
-                try
-                {
-                    await TryRestoreAsync(application, null);
-                }
-                catch
-                {
-                    // Best effort: report the store failure.
-                }
-
-                return Failure(id, ex);
+                var compensation = await CompensateAsync(baseline, []);
+                return Failure(id, ex, compensation);
             }
         }, ct);
 
     public Task<PluginMutationResult> SetEnabledAsync(
         string id, bool enabled, CancellationToken ct = default) =>
-        MutateAsync(id, async token =>
+        MutateAsync(id, async (baseline, token) =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(id);
             var application = await LoadApplicationAsync(token);
@@ -659,10 +644,10 @@ public sealed class PluginControlService : IPluginControlPlane
             {
                 Plugins = application.Plugins.Select(item => item.Id == id ? replacement : item).ToArray(),
             };
-            var apply = await PersistAndApplyAsync(application, updated, token);
+            var apply = await PersistAndApplyAsync(baseline, updated, token);
             if (!apply.Success)
             {
-                return Failure(id, apply.Failure!);
+                return Failure(id, apply.Failure!, apply.CompensationError);
             }
 
             Interlocked.Increment(ref _revision);
@@ -671,7 +656,7 @@ public sealed class PluginControlService : IPluginControlPlane
 
     public Task<PluginMutationResult> SetConfigAsync(
         string id, IReadOnlyDictionary<string, object?> config, CancellationToken ct = default) =>
-        MutateAsync(id, async token =>
+        MutateAsync(id, async (baseline, token) =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(id);
             if (config is null)
@@ -707,15 +692,155 @@ public sealed class PluginControlService : IPluginControlPlane
             {
                 Plugins = application.Plugins.Select(item => item.Id == id ? replacement : item).ToArray(),
             };
-            var apply = await PersistAndApplyAsync(application, updated, token);
+            var apply = await PersistAndApplyAsync(baseline, updated, token);
             if (!apply.Success)
             {
-                return Failure(id, apply.Failure!);
+                return Failure(id, apply.Failure!, apply.CompensationError);
             }
 
             Interlocked.Increment(ref _revision);
             return Accepted(id, [new PluginChange(PluginChangeKind.Updated, id, declaration.VersionRange)]);
         }, ct);
+
+    // ---- transaction baseline ----------------------------------------------
+
+    /// <summary>
+    /// State captured before a control mutation touches disk or runtime. The
+    /// raw manifest bytes, not a re-serialized copy, are the declaration
+    /// baseline; store versions and runtime declarations are compared after
+    /// compensation so a silent partial rollback is reported instead of hidden.
+    /// </summary>
+    private sealed record MutationBaseline(
+        bool ManifestExisted,
+        byte[] ManifestBytes,
+        string[] StoreVersions,
+        string[] RuntimeFingerprint);
+
+    private async Task<MutationBaseline> CaptureBaselineAsync(CancellationToken ct)
+    {
+        var existed = File.Exists(_manifestPath);
+        var bytes = existed ? await File.ReadAllBytesAsync(_manifestPath, ct) : [];
+        var storeVersions = (await _store.ListAsync(ct))
+            .Select(package => $"{package.Id}@{package.Version}")
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray();
+        return new MutationBaseline(existed, bytes, storeVersions, RuntimeFingerprint());
+    }
+
+    private string[] RuntimeFingerprint() =>
+        _registry.Entries.Values
+            .Select(entry => $"{entry.Manifest.Id}:{entry.Manifest.Enabled}:{entry.Fiber?.State}")
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray();
+
+    private async Task<string?> CompensateAsync(
+        MutationBaseline baseline, IReadOnlyList<Func<Task>> inverses)
+    {
+        var errors = new List<string>();
+
+        try
+        {
+            await RestoreManifestAsync(baseline);
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"manifest: {ex.Message}");
+        }
+
+        for (var i = inverses.Count - 1; i >= 0; i--)
+        {
+            try
+            {
+                await inverses[i]();
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"store[{i}]: {ex.Message}");
+            }
+        }
+
+        try
+        {
+            await ApplyAllCoreAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"runtime: {ex.Message}");
+        }
+
+        try
+        {
+            errors.AddRange(await VerifyBaselineAsync(baseline));
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"verification: {ex.Message}");
+        }
+
+        return errors.Count == 0 ? null : string.Join("; ", errors);
+    }
+
+    private async Task RestoreManifestAsync(MutationBaseline baseline)
+    {
+        if (!baseline.ManifestExisted)
+        {
+            if (File.Exists(_manifestPath))
+            {
+                File.Delete(_manifestPath);
+            }
+
+            return;
+        }
+
+        var directory = Path.GetDirectoryName(Path.GetFullPath(_manifestPath))!;
+        Directory.CreateDirectory(directory);
+        // Never reuse the forward write's .tmp path: a fault there must not
+        // disable the inverse as well.
+        var temp = Path.Combine(directory,
+            $".{Path.GetFileName(_manifestPath)}.rollback-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await File.WriteAllBytesAsync(temp, baseline.ManifestBytes, CancellationToken.None);
+            File.Move(temp, _manifestPath, overwrite: true);
+        }
+        catch
+        {
+            TryDeleteFile(temp);
+            throw;
+        }
+    }
+
+    private async Task<IReadOnlyList<string>> VerifyBaselineAsync(MutationBaseline baseline)
+    {
+        var errors = new List<string>();
+        var exists = File.Exists(_manifestPath);
+        if (exists != baseline.ManifestExisted)
+        {
+            errors.Add(exists ? "unexpected manifest after rollback" : "manifest missing after rollback");
+        }
+        else if (exists &&
+                 !(await File.ReadAllBytesAsync(_manifestPath, CancellationToken.None))
+                     .SequenceEqual(baseline.ManifestBytes))
+        {
+            errors.Add("manifest bytes differ after rollback");
+        }
+
+        var storeVersions = (await _store.ListAsync(CancellationToken.None))
+            .Select(package => $"{package.Id}@{package.Version}")
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray();
+        if (!storeVersions.SequenceEqual(baseline.StoreVersions))
+        {
+            errors.Add("store versions differ after rollback");
+        }
+
+        if (!RuntimeFingerprint().SequenceEqual(baseline.RuntimeFingerprint))
+        {
+            errors.Add("runtime declarations differ after rollback");
+        }
+
+        return errors;
+    }
 
     // ---- internals ---------------------------------------------------------
 
@@ -844,7 +969,7 @@ public sealed class PluginControlService : IPluginControlPlane
     {
         try
         {
-            await _store.UninstallAsync(id, version, CancellationToken.None);
+            await _store.UninstallExactAsync(id, version, CancellationToken.None);
         }
         catch
         {
@@ -875,58 +1000,49 @@ public sealed class PluginControlService : IPluginControlPlane
     }
 
     /// <summary>
-    /// Persists a declaration edit and reconciles it. On failure the previous
-    /// declaration and any store change made by this mutation are restored before
-    /// the error is reported. Revision is advanced by the caller only after the
-    /// whole mutation has succeeded.
+    /// Persists a declaration edit and reconciles it. On failure every inverse
+    /// is attempted independently in LIFO order, then all three layers are
+    /// verified against the captured baseline. Compensation errors are returned
+    /// to the caller instead of being swallowed. Revision is advanced only after
+    /// the whole mutation has succeeded.
     /// </summary>
-    private async Task<(bool Success, Exception? Failure)> PersistAndApplyAsync(
-        ApplicationManifest previous,
+    private async Task<(bool Success, Exception? Failure, string? CompensationError)> PersistAndApplyAsync(
+        MutationBaseline baseline,
         ApplicationManifest updated,
         CancellationToken ct,
-        Func<Task>? undoStore = null)
+        IReadOnlyList<Func<Task>>? inverses = null)
     {
         try
         {
             await updated.SaveAsync(_manifestPath, ct);
             await ApplyAllCoreAsync(ct);
-            return (true, null);
+            return (true, null, null);
         }
         catch (Exception ex)
         {
-            try
+            var compensation = await CompensateAsync(baseline, inverses ?? []);
+            if (ex is OperationCanceledException && ct.IsCancellationRequested)
             {
-                await TryRestoreAsync(previous, undoStore);
-            }
-            catch
-            {
-                // Best effort: the reported failure is the original one.
+                throw;
             }
 
-            return (false, ex);
+            return (false, ex, compensation);
         }
     }
 
-    private async Task TryRestoreAsync(ApplicationManifest previous, Func<Task>? undoStore)
-    {
-        await previous.SaveAsync(_manifestPath, CancellationToken.None);
-        if (undoStore is not null)
-        {
-            await undoStore();
-        }
-
-        await ApplyAllCoreAsync(CancellationToken.None);
-    }
+    private static IReadOnlyList<Func<Task>> Inverses(Func<Task>? inverse) =>
+        inverse is null ? [] : [inverse];
 
     private async Task<PluginMutationResult> MutateAsync(
         string id,
-        Func<CancellationToken, Task<PluginMutationResult>> operation,
+        Func<MutationBaseline, CancellationToken, Task<PluginMutationResult>> operation,
         CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
         try
         {
-            return await operation(ct);
+            var baseline = await CaptureBaselineAsync(ct);
+            return await operation(baseline, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -954,8 +1070,13 @@ public sealed class PluginControlService : IPluginControlPlane
         string id, string code, string error, bool persisted = false) =>
         new(false, code, error, id, null, persisted, []);
 
-    private static PluginMutationResult Failure(string id, Exception ex, bool persisted = false) =>
-        Rejected(id, CodeFor(ex), ex.Message, persisted);
+    private static PluginMutationResult Failure(string id, Exception ex, string? compensationError = null)
+    {
+        var message = string.IsNullOrWhiteSpace(compensationError)
+            ? ex.Message
+            : $"{ex.Message}; compensation incomplete: {compensationError}";
+        return Rejected(id, CodeFor(ex), message);
+    }
 
     private static string CodeFor(Exception ex) => ex switch
     {

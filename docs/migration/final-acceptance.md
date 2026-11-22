@@ -32,8 +32,8 @@ bash docs/migration/verify-baseline.sh  # Go baseline
 本地 .NET 验证结果：
 
 - Build：0 warning / 0 error
-- Test：397/397，控制面插件化后连续 3 次零失败、零挂起
-- 构成：Core 27 / Conformance 138 / Runtime 119 / Extensions 59 / Packaging 40 / UI 3 / Client 2 / Product 9
+- Test：404/404，Round 7 审查修复后连续 3 次零失败、零挂起
+- 构成：Core 27 / Conformance 141 / Runtime 119 / Extensions 59 / Packaging 40 / UI 3 / Client 2 / Product 13
 
 CI 状态不在本轮工作流中核验。最终验收以本地构建/测试为准；历史 `6ff30f1c` 曾记录 Go baseline Race
 flake，CI workflow 对该已知 flake 采用最多 3 次有界重试，真实失败不会被掩盖。当前 HEAD 的 CI 结果需由外部流程确认，不在本文件中声称。
@@ -98,6 +98,7 @@ Web/WinForms/Avalonia profile 按各自能力渲染或明确降级。
 ## 6. 明确保留的限制
 
 - WinForms/Avalonia 是 host profile 与 render-plan 契约，不是完整原生控件宿主包（账本标 Adapted）。
+  Platform CLI help、未知 host 错误与启动输出已明确该边界，见 `review-round-7.md`。
 - Explorer/Inspector/Dashboard 的数据与资源交付已通过真实 HTTP 验收；原生控件级产品化由 web/console 前端承担。
 - Koishi 完整插件市场、远程安装与云端服务不在迁移范围。
 - 跨 effect 并发撤销按论文/Go 严格 LIFO，不采用 JS `Promise.all` 并发撤销。

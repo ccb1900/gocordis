@@ -33,7 +33,8 @@ Active Fiber、能力可解析、UI 贡献可逆、HTTP 合同不变，并在 St
 - 持有 manifest 路径、PluginStore、PluginRegistry、可选 UiContributionRegistry
 - 单一 SemaphoreSlim 串行化所有读写和 mutation
 - 工厂注册按 type 去重；ProductPluginComponent 贡献 typed key 与 UI Page
-- 每次 mutation 先写声明，再调和；失败时恢复旧声明并尽力回滚 store（二次失败仍报告原始错误）
+- 每次 mutation 捕获 manifest 原始字节 / store 版本 / runtime 声明基线；
+  失败时 LIFO 补偿三方并验证，补偿不完整写入错误响应，见 `review-round-7.md`
 - Revision 单调递增，供 SSE `plugin-state` 使用
 
 公开能力：List / Store / Dependencies / Upload / Install / Upgrade / Uninstall /
@@ -93,7 +94,7 @@ npm run build → success
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 397/397
+dotnet test  Gocordis.sln → 404/404
 ```
 
 ## 5. 明确边界

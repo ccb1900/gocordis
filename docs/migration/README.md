@@ -35,6 +35,7 @@
 | [`review-round-4.md`](review-round-4.md) | 审查修复 | Round 4 插件 CLI 工具链关闭记录 | 红测 + 本地验证 |
 | [`review-round-5.md`](review-round-5.md) | 审查修复 | Round 5 远程只读插件源关闭记录 | 红测 + 本地验证 |
 | [`review-round-6.md`](review-round-6.md) | 审查修复 | Round 6 包签名与验签关闭记录 | 红测 + 本地验证 |
+| [`review-round-7.md`](review-round-7.md) | 审查修复 | Round 7 跨层事务、启动清理与原生 Host 边界 | 红测 + 本地验证 |
 | [`../guide/csharp-developer-manual.md`](../guide/csharp-developer-manual.md) | 批次 C | C# 开发者手册：十二铁律 → C# API 与反模式 | 与 `AGENTS.md` 十二铁律逐条锚定 |
 | [`migration-coverage.md`](migration-coverage.md) | 全周期 | 每个 Go 模块迁移到哪个 C# 项目；用什么机制替代；什么不迁移 | 清单逐项推进；状态只能由验收证据推进 |
 | [`execution-log.md`](execution-log.md) | 全周期 | 每一步做了什么、为什么、证据是什么 | 持续追加，不回改历史条目 |
@@ -70,5 +71,7 @@
 - **批次 C（论文矩阵 / 定理矩阵 / JS 差异统一 / 最终验收）已完成**：C01–C40 矩阵
   38 已覆盖 / 0 待补 / 2 接受差异；Thm64/68/70/73/80 每定理 3 场景；
   Koishi 真实消息链、provider 启停与 HTTP E2E 已覆盖。历史基线 **396/396**，连续 39 次全绿；
-  控制面插件化后当前 **397/397**，见 [`control-plane-pluginization.md`](control-plane-pluginization.md)。
+  控制面插件化与 Round 7 审查修复后当前 **404/404**，见
+  [`control-plane-pluginization.md`](control-plane-pluginization.md) 与
+  [`review-round-7.md`](review-round-7.md)。
 - 后续阶段状态以 [`migration-coverage.md`](migration-coverage.md) 的逐项状态为准，不在本文件重复维护。

@@ -78,7 +78,7 @@ Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52)
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 397/397（控制面插件化后）
+dotnet test  Gocordis.sln → 404/404（Round 7 审查修复后）
 ```
 
 结论：

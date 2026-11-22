@@ -74,8 +74,24 @@ public sealed class PluginStore
     public async Task<PluginStoreResult> UpgradeAsync(string packagePath, CancellationToken cancellationToken = default) =>
         await InstallCoreAsync(packagePath, upgrade: true, cancellationToken);
 
-    public async Task<PluginStoreResult> UninstallAsync(
-        string id, string? version = null, CancellationToken cancellationToken = default)
+    public Task<PluginStoreResult> UninstallAsync(
+        string id, string? version = null, CancellationToken cancellationToken = default) =>
+        UninstallCoreAsync(id, version, cancellationToken, exactOnly: false, skipDependents: false);
+
+    /// <summary>
+    /// Compensation-only inverse: removes one exact version without repeating
+    /// the forward dependency check that rejected the original mutation.
+    /// </summary>
+    internal Task<PluginStoreResult> UninstallExactAsync(
+        string id, string version, CancellationToken cancellationToken = default) =>
+        UninstallCoreAsync(id, version, cancellationToken, exactOnly: true, skipDependents: true);
+
+    private async Task<PluginStoreResult> UninstallCoreAsync(
+        string id,
+        string? version,
+        CancellationToken cancellationToken,
+        bool exactOnly,
+        bool skipDependents)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         await _gate.WaitAsync(cancellationToken);
@@ -99,7 +115,7 @@ public sealed class PluginStore
                 {
                     targets = exact;
                 }
-                else if (VersionRange.TryParse(version, out var range))
+                else if (!exactOnly && VersionRange.TryParse(version, out var range))
                 {
                     targets = candidates.Where(p =>
                         NuGetVersion.TryParse(p.Version, out var parsed) && range.Satisfies(parsed)).ToArray();
@@ -116,19 +132,23 @@ public sealed class PluginStore
             }
 
             // Dependents are still satisfied when another installed version of the
-            // same plugin remains within their declared range.
-            var survivors = state.Plugins.Where(p =>
-                !targets.Contains(p) && string.Equals(p.Id, id, StringComparison.Ordinal)).ToArray();
-            var dependents = state.Plugins.Where(p => !targets.Contains(p))
-                .Where(p => p.Manifest.DependenciesOrEmpty.Any(d =>
-                    string.Equals(d.Id, id, StringComparison.Ordinal) &&
-                    targets.Any(t => VersionRange.Parse(d.VersionRange).Satisfies(NuGetVersion.Parse(t.Version))) &&
-                    !survivors.Any(s => VersionRange.Parse(d.VersionRange).Satisfies(NuGetVersion.Parse(s.Version)))))
-                .Select(p => p.Id).Distinct(StringComparer.Ordinal).ToArray();
-            if (dependents.Length > 0)
+            // same plugin remains within their declared range. Compensation skips
+            // this forward check so an inverse can always remove what it added.
+            if (!skipDependents)
             {
-                throw new InvalidOperationException(
-                    $"cannot uninstall '{id}': required by {string.Join(", ", dependents)}");
+                var survivors = state.Plugins.Where(p =>
+                    !targets.Contains(p) && string.Equals(p.Id, id, StringComparison.Ordinal)).ToArray();
+                var dependents = state.Plugins.Where(p => !targets.Contains(p))
+                    .Where(p => p.Manifest.DependenciesOrEmpty.Any(d =>
+                        string.Equals(d.Id, id, StringComparison.Ordinal) &&
+                        targets.Any(t => VersionRange.Parse(d.VersionRange).Satisfies(NuGetVersion.Parse(t.Version))) &&
+                        !survivors.Any(s => VersionRange.Parse(d.VersionRange).Satisfies(NuGetVersion.Parse(s.Version)))))
+                    .Select(p => p.Id).Distinct(StringComparer.Ordinal).ToArray();
+                if (dependents.Length > 0)
+                {
+                    throw new InvalidOperationException(
+                        $"cannot uninstall '{id}': required by {string.Join(", ", dependents)}");
+                }
             }
 
             var backup = await ReadLockBytesAsync(cancellationToken);

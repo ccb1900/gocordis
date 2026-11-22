@@ -98,36 +98,56 @@ public sealed class PlatformApplication : IAsyncDisposable
             return;
         }
 
-        var manifest = await ApplicationManifest.LoadAsync(_options.ManifestPath, cancellationToken);
-        if (manifest.HostVersion != Store.HostVersion)
+        try
         {
-            throw new InvalidOperationException(
-                $"application host version '{manifest.HostVersion}' does not match store host '{Store.HostVersion}'");
+            var manifest = await ApplicationManifest.LoadAsync(_options.ManifestPath, cancellationToken);
+            if (manifest.HostVersion != Store.HostVersion)
+            {
+                throw new InvalidOperationException(
+                    $"application host version '{manifest.HostVersion}' does not match store host '{Store.HostVersion}'");
+            }
+
+            _manifest = manifest;
+
+            // The control plane is a plugin contribution: load its fiber first,
+            // then read its capability. Runtime.Close ends this fiber with all
+            // the others, including on a partially failed start.
+            await Runtime.LoadAsync(new PluginControlPlaneComponent(
+                _options.ManifestPath, Store, Registry, Console.Ui));
+            var control = Runtime.RequireCapability(ControlPlaneKeys.Service);
+            Control = control;
+
+            await control.ApplyAllAsync(cancellationToken);
+            if (_options.Host == UiHostKind.Web)
+            {
+                WebUi = new WebUiServer(
+                    Console,
+                    address: _options.Address,
+                    allowRemote: _options.AllowRemote,
+                    registry: Registry,
+                    control: control,
+                    routeGuard: _routeGuard);
+                await WebUi.StartAsync(cancellationToken);
+            }
+
+            _started = true;
         }
-
-        _manifest = manifest;
-
-        // The control plane is a plugin contribution: load its fiber first, then
-        // read its capability. Runtime.Close ends this fiber with all the others.
-        await Runtime.LoadAsync(new PluginControlPlaneComponent(
-            _options.ManifestPath, Store, Registry, Console.Ui));
-        var control = Runtime.RequireCapability(ControlPlaneKeys.Service);
-        Control = control;
-
-        await control.ApplyAllAsync(cancellationToken);
-        if (_options.Host == UiHostKind.Web)
+        catch
         {
-            WebUi = new WebUiServer(
-                Console,
-                address: _options.Address,
-                allowRemote: _options.AllowRemote,
-                registry: Registry,
-                control: control,
-                routeGuard: _routeGuard);
-            await WebUi.StartAsync(cancellationToken);
-        }
+            // Start failure keeps raise semantics: clean what was constructed,
+            // then propagate the original error. StopAsync is idempotent and no
+            // longer waits for _started to become true.
+            try
+            {
+                await StopAsync(CancellationToken.None);
+            }
+            catch
+            {
+                // Preserve the original startup failure.
+            }
 
-        _started = true;
+            throw;
+        }
     }
 
     /// <summary>
@@ -241,26 +261,42 @@ public sealed class PlatformApplication : IAsyncDisposable
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
-        if (_stopped || !_started)
+        if (_stopped)
         {
             return;
         }
 
-        if (WebUi is not null)
-        {
-            await WebUi.StopAsync(cancellationToken);
-            await WebUi.DisposeAsync();
-            WebUi = null;
-        }
-
-        await Registry.DisposeAsync();
-        await Runtime.DisposeAsync();
-        if (_routeGuard is not null)
-        {
-            await _routeGuard.DisposeAsync();
-        }
-
+        // Mark stopped before any await so a failed start or a re-entrant call
+        // cannot leave partially constructed resources behind.
         _stopped = true;
+        try
+        {
+            if (WebUi is not null)
+            {
+                await WebUi.StopAsync(cancellationToken);
+            }
+        }
+        finally
+        {
+            if (WebUi is not null)
+            {
+                await WebUi.DisposeAsync();
+                WebUi = null;
+            }
+
+            try
+            {
+                await Registry.DisposeAsync();
+            }
+            finally
+            {
+                await Runtime.DisposeAsync();
+                if (_routeGuard is not null)
+                {
+                    await _routeGuard.DisposeAsync();
+                }
+            }
+        }
     }
 
     public async ValueTask DisposeAsync()

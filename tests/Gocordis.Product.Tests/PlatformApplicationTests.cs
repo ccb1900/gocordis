@@ -76,6 +76,58 @@ public sealed class PlatformApplicationTests
     }
 
     [Fact]
+    public async Task FailedWebHostStartReleasesRuntimeAndRegistry()
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var options = new PlatformHostOptions(manifestPath, temp.Path("store"),
+            Address: "http://127.0.0.1:99999", HostVersion: "1.5.0",
+            AllowedHosts: ["console.example.com"]);
+
+        var app = new PlatformApplication(options);
+        await Assert.ThrowsAnyAsync<Exception>(() => app.StartAsync());
+        await app.DisposeAsync();
+
+        Assert.Empty(app.Runtime.Snapshot().Fibers);
+        Assert.Empty(app.Registry.Entries);
+        Assert.Null(app.WebUi);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => app.Runtime.LoadAsync(new ProbeComponent()));
+    }
+
+    [Fact]
+    public async Task FailedApplyAllReleasesControlPlaneFiber()
+    {
+        using var temp = new TempDir();
+        var manifestPath = temp.File("missing-plugin.app.json");
+        await new ApplicationManifest("product-app", "1.0.0", "1.5.0",
+            [new ApplicationPlugin("ghost", "1.0.0", true)]).SaveAsync(manifestPath);
+        var options = new PlatformHostOptions(manifestPath, temp.Path("store"),
+            HostVersion: "1.5.0", AllowedHosts: ["console.example.com"]);
+
+        var app = new PlatformApplication(options);
+        await Assert.ThrowsAnyAsync<Exception>(() => app.StartAsync());
+        await app.DisposeAsync();
+
+        Assert.Empty(app.Runtime.Snapshot().Fibers);
+        Assert.Empty(app.Registry.Entries);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => app.Runtime.LoadAsync(new ProbeComponent()));
+    }
+
+    [Fact]
+    public async Task FailedManifestLoadReleasesRuntime()
+    {
+        using var temp = new TempDir();
+        var options = new PlatformHostOptions(temp.Path("does-not-exist.json"), temp.Path("store"),
+            HostVersion: "1.5.0", AllowedHosts: ["console.example.com"]);
+
+        var app = new PlatformApplication(options);
+        await Assert.ThrowsAsync<FileNotFoundException>(() => app.StartAsync());
+        await app.DisposeAsync();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => app.Runtime.LoadAsync(new ProbeComponent()));
+    }
+
+    [Fact]
     public async Task ProductHostHonorsAllowedHostPolicyWhenConfigured()
     {
         using var temp = new TempDir();
@@ -167,6 +219,13 @@ public sealed class PlatformApplicationTests
     }
 
     [Fact]
+    public void PlatformCliUsageStatesNativeHostBoundary()
+    {
+        Assert.Contains("render-plan profiles only", PlatformRunner.UsageText, StringComparison.Ordinal);
+        Assert.Contains("no native UI window", PlatformRunner.UsageText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void OptionsRejectRemoteBindWithoutOptIn()
     {
         Assert.Throws<InvalidOperationException>(() => new PlatformHostOptions(
@@ -214,6 +273,12 @@ public sealed class PlatformApplicationTests
             },
         };
         await File.WriteAllTextAsync(Path.Combine(store, "installed.json"), JsonSerializer.Serialize(state));
+    }
+
+    private sealed class ProbeComponent : Component
+    {
+        public override string Name => "probe";
+        public override ValueTask<Cleanup?> ApplyAsync(Context context) => ValueTask.FromResult<Cleanup?>(null);
     }
 
     private sealed class TempDir : IDisposable

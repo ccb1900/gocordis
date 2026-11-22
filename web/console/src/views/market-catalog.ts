@@ -128,6 +128,13 @@ export function mapStoreEntry(raw: unknown): StoreRow {
   };
 }
 
+/** antd row key for store rows. A plugin id is not unique in the local store:
+ * several installed versions share it. The NUL separator cannot occur in the
+ * mapped id/version text, so distinct pairs never collapse to one key. */
+export function storeRowKey(row: Pick<StoreRow, "id" | "version">): string {
+  return `${row.id}\u0000${row.version}`;
+}
+
 /** Parses the `market/catalog` query payload. Accepts the described
  * {entries, sequence} shape, a bare entries array, and (defensively) a
  * still-wrapped {data: ...} body. Never throws on partial/missing data. */

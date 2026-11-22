@@ -24,7 +24,10 @@ public sealed record PluginPackageManifest(
     IReadOnlyList<PluginDependency> Dependencies = null!,
     IReadOnlyList<string> Provides = null!,
     string? Checksum = null,
-    IReadOnlyList<PackageFile> Files = null!)
+    IReadOnlyList<PackageFile> Files = null!,
+    string? Backend = null,
+    string? EntryAssembly = null,
+    string? EntryType = null)
 {
     public IReadOnlyList<PluginDependency> DependenciesOrEmpty => Dependencies ?? [];
     public IReadOnlyList<string> ProvidesOrEmpty => Provides ?? [];
@@ -119,6 +122,13 @@ public static class PluginPackageWriter
         {
             throw new InvalidPluginPackageException(
                 $"package has {files.Count} payload files; limit is {PluginPackageLimits.MaxPayloadFiles}");
+        }
+
+        if (string.Equals(manifest.Backend, "managed", StringComparison.OrdinalIgnoreCase) &&
+            !files.Any(file => string.Equals(file.Path, manifest.EntryAssembly, StringComparison.Ordinal)))
+        {
+            throw new InvalidPluginPackageException(
+                $"managed entry assembly '{manifest.EntryAssembly}' is not in the package payload");
         }
 
         var completed = manifest with { Checksum = ComputeIntegrityChecksum(manifest with { Files = files }), Files = files };
@@ -221,6 +231,35 @@ public static class PluginPackageWriter
                 throw new InvalidPluginPackageException("empty capability name in provides");
             }
         }
+
+        // Backend metadata is optional: an absent backend is the legacy
+        // declaration-only package, resolved by a host-provided factory.
+        var backend = manifest.Backend;
+        if (!string.IsNullOrWhiteSpace(backend))
+        {
+            if (!string.Equals(backend, "builtin", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(backend, "managed", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidPluginPackageException($"unsupported backend '{backend}'");
+            }
+
+            if (string.Equals(backend, "managed", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(manifest.EntryAssembly) ||
+                    string.IsNullOrWhiteSpace(manifest.EntryType))
+                {
+                    throw new InvalidPluginPackageException(
+                        "managed package requires both entry assembly and entry type");
+                }
+
+                EnsureSafeRelativePath(manifest.EntryAssembly);
+                if (!manifest.EntryAssembly.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidPluginPackageException(
+                        $"managed entry assembly '{manifest.EntryAssembly}' is not a .dll");
+                }
+            }
+        }
     }
 
     private static bool IsValidPluginId(string id)
@@ -265,6 +304,17 @@ public static class PluginPackageWriter
         text.Append("type=").Append(manifest.Type).Append('\n');
         text.Append("display=").Append(manifest.DisplayName ?? string.Empty).Append('\n');
         text.Append("host=").Append(VersionRange.Parse(manifest.HostVersionRange).ToString()).Append('\n');
+        // Version the checksum: packages without backend metadata keep the exact
+        // legacy byte sequence, so old artifacts remain verifiable after upgrade.
+        if (!string.IsNullOrWhiteSpace(manifest.Backend) ||
+            !string.IsNullOrWhiteSpace(manifest.EntryAssembly) ||
+            !string.IsNullOrWhiteSpace(manifest.EntryType))
+        {
+            text.Append("backend=").Append(manifest.Backend ?? string.Empty).Append('\n');
+            text.Append("entry-assembly=").Append(manifest.EntryAssembly ?? string.Empty).Append('\n');
+            text.Append("entry-type=").Append(manifest.EntryType ?? string.Empty).Append('\n');
+        }
+
         foreach (var dependency in manifest.DependenciesOrEmpty
                      .OrderBy(d => d.Id, StringComparer.Ordinal)
                      .ThenBy(d => d.VersionRange, StringComparer.Ordinal))

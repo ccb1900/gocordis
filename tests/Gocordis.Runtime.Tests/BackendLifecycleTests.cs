@@ -168,6 +168,39 @@ public sealed class BackendLifecycleTests
     }
 
     [Fact]
+    public async Task ManagedStagedAlcIsReleasedWhenPrepareFails()
+    {
+        var reference = await FailDuringPrepare();
+        Assert.True(GcAssert.Reclaimed(reference), "a staged managed ALC survived a failed Prepare");
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static async Task<WeakReference> FailDuringPrepare()
+        {
+            await using var runtime = new Gocordis.Core.Runtime();
+            await using var loader = new ManagedPluginLoader();
+            await using var registry = new PluginRegistry(runtime);
+            const string id = "staged-prepare-failure";
+            WeakReference? weak = null;
+            registry.RegisterComponentFactory("managed", _ =>
+            {
+                var component = new ManagedPluginComponent(
+                    loader, id, SamplePath("SamplePlugin"), "SamplePlugin.SampleComponent");
+                weak = new WeakReference(loader.Plugins[id].Context);
+                return component;
+            });
+            registry.RegisterFactory("broken", _ => throw new InvalidOperationException("boom"));
+
+            await Assert.ThrowsAnyAsync<Exception>(() => registry.ApplyAsync([
+                Declaration(id, "managed"),
+                Declaration("broken", "broken"),
+            ]));
+
+            Assert.False(loader.Plugins.ContainsKey(id));
+            return weak!;
+        }
+    }
+
+    [Fact]
     public async Task ManagedStaleGenerationCannotUnloadANewerAlc()
     {
         await using var loader = new ManagedPluginLoader();

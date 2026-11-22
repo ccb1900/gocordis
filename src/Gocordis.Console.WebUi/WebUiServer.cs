@@ -23,6 +23,10 @@ public enum ConsoleAccessScope
     Lifecycle,
     Config,
     Package,
+    /// <summary>Reads of host/plugin state (list, config, dependencies, store).</summary>
+    Read,
+    /// <summary>Continuous observation of host state (SSE stream).</summary>
+    Observe,
 }
 
 /// <summary>Returns true when the caller may exercise the given scope.</summary>
@@ -35,7 +39,16 @@ public delegate bool ConsoleAccessPolicy(ConsoleAccessScope scope);
 public sealed class WebUiServer : IAsyncDisposable
 {
     private const long MaxBodyBytes = 1L << 20;
+    private const string RedactedValue = "***";
     private static readonly TimeSpan StreamInterval = TimeSpan.FromMilliseconds(500);
+
+    // Declaration values are echoed to the UI; credential-shaped names are
+    // projected to a fixed marker before they leave the transport boundary.
+    private static readonly string[] SensitiveFieldMarkers =
+    [
+        "password", "passwd", "pwd", "secret", "token", "credential",
+        "connectionstring", "authorization",
+    ];
 
     private readonly WebApplication _app;
     private readonly ConsoleHost _host;
@@ -96,6 +109,9 @@ public sealed class WebUiServer : IAsyncDisposable
 
         _app.MapGet("/api/plugins", async (HttpContext context) =>
         {
+            var denial = Deny(ConsoleAccessScope.Read);
+            if (denial is not null) return denial;
+
             if (_control is not null)
             {
                 var entries = await _control.ListAsync(context.RequestAborted);
@@ -119,6 +135,9 @@ public sealed class WebUiServer : IAsyncDisposable
 
         _app.MapGet("/api/plugins/store", async (HttpContext context) =>
         {
+            var denial = Deny(ConsoleAccessScope.Read);
+            if (denial is not null) return denial;
+
             if (_control is null)
             {
                 return Unavailable("plugin control service is not configured");
@@ -130,6 +149,9 @@ public sealed class WebUiServer : IAsyncDisposable
 
         _app.MapGet("/api/plugins/{id}/dependencies", async (string id, HttpContext context) =>
         {
+            var denial = Deny(ConsoleAccessScope.Read);
+            if (denial is not null) return denial;
+
             if (_control is null)
             {
                 return Unavailable("plugin control service is not configured");
@@ -481,6 +503,9 @@ public sealed class WebUiServer : IAsyncDisposable
 
         _app.MapGet("/api/plugins/{id}/config", (string id) =>
         {
+            var denial = Deny(ConsoleAccessScope.Read);
+            if (denial is not null) return denial;
+
             if (registry is null)
             {
                 return Unavailable("plugin registry is not configured");
@@ -491,8 +516,9 @@ public sealed class WebUiServer : IAsyncDisposable
                 return ApiResults.Error(StatusCodes.Status404NotFound, "not_found", $"unknown plugin '{id}'");
             }
 
-            var config = JsonSerializer.SerializeToNode(entry.Manifest.Config) as JsonObject ?? new JsonObject();
-            return ApiResults.Data(config);
+            // Both config read paths share the redacted projection; the raw
+            // declaration stays in the registry for the control service.
+            return ApiResults.Data(ConfigNode(entry.Manifest.Config));
         });
 
         _app.MapPost("/api/plugins/{id}/config", async (string id, HttpContext context) =>
@@ -545,6 +571,15 @@ public sealed class WebUiServer : IAsyncDisposable
         // Existing observation frames keep their exact wire shape.
         _app.MapGet("/api/stream", async context =>
         {
+            // Authorize before the first header or body byte: a rejected
+            // observer must not receive an SSE envelope or any host state.
+            var denial = Deny(ConsoleAccessScope.Observe);
+            if (denial is not null)
+            {
+                await denial.ExecuteAsync(context);
+                return;
+            }
+
             var token = context.RequestAborted;
             context.Response.ContentType = "text/event-stream";
             context.Response.Headers.CacheControl = "no-cache";
@@ -783,7 +818,7 @@ public sealed class WebUiServer : IAsyncDisposable
         ["version"] = entry.Version,
         ["displayName"] = entry.DisplayName,
         ["hostVersionRange"] = entry.HostVersionRange,
-        ["installPath"] = entry.InstallPath,
+        ["installPath"] = InstallPathName(entry.InstallPath),
         ["dependencies"] = DependencyArray(entry.Dependencies),
         ["provides"] = StringArray(entry.Provides),
         ["checksum"] = entry.Checksum,
@@ -865,15 +900,88 @@ public sealed class WebUiServer : IAsyncDisposable
         }, statusCode: status);
     }
 
+    /// <summary>Projects a declaration config for the wire: credential-shaped
+    /// fields are replaced at every depth, while ordinary values keep their
+    /// JSON shape. The stored declaration is never changed.</summary>
     private static JsonObject ConfigNode(IReadOnlyDictionary<string, object?> config)
     {
         var node = new JsonObject();
         foreach (var (key, value) in config)
         {
-            node[key] = JsonSerializer.SerializeToNode(value);
+            node[key] = IsSensitiveField(key)
+                ? JsonValue.Create(RedactedValue)
+                : MaskNode(JsonSerializer.SerializeToNode(value));
         }
 
         return node;
+    }
+
+    private static JsonNode? MaskNode(JsonNode? node) => node switch
+    {
+        JsonObject obj =>
+            new JsonObject(obj.Select(pair =>
+                new KeyValuePair<string, JsonNode?>(
+                    pair.Key,
+                    IsSensitiveField(pair.Key) ? JsonValue.Create(RedactedValue) : MaskNode(pair.Value)))),
+        JsonArray array => new JsonArray(array.Select(MaskNode).ToArray()),
+        _ => node?.DeepClone(),
+    };
+
+    private static bool IsSensitiveField(string name)
+    {
+        var normalized = name.ToLowerInvariant();
+        if (SensitiveFieldMarkers.Any(marker => normalized.Contains(marker, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        // "key" is a secret only as a whole field component: apiKey,
+        // signing_key, key — not incidental text such as "monkey".
+        return FieldWords(name).Contains("key");
+    }
+
+    private static IEnumerable<string> FieldWords(string name)
+    {
+        var word = new StringBuilder();
+        for (var i = 0; i < name.Length; i++)
+        {
+            var c = name[i];
+            if (!char.IsLetterOrDigit(c))
+            {
+                if (word.Length > 0)
+                {
+                    yield return word.ToString().ToLowerInvariant();
+                    word.Clear();
+                }
+                continue;
+            }
+
+            if (word.Length > 0 && char.IsUpper(c) && char.IsLower(name[i - 1]))
+            {
+                yield return word.ToString().ToLowerInvariant();
+                word.Clear();
+            }
+
+            word.Append(c);
+        }
+
+        if (word.Length > 0)
+        {
+            yield return word.ToString().ToLowerInvariant();
+        }
+    }
+
+    /// <summary>Store rows are an inventory display: a package file name is
+    /// useful, its host directory is not part of the remote contract.</summary>
+    private static string InstallPathName(string installPath)
+    {
+        if (string.IsNullOrWhiteSpace(installPath))
+        {
+            return RedactedValue;
+        }
+
+        var name = Path.GetFileName(installPath.Replace('\\', '/'));
+        return string.IsNullOrEmpty(name) ? RedactedValue : name;
     }
 
     private static JsonArray StringArray(IReadOnlyList<string> values) =>

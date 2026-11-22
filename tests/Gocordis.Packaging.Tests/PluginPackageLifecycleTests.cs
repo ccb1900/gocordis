@@ -80,6 +80,37 @@ public sealed class PluginPackageLifecycleTests
     }
 
     [Fact]
+    public async Task StoreUpgradeRejectsWhenRemovedVersionIsOnlySatisfyingDependent()
+    {
+        using var temp = new TempDir();
+        var source = temp.Path("source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "entry.txt"), "provider v1");
+        var store = new PluginStore(temp.Path("store"), HostVersion);
+
+        var providerV1 = temp.File("provider-1.0.0.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source,
+            new PluginPackageManifest("provider", "1.0.0", "demo", "[1.0,2.0)"), providerV1);
+        await store.InstallAsync(providerV1);
+
+        var consumer = temp.File("consumer-1.0.0.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source,
+            new PluginPackageManifest("consumer", "1.0.0", "demo", "[1.0,2.0)",
+                Dependencies: [new PluginDependency("provider", "[1.0,1.5)")]), consumer);
+        await store.InstallAsync(consumer);
+
+        await File.WriteAllTextAsync(Path.Combine(source, "entry.txt"), "provider v1.5");
+        var providerV15 = temp.File("provider-1.5.0.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source,
+            new PluginPackageManifest("provider", "1.5.0", "demo", "[1.0,2.0)"), providerV15);
+
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => store.UpgradeAsync(providerV15));
+        Assert.Contains("consumer", failure.Message, StringComparison.Ordinal);
+        Assert.NotNull(await store.ResolveAsync("provider", "1.0.0"));
+        Assert.Null(await store.ResolveAsync("provider", "[1.5,2.0)"));
+    }
+
+    [Fact]
     public async Task StoreRejectsIncompatibleAndMissingDependencyPackages()
     {
         using var temp = new TempDir();

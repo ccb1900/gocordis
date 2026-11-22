@@ -1,8 +1,10 @@
+using System.IO;
 using System.Text.Json.Nodes;
 using Gocordis.Console.WebUi;
 using Gocordis.Core;
 using Gocordis.Extensions;
 using Gocordis.Packaging;
+using Gocordis.Runtime.Managed;
 using Gocordis.Plugins;
 using Gocordis.UI.Hosts;
 using NuGet.Versioning;
@@ -67,9 +69,10 @@ public class PlatformApplication : IAsyncDisposable
     public PlatformApplication(PlatformHostOptions options)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        Runtime = new Runtime();
+        Runtime = new Gocordis.Core.Runtime();
         Console = new ConsoleHost(Runtime);
         Registry = new PluginRegistry(Runtime);
+        Managed = new ManagedPluginHost(Runtime);
         Store = new PluginStore(options.StorePath, options.HostVersion);
         _diagnostics = new DiagnosticsService(options.HostVersion);
         if (options.AllowedHosts is { Count: > 0 } allowedHosts)
@@ -83,9 +86,10 @@ public class PlatformApplication : IAsyncDisposable
             ContributionOwner.For("framework", "devtools"));
     }
 
-    public Runtime Runtime { get; }
+    public Gocordis.Core.Runtime Runtime { get; }
     public ConsoleHost Console { get; }
     public PluginRegistry Registry { get; }
+    public ManagedPluginHost Managed { get; }
     public PluginStore Store { get; }
     public IPluginControlPlane? Control { get; private set; }
     public WebUiServer? WebUi { get; private set; }
@@ -109,11 +113,41 @@ public class PlatformApplication : IAsyncDisposable
 
             _manifest = manifest;
 
+            // Framework keys are capabilities like any other: one Core fiber
+            // provides them, and the registry treats them as host-supplied when
+            // validating an injected dependency at Prepare time.
+            Registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
+            Registry.ExternalCapabilities.Add(ApiGateway.Key);
+            await Runtime.LoadAsync(new ConsoleCapabilitiesComponent(Console));
+
+            // Backend selection belongs to the composition root. The control
+            // plane receives the same factory so packages installed later use
+            // the same dispatch path as declarations known at startup.
+            Func<PluginManifest, Component> componentFactory = CreateComponent;
+            foreach (var plugin in manifest.Plugins)
+            {
+                var installed = await Store.ResolveAsync(plugin.Id, plugin.VersionRange, cancellationToken);
+                if (installed is null)
+                {
+                    continue; // ApplicationLoader reports the missing dependency.
+                }
+
+                try
+                {
+                    Registry.RegisterComponentFactory(installed.Manifest.Type, componentFactory);
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("already registered", StringComparison.Ordinal))
+                {
+                    // A type can be shared by several declarations; one factory
+                    // serves all of them, so a duplicate registration is benign.
+                }
+            }
+
             // The control plane is a plugin contribution: load its fiber first,
             // then read its capability. Runtime.Close ends this fiber with all
             // the others, including on a partially failed start.
             await Runtime.LoadAsync(new PluginControlPlaneComponent(
-                _options.ManifestPath, Store, Registry, Console.Ui));
+                _options.ManifestPath, Store, Registry, Console.Ui, componentFactory));
             var control = Runtime.RequireCapability(ControlPlaneKeys.Service);
             Control = control;
 
@@ -148,6 +182,56 @@ public class PlatformApplication : IAsyncDisposable
 
             throw;
         }
+    }
+
+    /// <summary>
+    /// Selects a backend from the resolved package declaration. Managed plugins
+    /// get a real collectible ALC; legacy declarations keep the placeholder
+    /// adapter, so older packages remain loadable without executing code.
+    /// </summary>
+    private Component CreateComponent(PluginManifest manifest)
+    {
+        if (!manifest.Enabled)
+        {
+            // Prepare constructs components even for disabled declarations.
+            // Returning a zero-capability component keeps disabled plugins from
+            // opening an AssemblyLoadContext until they are actually enabled.
+            return new DisabledPluginComponent();
+        }
+
+        if (string.Equals(manifest.Backend, "managed", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(manifest.Source) ||
+                string.IsNullOrWhiteSpace(manifest.EntryAssembly) ||
+                string.IsNullOrWhiteSpace(manifest.EntryType))
+            {
+                throw new InvalidOperationException(
+                    $"managed plugin '{manifest.Id}' is missing source or entry metadata");
+            }
+
+            var assemblyPath = Path.Combine(manifest.Source, manifest.EntryAssembly);
+            if (!File.Exists(assemblyPath))
+            {
+                throw new FileNotFoundException(
+                    $"managed entry assembly for '{manifest.Id}' not found: '{assemblyPath}'");
+            }
+
+            // Prepare stages a new component before Commit retires the old
+            // fiber, so the loader key must include the version: otherwise an
+            // upgrade would fail with "already loaded" on the same id.
+            var loaderKey = $"{manifest.Id}@{manifest.Version}";
+            return Managed.CreateComponent(loaderKey, assemblyPath, manifest.EntryType);
+        }
+
+        return new ProductPluginComponent(manifest.Type, Console.Ui);
+    }
+
+    private sealed class DisabledPluginComponent : Component
+    {
+        public override string Name => "disabled-plugin";
+
+        public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
+            ValueTask.FromResult<Cleanup?>(null);
     }
 
     /// <summary>
@@ -268,6 +352,8 @@ public class PlatformApplication : IAsyncDisposable
 
     protected virtual ValueTask DisposeRegistryAsync() => Registry.DisposeAsync();
 
+    protected virtual ValueTask DisposeManagedAsync() => Managed.DisposeAsync();
+
     protected virtual ValueTask DisposeRuntimeAsync() => Runtime.DisposeAsync();
 
     protected virtual ValueTask DisposeRouteGuardAsync() =>
@@ -293,6 +379,7 @@ public class PlatformApplication : IAsyncDisposable
             }
         });
         await AttemptAsync(errors, "registry", async () => await DisposeRegistryAsync());
+        await AttemptAsync(errors, "managed host", async () => await DisposeManagedAsync());
         await AttemptAsync(errors, "runtime", async () => await DisposeRuntimeAsync());
         await AttemptAsync(errors, "route guard", async () => await DisposeRouteGuardAsync());
 

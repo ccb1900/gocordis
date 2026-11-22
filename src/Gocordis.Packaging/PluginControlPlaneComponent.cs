@@ -19,13 +19,17 @@ public sealed class PluginControlPlaneComponent : Component
         string ManifestPath,
         PluginStore Store,
         PluginRegistry Registry,
-        UiContributionRegistry? Ui = null)
+        UiContributionRegistry? Ui = null,
+        Func<PluginManifest, Component>? ComponentFactory = null)
     {
         _manifestPath = ManifestPath ?? throw new ArgumentNullException(nameof(ManifestPath));
         _store = Store ?? throw new ArgumentNullException(nameof(Store));
         _registry = Registry ?? throw new ArgumentNullException(nameof(Registry));
         _ui = Ui;
+        _componentFactory = ComponentFactory;
     }
+
+    private readonly Func<PluginManifest, Component>? _componentFactory;
 
     public override string Name => "plugin-control-plane";
 
@@ -33,7 +37,8 @@ public sealed class PluginControlPlaneComponent : Component
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
-        var service = new PluginControlService(_manifestPath, _store, _registry, _ui);
+        var service = new PluginControlService(
+            _manifestPath, _store, _registry, _ui, _componentFactory);
         // Context.Provide installs its own LIFO inverse; no cleanup stack here.
         context.Provide(ControlPlaneKeys.Service, service);
 

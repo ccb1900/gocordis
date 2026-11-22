@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Gocordis.Cli;
 using Gocordis.Packaging;
@@ -72,7 +73,23 @@ public sealed class CliAndSourceTests
         Assert.Equal("sample-app", app.Id);
         Assert.Equal("1.2.3", app.Version);
         Assert.Equal("1.5.0", app.HostVersion);
-        Assert.Contains("Gocordis.Packaging.ApplicationLoader", await File.ReadAllTextAsync(programPath));
+
+        var program = await File.ReadAllTextAsync(programPath);
+        var project = await File.ReadAllTextAsync(projectPath);
+        Assert.Contains("PlatformRunner.RunAsync", program);
+        Assert.Contains("gocordis-platform", project);
+        Assert.Contains("<TargetFramework>net10.0</TargetFramework>", project);
+        Assert.DoesNotContain(Environment.CurrentDirectory.Replace('\\', '/'), project);
+        Assert.DoesNotContain("ProjectReference", project);
+        Assert.True(File.Exists(System.IO.Path.Combine(output, "NuGet.Config")));
+
+        // The generated app is self-contained: copying it elsewhere and building
+        // must not depend on the developer's repository checkout.
+        var relocated = System.IO.Path.Combine(temp.Root, "relocated-app");
+        Directory.Move(output, relocated);
+        var build = await RunProcessAsync("dotnet", "build sample-app.csproj --nologo", relocated);
+        Assert.True(build.Code == 0,
+            $"generated app must build after relocation (exit {build.Code}): {build.Out}\n{build.Error}");
     }
 
     private static async Task PackageAsync(TempDir temp, string version)
@@ -83,6 +100,34 @@ public sealed class CliAndSourceTests
         await PluginPackageWriter.CreateAsync(source,
             new PluginPackageManifest("cli-demo", version, "demo", "[1.0,)"),
             System.IO.Path.Combine(temp.Root, $"cli-demo-{version}.gocordis-plugin"));
+    }
+
+    private static async Task<(int Code, string Out, string Error)> RunProcessAsync(
+        string file, string arguments, string workingDirectory)
+    {
+        var start = new ProcessStartInfo(file, arguments)
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        using var process = Process.Start(start)
+                            ?? throw new InvalidOperationException($"cannot start '{file}'");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var outTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            process.Kill(entireProcessTree: true);
+            throw;
+        }
+
+        return (process.ExitCode, await outTask, await errorTask);
     }
 
     private static async Task<(int Code, string Out, string Error)> RunAsync(params string[] args)

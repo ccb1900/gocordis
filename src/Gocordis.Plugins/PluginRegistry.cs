@@ -5,7 +5,11 @@ using Gocordis.Core;
 
 namespace Gocordis.Plugins;
 
-public sealed record PluginEntry(PluginManifest Manifest, Fiber? Fiber, string ConfigurationKey);
+public sealed record PluginEntry(
+    PluginManifest Manifest,
+    Fiber? Fiber,
+    string ConfigurationKey,
+    Component? Component = null);
 
 /// <summary>A declaration file that could not be discovered, with its error.</summary>
 public sealed record ManifestDiagnostic(string Path, Exception Error);
@@ -21,7 +25,9 @@ public sealed class PluginRegistry : IAsyncDisposable
 {
     private readonly Runtime _runtime;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly Dictionary<string, Func<IReadOnlyDictionary<string, object?>, Component>> _factories = [];
+    // All factories are normalized to the manifest-aware shape; the legacy
+    // config-only registration is a thin adapter over it.
+    private readonly Dictionary<string, Func<PluginManifest, Component>> _factories = [];
     private readonly Dictionary<string, PluginEntry> _entries = [];
     private IReadOnlyList<ManifestDiagnostic> _diagnostics = [];
 
@@ -62,7 +68,18 @@ public sealed class PluginRegistry : IAsyncDisposable
     public HashSet<ICapabilityKey> ExternalCapabilities { get; } =
         new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>Legacy config-only registration, kept source-compatible.</summary>
     public void RegisterFactory(string type, Func<IReadOnlyDictionary<string, object?>, Component> factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        RegisterComponentFactory(type, manifest => factory(manifest.Config));
+    }
+
+    /// <summary>
+    /// Factory that sees the whole declaration (source path, backend, entry and
+    /// config). Backend selection belongs to the composition root, not Core.
+    /// </summary>
+    public void RegisterComponentFactory(string type, Func<PluginManifest, Component> factory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(type);
         ArgumentNullException.ThrowIfNull(factory);
@@ -110,20 +127,56 @@ public sealed class PluginRegistry : IAsyncDisposable
         try
         {
             var previous = new Dictionary<string, PluginEntry>(_entries, StringComparer.Ordinal);
-            var batch = Prepare(declarations.ToArray(), rejectProtectedDisable: true);
+            PreparedBatch? batch = null;
             try
             {
+                batch = Prepare(declarations.ToArray(), rejectProtectedDisable: true);
                 await CommitAsync(batch);
             }
             catch (Exception commitError)
             {
-                await RollbackAsync(batch, previous, commitError);
+                if (batch is not null)
+                {
+                    // Staged-but-never-activated components may own an ALC. A
+                    // generation-fenced release is safe here (a live fiber is
+                    // never in this set) and prevents a silent leak on failure.
+                    await ReleaseUnusedStagedAsync(batch);
+                    await RollbackAsync(batch, previous, commitError);
+                }
+
                 throw;
             }
+
+            await ReleaseUnusedStagedAsync(batch!);
         }
         finally
         {
             _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Releases only the components constructed by this batch that never reached
+    /// a fiber (disabled or skipped declarations). Applied components stay under
+    /// Core's effect authority and must not be released here.
+    /// </summary>
+    private static async ValueTask ReleaseUnusedStagedAsync(PreparedBatch batch)
+    {
+        foreach (var component in batch.NewlyStaged)
+        {
+            if (batch.Applied.Contains(component))
+            {
+                continue;
+            }
+
+            if (component is IAsyncDisposable asyncDisposable)
+            {
+                await asyncDisposable.DisposeAsync();
+            }
+            else
+            {
+                ReleaseStaged(component);
+            }
         }
     }
 
@@ -160,50 +213,88 @@ public sealed class PluginRegistry : IAsyncDisposable
         var staged = new Dictionary<string, Component>(StringComparer.Ordinal);
         var fingerprints = new Dictionary<string, string>(StringComparer.Ordinal);
         var providedKeys = new Dictionary<ICapabilityKey, string>(ReferenceEqualityComparer.Instance);
+        var batchNewlyStaged = new HashSet<Component>(ReferenceEqualityComparer.Instance);
 
-        foreach (var manifest in declarations)
+        try
         {
-            if (rejectProtectedDisable && ProtectedIds.Contains(manifest.Id) && !manifest.Enabled)
+            foreach (var manifest in declarations)
             {
-                throw new ProtectedPluginException(manifest.Id);
-            }
-
-            if (!_factories.TryGetValue(manifest.Type, out var factory))
-            {
-                throw new InvalidOperationException(
-                    $"unknown plugin type '{manifest.Type}' for '{manifest.Id}'");
-            }
-
-            Component component;
-            try
-            {
-                component = factory(manifest.Config);
-                _ = component.Inject();
-                _ = component.Provide();
-            }
-            catch (Exception ex)
-            {
-                throw new InvalidOperationException($"factory for '{manifest.Id}' failed", ex);
-            }
-
-            foreach (var key in component.Provide())
-            {
-                if (providedKeys.TryGetValue(key, out var owner))
+                if (rejectProtectedDisable && ProtectedIds.Contains(manifest.Id) && !manifest.Enabled)
                 {
-                    throw new DuplicateProviderException(
-                        $"key '{key.Name}' is provided by both '{owner}' and '{manifest.Id}'");
+                    throw new ProtectedPluginException(manifest.Id);
                 }
 
-                providedKeys[key] = manifest.Id;
+                var fingerprint = Fingerprint(manifest);
+                if (_entries.TryGetValue(manifest.Id, out var current) &&
+                    current.ConfigurationKey == fingerprint &&
+                    current.Component is { } reused)
+                {
+                    // An unchanged declaration keeps its existing component: no
+                    // new factory call and therefore no redundant assembly load.
+                    desired[manifest.Id] = manifest;
+                    staged[manifest.Id] = reused;
+                    fingerprints[manifest.Id] = fingerprint;
+                    continue;
+                }
+
+                if (!_factories.TryGetValue(manifest.Type, out var factory))
+                {
+                    throw new InvalidOperationException(
+                        $"unknown plugin type '{manifest.Type}' for '{manifest.Id}'");
+                }
+
+                Component component;
+                try
+                {
+                    component = factory(manifest);
+                    _ = component.Inject();
+                    _ = component.Provide();
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException($"factory for '{manifest.Id}' failed", ex);
+                }
+
+                foreach (var key in component.Provide())
+                {
+                    if (providedKeys.TryGetValue(key, out var owner))
+                    {
+                        throw new DuplicateProviderException(
+                            $"key '{key.Name}' is provided by both '{owner}' and '{manifest.Id}'");
+                    }
+
+                    providedKeys[key] = manifest.Id;
+                }
+
+                desired[manifest.Id] = manifest;
+                staged[manifest.Id] = component;
+                fingerprints[manifest.Id] = fingerprint;
+                batchNewlyStaged.Add(component);
             }
 
-            desired[manifest.Id] = manifest;
-            staged[manifest.Id] = component;
-            fingerprints[manifest.Id] = Fingerprint(manifest);
+            var ordered = SortByTypedDependencies(staged);
+            return new PreparedBatch(desired, staged, ordered, fingerprints, batchNewlyStaged);
         }
+        catch
+        {
+            // Prepare can fail after a factory has already opened a collectible
+            // ALC (duplicate provider, cycle, unknown later type). Release every
+            // component staged in this failed pass; none of them owns a fiber.
+            foreach (var component in batchNewlyStaged)
+            {
+                ReleaseStaged(component);
+            }
 
-        var ordered = SortByTypedDependencies(staged);
-        return new PreparedBatch(desired, staged, ordered, fingerprints);
+            throw;
+        }
+    }
+
+    private static void ReleaseStaged(Component component)
+    {
+        if (component is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
     }
 
     private async Task CommitAsync(PreparedBatch batch)
@@ -239,19 +330,20 @@ public sealed class PluginRegistry : IAsyncDisposable
 
             if (!manifest.Enabled)
             {
-                _entries[id] = new PluginEntry(manifest, null, configurationKey);
+                _entries[id] = new PluginEntry(manifest, null, configurationKey, component);
                 continue;
             }
 
             var fiber = await _runtime.LoadAsync(component);
             batch.LoadedFibers.Add(fiber);
+            batch.Applied.Add(component);
             if (fiber.State == FiberState.Failed)
             {
                 throw new InvalidOperationException(
                     $"plugin '{id}' failed to activate", fiber.Failure);
             }
 
-            _entries[id] = new PluginEntry(manifest, fiber, configurationKey);
+            _entries[id] = new PluginEntry(manifest, fiber, configurationKey, component);
         }
     }
 
@@ -284,9 +376,10 @@ public sealed class PluginRegistry : IAsyncDisposable
             return;
         }
 
+        PreparedBatch? restore = null;
         try
         {
-            var restore = Prepare(previous.Values.Select(entry => entry.Manifest).ToArray(),
+            restore = Prepare(previous.Values.Select(entry => entry.Manifest).ToArray(),
                 rejectProtectedDisable: false);
             await CommitAsync(restore);
         }
@@ -294,6 +387,13 @@ public sealed class PluginRegistry : IAsyncDisposable
         {
             errors.Add(ex);
             _entries.Clear();
+        }
+        finally
+        {
+            if (restore is not null)
+            {
+                await ReleaseUnusedStagedAsync(restore);
+            }
         }
 
         if (errors.Count > 1)
@@ -428,6 +528,9 @@ public sealed class PluginRegistry : IAsyncDisposable
             manifest.Version,
             manifest.Source,
             manifest.Checksum,
+            manifest.Backend,
+            manifest.EntryAssembly,
+            manifest.EntryType,
             manifest.Requires,
             manifest.Provides,
             Config = manifest.Config.OrderBy(pair => pair.Key, StringComparer.Ordinal)
@@ -440,8 +543,11 @@ public sealed class PluginRegistry : IAsyncDisposable
         IReadOnlyDictionary<string, PluginManifest> Desired,
         IReadOnlyDictionary<string, Component> Staged,
         IReadOnlyList<(string Id, Component Component)> Ordered,
-        IReadOnlyDictionary<string, string> Fingerprints)
+        IReadOnlyDictionary<string, string> Fingerprints,
+        IReadOnlyCollection<Component> NewlyStaged)
     {
         internal List<Fiber> LoadedFibers { get; } = [];
+
+        internal HashSet<Component> Applied { get; } = new(ReferenceEqualityComparer.Instance);
     }
 }

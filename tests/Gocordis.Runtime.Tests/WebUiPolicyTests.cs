@@ -25,8 +25,9 @@ public sealed class WebUiPolicyTests
         await using var fx = await PolicyFixture.CreateAsync();
         var disable = new JsonObject { ["pluginId"] = "demo", ["enable"] = false };
 
-        // Remote listener with no policy: every mutation is forbidden, reads
-        // remain available and nothing is changed behind the 403.
+        // Remote listener with no policy: every mutation is forbidden, and so
+        // is every read/observation of host state. A read-enabled viewer below
+        // verifies nothing was changed behind the 403.
         await using var locked = new WebUiServer(
             fx.Host, allowRemote: true, registry: fx.Registry, control: fx.Control);
         await locked.StartAsync();
@@ -37,9 +38,16 @@ public sealed class WebUiPolicyTests
         Assert.Equal("forbidden",
             JsonNode.Parse(await denied.Content.ReadAsStringAsync())!["code"]!.GetValue<string>());
         using var read = await lockedClient.GetAsync("/api/plugins");
-        Assert.Equal(HttpStatusCode.OK, read.StatusCode);
-        Assert.True((await PluginAsync(lockedClient, "demo"))["enabled"]!.GetValue<bool>());
+        Assert.Equal(HttpStatusCode.Forbidden, read.StatusCode);
         await locked.StopAsync();
+
+        await using var viewer = new WebUiServer(
+            fx.Host, allowRemote: true, registry: fx.Registry, control: fx.Control,
+            accessPolicy: scope => scope is ConsoleAccessScope.Read);
+        await viewer.StartAsync();
+        using var viewerClient = NewClient(viewer);
+        Assert.True((await PluginAsync(viewerClient, "demo"))["enabled"]!.GetValue<bool>());
+        await viewer.StopAsync();
 
         // An explicit policy opts into writes and is consulted per scope.
         await using var allowed = new WebUiServer(
@@ -54,6 +62,177 @@ public sealed class WebUiPolicyTests
         Assert.True(result["accepted"]!.GetValue<bool>());
         Assert.False((await PluginAsync(allowedClient, "demo"))["enabled"]!.GetValue<bool>());
         await allowed.StopAsync();
+    }
+
+    /// <summary>Remote state reads and the SSE observation stream are a
+    /// separate authority from query/command. Loopback keeps its open default;
+    /// an explicit policy remains authoritative on either listener.</summary>
+    [Fact]
+    public async Task RemoteReadAndObserveEndpointsRequireAccessPolicy()
+    {
+        await using var fx = await PolicyFixture.CreateAsync();
+        string[] readRoutes =
+        [
+            "/api/plugins", "/api/plugins/store", "/api/plugins/demo/config",
+            "/api/plugins/demo/dependencies", "/api/stream",
+        ];
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        // Remote without a policy: all five routes are forbidden before any
+        // state (or SSE header/body) is emitted.
+        await using var locked = new WebUiServer(
+            fx.Host, allowRemote: true, registry: fx.Registry, control: fx.Control);
+        await locked.StartAsync();
+        using var lockedClient = NewClient(locked);
+        foreach (var path in readRoutes)
+        {
+            using var denied = await GetWithHostAsync(lockedClient, path, null, cts.Token);
+            Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+            var body = await denied.Content.ReadAsStringAsync();
+            Assert.Equal("forbidden", JsonNode.Parse(body)!["code"]!.GetValue<string>());
+            Assert.DoesNotContain("text/event-stream", denied.Content.Headers.ContentType?.MediaType ?? "");
+            Assert.DoesNotContain(": connected", body);
+        }
+        await locked.StopAsync();
+
+        // Loopback default is unchanged: same routes, no policy, still open.
+        await using var loopback = new WebUiServer(fx.Host, registry: fx.Registry, control: fx.Control);
+        await loopback.StartAsync();
+        using var loopbackClient = NewClient(loopback);
+        foreach (var path in readRoutes)
+        {
+            using var ok = await GetWithHostAsync(loopbackClient, path, null, cts.Token);
+            Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        }
+        await loopback.StopAsync();
+
+        // A supplied policy is consulted per scope; Read covers the four
+        // state routes and Observe is a distinct scope for the stream.
+        var seen = new List<ConsoleAccessScope>();
+        await using var scoped = new WebUiServer(
+            fx.Host, allowRemote: true, registry: fx.Registry, control: fx.Control,
+            accessPolicy: scope =>
+            {
+                lock (seen) seen.Add(scope);
+                return scope is ConsoleAccessScope.Query or ConsoleAccessScope.Command
+                    or ConsoleAccessScope.Lifecycle or ConsoleAccessScope.Config
+                    or ConsoleAccessScope.Package;
+            });
+        await scoped.StartAsync();
+        using var scopedClient = NewClient(scoped);
+        foreach (var path in readRoutes)
+        {
+            using var denied = await GetWithHostAsync(scopedClient, path, null, cts.Token);
+            Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+        }
+        lock (seen)
+        {
+            Assert.Contains(ConsoleAccessScope.Read, seen);
+            Assert.Contains(ConsoleAccessScope.Observe, seen);
+        }
+        await scoped.StopAsync();
+    }
+
+    [Fact]
+    public async Task QueryAndWriteScopesKeepTheirExistingPolicySemantics()
+    {
+        await using var fx = await PolicyFixture.CreateAsync();
+
+        // Query stays open in remote-without-policy mode (404 for an unknown
+        // query, never 403); lifecycle writes still need a policy.
+        await using var locked = new WebUiServer(
+            fx.Host, allowRemote: true, registry: fx.Registry, control: fx.Control);
+        await locked.StartAsync();
+        using var lockedClient = NewClient(locked);
+        using var query = await lockedClient.GetAsync("/api/query/no-such-query");
+        Assert.Equal(HttpStatusCode.NotFound, query.StatusCode);
+
+        // A policy that rejects only the new scopes leaves every legacy
+        // scope usable, including the write path.
+        await using var legacy = new WebUiServer(
+            fx.Host, allowRemote: true, registry: fx.Registry, control: fx.Control,
+            accessPolicy: scope => scope is not (ConsoleAccessScope.Read or ConsoleAccessScope.Observe));
+        await legacy.StartAsync();
+        using var legacyClient = NewClient(legacy);
+        using var accepted = await PostJsonAsync(legacyClient, "/api/plugins/control",
+            new JsonObject { ["pluginId"] = "demo", ["enable"] = false });
+        Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+        using var read = await legacyClient.GetAsync("/api/plugins");
+        Assert.Equal(HttpStatusCode.Forbidden, read.StatusCode);
+    }
+
+    [Fact]
+    public async Task SensitiveConfigAndInstallPathAreRedactedOnReads()
+    {
+        await using var fx = await PolicyFixture.CreateAsync(new Dictionary<string, object?>
+        {
+            ["value"] = "visible",
+            ["apiKey"] = "super-secret-key",
+            ["dbPassword"] = "hunter2",
+            ["token"] = "tok-xyz",
+            ["credential"] = "cred-xyz",
+            ["connectionString"] = "Server=db;Password=hunter2;",
+            ["auth"] = new Dictionary<string, object?>
+            {
+                ["password"] = "nested-secret",
+                ["realm"] = "local",
+            },
+        });
+        await using var server = new WebUiServer(fx.Host, registry: fx.Registry, control: fx.Control);
+        await server.StartAsync();
+        using var client = NewClient(server);
+
+        var listJson = await client.GetStringAsync("/api/plugins");
+        var list = JsonNode.Parse(listJson)!["data"]!.AsArray();
+        AssertMaskedConfig(list.OfType<JsonObject>()
+            .Single(item => item["id"]!.GetValue<string>() == "demo")["config"]!.AsObject(), listJson);
+
+        var configJson = await client.GetStringAsync("/api/plugins/demo/config");
+        AssertMaskedConfig(JsonNode.Parse(configJson)!["data"]!.AsObject(), configJson);
+
+        // A registry-only config read goes through a different code path.
+        await using var runtime = new Gocordis.Core.Runtime();
+        var host = new ConsoleHost(runtime);
+        await using var registry = new PluginRegistry(runtime);
+        registry.RegisterFactory("demo", _ => new DemoComponent());
+        await registry.ApplyAsync([
+            new PluginManifest("p1", "demo", true,
+                new Dictionary<string, object?> { ["apiKey"] = "registry-secret", ["value"] = "1" }, [], []),
+        ]);
+        await using var registryServer = new WebUiServer(host, registry: registry);
+        await registryServer.StartAsync();
+        using var registryClient = NewClient(registryServer);
+        var registryJson = await registryClient.GetStringAsync("/api/plugins/p1/config");
+        var registryConfig = JsonNode.Parse(registryJson)!["data"]!.AsObject();
+        Assert.DoesNotContain("registry-secret", registryJson);
+        Assert.Equal("***", registryConfig["apiKey"]!.GetValue<string>());
+        Assert.Equal("1", registryConfig["value"]!.GetValue<string>());
+
+        // The store DTO exposes only the package file name, never its directory.
+        var storeJson = await client.GetStringAsync("/api/plugins/store");
+        var displayed = JsonNode.Parse(storeJson)!["data"]!.AsArray()
+            .OfType<JsonObject>().Single()["installPath"]!.GetValue<string>();
+        var fullPath = (await fx.Control.StoreAsync())[0].InstallPath;
+        Assert.Equal(Path.GetFileName(fullPath), displayed);
+        Assert.NotEqual(fullPath, displayed);
+        Assert.DoesNotContain(Path.GetDirectoryName(fullPath)!, storeJson);
+    }
+
+    private static void AssertMaskedConfig(JsonObject config, string rawResponse)
+    {
+        Assert.DoesNotContain("super-secret-key", rawResponse);
+        Assert.DoesNotContain("hunter2", rawResponse);
+        Assert.DoesNotContain("tok-xyz", rawResponse);
+        Assert.DoesNotContain("cred-xyz", rawResponse);
+        Assert.DoesNotContain("nested-secret", rawResponse);
+        Assert.Equal("visible", config["value"]!.GetValue<string>());
+        Assert.Equal("***", config["apiKey"]!.GetValue<string>());
+        Assert.Equal("***", config["dbPassword"]!.GetValue<string>());
+        Assert.Equal("***", config["token"]!.GetValue<string>());
+        Assert.Equal("***", config["credential"]!.GetValue<string>());
+        Assert.Equal("***", config["connectionString"]!.GetValue<string>());
+        Assert.Equal("local", config["auth"]!["realm"]!.GetValue<string>());
+        Assert.Equal("***", config["auth"]!["password"]!.GetValue<string>());
     }
 
     [Fact]
@@ -192,7 +371,7 @@ public sealed class WebUiPolicyTests
         public PluginRegistry Registry { get; }
         public PluginControlService Control { get; }
 
-        public static async Task<PolicyFixture> CreateAsync()
+        public static async Task<PolicyFixture> CreateAsync(IReadOnlyDictionary<string, object?>? config = null)
         {
             var root = Path.Combine(Path.GetTempPath(), $"gocordis-policy-{Guid.NewGuid():N}");
             try
@@ -221,7 +400,8 @@ public sealed class WebUiPolicyTests
                     await store.InstallAsync(package);
                     var manifest = Path.Combine(root, "app.json");
                     await new ApplicationManifest("policy-tests", "1.0.0", HostVersion,
-                        [new ApplicationPlugin("demo", "[1.0,2.0)", true)]).SaveAsync(manifest);
+                        [new ApplicationPlugin("demo", "[1.0,2.0)", true,
+                            config ?? new Dictionary<string, object?> { ["value"] = "1" })]).SaveAsync(manifest);
 
                     var control = new PluginControlService(manifest, store, registry);
                     await control.ApplyAllAsync();

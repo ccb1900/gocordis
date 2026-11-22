@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Gocordis.Console.WebUi;
@@ -59,42 +60,87 @@ public static class Program
         var manifest = new ApplicationManifest(id, version, hostVersion, []);
         await manifest.SaveAsync(Path.Combine(output, "gocordis.app.json"));
 
+        // The generated app references the published host package, not this
+        // developer's checkout. `dotnet pack` below seeds a local feed so the
+        // scaffold is immediately buildable without nuget.org credentials.
         var project = $$"""
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
                 <OutputType>Exe</OutputType>
+                <TargetFramework>net10.0</TargetFramework>
+                <ImplicitUsings>enable</ImplicitUsings>
+                <Nullable>enable</Nullable>
               </PropertyGroup>
               <ItemGroup>
-                <ProjectReference Include="{{root}}/src/Gocordis.Core/Gocordis.Core.csproj" />
-                <ProjectReference Include="{{root}}/src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
-                <ProjectReference Include="{{root}}/src/Gocordis.Packaging/Gocordis.Packaging.csproj" />
-                <ProjectReference Include="{{root}}/src/Gocordis.Console.WebUi/Gocordis.Console.WebUi.csproj" />
+                <PackageReference Include="gocordis-platform" Version="{{hostVersion}}" />
               </ItemGroup>
             </Project>
             """;
         await File.WriteAllTextAsync(Path.Combine(output, id + ".csproj"), project);
 
-        var program = $$"""
-            using Gocordis.Console.WebUi;
-            using Gocordis.Plugins;
-
-            var runtime = new Gocordis.Core.Runtime();
-            var host = new ConsoleHost(runtime);
-            var registry = new PluginRegistry(runtime);
-            var store = new Gocordis.Packaging.PluginStore(
-                Path.Combine(AppContext.BaseDirectory, "plugins"), "{{hostVersion}}");
-            var loader = new Gocordis.Packaging.ApplicationLoader(store, registry);
-            await loader.ApplyAsync(await Gocordis.Packaging.ApplicationManifest.LoadAsync("gocordis.app.json"));
-
-            await using var ui = new WebUiServer(host, registry: registry);
-            await ui.StartAsync();
-            System.Console.WriteLine($"Gocordis app '{{id}}': {ui.Address}");
-            await Task.Delay(Timeout.Infinite);
-            """;
+        var program = "return await Gocordis.Platform.PlatformRunner.RunAsync(args);\n";
         await File.WriteAllTextAsync(Path.Combine(output, "Program.cs"), program);
 
-        Write(new { created = output, id, version, hostVersion });
+        var nugetConfig = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <configuration>
+              <packageSources>
+                <clear />
+                <add key="local" value="./local-packages" />
+                <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+              </packageSources>
+            </configuration>
+            """;
+        await File.WriteAllTextAsync(Path.Combine(output, "NuGet.Config"), nugetConfig);
+
+        await File.WriteAllTextAsync(Path.Combine(output, "build.sh"),
+            "#!/bin/sh\nset -e\ndotnet build\n");
+        await File.WriteAllTextAsync(Path.Combine(output, "run.sh"),
+            "#!/bin/sh\nexec dotnet run -- --manifest gocordis.app.json --store ./plugins\n");
+        await File.WriteAllTextAsync(Path.Combine(output, "build.cmd"),
+            "@echo off\r\ndotnet build || exit /b 1\r\n");
+        await File.WriteAllTextAsync(Path.Combine(output, "run.cmd"),
+            "@echo off\r\ndotnet run -- --manifest gocordis.app.json --store ./plugins\r\n");
+
+        var feed = Path.GetFullPath(Path.Combine(output, "local-packages"));
+        var pack = await RunProcessAsync("dotnet",
+            $"pack \"{root}/Gocordis.sln\" -c Release -o \"{feed}\" " +
+            $"-p:PackageVersion={hostVersion} --nologo -m:1", output);
+        if (pack.Code != 0)
+        {
+            return Fail($"failed to seed local host packages: {pack.Error}");
+        }
+
+        Write(new { created = output, id, version, hostVersion, localFeed = "local-packages" });
         return 0;
+    }
+
+    private static async Task<(int Code, string Out, string Error)> RunProcessAsync(
+        string file, string arguments, string workingDirectory)
+    {
+        var start = new ProcessStartInfo(file, arguments)
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        using var process = Process.Start(start)
+                            ?? throw new InvalidOperationException($"cannot start '{file}'");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var outTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            process.Kill(entireProcessTree: true);
+            throw;
+        }
+
+        return (process.ExitCode, await outTask, await errorTask);
     }
 
     private static string FindRepoRoot()

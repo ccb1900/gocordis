@@ -133,6 +133,7 @@ public sealed class PluginControlService : IPluginControlPlane
     private readonly PluginStore _store;
     private readonly PluginRegistry _registry;
     private readonly UiContributionRegistry? _ui;
+    private readonly Func<PluginManifest, Component>? _componentFactory;
     private readonly ApplicationLoader _loader;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly HashSet<string> _registeredTypes = new(StringComparer.Ordinal);
@@ -143,12 +144,15 @@ public sealed class PluginControlService : IPluginControlPlane
         string ManifestPath,
         PluginStore Store,
         PluginRegistry Registry,
-        UiContributionRegistry? Ui = null)
+        UiContributionRegistry? Ui = null,
+        Func<PluginManifest, Component>? ComponentFactory = null)
     {
         _manifestPath = ManifestPath ?? throw new ArgumentNullException(nameof(ManifestPath));
         _store = Store ?? throw new ArgumentNullException(nameof(Store));
         _registry = Registry ?? throw new ArgumentNullException(nameof(Registry));
         _ui = Ui;
+        // The host owns backend selection; Packaging never references a backend.
+        _componentFactory = ComponentFactory;
         _loader = new ApplicationLoader(Store, Registry);
         CleanStaleUploads();
     }
@@ -881,7 +885,14 @@ public sealed class PluginControlService : IPluginControlPlane
 
             try
             {
-                _registry.RegisterFactory(type, _ => new ProductPluginComponent(type, _ui));
+                if (_componentFactory is { } factory)
+                {
+                    _registry.RegisterComponentFactory(type, factory);
+                }
+                else
+                {
+                    _registry.RegisterFactory(type, _ => new ProductPluginComponent(type, _ui));
+                }
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("already registered", StringComparison.Ordinal))
             {

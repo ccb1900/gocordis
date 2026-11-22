@@ -16,7 +16,7 @@ import { PLUGIN, useDomainVersion } from "../lib/projections";
 import type { BlockRenderer } from "./registry";
 import type { ViewBlock } from "./schema";
 import {
-  compareRows, filterRows, mapStoreEntry,
+  compareRows, filterRows, mapStoreEntry, storeRowKey,
   type CatalogFilter, type StoreRow,
 } from "./market-catalog";
 
@@ -113,7 +113,7 @@ export const MarketCatalogBlock: BlockRenderer = ({ block }: { block: ViewBlock 
       />
       <Table<StoreRow>
         size="small"
-        rowKey="id"
+        rowKey={storeRowKey}
         loading={loading}
         scroll={{ x: "max-content" }}
         dataSource={visible}

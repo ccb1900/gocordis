@@ -148,7 +148,7 @@ public sealed class ManagedBackend : IPluginBackend
 /// component's capabilities up front (Core enforces declarations at Apply) and
 /// delegates the whole lifecycle to <see cref="ManagedBackend"/>.
 /// </summary>
-public sealed class ManagedPluginComponent : Component
+public sealed class ManagedPluginComponent : Component, IDisposable, IAsyncDisposable
 {
     private readonly ManagedPluginLoader _loader;
     private readonly string _id;
@@ -156,6 +156,7 @@ public sealed class ManagedPluginComponent : Component
     private readonly string _typeName;
     private readonly LoadedManagedPlugin _plugin;
     private readonly Key<string> _instanceKey;
+    private bool _stagingReleased;
 
     public ManagedPluginComponent(
         ManagedPluginLoader loader, string id, string assemblyPath, string typeName)
@@ -168,7 +169,7 @@ public sealed class ManagedPluginComponent : Component
         _instanceKey = ManagedKeys.ForInstance(id);
     }
 
-    public override string Name => "managed-plugin";
+    public override string Name => _plugin.Component.Name;
 
     public override IReadOnlyList<ICapabilityKey> Inject() => _plugin.Component.Inject();
 
@@ -178,4 +179,26 @@ public sealed class ManagedPluginComponent : Component
     public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
         BackendProtocol.RunAsync(
             new ManagedBackend(_loader, _id, _assemblyPath, _typeName, _plugin, _instanceKey), context);
+
+    /// <summary>
+    /// Fenced release for a component that was staged by a declaration batch but
+    /// never reached a fiber. Once a fiber owns the activation, Core's effect
+    /// inverse performs the release; this call is then a generation-fenced no-op.
+    /// </summary>
+    public void Dispose()
+    {
+        if (_stagingReleased)
+        {
+            return;
+        }
+
+        _stagingReleased = true;
+        _loader.Unload(_id, _plugin.Generation);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        Dispose();
+        return ValueTask.CompletedTask;
+    }
 }

@@ -209,6 +209,32 @@ public sealed class PluginStore
                 return new PluginStoreResult([new PluginChange(PluginChangeKind.Unchanged, existing.Id, existing.Version)]);
             }
 
+            if (upgrade)
+            {
+                // An upgrade removes lower versions of the same plugin. Verify
+                // that no installed consumer loses its only satisfying version.
+                var upgraded = NuGetVersion.Parse(content.Manifest.Version);
+                var removed = state.Plugins
+                    .Where(p => string.Equals(p.Id, content.Manifest.Id, StringComparison.Ordinal) &&
+                                NuGetVersion.Parse(p.Version) < upgraded)
+                    .Select(p => NuGetVersion.Parse(p.Version))
+                    .ToArray();
+                var surviving = state.Plugins
+                    .Where(p => string.Equals(p.Id, content.Manifest.Id, StringComparison.Ordinal) &&
+                                NuGetVersion.Parse(p.Version) >= upgraded)
+                    .Select(p => NuGetVersion.Parse(p.Version))
+                    .Append(upgraded)
+                    .Distinct()
+                    .ToArray();
+                var dependents = PluginDependencyPlanner.FindUnsatisfiedDependents(
+                    state.Plugins, content.Manifest.Id, removed, surviving);
+                if (dependents.Count > 0)
+                {
+                    throw new InvalidOperationException(
+                        $"cannot upgrade '{content.Manifest.Id}': required by {string.Join(", ", dependents)}");
+                }
+            }
+
             var backup = await ReadLockBytesAsync(cancellationToken);
             var transaction = Guid.NewGuid().ToString("N");
             var staging = EnsureUnderRoot(_root, ".staging", transaction);

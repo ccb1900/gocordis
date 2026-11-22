@@ -3,7 +3,8 @@
 import { describe, expect, it } from "vitest";
 import {
   actionFor, buildArgs, compareRows, declaredActions, eligibleActions,
-  filterRows, isNativeEntry, mapEntry, mapEntries, parseCatalog, sortRows,
+  filterRows, isNativeEntry, mapEntry, mapEntries, mapStoreEntry, parseCatalog,
+  sortRows, storeRowKey,
   type CatalogActionSpec, type CatalogRow, type DeclaredAction,
 } from "./market-catalog";
 
@@ -47,6 +48,16 @@ describe("row mapping", () => {
     });
     expect(mapEntry(null).installed).toBe(false);
     expect(mapEntries([null, 3, "x", { id: "ok" }]).map((x) => x.id)).toEqual(["ok"]);
+  });
+
+  it("uses id+version as the store row key so multiple versions coexist", () => {
+    const v1 = mapStoreEntry({ id: "demo", version: "1.0.0" });
+    const v2 = mapStoreEntry({ id: "demo", version: "2.0.0" });
+    expect(storeRowKey(v1)).not.toBe(storeRowKey(v2));
+    expect(storeRowKey(v1)).toBe(storeRowKey(mapStoreEntry({ id: "demo", version: "1.0.0" })));
+    expect(storeRowKey(v2)).not.toBe(storeRowKey(mapStoreEntry({ id: "other", version: "2.0.0" })));
+    // Field text must not be able to forge another row's composite key.
+    expect(storeRowKey({ id: "a@1", version: "0" })).not.toBe(storeRowKey({ id: "a", version: "1@0" }));
   });
 });
 

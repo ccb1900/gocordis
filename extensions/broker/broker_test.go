@@ -19,6 +19,17 @@ import (
 //	    traffic, deregister v1 — the consumer never reloads and never observes
 //	    a dependency change (the broker binding is stable).
 
+func recvOut(t *testing.T, out <-chan string) string {
+	t.Helper()
+	select {
+	case v := <-out:
+		return v
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for broker response")
+		return ""
+	}
+}
+
 type encoder interface {
 	Encode(string) string
 }
@@ -312,13 +323,8 @@ func TestBrokerRollingUpdate(t *testing.T) {
 	}
 	waitActiveB(t, pv1)
 	waitActiveB(t, cons)
-	select {
-	case v := <-out:
-		if v != "v1:x" {
-			t.Fatalf("v1 response = %q", v)
-		}
-	default:
-		t.Fatal("no response through broker")
+	if v := recvOut(t, out); v != "v1:x" {
+		t.Fatalf("v1 response = %q", v)
 	}
 
 	// (1) Load v2 as an additional fiber.
@@ -348,12 +354,7 @@ func TestBrokerRollingUpdate(t *testing.T) {
 		}
 		return nil
 	})
-	select {
-	case v := <-out:
-		if v != "v2:y" {
-			t.Fatalf("post-update response = %q, want v2:y", v)
-		}
-	default:
-		t.Fatal("no response after rolling update")
+	if v := recvOut(t, out); v != "v2:y" {
+		t.Fatalf("post-update response = %q, want v2:y", v)
 	}
 }

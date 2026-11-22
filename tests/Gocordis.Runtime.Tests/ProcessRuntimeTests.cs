@@ -109,6 +109,12 @@ public sealed class ProcessRuntimeTests
         await Assert.ThrowsAnyAsync<Exception>(() =>
             client.CallAsync("crash", timeout: TimeSpan.FromSeconds(5)));
 
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (!client.HasExited && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
         Assert.True(client.HasExited);
     }
 
@@ -143,6 +149,13 @@ public sealed class ProcessRuntimeTests
         var diagnostics = runtime.Snapshot().Fibers.Single(f => f.Name == "process-plugin");
         Assert.Contains("process-diagnostics", diagnostics.Provides);
         Assert.Contains("plugin_error", diagnostics.Provides);
+
+        var observed = string.Empty;
+        await runtime.LoadAsync(new ProbeComponent(
+            "error-consumer",
+            context => observed = context.Require(ProcessKeys.ErrorVocabulary),
+            [ProcessKeys.ErrorVocabulary]));
+        Assert.Equal("plugin_error", observed);
     }
 
     private static string PluginExecutable()

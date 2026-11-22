@@ -16,7 +16,11 @@ public sealed class WebUiServer : IAsyncDisposable
 {
     private readonly WebApplication _app;
 
-    public WebUiServer(ConsoleHost host, string address = "http://127.0.0.1:0", bool allowRemote = false)
+    public WebUiServer(
+        ConsoleHost host,
+        string address = "http://127.0.0.1:0",
+        bool allowRemote = false,
+        Plugins.PluginRegistry? registry = null)
     {
         ListenGuard.Validate(address, allowRemote);
         var builder = WebApplication.CreateBuilder();
@@ -26,6 +30,30 @@ public sealed class WebUiServer : IAsyncDisposable
         _app.MapGet("/", () => Results.Content(WebResources.Read("index.html"), "text/html"));
         _app.MapGet("/app.js", () => Results.Content(WebResources.Read("app.js"), "text/javascript"));
         _app.MapGet("/app.css", () => Results.Content(WebResources.Read("app.css"), "text/css"));
+
+        _app.MapGet("/api/plugins", () =>
+        {
+            var plugins = new JsonArray();
+            foreach (var (id, entry) in registry?.Entries ?? new Dictionary<string, Plugins.PluginEntry>())
+            {
+                plugins.Add(new JsonObject
+                {
+                    ["id"] = id,
+                    ["type"] = entry.Manifest.Type,
+                    ["enabled"] = entry.Manifest.Enabled,
+                    ["state"] = entry.Fiber?.State.ToString() ?? "disabled",
+                });
+            }
+
+            return plugins;
+        });
+
+        _app.MapGet("/api/fleet", () => new JsonObject
+        {
+            ["frameworkVersion"] = "1",
+            ["self"] = true,
+            ["plugins"] = registry?.Entries.Count ?? 0,
+        });
 
         _app.MapGet("/api/meta", () => new JsonObject
         {

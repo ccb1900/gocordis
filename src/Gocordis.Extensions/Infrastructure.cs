@@ -42,6 +42,17 @@ public sealed class FileSystemService : IAsyncDisposable
         });
     }
 
+    private static void EnsureWithin(string root, string candidate)
+    {
+        var relative = Path.GetRelativePath(root, candidate);
+        if (relative == ".." ||
+            relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+            Path.IsPathRooted(relative))
+        {
+            throw new InvalidOperationException("path escapes the mount root");
+        }
+    }
+
     private string Resolve(string path)
     {
         var match = _mounts
@@ -55,9 +66,17 @@ public sealed class FileSystemService : IAsyncDisposable
 
         var relative = path[match.Key.Length..].TrimStart('/', '\\');
         var resolved = Path.GetFullPath(Path.Combine(match.Value, relative));
-        if (!resolved.StartsWith(match.Value, StringComparison.Ordinal))
+        EnsureWithin(match.Value, resolved);
+
+        // Path.GetFullPath does not resolve symlinks; check the final target too.
+        var info = new FileInfo(resolved);
+        if (info.Exists)
         {
-            throw new InvalidOperationException("path escapes the mount root");
+            var target = info.ResolveLinkTarget(returnFinalTarget: true);
+            if (target is not null)
+            {
+                EnsureWithin(match.Value, target.FullName);
+            }
         }
 
         return resolved;

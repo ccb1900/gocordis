@@ -28,6 +28,10 @@ public sealed class PluginRegistry : IAsyncDisposable
     /// <summary>Platform-declared ids cannot be disabled by a catalog action.</summary>
     public HashSet<string> ProtectedIds { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>Capabilities supplied by the host rather than by declared plugins.</summary>
+    public HashSet<ICapabilityKey> ExternalCapabilities { get; } =
+        new(ReferenceEqualityComparer.Instance);
+
     public void RegisterFactory(string type, Func<IReadOnlyDictionary<string, object?>, Component> factory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(type);
@@ -74,12 +78,11 @@ public sealed class PluginRegistry : IAsyncDisposable
 
         var desired = declarationsArray.ToDictionary(manifest => manifest.Id);
 
-        // Stage the whole batch: factory construction, declaration probing and
-        // duplicate provider detection all happen before any fiber is touched.
-        _ = SortByDependencies(desired.Values);
+        // Stage the whole batch: factory construction and declaration probing
+        // happen before any fiber is touched.
         var staged = new Dictionary<string, Component>(StringComparer.Ordinal);
         var providedKeys = new Dictionary<ICapabilityKey, string>(ReferenceEqualityComparer.Instance);
-        foreach (var manifest in SortByDependencies(desired.Values))
+        foreach (var manifest in desired.Values)
         {
             if (!_factories.TryGetValue(manifest.Type, out var factory))
             {
@@ -113,6 +116,8 @@ public sealed class PluginRegistry : IAsyncDisposable
             staged[manifest.Id] = component;
         }
 
+        var ordered = SortByTypedDependencies(staged);
+
         await _gate.WaitAsync();
         try
         {
@@ -124,8 +129,9 @@ public sealed class PluginRegistry : IAsyncDisposable
                 }
             }
 
-            foreach (var manifest in SortByDependencies(desired.Values))
+            foreach (var (id, component) in ordered)
             {
+                var manifest = desired[id];
                 var configurationKey = Fingerprint(manifest);
                 if (ProtectedIds.Contains(manifest.Id) && !manifest.Enabled &&
                     _entries.TryGetValue(manifest.Id, out var protectedEntry) &&
@@ -152,7 +158,7 @@ public sealed class PluginRegistry : IAsyncDisposable
                     continue;
                 }
 
-                var fiber = await _runtime.LoadAsync(staged[manifest.Id]);
+                var fiber = await _runtime.LoadAsync(component);
                 _entries[manifest.Id] = new PluginEntry(manifest, fiber, configurationKey);
             }
         }
@@ -193,40 +199,63 @@ public sealed class PluginRegistry : IAsyncDisposable
         _entries.Remove(id);
     }
 
-    private static IReadOnlyList<PluginManifest> SortByDependencies(IEnumerable<PluginManifest> manifests)
+    private IReadOnlyList<(string Id, Component Component)> SortByTypedDependencies(
+        Dictionary<string, Component> staged)
     {
-        var all = manifests.ToArray();
-        var provided = new HashSet<string>(all.SelectMany(manifest => manifest.Provides), StringComparer.Ordinal);
-        var visiting = new HashSet<string>(StringComparer.Ordinal);
-        var visited = new HashSet<string>(StringComparer.Ordinal);
-        var ordered = new List<PluginManifest>();
-
-        void Visit(PluginManifest manifest)
+        var keyOwner = new Dictionary<ICapabilityKey, string>(ReferenceEqualityComparer.Instance);
+        foreach (var (id, component) in staged)
         {
-            if (!visiting.Add(manifest.Id))
+            foreach (var key in component.Provide())
             {
-                throw new DependencyCycleException($"plugin dependency cycle at '{manifest.Id}'");
-            }
-
-            foreach (var dependency in manifest.Requires.Where(provided.Contains))
-            {
-                var provider = all.First(candidate => candidate.Provides.Contains(dependency, StringComparer.Ordinal));
-                if (!visited.Contains(provider.Id))
-                {
-                    Visit(provider);
-                }
-            }
-
-            visiting.Remove(manifest.Id);
-            if (visited.Add(manifest.Id))
-            {
-                ordered.Add(manifest);
+                keyOwner[key] = id;
             }
         }
 
-        foreach (var manifest in all)
+        var visiting = new HashSet<string>(StringComparer.Ordinal);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var ordered = new List<(string, Component)>();
+
+        void Visit(string id)
         {
-            Visit(manifest);
+            if (!visiting.Add(id))
+            {
+                throw new DependencyCycleException($"plugin dependency cycle at '{id}'");
+            }
+
+            foreach (var key in staged[id].Inject())
+            {
+                if (key is IMetaKey)
+                {
+                    continue;
+                }
+
+                if (keyOwner.TryGetValue(key, out var providerId))
+                {
+                    if (!visited.Contains(providerId))
+                    {
+                        Visit(providerId);
+                    }
+
+                    continue;
+                }
+
+                if (!ExternalCapabilities.Contains(key))
+                {
+                    throw new InvalidOperationException(
+                        $"plugin '{id}' requires capability '{key.Name}' with no provider");
+                }
+            }
+
+            visiting.Remove(id);
+            if (visited.Add(id))
+            {
+                ordered.Add((id, staged[id]));
+            }
+        }
+
+        foreach (var id in staged.Keys)
+        {
+            Visit(id);
         }
 
         return ordered;

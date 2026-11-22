@@ -100,7 +100,10 @@ public sealed class Phase6Tests
     {
         await using var runtime = new Gocordis.Core.Runtime();
         var host = new ConsoleHost(runtime);
-        await using var server = new WebUiServer(host);
+        await using var registry = new PluginRegistry(runtime);
+        registry.RegisterFactory("echo", _ => new EchoComponent());
+        await registry.ApplyAsync([Manifest("p1", "x")]);
+        await using var server = new WebUiServer(host, registry: registry);
 
         await server.StartAsync();
         using var client = new HttpClient { BaseAddress = new Uri(server.Address!) };
@@ -114,7 +117,26 @@ public sealed class Phase6Tests
         Assert.Contains("frameworkVersion", meta);
         var snapshot = await client.GetStringAsync("/api/query/runtime/snapshot");
         Assert.Contains("fibers", snapshot);
+        var plugins = await client.GetStringAsync("/api/plugins");
+        Assert.Contains("p1", plugins);
+        var fleet = await client.GetStringAsync("/api/fleet");
+        Assert.Contains("\"plugins\":1", fleet);
         await server.StopAsync();
+    }
+
+    private sealed class EchoComponent : Component
+    {
+        private readonly Key<int> _key = new($"echo-{Guid.NewGuid():N}");
+
+        public override string Name => "echo";
+
+        public override IReadOnlyList<ICapabilityKey> Provide() => [_key];
+
+        public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            context.Provide(_key, 1);
+            return null;
+        }
     }
 
     private static PluginManifest Manifest(string id, string value) =>

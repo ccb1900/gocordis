@@ -52,6 +52,15 @@ public enum LifecycleIntent
     Retired,
 }
 
+/// <summary>Effect installation state (paper §3 effect accumulator).</summary>
+public enum EffectState
+{
+    Installing,
+    Committed,
+    Undoing,
+    Undone,
+}
+
 /// <summary>Inverse of an installed effect. Inverses run in strict LIFO order.</summary>
 public delegate ValueTask Cleanup();
 

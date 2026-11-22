@@ -18,7 +18,13 @@ public sealed class TimerService : IAsyncDisposable
         }
         finally
         {
+            lock (_sync)
+            {
+                _timers.Remove(linked);
+            }
+
             registration.Dispose();
+            linked.Dispose();
         }
     }
 
@@ -39,7 +45,13 @@ public sealed class TimerService : IAsyncDisposable
         }
         finally
         {
+            lock (_sync)
+            {
+                _timers.Remove(linked);
+            }
+
             registration.Dispose();
+            linked.Dispose();
         }
     }
 
@@ -62,17 +74,33 @@ public sealed class TimerService : IAsyncDisposable
         {
             // superseded by a newer call
         }
+        finally
+        {
+            lock (_sync)
+            {
+                if (ReferenceEquals(_debounce, source))
+                {
+                    _debounce = null;
+                }
+            }
+
+            source.Dispose();
+        }
     }
 
     public async Task<bool> ThrottleAsync(TimeSpan window, Func<ValueTask> action)
     {
-        var now = DateTimeOffset.UtcNow;
-        if (now - _lastThrottle < window)
+        lock (_sync)
         {
-            return false;
+            var now = DateTimeOffset.UtcNow;
+            if (now - _lastThrottle < window)
+            {
+                return false;
+            }
+
+            _lastThrottle = now;
         }
 
-        _lastThrottle = now;
         await action();
         return true;
     }
@@ -121,6 +149,7 @@ public sealed class TimerService : IAsyncDisposable
 public sealed class Scheduler : IAsyncDisposable
 {
     private readonly Dictionary<Guid, Job> _jobs = [];
+    private readonly HashSet<Guid> _running = [];
 
     public IReadOnlyCollection<Job> Jobs => _jobs.Values.ToArray();
 
@@ -142,20 +171,45 @@ public sealed class Scheduler : IAsyncDisposable
 
     public async Task<Guid?> RunNextAsync(DateTimeOffset now)
     {
-        var due = _jobs.Values.Where(job => job.Next <= now).OrderBy(job => job.Next).FirstOrDefault();
+        Job? due;
+        lock (_jobs)
+        {
+            due = _jobs.Values
+                .Where(job => job.Next <= now && !_running.Contains(job.Id))
+                .OrderBy(job => job.Next)
+                .FirstOrDefault();
+            if (due is not null)
+            {
+                _running.Add(due.Id);
+            }
+        }
+
         if (due is null)
         {
             return null;
         }
 
-        await due.Action();
-        if (due.Period is { } period)
+        try
         {
-            _jobs[due.Id] = due with { Next = now + period };
+            await due.Action();
         }
-        else
+        finally
         {
-            _jobs.Remove(due.Id);
+            lock (_jobs)
+            {
+                _running.Remove(due.Id);
+            }
+        }
+        lock (_jobs)
+        {
+            if (due.Period is { } period)
+            {
+                _jobs[due.Id] = due with { Next = now + period };
+            }
+            else
+            {
+                _jobs.Remove(due.Id);
+            }
         }
 
         return due.Id;

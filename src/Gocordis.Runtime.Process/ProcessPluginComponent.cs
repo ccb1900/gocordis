@@ -36,6 +36,7 @@ public sealed class ProcessPluginComponent : Component
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
             var result = await client.CallAsync("echo", new { text = "ready" }, timeout.Token);
             context.Provide(_key, result?["text"]?.GetValue<string>() ?? "unavailable");
+            context.Provide(ProcessKeys.ErrorVocabulary, "ok");
         }
         catch (Exception ex)
         {
@@ -48,6 +49,7 @@ public sealed class ProcessPluginComponent : Component
             // active and consumers can observe the error vocabulary.
             diagnostics.LastError = ex.Message;
             context.Provide(_key, "plugin_error");
+            context.Provide(ProcessKeys.ErrorVocabulary, "plugin_error");
             return null;
         }
 

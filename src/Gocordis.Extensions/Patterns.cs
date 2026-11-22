@@ -14,16 +14,42 @@ namespace Gocordis.Extensions;
 public sealed class Broker<T>
 {
     private readonly List<T> _providers = [];
+    private readonly object _sync = new();
 
     public IDisposable Register(T provider)
     {
-        _providers.Add(provider);
-        return new Subscription(() => _providers.Remove(provider));
+        lock (_sync)
+        {
+            _providers.Add(provider);
+        }
+
+        return new Subscription(() =>
+        {
+            lock (_sync)
+            {
+                _providers.Remove(provider);
+            }
+        });
     }
 
-    public IReadOnlyList<T> Providers => _providers.ToArray();
+    public IReadOnlyList<T> Providers
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _providers.ToArray();
+            }
+        }
+    }
 
-    public T? RoundRobin(long ticket) => _providers.Count == 0 ? default : _providers[(int)(ticket % _providers.Count)];
+    public T? RoundRobin(long ticket)
+    {
+        lock (_sync)
+        {
+            return _providers.Count == 0 ? default : _providers[(int)(ticket % _providers.Count)];
+        }
+    }
 
     private sealed class Subscription : IDisposable
     {
@@ -40,14 +66,24 @@ public sealed class StableRegistry<T>
 {
     private readonly Dictionary<string, T> _members = new(StringComparer.Ordinal);
     private readonly List<Action> _watchers = [];
+    private readonly object _sync = new();
 
-    public IReadOnlyDictionary<string, T> Snapshot() => new Dictionary<string, T>(_members, StringComparer.Ordinal);
+    public IReadOnlyDictionary<string, T> Snapshot()
+    {
+        lock (_sync)
+        {
+            return new Dictionary<string, T>(_members, StringComparer.Ordinal);
+        }
+    }
 
     public bool TryAdd(string id, T value)
     {
-        if (!_members.TryAdd(id, value))
+        lock (_sync)
         {
-            return false;
+            if (!_members.TryAdd(id, value))
+            {
+                return false;
+            }
         }
 
         Notify();
@@ -56,21 +92,28 @@ public sealed class StableRegistry<T>
 
     public bool TryReplace(string id, T value)
     {
-        if (!_members.ContainsKey(id))
+        lock (_sync)
         {
-            return false;
+            if (!_members.ContainsKey(id))
+            {
+                return false;
+            }
+
+            _members[id] = value;
         }
 
-        _members[id] = value;
         Notify();
         return true;
     }
 
     public bool TryRemove(string id)
     {
-        if (!_members.Remove(id))
+        lock (_sync)
         {
-            return false;
+            if (!_members.Remove(id))
+            {
+                return false;
+            }
         }
 
         Notify();
@@ -79,13 +122,29 @@ public sealed class StableRegistry<T>
 
     public IDisposable Watch(Action onChange)
     {
-        _watchers.Add(onChange);
-        return new Subscription(() => _watchers.Remove(onChange));
+        lock (_sync)
+        {
+            _watchers.Add(onChange);
+        }
+
+        return new Subscription(() =>
+        {
+            lock (_sync)
+            {
+                _watchers.Remove(onChange);
+            }
+        });
     }
 
     private void Notify()
     {
-        foreach (var watcher in _watchers.ToArray())
+        Action[] snapshot;
+        lock (_sync)
+        {
+            snapshot = _watchers.ToArray();
+        }
+
+        foreach (var watcher in snapshot)
         {
             watcher();
         }
@@ -101,7 +160,6 @@ public sealed class StableRegistry<T>
     }
 }
 
-/// <summary>Streaming observation with sequence numbers and slow-consumer overflow.</summary>
 public sealed class ObserveStream<T> : IAsyncDisposable
 {
     private readonly Channel<(long Sequence, T Item)> _channel =
@@ -119,16 +177,33 @@ public sealed class ObserveStream<T> : IAsyncDisposable
     }
 
     public IAsyncEnumerable<T> Subscribe(long fromSequence, CancellationToken token = default) =>
-        ReadAll(fromSequence, token);
+        Project(SubscribeWithSequence(fromSequence, token));
 
-    private async IAsyncEnumerable<T> ReadAll(long fromSequence,
+    /// <summary>
+    /// Exposes the sequence number so a slow consumer can detect gaps caused by
+    /// the bounded DropOldest policy instead of silently missing events.
+    /// </summary>
+    public IAsyncEnumerable<(long Sequence, T Item)> SubscribeWithSequence(
+        long fromSequence,
+        CancellationToken token = default) => ReadAll(fromSequence, token);
+
+    private static async IAsyncEnumerable<T> Project(
+        IAsyncEnumerable<(long Sequence, T Item)> source)
+    {
+        await foreach (var (_, item) in source)
+        {
+            yield return item;
+        }
+    }
+
+    private async IAsyncEnumerable<(long Sequence, T Item)> ReadAll(long fromSequence,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken token)
     {
         await foreach (var (sequence, item) in _channel.Reader.ReadAllAsync(token))
         {
             if (sequence >= fromSequence)
             {
-                yield return item;
+                yield return (sequence, item);
             }
         }
     }

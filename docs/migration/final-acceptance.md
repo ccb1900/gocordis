@@ -20,12 +20,12 @@
 ```
 bash docs/migration/verify-baseline.sh   → BASELINE VERIFIED
 dotnet build Gocordis.sln --nologo -m:1  → Build succeeded, 0 Warning(s), 0 Error(s)
-dotnet test Gocordis.sln --nologo -m:1   → 17 + 18 + 44 + 11 = 90 passed
+dotnet test Gocordis.sln --nologo -m:1   → 19 + 18 + 48 + 14 = 99 passed
 ```
 
 测试构成：
 
-- `Gocordis.Core.Tests`（17）：声明一致性、严格 LIFO、失败不重试、依赖丢失→Pending、divert、
+- `Gocordis.Core.Tests`（19）：声明一致性、严格 LIFO、失败不重试、依赖丢失→Pending、divert、
   Cleanup 内 Require、所有权级联、事件注销、环拒绝、Realm 隔离、MetaKey 右偏、并发调和。
 - `Gocordis.Conformance.Tests`（18）：C06、C13、C22、Thm70、确定性重放 + 第 1 轮审查回归 5 项 + 第 4 轮 EventKey 解析。
 - `Gocordis.Runtime.Tests`（36）：架构边界、Manifest/Registry、ALC 回收与依赖隔离、
@@ -61,6 +61,11 @@ dotnet test Gocordis.sln --nologo -m:1   → 17 + 18 + 44 + 11 = 90 passed
    这是唯一无法在本地关闭的执行性事项，CI 配置本身已就绪。
 7. **Go 基线 flake**：`broker_test.go` 的 race 假失败由外部写入者在冻结后修复，已随基线叠加层提交
    （`0ded6d6`），不再属于 C# 迁移的未达成项。
+
+## 4.1 终审问题闭合
+
+外部静态审查提出的 P0/P1/P2 问题已逐条修复并有回归测试，记录见
+[`review-closure-2026-11-22.md`](review-closure-2026-11-22.md)。仍存在的限制在该文件末尾列出。
 
 **刻意保留的差异（不是缺口）**：JS Proxy 动态属性、跨 effect 并发撤销、保身份 `registry.replace()`
 仍按论文语义拒绝；插件市场服务端、云端管理平台、NativeAOT 仍在原"不迁移"清单内。

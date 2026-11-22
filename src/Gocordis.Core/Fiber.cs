@@ -48,6 +48,8 @@ public sealed class Fiber
 
     internal List<Func<ValueTask>> Inverses => _inverses;
 
+    internal List<EffectState> EffectStates { get; } = [];
+
     internal IDictionary<ICapabilityKey, object?> Provided => _provided;
 
     internal IDictionary<ICapabilityKey, Fiber> Committed => _committed;
@@ -71,7 +73,11 @@ public sealed class Fiber
 
     internal void RemoveChild(Fiber child) => _children.Remove(child);
 
-    internal void AddInverse(Func<ValueTask> inverse) => _inverses.Add(inverse);
+    internal void AddInverse(Func<ValueTask> inverse)
+    {
+        _inverses.Add(inverse);
+        EffectStates.Add(EffectState.Committed);
+    }
 
     internal void SignalGone() => _gone.TrySetResult();
 

@@ -432,6 +432,75 @@ public sealed class CoreSemanticsTests
         Assert.Equal("open", observed);
     }
 
+
+    [Fact]
+    public async Task FailedEffectInstallationCompensatesPartialSideEffects()
+    {
+        var compensated = 0;
+        await using var runtime = new Gocordis.Core.Runtime();
+        var component = new DelegateComponent("failing-effect", async context =>
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => context.EffectAsync(
+                async () =>
+                {
+                    await ValueTask.CompletedTask;
+                    throw new InvalidOperationException("install failed after side effect");
+                },
+                () =>
+                {
+                    compensated++;
+                    return ValueTask.CompletedTask;
+                }).AsTask());
+            return null;
+        });
+
+        var fiber = await runtime.LoadAsync(component);
+
+        Assert.Equal(FiberState.Active, fiber.State);
+        Assert.Equal(1, compensated);
+    }
+
+    [Fact]
+    public async Task StaleActivationContextCannotMutateTheFiber()
+    {
+        var key = new Key<int>("volatile-dependency");
+        Context? captured = null;
+
+        await using var runtime = new Gocordis.Core.Runtime();
+        var provider = new DelegateComponent(
+            "provider",
+            async context =>
+            {
+                context.Provide(key, 1);
+                return null;
+            },
+            provide: [key]);
+        var consumer = new DelegateComponent(
+            "consumer",
+            async context =>
+            {
+                captured ??= context;
+                context.Require(key);
+                return null;
+            },
+            inject: [key]);
+
+        var first = await runtime.LoadAsync(provider);
+        await runtime.LoadAsync(consumer);
+        await runtime.DisposeAsync(first);
+        await runtime.LoadAsync(new DelegateComponent(
+            "provider2",
+            async context =>
+            {
+                context.Provide(key, 2);
+                return null;
+            },
+            provide: [key]));
+
+        Assert.NotNull(captured);
+        Assert.Throws<DivertedException>(() => captured!.Provide(new Key<int>("local"), 1));
+    }
+
     [Fact]
     public async Task RealmsIsolateTheSameKeyIntoIndependentProviders()
     {

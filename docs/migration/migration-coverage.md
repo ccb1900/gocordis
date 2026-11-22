@@ -66,9 +66,9 @@
 dotnet test Gocordis.sln --nologo
 Core.Tests        16 passed（含并发、Realm、MetaKey）
 Conformance.Tests  5 passed（C06 / Thm70 / C22 / C13 / 确定性重放）
-Runtime.Tests     44 passed（边界 + Manifest/Registry + 三种 Runtime + 贡献 + 审查回归）
+Runtime.Tests     48 passed（边界 + Manifest/Registry + 三种 Runtime + 贡献 + 审查回归）
 Conformance.Tests  18 passed（含 Thm64/68/73/80 与平台收敛）
-Extensions.Tests   11 passed（event/timer/scheduler/watch/fs/http/server/env/cli/broker/registry/observe/market/package-manager）
+Extensions.Tests   14 passed（event/timer/scheduler/watch/fs/http/server/env/cli/broker/registry/observe/market/package-manager）
 ```
 
 ## 4. 阶段 3：Plugin System（状态：已执行（部分缺口））

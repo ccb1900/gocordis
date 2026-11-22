@@ -12,34 +12,45 @@ public sealed class WasmHotSwapper
     private readonly Key<int> _key;
     private long _generation;
     private Fiber? _current;
+    private readonly SemaphoreSlim _replaceGate = new(1, 1);
+    private readonly WasmHostBridge _bridge;
 
-    public WasmHotSwapper(Gocordis.Core.Runtime runtime, Key<int> key)
+    public WasmHotSwapper(Gocordis.Core.Runtime runtime, Key<int> key, WasmHostBridge? bridge = null)
     {
         _runtime = runtime;
         _key = key;
+        _bridge = bridge ?? new WasmHostBridge();
     }
 
     public Fiber? Current => _current;
 
     public async Task<Fiber> ReplaceAsync(string wat)
     {
-        var generation = Interlocked.Increment(ref _generation);
-
-        // Warm-load: a broken replacement never disturbs the running fiber.
-        var candidate = WasmPluginInstance.FromWat(wat);
-        candidate.Dispose();
-
-        if (_current is not null)
+        await _replaceGate.WaitAsync();
+        try
         {
-            await _runtime.DisposeAsync(_current);
-        }
+            // Candidate stays alive until the old fiber reaches Gone: this is a
+            // serialized warm handoff (not zero-downtime atomic replacement).
+            var candidate = WasmPluginInstance.FromWat(wat, bridge: _bridge);
+            try
+            {
+                if (_current is not null)
+                {
+                    await _runtime.DisposeAsync(_current);
+                    await _current.GoneAsync();
+                }
 
-        if (generation != Interlocked.Read(ref _generation))
+                _current = await _runtime.LoadAsync(new WasmComponent(wat, _key, _bridge));
+                return _current;
+            }
+            finally
+            {
+                candidate.Dispose();
+            }
+        }
+        finally
         {
-            throw new DivertedException();
+            _replaceGate.Release();
         }
-
-        _current = await _runtime.LoadAsync(new WasmComponent(wat, _key));
-        return _current;
     }
 }

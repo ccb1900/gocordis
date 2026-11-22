@@ -117,6 +117,48 @@ public sealed class WasmRuntimeTests
         Assert.Same(second, swapper.Current);
     }
 
+
+    [Fact]
+    public async Task WasmComponentUsesTheSuppliedHostBridge()
+    {
+        const string wat = """
+            (module
+              (import "gocordis" "report" (func $report (param i32)))
+              (func (export "runtime_component_create") (result i32)
+                i32.const 33 call $report i32.const 5)
+              (func (export "runtime_component_destroy") (param i32)))
+            """;
+        var bridge = new WasmHostBridge();
+        var key = new Key<int>("bridged-component");
+        await using var runtime = new Gocordis.Core.Runtime();
+
+        var fiber = await runtime.LoadAsync(new WasmComponent(wat, key, bridge));
+
+        Assert.Equal(FiberState.Active, fiber.State);
+        Assert.Equal(new[] { 33 }, bridge.Reports);
+    }
+
+    [Fact]
+    public async Task ConcurrentWasmReplacementsAreSerialized()
+    {
+        var key = new Key<int>("serialized-hmr");
+        const string wat = """
+            (module
+              (func (export "runtime_component_create") (result i32) i32.const 8)
+              (func (export "runtime_component_destroy") (param i32)))
+            """;
+        await using var runtime = new Gocordis.Core.Runtime();
+        var swapper = new WasmHotSwapper(runtime, key);
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 4)
+            .Select(_ => swapper.ReplaceAsync(wat)));
+
+        Assert.Equal(4, results.Length);
+        Assert.All(results, fiber => Assert.NotNull(fiber));
+        Assert.Equal(FiberState.Active, swapper.Current!.State);
+        Assert.Single(runtime.Snapshot().Fibers);
+    }
+
     private sealed class ProbeComponent : Component
     {
         private readonly Action<Context> _apply;

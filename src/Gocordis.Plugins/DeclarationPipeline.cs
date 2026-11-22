@@ -66,6 +66,7 @@ public sealed class ConfigWatcher : IDisposable
     private readonly Func<IReadOnlyList<PluginManifest>, Task> _reconcile;
     private readonly FileSystemWatcher _watcher;
     private readonly Timer _debounce;
+    private readonly SemaphoreSlim _reconcileGate = new(1, 1);
     private long _revision;
     private volatile bool _disposed;
 
@@ -87,6 +88,19 @@ public sealed class ConfigWatcher : IDisposable
     public long Revision => Interlocked.Read(ref _revision);
 
     public async Task SyncAsync()
+    {
+        await _reconcileGate.WaitAsync();
+        try
+        {
+            await SyncCoreAsync();
+        }
+        finally
+        {
+            _reconcileGate.Release();
+        }
+    }
+
+    private async Task SyncCoreAsync()
     {
         var text = File.Exists(_path) ? await File.ReadAllTextAsync(_path) : string.Empty;
         await _reconcile(PluginManifest.ParseToml(text));
@@ -113,9 +127,10 @@ public sealed class ConfigWatcher : IDisposable
             return;
         }
 
+        await _reconcileGate.WaitAsync();
         try
         {
-            await SyncAsync();
+            await SyncCoreAsync();
         }
         catch (Exception ex)
         {
@@ -123,6 +138,7 @@ public sealed class ConfigWatcher : IDisposable
         }
         finally
         {
+            _reconcileGate.Release();
             Interlocked.Increment(ref _revision);
         }
     }
@@ -133,5 +149,6 @@ public sealed class ConfigWatcher : IDisposable
         _watcher.EnableRaisingEvents = false;
         _watcher.Dispose();
         _debounce.Dispose();
+        _reconcileGate.Dispose();
     }
 }

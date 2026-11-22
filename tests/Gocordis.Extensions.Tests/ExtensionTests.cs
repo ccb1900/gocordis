@@ -111,6 +111,7 @@ public sealed class ExtensionTests
             await files.WriteAsync("/data/a.txt", "hello"u8.ToArray());
             Assert.Equal("hello", System.Text.Encoding.UTF8.GetString(await files.ReadAsync("/data/a.txt")));
             Assert.Throws<InvalidOperationException>(() => files.ReadAsync("/data/../secret").GetAwaiter().GetResult());
+            Assert.Throws<InvalidOperationException>(() => files.ReadAsync("/data/../database/other").GetAwaiter().GetResult());
 
             var observed = new List<string>();
             using var watcher = files.Watch("/data", path => observed.Add(path));
@@ -245,6 +246,52 @@ public sealed class ExtensionTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+
+    [Fact]
+    public async Task SchedulerDoesNotRunTheSameDueJobTwice()
+    {
+        await using var scheduler = new Scheduler();
+        var executions = 0;
+        scheduler.ScheduleOnce(DateTimeOffset.UtcNow.AddMinutes(-1), async () =>
+        {
+            Interlocked.Increment(ref executions);
+            await Task.Delay(20);
+        });
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 8)
+            .Select(_ => scheduler.RunNextAsync(DateTimeOffset.UtcNow)));
+
+        Assert.Equal(1, executions);
+        Assert.Single(results.Where(id => id.HasValue));
+    }
+
+    [Fact]
+    public void BrokerAndRegistryAreSafeUnderConcurrentMutation()
+    {
+        var broker = new Broker<int>();
+        Parallel.For(0, 100, index => broker.Register(index).Dispose());
+        Assert.Empty(broker.Providers);
+
+        var registry = new StableRegistry<int>();
+        Parallel.For(0, 100, index => registry.TryAdd(index.ToString(), index));
+        Assert.Equal(100, registry.Snapshot().Count);
+    }
+
+    [Fact]
+    public async Task ObserveStreamExposesSequenceGaps()
+    {
+        await using var stream = new ObserveStream<int>();
+        for (var index = 1; index <= 100; index++)
+        {
+            stream.Publish(index);
+        }
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var first = await stream.SubscribeWithSequence(1, cts.Token).FirstAsync(cts.Token);
+        Assert.True(first.Sequence > 1, "bounded stream should expose dropped sequence numbers");
+        Assert.Equal(first.Sequence, first.Item);
     }
 
     [Fact]

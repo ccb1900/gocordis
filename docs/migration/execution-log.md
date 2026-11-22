@@ -62,6 +62,8 @@
 | 53 | 缺口关闭后全量验证 | 证据驱动 | baseline + build + 90 passed |
 | 54 | 稳定化：崩溃后进程客户端 Dispose 抛 `IOException: Pipe is broken` | 连续运行 3 次暴露间歇失败，先复现再修 | `ProcessPluginClient.DisposeAsync` 捕获 broken pipe/重复释放；连续 4 次全量测试绿 |
 | 55 | 修正基线校验语义 | 迁移分支已有提交，`HEAD == baseline` 不再成立 | 校验改为"基线是 HEAD 祖先且 main 冻结"；`BASELINE VERIFIED` |
+| 56 | 外部终审问题集中修复 | 用户要求按 P0→P2 一次修完，不逐个小问题循环 | Effect 补偿/状态机/代次校验、Managed 生命周期所有者、Manifest typed 依赖统一、WASM bridge+HMR 串行化、Process 能力提供、扩展并发与路径安全、Console 端点 |
+| 57 | 终审闭合验证 | 证据驱动 | baseline + build + 99 passed；`review-closure-2026-11-22.md` |
 
 ## 验证结果（持续追加）
 

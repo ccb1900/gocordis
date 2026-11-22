@@ -93,11 +93,13 @@ public sealed class WasmComponent : Component
 {
     private readonly string _wat;
     private readonly Key<int> _key;
+    private readonly WasmHostBridge? _bridge;
 
-    public WasmComponent(string wat, Key<int> key)
+    public WasmComponent(string wat, Key<int> key, WasmHostBridge? bridge = null)
     {
         _wat = wat;
         _key = key;
+        _bridge = bridge;
     }
 
     public override string Name => "wasm-plugin";
@@ -106,7 +108,7 @@ public sealed class WasmComponent : Component
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
-        var instance = WasmPluginInstance.FromWat(_wat);
+        var instance = WasmPluginInstance.FromWat(_wat, bridge: _bridge);
         var value = 0;
         try
         {

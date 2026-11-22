@@ -87,34 +87,48 @@ public sealed class PluginSystemTests
     }
 
     [Fact]
-    public async Task DependencyOrderIsResolvedBeforeLoading()
+    public async Task DependencyOrderComesFromTypedKeysNotManifestStrings()
     {
+        var shared = new Key<int>("typed-base");
         var order = new List<string>();
         await using var runtime = new Gocordis.Core.Runtime();
         await using var registry = new PluginRegistry(runtime);
-        registry.RegisterFactory("echo", config =>
+        registry.RegisterFactory("base", _ =>
         {
-            var name = (string)config["value"]!;
-            order.Add(name);
-            return new EchoComponent(name);
+            order.Add("base");
+            return new KeyedComponent("base", provide: [shared]);
+        });
+        registry.RegisterFactory("dep", _ =>
+        {
+            order.Add("dep");
+            return new KeyedComponent("dep", inject: [shared]);
         });
 
-        var baseManifest = Manifest("base", "echo", true, "base") with
-        {
-            Provides = ["base-out"],
-        };
-        var dependent = Manifest("dep", "echo", true, "dep") with
-        {
-            Requires = ["base-out"],
-        };
+        // Manifest strings deliberately disagree with the real typed graph.
+        var baseManifest = Manifest("base", "base", true, "base") with { Provides = ["unrelated"] };
+        var dependent = Manifest("dep", "dep", true, "dep") with { Requires = ["also-unrelated"] };
 
         await registry.ApplyAsync([dependent, baseManifest]);
 
-        Assert.Equal(new[] { "base", "dep" }, order);
+        var dep = runtime.Snapshot().Fibers.Single(f => f.Name == "dep");
+        var baseFiber = runtime.Snapshot().Fibers.Single(f => f.Name == "base");
+        Assert.Equal(FiberState.Active, dep.State);
+        Assert.Contains($"typed-base->{baseFiber.Id}", dep.BoundProviders);
     }
 
     [Fact]
-    public async Task UnknownFactoryAndCyclesAreRejected()
+    public async Task UnresolvedTypedCapabilityIsRejectedEvenWhenManifestClaimsItExists()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        registry.RegisterFactory("dep", _ => new KeyedComponent("dep", inject: [new Key<int>("missing")]));
+
+        var manifest = Manifest("dep", "dep", true, "dep") with { Requires = ["fake-provider"] };
+        await Assert.ThrowsAsync<InvalidOperationException>(() => registry.ApplyAsync([manifest]));
+    }
+
+    [Fact]
+    public async Task UnknownFactoryAndTypedDependencyCyclesAreRejected()
     {
         await using var runtime = new Gocordis.Core.Runtime();
         await using var registry = new PluginRegistry(runtime);
@@ -123,9 +137,54 @@ public sealed class PluginSystemTests
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             registry.ApplyAsync([Manifest("x", "missing", true, "x")]));
 
-        var a = Manifest("a", "echo", true, "a") with { Provides = ["ka"], Requires = ["kb"] };
-        var b = Manifest("b", "echo", true, "b") with { Provides = ["kb"], Requires = ["ka"] };
-        await Assert.ThrowsAsync<DependencyCycleException>(() => registry.ApplyAsync([a, b]));
+        var aKey = new Key<int>("a");
+        var bKey = new Key<int>("b");
+        registry.RegisterFactory("a", _ => new KeyedComponent("a", inject: [bKey], provide: [aKey]));
+        registry.RegisterFactory("b", _ => new KeyedComponent("b", inject: [aKey], provide: [bKey]));
+        await Assert.ThrowsAsync<DependencyCycleException>(() => registry.ApplyAsync([
+            Manifest("a", "a", true, "a"),
+            Manifest("b", "b", true, "b"),
+        ]));
+    }
+
+    private sealed class KeyedComponent : Component
+    {
+        private readonly IReadOnlyList<ICapabilityKey> _inject;
+        private readonly IReadOnlyList<ICapabilityKey> _provide;
+
+        public KeyedComponent(string name, IReadOnlyList<ICapabilityKey>? inject = null, IReadOnlyList<ICapabilityKey>? provide = null)
+        {
+            Name = name;
+            _inject = inject ?? [];
+            _provide = provide ?? [];
+        }
+
+        public override string Name { get; }
+
+        public override IReadOnlyList<ICapabilityKey> Inject() => _inject;
+
+        public override IReadOnlyList<ICapabilityKey> Provide() => _provide;
+
+        public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            foreach (var key in _inject)
+            {
+                if (key is Key<int> typed)
+                {
+                    context.Require(typed);
+                }
+            }
+
+            foreach (var key in _provide)
+            {
+                if (key is Key<int> typed)
+                {
+                    context.Provide(typed, 1);
+                }
+            }
+
+            return null;
+        }
     }
 
     private static PluginManifest Manifest(string id, string type, bool enabled, string value) =>

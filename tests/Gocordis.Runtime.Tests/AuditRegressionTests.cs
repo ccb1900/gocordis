@@ -119,6 +119,42 @@ public sealed class AuditRegressionTests
         }
     }
 
+
+    [Fact]
+    public async Task ManagedUnloadIsBoundedToFiberGone()
+    {
+        var reference = await LoadThroughRegistryThenUnload();
+        for (var attempt = 0; attempt < 12 && reference.IsAlive; attempt++)
+        {
+            GC.Collect(2, GCCollectionMode.Forced);
+            GC.WaitForPendingFinalizers();
+        }
+
+        Assert.False(reference.IsAlive, "ALC still referenced after fiber Gone");
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static async Task<WeakReference> LoadThroughRegistryThenUnload()
+        {
+            await using var runtime = new Gocordis.Core.Runtime();
+            await using var host = new ManagedPluginHost(runtime);
+            var plugin = host.Loader.Load("registry-plugin", SamplePath("SamplePlugin"), "SamplePlugin.SampleComponent");
+            var weak = new WeakReference(plugin.Context);
+
+            await using var registry = new PluginRegistry(runtime);
+            registry.RegisterFactory("managed", _ => plugin.Component);
+            await registry.ApplyAsync([Manifest("plugin", "managed", true, "x")]);
+            var fiber = registry.Entries["plugin"].Fiber!;
+            Assert.Equal(FiberState.Active, fiber.State);
+
+            await registry.ApplyAsync([]); // retire through the same lifecycle authority
+            await fiber.GoneAsync();
+            Assert.Equal(FiberState.Gone, fiber.State);
+
+            host.Loader.Unload("registry-plugin");
+            return weak;
+        }
+    }
+
     private static PluginManifest Manifest(string id, string type, bool enabled, string value) =>
         new(id, type, enabled, new Dictionary<string, object?> { ["value"] = value }, [], []);
 

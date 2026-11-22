@@ -15,6 +15,7 @@
 | [`semantic-mapping.md`](semantic-mapping.md) | 阶段 0 / 2 | 论文、JS Cordis、Go 三层语义如何对应；冲突如何裁决 | 语义条目编号后冻结；C# 实现逐条对齐 |
 | [`migration-coverage.md`](migration-coverage.md) | 全周期 | 每个 Go 模块迁移到哪个 C# 项目；用什么机制替代；什么不迁移 | 清单逐项推进；状态只能由验收证据推进 |
 | [`execution-log.md`](execution-log.md) | 全周期 | 每一步做了什么、为什么、证据是什么 | 持续追加，不回改历史条目 |
+| [`review-closure-2026-11-22.md`](review-closure-2026-11-22.md) | 终审 | 外部审查问题逐条闭合证据与仍存限制 | 一次性记录 |
 | [`final-acceptance.md`](final-acceptance.md) | 收尾 | 七阶段结果、最终验证、未达成缺口 | 一次性总结，缺口逐项登记 |
 | [`baseline.sha256`](baseline.sha256) / [`verify-baseline.sh`](verify-baseline.sh) | 阶段 0 | 如何独立验证基线未被偷偷改动 | 任一校验失败即视为基线漂移 |
 

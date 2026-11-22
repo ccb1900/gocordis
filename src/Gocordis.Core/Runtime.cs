@@ -520,6 +520,7 @@ public sealed class Runtime : IAsyncDisposable
         // LIFO: the inverse of the last installed effect runs first.
         for (var i = fiber.Inverses.Count - 1; i >= 0; i--)
         {
+            fiber.EffectStates[i] = EffectState.Undoing;
             try
             {
                 await fiber.Inverses[i]();
@@ -528,11 +529,14 @@ public sealed class Runtime : IAsyncDisposable
             {
                 // A failing inverse must not prevent the remaining inverses.
             }
+
+            fiber.EffectStates[i] = EffectState.Undone;
         }
 
         var providedRealms = fiber.Component.Provide()
             .ToDictionary(key => key, key => EffectiveRealm(fiber, key), ReferenceEqualityComparer.Instance);
         fiber.Inverses.Clear();
+        fiber.EffectStates.Clear();
         fiber.Provided.Clear();
         fiber.Metadata.Clear();
         foreach (var key in fiber.Component.Provide())

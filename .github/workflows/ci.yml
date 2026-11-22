@@ -127,6 +127,15 @@ jobs:
         with:
           global-json-file: global.json
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/console/package-lock.json
+      - name: Frontend build (web/console)
+        working-directory: web/console
+        run: npm ci && npm run build
+
       - name: Build (.NET solution)
         run: dotnet build Gocordis.sln --nologo -m:1
 

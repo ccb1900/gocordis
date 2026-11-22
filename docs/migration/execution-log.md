@@ -82,6 +82,7 @@
 | 73 | UI 批次 A：平台宿主与 CI | `samples/PlatformHost` 正式组合入口；CI 先 npm ci/test/build 再 dotnet build/test | PlatformHost 独立构建通过；不新增第二套 Registry/Host |
 | 74 | UI 批次 A：语义对照 | 论文/JS/Koishi/Go 四参照对照与未迁移边界 | `docs/migration/ui-contribution-lifecycle.md` |
 | 75 | UI 批次 A 验证 | 全量测试连续 3 次绿；win/linux/CI 按 SHA 核对 | 280/280；0 warning |
+| 76 | UI 批次 A：CI 修复 | 首次推送后 Linux/Windows 因未生成 `web/console/dist` 失败；三个 .NET job 增加 npm ci/build | 与 React Console 交付路径一致；等待新 SHA CI 全绿 |
 
 ## 验证结果（持续追加）
 

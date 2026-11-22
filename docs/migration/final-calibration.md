@@ -2,7 +2,7 @@
 
 Calibration date: 2026-11-22
 Go source baseline: `ed2ef724a24331ecc3fa21974539315fd90212bf`
-C# calibrated target: `migration/dotnet-complete` HEAD `60b13311`
+C# calibrated target: current `migration/dotnet-complete` HEAD (product host added after calibration)
 
 本文件是唯一可信的最终账本校准。它取代旧文档中的基线、状态计数和“不迁移”列表。
 其他迁移文档中的状态冲突，以本文件为准。
@@ -77,7 +77,7 @@ Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52)
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 349/349
+dotnet test  Gocordis.sln → 352/352
 ```
 
 结论：

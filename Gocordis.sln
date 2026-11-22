@@ -83,6 +83,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Product.Tests", "Product.Te
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Gocordis.Product.Tests", "tests\Gocordis.Product.Tests\Gocordis.Product.Tests.csproj", "{F6EA0915-E143-4C6D-A60B-9777A50C977B}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Platform", "Platform", "{E54149B9-7F22-367F-9CC5-FD829E3AA07B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Gocordis.Platform", "src\Gocordis.Platform\Gocordis.Platform.csproj", "{971931BD-7E20-4B73-AEFC-6F9334183F22}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -441,6 +445,18 @@ Global
 		{F6EA0915-E143-4C6D-A60B-9777A50C977B}.Release|x64.Build.0 = Release|Any CPU
 		{F6EA0915-E143-4C6D-A60B-9777A50C977B}.Release|x86.ActiveCfg = Release|Any CPU
 		{F6EA0915-E143-4C6D-A60B-9777A50C977B}.Release|x86.Build.0 = Release|Any CPU
+		{971931BD-7E20-4B73-AEFC-6F9334183F22}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{971931BD-7E20-4B73-AEFC-6F9334183F22}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{971931BD-7E20-4B73-AEFC-6F9334183F22}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{971931BD-7E20-4B73-AEFC-6F9334183F22}.Debug|x64.Build.0 = Debug|Any CPU
+		{971931BD-7E20-4B73-AEFC-6F9334183F22}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{971931BD-7E20-4B73-AEFC-6F9334183F22}.Debug|x86.Build.0 = Debug|Any CPU
+		{971931BD-7E20-4B73-AEFC-6F9334183F22}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{971931BD-7E20-4B73-AEFC-6F9334183F22}.Release|Any CPU.Build.0 = Release|Any CPU
+		{971931BD-7E20-4B73-AEFC-6F9334183F22}.Release|x64.ActiveCfg = Release|Any CPU
+		{971931BD-7E20-4B73-AEFC-6F9334183F22}.Release|x64.Build.0 = Release|Any CPU
+		{971931BD-7E20-4B73-AEFC-6F9334183F22}.Release|x86.ActiveCfg = Release|Any CPU
+		{971931BD-7E20-4B73-AEFC-6F9334183F22}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -475,5 +491,6 @@ Global
 		{42724C71-C77F-4446-9115-584529D3A6FB} = {5D20AA90-6969-D8BD-9DCD-8634F4692FDA}
 		{A181E539-EEB6-449C-B740-7DA16C7EBF96} = {5D20AA90-6969-D8BD-9DCD-8634F4692FDA}
 		{F6EA0915-E143-4C6D-A60B-9777A50C977B} = {A24119DF-9DF1-80A8-5284-D4E44399D6AC}
+		{971931BD-7E20-4B73-AEFC-6F9334183F22} = {E54149B9-7F22-367F-9CC5-FD829E3AA07B}
 	EndGlobalSection
 EndGlobal

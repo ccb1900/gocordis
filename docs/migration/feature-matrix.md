@@ -4,7 +4,7 @@ Baseline (re-confirmed 2026-11-22):
 
 - Go `origin/main`: `ed2ef724a24331ecc3fa21974539315fd90212bf`
 # Historical C# baseline (matrix first written): `488e959d750a87cf9a091bf80e6a553bdace5d7c`
-# Calibrated target: `migration/dotnet-complete` HEAD `60b13311` (2026-11-22)
+# Calibrated target: current `migration/dotnet-complete` HEAD; product host added after ledger calibration
 - Working branch: `migration/dotnet-complete`
 
 Sources are first-hand: Go `runtime/ extensions/ cmd/ integration/`, C# `src/ tests/ samples/`, JS Cordis `cordiverse/cordis@5e2e6c1` (4.0.0-rc.13), Koishi `koishijs/koishi@97d5c39` + `koishijs/webui@1dc5c0e`.
@@ -59,8 +59,8 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 
 | Feature | Go Source | Go Tests | Paper Semantics | JS Cordis | Koishi | C# Source | Status | Gap | Target | Acceptance |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| platform host | cmd/platform/main.go:63,174 | cmd/platform/main_test.go:106 | C19/C40 | loader entry | App/CLI start | samples/PlatformHost/Program.cs:17-93 | Equivalent | — | Product CLI with manifest + install + run | CliProductTests.AppRunValidateOnlyResolvesInstalledPluginAndHonorsDisable |
-| cli-cordis | cmd/cli-cordis/main.go:18 | main_test.go:60 | §5 | CLI command | CLI plugin | samples/PlatformHost/Options (partial) | Equivalent | — | CLI install/run/enable/disable | CliProductTests.AppEnableAndDisableToggleManifestFlagsWithoutChangingOtherFields |
+| platform host | cmd/platform/main.go:63,174 | cmd/platform/main_test.go:106 | C19/C40 | loader entry | App/CLI start | src/Gocordis.Platform/ | Equivalent | — | Product host with manifest/store/host-profile + CLI run | PlatformApplicationTests.WebHostStartsServesConsoleAndStopsCleanly |
+| cli-cordis | cmd/cli-cordis/main.go:18 | main_test.go:60 | §5 | CLI command | CLI plugin | tools/Gocordis.Cli/Program.cs | Equivalent | — | CLI install/run/enable/disable + product host | CliProductTests.AppEnableAndDisableToggleManifestFlagsWithoutChangingOtherFields |
 | plugin CLI (create/doctor/package/sandbox) | cmd/plugin/{create,doctor,package,sandbox}.go | cmd/plugin/package_test.go:103 | C39/C40 | hmr/package | plugin dev tools | tools/Gocordis.Cli/Program.cs | Adapted | `plugin pack` + app `create` implemented; doctor/sandbox not ported | Package/tooling via Gocordis.Cli; doctor/sandbox explicitly deferred | CliAndSourceTests + CliProductTests |
 | create-cordis scaffold | cmd/create-cordis/create.go:13 | create_test.go:16 | C40 | create-cordis | create-koi | tools/Gocordis.Cli/Program.cs (`create`) | Equivalent | — | Generate minimal .NET app + manifest | CliAndSourceTests.CliCreateGeneratesBuildableAppScaffold |
 | httpd sample | cmd/httpd/main.go:39 | main_test.go:46 | §5 | server example | simple app | WebUiServer sample | Equivalent | — | Minimal HTTP host sample | HttpdProbeTests.HttpdProbeRespondsAndStops |

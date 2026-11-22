@@ -1,3 +1,6 @@
+> **C# 正式入口**：`dotnet run --project src/Gocordis.Platform -- --manifest gocordis.app.json --store ~/.gocordis/plugins`
+> （不是 `samples/PlatformHost`；后者只是示例）。详见 `docs/migration/final-acceptance.md`。
+
 > **C# 迁移状态**：完整迁移在 [`migration/dotnet-complete`](https://github.com/ccb1900/gocordis/tree/migration/dotnet-complete) 分支。
 > 该分支包含统一 Runtime、Managed/Process/WASM 后端、插件包/CLI、Web/WinForms/Avalonia UI 契约与完整验收账本，
 > 入口见 [docs/migration/final-acceptance.md](docs/migration/final-acceptance.md)。

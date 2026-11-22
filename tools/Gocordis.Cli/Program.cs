@@ -4,6 +4,7 @@ using Gocordis.Console.WebUi;
 using Gocordis.Core;
 using Gocordis.Packaging;
 using Gocordis.Plugins;
+using NuGet.Versioning;
 
 namespace Gocordis.Cli;
 
@@ -120,6 +121,38 @@ public static class Program
 
         var command = args[0];
         var rest = args[1..];
+        return command switch
+        {
+            "pack" or "package" => await PluginPackAsync(rest),
+            "create" => await PluginCreateAsync(rest),
+            "doctor" => await PluginDoctorAsync(rest),
+            "sandbox" => await PluginSandboxAsync(rest),
+            "install" or "upgrade" or "uninstall" or "list" or "resolve" => await PluginStoreAsync(command, rest),
+            _ => Fail($"unknown plugin command '{command}'"),
+        };
+    }
+
+    private static async Task<int> PluginPackAsync(string[] args)
+    {
+        var source = Positional(args, 0);
+        var output = Positional(args, 1);
+        if (source is null || output is null)
+        {
+            return Fail("usage: plugin pack|package <sourceDir> <output.gocordis-plugin> [--id] [--version] [--type] [--host-range]");
+        }
+
+        var manifest = new PluginPackageManifest(
+            Option(args, "--id") ?? new DirectoryInfo(source).Name,
+            Option(args, "--version") ?? "1.0.0",
+            Option(args, "--type") ?? Option(args, "--id") ?? new DirectoryInfo(source).Name,
+            Option(args, "--host-range") ?? "[1.0,)");
+        var written = await PluginPackageWriter.CreateAsync(source, manifest, output);
+        Write(new { packed = output, written.Id, written.Version, written.Checksum });
+        return 0;
+    }
+
+    private static async Task<int> PluginStoreAsync(string command, string[] rest)
+    {
         var storePath = Option(rest, "--store") ??
                         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".gocordis", "plugins");
         var hostVersion = Option(rest, "--host-version") ?? "1.0.0";
@@ -127,24 +160,6 @@ public static class Program
 
         switch (command)
         {
-            case "pack":
-            {
-                var source = Positional(rest, 0);
-                var output = Positional(rest, 1);
-                if (source is null || output is null)
-                {
-                    return Fail("usage: plugin pack <sourceDir> <output.gocordis-plugin>");
-                }
-
-                var manifest = new PluginPackageManifest(
-                    Option(rest, "--id") ?? new DirectoryInfo(source).Name,
-                    Option(rest, "--version") ?? "1.0.0",
-                    Option(rest, "--type") ?? Option(rest, "--id") ?? new DirectoryInfo(source).Name,
-                    Option(rest, "--host-range") ?? "[1.0,)");
-                var written = await PluginPackageWriter.CreateAsync(source, manifest, output);
-                Write(new { packed = output, written.Id, written.Version, written.Checksum });
-                return 0;
-            }
             case "install":
             case "upgrade":
             {
@@ -207,6 +222,417 @@ public static class Program
                 return Fail($"unknown plugin command '{command}'");
         }
     }
+
+    /// <summary>
+    /// Scaffolds a standalone plugin project. Every write is tracked so a late
+    /// I/O failure cannot leave a half-generated scaffold behind.
+    /// </summary>
+    private static async Task<int> PluginCreateAsync(string[] args)
+    {
+        var output = Positional(args, 0);
+        var id = Option(args, "--id");
+        var name = Option(args, "--name");
+        var type = Option(args, "--type");
+        var version = Option(args, "--version") ?? "1.0.0";
+        if (output is null || id is null || name is null || type is null)
+        {
+            return Fail("usage: plugin create <outputDir> --id <id> --name <name> --type <type> [--version]");
+        }
+
+        if (!IsPluginId(id))
+        {
+            return Fail($"invalid plugin id '{id}' (want lower-case letters, digits, '.', '_' or '-')");
+        }
+
+        if (name.Length is 0 or > 200 || name.Any(c => c < 32 || c > 126))
+        {
+            return Fail($"invalid plugin name '{name}'");
+        }
+
+        if (!IsPluginId(type))
+        {
+            return Fail($"invalid plugin type '{type}'");
+        }
+
+        if (!NuGetVersion.TryParse(version, out var parsedVersion))
+        {
+            return Fail($"invalid plugin version '{version}'");
+        }
+
+        version = parsedVersion.ToNormalizedString();
+        var root = FindRepoRoot();
+        var fullOutput = Path.GetFullPath(output);
+        if (Directory.Exists(fullOutput) && Directory.EnumerateFileSystemEntries(fullOutput).Any())
+        {
+            return Fail($"plugin create target '{output}' is not empty");
+        }
+
+        var projectName = id + ".csproj";
+        var created = new List<string>();
+        var createdDirectory = false;
+
+        async Task WriteAsync(string path, string content)
+        {
+            created.Add(path); // track before the write so a partial file is rolled back too
+            await File.WriteAllTextAsync(path, content);
+        }
+
+        try
+        {
+            if (!Directory.Exists(fullOutput))
+            {
+                Directory.CreateDirectory(fullOutput);
+                createdDirectory = true;
+            }
+
+            var project = """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                    <ImplicitUsings>enable</ImplicitUsings>
+                    <Nullable>enable</Nullable>
+                    <LangVersion>latest</LangVersion>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="__ROOT__/src/Gocordis.Core/Gocordis.Core.csproj" />
+                    <ProjectReference Include="__ROOT__/src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
+                  </ItemGroup>
+                </Project>
+                """.Replace("__ROOT__", root, StringComparison.Ordinal);
+
+            var plugin = """
+                using Gocordis.Core;
+
+                namespace __NAMESPACE__;
+
+                /// <summary>
+                /// Scaffolded plugin component. The reversible effect writes a log field
+                /// and publishes it under a key, so its presence is observable via Context.
+                /// </summary>
+                public sealed class Plugin : Component
+                {
+                    public static readonly Key<string> LogKey = new("__ID__.log");
+                    private static readonly List<string> Entries = [];
+
+                    public static IReadOnlyList<string> Log => Entries;
+
+                    public override string Name => "__NAME__";
+
+                    public override IReadOnlyList<ICapabilityKey> Provide() => [LogKey];
+
+                    public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+                    {
+                        var entry = $"{Name}: effect installed";
+                        await context.EffectAsync(
+                            install: () =>
+                            {
+                                Entries.Add(entry);
+                                context.Provide(LogKey, entry);
+                                return ValueTask.CompletedTask;
+                            },
+                            inverse: () =>
+                            {
+                                Entries.Remove(entry);
+                                return ValueTask.CompletedTask;
+                            });
+                        return () =>
+                        {
+                            Entries.Clear();
+                            return ValueTask.CompletedTask;
+                        };
+                    }
+                }
+                """
+                .Replace("__NAMESPACE__", PluginNamespace(id), StringComparison.Ordinal)
+                .Replace("__ID__", id, StringComparison.Ordinal)
+                .Replace("__NAME__", CSharpLiteral(name), StringComparison.Ordinal);
+
+            var manifest = """
+                [[components]]
+                id = "__ID__"
+                type = "__TYPE__"
+                enabled = true
+                version = "__VERSION__"
+
+                [components.config]
+                message = "scaffolded plugin"
+                """
+                .Replace("__ID__", id, StringComparison.Ordinal)
+                .Replace("__TYPE__", type, StringComparison.Ordinal)
+                .Replace("__VERSION__", version, StringComparison.Ordinal);
+
+            await WriteAsync(Path.Combine(fullOutput, projectName), project);
+            await WriteAsync(Path.Combine(fullOutput, "Plugin.cs"), plugin);
+            await WriteAsync(Path.Combine(fullOutput, "manifest.toml"), manifest);
+
+            Write(new { created = fullOutput, id, name, type, version, files = new[] { projectName, "Plugin.cs", "manifest.toml" } });
+            return 0;
+        }
+        catch (Exception)
+        {
+            foreach (var path in created.AsEnumerable().Reverse())
+            {
+                try
+                {
+                    if (File.Exists(path))
+                    {
+                        File.Delete(path);
+                    }
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+
+            if (createdDirectory)
+            {
+                try
+                {
+                    if (Directory.Exists(fullOutput) && !Directory.EnumerateFileSystemEntries(fullOutput).Any())
+                    {
+                        Directory.Delete(fullOutput);
+                    }
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+
+            throw; // Main renders the failure as a structured error with a non-zero exit code
+        }
+    }
+
+    /// <summary>
+    /// Validates a package without installing it. Diagnostics are always a JSON
+    /// array of severity/code/message; errors (not warnings) drive exit code 1.
+    /// </summary>
+    private static async Task<int> PluginDoctorAsync(string[] args)
+    {
+        var package = Positional(args, 0);
+        if (package is null)
+        {
+            return Fail("usage: plugin doctor <packagePath> [--host-version] [--store]");
+        }
+
+        var (diagnostics, _) = await InspectPackageAsync(package, HostVersion(args), Option(args, "--store"));
+        WriteDiagnostics(diagnostics);
+        return diagnostics.Any(diagnostic => diagnostic.Severity == "error") ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Declaration-only load check in a throwaway store/runtime. Package payloads
+    /// are never executed and no host factory is involved: this is not a security
+    /// sandbox, just a lifecycle preflight with a clean shutdown.
+    /// </summary>
+    private static async Task<int> PluginSandboxAsync(string[] args)
+    {
+        var package = Positional(args, 0);
+        if (package is null)
+        {
+            return Fail("usage: plugin sandbox <packagePath> [--host-version]");
+        }
+
+        var hostVersion = HostVersion(args);
+        var diagnostics = new List<CliDiagnostic>
+        {
+            Warn("NO_HOST_FACTORY",
+                "declaration-only load check: no host plugin factory is used and the package payload is not executed; this is not a security sandbox"),
+        };
+        var (inspection, content) = await InspectPackageAsync(package, hostVersion, storePath: null);
+        diagnostics.AddRange(inspection);
+        if (content is null || diagnostics.Any(diagnostic => diagnostic.Severity == "error"))
+        {
+            WriteSandboxResult(null, null, diagnostics);
+            return 1;
+        }
+
+        var tempStore = Path.Combine(Path.GetTempPath(), $"gocordis-sandbox-{Guid.NewGuid():N}");
+        Runtime? runtime = null;
+        PluginRegistry? registry = null;
+        try
+        {
+            // Installation happens only in the temp store; no user store or
+            // application manifest is touched. InstallAsync also enforces that
+            // every declared package dependency is already installed there.
+            var store = new PluginStore(tempStore, hostVersion);
+            var installed = await store.InstallAsync(package);
+            diagnostics.Add(Info("TEMP_STORE_LOADED",
+                $"package loaded into temporary store with {installed.Changes.Count} change(s)"));
+
+            runtime = new Runtime();
+            registry = new PluginRegistry(runtime);
+            var type = content.Manifest.Type;
+            registry.RegisterFactory(type, _ => new ProductPluginComponent(type));
+            var application = new ApplicationManifest(
+                $"sandbox-{content.Manifest.Id}",
+                "1.0.0",
+                hostVersion,
+                [new ApplicationPlugin(content.Manifest.Id, $"[{content.Manifest.Version}]", true)]);
+            await new ApplicationLoader(store, registry).ApplyAsync(application);
+
+            WriteSandboxResult(content.Manifest, runtime.Snapshot(), diagnostics);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            diagnostics.Add(ex switch
+            {
+                MissingPluginDependencyException => Error("MISSING_DEPENDENCY", ex.Message),
+                IncompatiblePluginException => Error("VERSION_MISMATCH", ex.Message),
+                InvalidPluginPackageException => Error("INVALID_PACKAGE", ex.Message),
+                _ => Error("SANDBOX_LOAD", ex.Message),
+            });
+            WriteSandboxResult(content.Manifest, runtime?.Snapshot(), diagnostics);
+            return 1;
+        }
+        finally
+        {
+            // LIFO teardown: declarations first, then runtime, then the temp store.
+            if (registry is not null)
+            {
+                await registry.DisposeAsync();
+            }
+
+            if (runtime is not null)
+            {
+                await runtime.DisposeAsync();
+            }
+
+            TryDeleteDirectory(tempStore);
+        }
+    }
+
+    /// <summary>Shared preflight for doctor and sandbox; never throws.</summary>
+    private static async Task<(IReadOnlyList<CliDiagnostic> Diagnostics, PluginPackageContent? Content)> InspectPackageAsync(
+        string packagePath, string hostVersion, string? storePath)
+    {
+        var diagnostics = new List<CliDiagnostic>();
+        if (!NuGetVersion.TryParse(hostVersion, out _))
+        {
+            diagnostics.Add(Error("INVALID_VERSION", $"host version '{hostVersion}' is not a valid version"));
+            return (diagnostics, null);
+        }
+
+        if (!File.Exists(packagePath))
+        {
+            diagnostics.Add(Error("INVALID_PACKAGE", $"package not found: '{packagePath}'"));
+            return (diagnostics, null);
+        }
+
+        PluginPackageContent content;
+        try
+        {
+            content = await PluginPackageReader.ReadAsync(packagePath, hostVersion);
+        }
+        catch (IncompatiblePluginException ex)
+        {
+            diagnostics.Add(Error("VERSION_MISMATCH", ex.Message));
+            return (diagnostics, null);
+        }
+        catch (InvalidPluginPackageException ex)
+        {
+            diagnostics.Add(Error("INVALID_PACKAGE", ex.Message));
+            return (diagnostics, null);
+        }
+        catch (Exception ex)
+        {
+            diagnostics.Add(Error("INVALID_PACKAGE", $"cannot inspect package: {ex.Message}"));
+            return (diagnostics, null);
+        }
+
+        var manifest = content.Manifest;
+        if (!IsPluginId(manifest.Id) || !NuGetVersion.TryParse(manifest.Version, out _) ||
+            string.IsNullOrWhiteSpace(manifest.Type))
+        {
+            diagnostics.Add(Error("INVALID_PACKAGE", "package manifest has an invalid id, version or type"));
+            return (diagnostics, null);
+        }
+
+        diagnostics.Add(Info("PACKAGE_OK",
+            $"package '{manifest.Id}' {manifest.Version} (type '{manifest.Type}') is structurally valid"));
+        diagnostics.Add(Info("CHECKSUM_OK", "package checksum and payload hashes match the manifest"));
+        diagnostics.Add(Info("HOST_RANGE_OK", $"host {hostVersion} satisfies '{manifest.HostVersionRange}'"));
+
+        var dependencies = manifest.DependenciesOrEmpty;
+        if (dependencies.Count == 0)
+        {
+            diagnostics.Add(Info("DEPENDENCIES_OK", "package declares no dependencies"));
+        }
+        else if (storePath is null)
+        {
+            diagnostics.Add(Warn("DEPENDENCY_UNVERIFIED",
+                $"package declares {dependencies.Count} dependency(ies); supply --store to verify installation"));
+        }
+        else
+        {
+            var installed = await new PluginStore(storePath, hostVersion).ListAsync();
+            foreach (var dependency in dependencies)
+            {
+                var found = installed.Any(p =>
+                    string.Equals(p.Id, dependency.Id, StringComparison.Ordinal) &&
+                    VersionRange.Parse(dependency.VersionRange).Satisfies(NuGetVersion.Parse(p.Version)));
+                diagnostics.Add(found
+                    ? Info("DEPENDENCY_OK", $"dependency '{dependency.Id}' {dependency.VersionRange} is installed")
+                    : Error("MISSING_DEPENDENCY", $"dependency '{dependency.Id}' {dependency.VersionRange} is not installed"));
+            }
+        }
+
+        return (diagnostics, content);
+    }
+
+    private static void WriteDiagnostics(IReadOnlyList<CliDiagnostic> diagnostics) =>
+        System.Console.WriteLine(JsonSerializer.Serialize(diagnostics, Json));
+
+    private static void WriteSandboxResult(
+        PluginPackageManifest? manifest, RuntimeSnapshot? snapshot, IReadOnlyList<CliDiagnostic> diagnostics) =>
+        Write(new
+        {
+            mode = "declaration-only",
+            securityBoundary = false,
+            note = "load check only: package payload is not executed; this is not a security sandbox",
+            package = manifest is null
+                ? null
+                : new { manifest.Id, manifest.Version, manifest.Type, manifest.Checksum },
+            diagnostics,
+            snapshot = snapshot ?? new RuntimeSnapshot([]),
+        });
+
+    private static CliDiagnostic Error(string code, string message) => new("error", code, message);
+
+    private static CliDiagnostic Warn(string code, string message) => new("warn", code, message);
+
+    private static CliDiagnostic Info(string code, string message) => new("info", code, message);
+
+    private static bool IsPluginId(string id) =>
+        id.Length is > 0 and <= 128 &&
+        (char.IsAsciiLetterLower(id[0]) || char.IsAsciiDigit(id[0])) &&
+        id.All(c => char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c is '-' or '_' or '.');
+
+    private static string PluginNamespace(string id)
+    {
+        var text = string.Concat(id.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_'));
+        return char.IsAsciiDigit(text[0]) ? "_" + text : text;
+    }
+
+    private static string CSharpLiteral(string value) => value
+        .Replace("\\", "\\\\", StringComparison.Ordinal)
+        .Replace("\"", "\\\"", StringComparison.Ordinal);
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    private sealed record CliDiagnostic(
+        [property: JsonPropertyName("severity")] string Severity,
+        [property: JsonPropertyName("code")] string Code,
+        [property: JsonPropertyName("message")] string Message);
 
     private static async Task<int> AppAsync(string[] args)
     {
@@ -431,7 +857,7 @@ public static class Program
     {
         var options = new HashSet<string>(StringComparer.Ordinal)
         {
-            "--store", "--host-version", "--address", "--id", "--version", "--type", "--host-range", "--source",
+            "--store", "--host-version", "--address", "--id", "--name", "--version", "--type", "--host-range", "--source",
         };
         var flags = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -473,7 +899,10 @@ public static class Program
 
     private static void PrintUsage() => System.Console.Error.WriteLine("""
         gocordis create <outputDir> [--id] [--version] [--host-version]
-        gocordis plugin pack <sourceDir> <output> [--id] [--version] [--type] [--host-range]
+        gocordis plugin create <outputDir> --id <id> --name <name> --type <type> [--version]
+        gocordis plugin pack|package <sourceDir> <output> [--id] [--version] [--type] [--host-range]
+        gocordis plugin doctor <packagePath> [--host-version] [--store]
+        gocordis plugin sandbox <packagePath> [--host-version]
         gocordis plugin install|upgrade <package> [--store] [--host-version]
         gocordis plugin uninstall <id> [--version] [--store] [--host-version]
         gocordis plugin list [--store] [--host-version]

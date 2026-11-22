@@ -28,7 +28,7 @@ Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52)
 
 | Feature | 适配内容 |
 | --- | --- |
-| plugin CLI (create/doctor/package/sandbox) | `plugin pack` 与 app `create` 已实现；`doctor` / `sandbox` 未移植，明确列为剩余产品工具缺口。 |
+| plugin CLI (create/doctor/package/sandbox) | 全部实现：`plugin create/doctor/pack|package/sandbox`；sandbox 是 declaration-only 加载检查，不是安全沙箱。 |
 | WinForms UI host | Host Profile + RenderPlan + web-module 降级已实现；原生窗口/控件 Renderer 未实现。 |
 | Avalonia UI host | 同 WinForms；仅契约层适配。 |
 
@@ -46,7 +46,6 @@ Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52)
 
 | 缺口 | 当前决定 | 影响 |
 | --- | --- | --- |
-| `gocordis plugin doctor` / `sandbox` | 延期到产品工具阶段；不影响 Runtime/包/安装闭环 | 开发工具体验少于 Go cmd/plugin |
 | 远程 package registry | `IPluginPackageSource` 接口已预留，未实现远程源 | 仅本地目录/本地包安装 |
 | 包签名与来源真实性 | checksum 只做完整性，非签名 | 不提供供应链信任保证 |
 | WinForms/Avalonia 原生控件 Renderer | 明确延期，不为此造第二套 Plugin Registry | 两种桌面 Host 目前只消费 RenderPlan |
@@ -63,10 +62,10 @@ Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52)
 | 原冲突 | 修正后 |
 | --- | --- |
 | feature-matrix 仍以 `488e959d` 为 C# 基线 | 改为历史基线 + 当前校准目标 `60b13311` |
-| feature-matrix 仍把 plugin CLI 标 Missing | 改为 Adapted，并列出 doctor/sandbox 子缺口 |
+| feature-matrix 曾把 plugin CLI 标 Missing/Adapted | 改为 Equivalent，指向 PluginToolingTests |
 | 状态集合含 Partial | 改为 Equivalent / Adapted / Divergent / Missing |
 | extension-parity 说 create-cordis/client SDK Missing | 改为已完成，指向 CLI create 与 Gocordis.Client |
-| plugin-package-lifecycle 说 plugin create/doctor/sandbox 未完成 | 改为 pack/create 完成，doctor/sandbox 延期 |
+| plugin-package-lifecycle 曾列 doctor/sandbox 未完成 | 改为全部实现并指向 PluginToolingTests |
 | migration-coverage §9 说 Application Package 不设计 | 改为已实现（Gocordis.Packaging + CLI） |
 | migration-coverage §9 说 Go 前端资产不搬运 | 改为 web/console dist 由 C# host 交付，TS 为产品前端资产 |
 | migration-plan 说不设计 Application Package | 标注为历史计划，已被后续实现 superseded |
@@ -79,7 +78,7 @@ Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52)
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 378/378
+dotnet test  Gocordis.sln → 385/385
 ```
 
 结论：

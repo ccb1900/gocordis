@@ -61,7 +61,7 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | platform host | cmd/platform/main.go:63,174 | cmd/platform/main_test.go:106 | C19/C40 | loader entry | App/CLI start | src/Gocordis.Platform/ | Equivalent | — | Product host with manifest/store/host-profile + CLI run | PlatformApplicationTests.WebHostStartsServesConsoleAndStopsCleanly |
 | cli-cordis | cmd/cli-cordis/main.go:18 | main_test.go:60 | §5 | CLI command | CLI plugin | tools/Gocordis.Cli/Program.cs | Equivalent | — | CLI install/run/enable/disable + product host | CliProductTests.AppEnableAndDisableToggleManifestFlagsWithoutChangingOtherFields |
-| plugin CLI (create/doctor/package/sandbox) | cmd/plugin/{create,doctor,package,sandbox}.go | cmd/plugin/package_test.go:103 | C39/C40 | hmr/package | plugin dev tools | tools/Gocordis.Cli/Program.cs | Adapted | `plugin pack` + app `create` implemented; doctor/sandbox not ported | Package/tooling via Gocordis.Cli; doctor/sandbox explicitly deferred | CliAndSourceTests + CliProductTests |
+| plugin CLI (create/doctor/package/sandbox) | cmd/plugin/{create,doctor,package,sandbox}.go | cmd/plugin/package_test.go:103 | C39/C40 | hmr/package | plugin dev tools | tools/Gocordis.Cli/Program.cs | Equivalent | — | Full plugin tooling via Gocordis.Cli | PluginToolingTests + CliAndSourceTests + CliProductTests |
 | create-cordis scaffold | cmd/create-cordis/create.go:13 | create_test.go:16 | C40 | create-cordis | create-koi | tools/Gocordis.Cli/Program.cs (`create`) | Equivalent | — | Generate minimal .NET app + manifest | CliAndSourceTests.CliCreateGeneratesBuildableAppScaffold |
 | httpd sample | cmd/httpd/main.go:39 | main_test.go:46 | §5 | server example | simple app | WebUiServer sample | Equivalent | — | Minimal HTTP host sample | HttpdProbeTests.HttpdProbeRespondsAndStops |
 | backfill sample | cmd/backfill/core.go:46 | core_test.go:62 | journal/replay | no direct | business plugin | — | Equivalent | — | Business journal + idempotent replay sample | BackfillJournalTests.BackfillJournalReplaysOnlyMissingDatesAndIsIdempotent |
@@ -102,10 +102,10 @@ Paths are repo-relative unless prefixed `/tmp/...`. Status values: **Equivalent 
 
 | Status | Count |
 | --- | ---: |
-| Equivalent | 44 |
-| Adapted | 3 |
+| Equivalent | 45 |
+| Adapted | 2 |
 | Divergent | 5 |
 | Missing | 0 |
 | **Total acceptance rows** | **52** |
 
-Row-level Missing is 0; remaining sub-capability gaps (doctor/sandbox, remote registry, native UI controls, Koishi ecosystem) are listed in `final-calibration.md`. Divergent rows retain explicit semantic reasons.
+Row-level Missing is 0; remaining sub-capability gaps (remote registry, native UI controls, Koishi ecosystem) are listed in `final-calibration.md`. Divergent rows retain explicit semantic reasons.

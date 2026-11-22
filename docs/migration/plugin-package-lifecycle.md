@@ -52,7 +52,7 @@ Runtime 仍通过 `PluginRegistry` 和 Core Effect 管理 Fiber，包系统不�
 
 ## 5. 尚未完成
 
-- `plugin pack` 与 app `create` 已实现；`plugin doctor` / `sandbox` 延期，见 `final-calibration.md`
+- `plugin create/doctor/pack|package/sandbox` 全部实现；sandbox 是 declaration-only 加载检查，不是安全沙箱。
 - 远程 package registry（接口已预留 `IPluginPackageSource`）
 - checksum 内容校验与包签名的深度整合（当前校验包内文件 checksum）
 - WinForms / Avalonia Host（批次 5）

@@ -29,6 +29,7 @@
 | [`package-security.md`](package-security.md) | 安全收敛 | Plugin ID、ZIP 资源上限、checksum 绑定、Store 文件系统事务 | 与 `PackageSecurityTests` 对齐 |
 | [`final-calibration.md`](final-calibration.md) | 最终校准 | 唯一可信的 52 功能域状态、冲突修正与剩余能力清单 | 取代所有旧基线和状态计数 |
 | [`ui-control-plane.md`](ui-control-plane.md) | UI 控制面 | 通过 UI 安装/配置/启停/升级/卸载插件的完整闭环 | 与 `PluginControlPlaneTests` + React Console 对齐 |
+| [`control-plane-pluginization.md`](control-plane-pluginization.md) | 一切皆插件 | 控制面作为 Core Fiber 提供 typed capability，宿主只解析能力 | 与 `ControlPlaneIsAPluginContribution` 对齐 |
 | [`review-round-2.md`](review-round-2.md) | 审查修复 | Round 2 P0/P1 关闭记录与下一轮候选 | 红测 + 本地验证 |
 | [`review-round-3.md`](review-round-3.md) | 审查修复 | Round 3 剩余 P1/P2 关闭记录 | 红测 + 本地验证 |
 | [`review-round-4.md`](review-round-4.md) | 审查修复 | Round 4 插件 CLI 工具链关闭记录 | 红测 + 本地验证 |
@@ -68,5 +69,6 @@
   共用统一后端协议与世代栅栏。
 - **批次 C（论文矩阵 / 定理矩阵 / JS 差异统一 / 最终验收）已完成**：C01–C40 矩阵
   38 已覆盖 / 0 待补 / 2 接受差异；Thm64/68/70/73/80 每定理 3 场景；
-  Koishi 真实消息链、provider 启停与 HTTP E2E 已覆盖。最终 **396/396**，连续 39 次全绿。
+  Koishi 真实消息链、provider 启停与 HTTP E2E 已覆盖。历史基线 **396/396**，连续 39 次全绿；
+  控制面插件化后当前 **397/397**，见 [`control-plane-pluginization.md`](control-plane-pluginization.md)。
 - 后续阶段状态以 [`migration-coverage.md`](migration-coverage.md) 的逐项状态为准，不在本文件重复维护。

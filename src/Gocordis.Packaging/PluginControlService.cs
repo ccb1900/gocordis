@@ -84,12 +84,50 @@ internal sealed class InvalidPluginConfigException : Exception
 }
 
 /// <summary>
+/// The control surface WebUiServer drives. It is a capability contribution of
+/// the plugin-control-plane fiber; DTOs and HTTP wire shapes stay unchanged.
+/// </summary>
+public interface IPluginControlPlane
+{
+    long Revision { get; }
+
+    Task ApplyAllAsync(CancellationToken ct = default);
+
+    Task<IReadOnlyList<PluginControlEntry>> ListAsync(CancellationToken ct = default);
+
+    Task<IReadOnlyList<StorePluginEntry>> StoreAsync(CancellationToken ct = default);
+
+    Task<PluginDependencyView?> DependenciesAsync(string id, CancellationToken ct = default);
+
+    Task<PluginUploadResult> UploadAsync(Stream packageStream, string fileName, CancellationToken ct = default);
+
+    Task<PluginMutationResult> InstallAsync(
+        string uploadKey, bool enable = true, CancellationToken ct = default);
+
+    Task<PluginMutationResult> UpgradeAsync(
+        string id, string uploadKey, string? versionRange = null, CancellationToken ct = default);
+
+    Task<PluginMutationResult> UninstallAsync(
+        string id, string? version = null, CancellationToken ct = default);
+
+    Task<PluginMutationResult> SetEnabledAsync(string id, bool enabled, CancellationToken ct = default);
+
+    Task<PluginMutationResult> SetConfigAsync(
+        string id, IReadOnlyDictionary<string, object?> config, CancellationToken ct = default);
+}
+
+public static class ControlPlaneKeys
+{
+    public static readonly Key<IPluginControlPlane> Service = new("plugin-control-plane");
+}
+
+/// <summary>
 /// Declaration-aware plugin control. It owns no fibers: every lifecycle change
 /// is expressed as a manifest edit followed by ApplicationLoader.ApplyAsync, so
 /// PluginRegistry remains the single lifecycle authority. All operations are
 /// serialized and the declaration store is restored if reconciliation fails.
 /// </summary>
-public sealed class PluginControlService
+public sealed class PluginControlService : IPluginControlPlane
 {
     private readonly string _manifestPath;
     private readonly PluginStore _store;

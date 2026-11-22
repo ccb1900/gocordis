@@ -40,7 +40,7 @@ public sealed class WebUiServer : IAsyncDisposable
     private readonly WebApplication _app;
     private readonly ConsoleHost _host;
     private readonly bool _allowRemote;
-    private readonly PluginControlService? _control;
+    private readonly IPluginControlPlane? _control;
     private readonly ConsoleAccessPolicy? _accessPolicy;
     private readonly Func<string, string?> _clientModuleRoot;
     private readonly string? _reactDist;
@@ -52,7 +52,7 @@ public sealed class WebUiServer : IAsyncDisposable
         Plugins.PluginRegistry? registry = null,
         Func<string, string?>? clientModuleRootResolver = null,
         string? webDistPath = null,
-        PluginControlService? control = null,
+        IPluginControlPlane? control = null,
         ConsoleAccessPolicy? accessPolicy = null,
         ServerRouteGuard? routeGuard = null)
     {

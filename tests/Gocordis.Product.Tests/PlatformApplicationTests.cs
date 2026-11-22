@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Gocordis.Core;
 using Gocordis.Packaging;
 using Gocordis.Platform;
 using Gocordis.Plugins;
@@ -30,6 +31,48 @@ public sealed class PlatformApplicationTests
 
         await app.StopAsync();
         Assert.Empty(app.Runtime.Snapshot().Fibers);
+    }
+
+    [Fact]
+    public async Task ControlPlaneIsAPluginContribution()
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var options = new PlatformHostOptions(manifestPath, temp.Path("store"),
+            Address: "http://127.0.0.1:0", HostVersion: "1.5.0");
+
+        await using var app = new PlatformApplication(options);
+        await app.StartAsync();
+
+        // The control plane is reconciled by the one Core Runtime, not built by
+        // the composition root: it is a fiber that provides a typed capability.
+        var controlFiber = Assert.Single(app.Runtime.Snapshot().Fibers,
+            fiber => fiber.Name == "plugin-control-plane");
+        Assert.Equal(FiberState.Active, controlFiber.State);
+        Assert.Contains("plugin-control-plane", controlFiber.Provides);
+        Assert.NotNull(app.Control);
+        Assert.Same(app.Control, app.Runtime.RequireCapability(ControlPlaneKeys.Service));
+        Assert.Contains(app.Console.Ui.Pages(), page => page.Id == "plugin-control-plane");
+
+        // The existing HTTP contract still goes through the resolved capability.
+        Assert.NotNull(app.Address);
+        using var http = new HttpClient { BaseAddress = app.Address };
+        var plugins = JsonNode.Parse(await http.GetStringAsync("/api/plugins"));
+        Assert.NotNull(plugins?["data"]);
+        var store = JsonNode.Parse(await http.GetStringAsync("/api/plugins/store"));
+        Assert.NotNull(store?["data"]);
+        using var control = await http.PostAsJsonAsync("/api/plugins/control",
+            new { pluginId = "not-declared", enable = true });
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, control.StatusCode);
+        var rejection = JsonNode.Parse(await control.Content.ReadAsStringAsync());
+        Assert.Equal("not_found", rejection?["code"]?.GetValue<string>());
+
+        await app.StopAsync();
+        Assert.DoesNotContain(app.Runtime.Snapshot().Fibers,
+            fiber => fiber.Name == "plugin-control-plane");
+        Assert.DoesNotContain(app.Console.Ui.Pages(), page => page.Id == "plugin-control-plane");
+        Assert.Throws<DependencyMissingException>(
+            () => app.Runtime.RequireCapability(ControlPlaneKeys.Service));
     }
 
     [Fact]
@@ -71,8 +114,9 @@ public sealed class PlatformApplicationTests
             new UiPageDefinition("product-page", "Product", "/product", "generic"));
         var plan = app.RenderPlan();
         Assert.Equal(UiHostKind.WinForms, plan.Host);
-        var page = Assert.Single(plan.Rendered);
-        Assert.StartsWith("winforms:", page.Descriptor, StringComparison.Ordinal);
+        var page = Assert.Single(plan.Rendered, rendered => rendered.Id == "product-page");
+        Assert.StartsWith("winforms:generic", page.Descriptor, StringComparison.Ordinal);
+        Assert.Contains(plan.Rendered, rendered => rendered.Id == "plugin-control-plane");
         Assert.DoesNotContain(app.Runtime.Snapshot().Fibers, f => f.Name == "webui");
     }
 

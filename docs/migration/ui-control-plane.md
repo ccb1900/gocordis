@@ -6,15 +6,29 @@ Branch: `migration/dotnet-complete`
 唯一写入路径仍然是：
 
 ```text
-UI action → PluginControlService → ApplicationManifest.SaveAsync
-          → ApplicationLoader → PluginRegistry.ApplyAsync → Core Runtime
+UI action → IPluginControlPlane (plugin-control-plane Fiber)
+          → ApplicationManifest.SaveAsync → ApplicationLoader
+          → PluginRegistry.ApplyAsync → Core Runtime
 ```
 
 Web UI 不直接操作 Fiber，不维护第二套插件状态。
 
-## 1. 服务端唯一控制服务
+## 1. 控制面本身是插件贡献
 
-`src/Gocordis.Packaging/PluginControlService.cs`
+宿主组合根不再直接 `new PluginControlService`。`PluginControlPlaneComponent` 是
+Core `Component`，由 `Runtime.LoadAsync` 调和为 `plugin-control-plane` Fiber：
+
+- `Provide()` 声明 `ControlPlaneKeys.Service`（`Key<IPluginControlPlane>`）
+- `ApplyAsync` 创建 `PluginControlService`，通过 `context.Provide` 提供能力
+- UI Page 经 `context.RegisterUiPageAsync` 注册，Fiber 撤销时一同撤回
+- `PlatformApplication` 只通过 `Runtime.RequireCapability` 读取能力；`WebUiServer`
+  只依赖 `IPluginControlPlane?`，不再拥有控制服务类型
+- `Runtime.RequireCapability` 是只读组合根 API，不绑定依赖、不安装 effect、不改生命周期
+
+红测 `PlatformApplicationTests.ControlPlaneIsAPluginContribution` 证明控制面是
+Active Fiber、能力可解析、UI 贡献可逆、HTTP 合同不变，并在 Stop 后 Fiber/UI/能力全部消失。
+
+实现仍在 `src/Gocordis.Packaging/PluginControlService.cs`：
 
 - 持有 manifest 路径、PluginStore、PluginRegistry、可选 UiContributionRegistry
 - 单一 SemaphoreSlim 串行化所有读写和 mutation
@@ -71,7 +85,7 @@ SetEnabled / SetConfig / ApplyAll。
 前端本地验证：
 
 ```text
-npm test  → 84 passed
+npm test  → 85 passed
 npm run build → success
 ```
 
@@ -79,7 +93,7 @@ npm run build → success
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 396/396
+dotnet test  Gocordis.sln → 397/397
 ```
 
 ## 5. 明确边界

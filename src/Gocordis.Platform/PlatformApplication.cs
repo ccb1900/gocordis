@@ -71,7 +71,6 @@ public sealed class PlatformApplication : IAsyncDisposable
         Console = new ConsoleHost(Runtime);
         Registry = new PluginRegistry(Runtime);
         Store = new PluginStore(options.StorePath, options.HostVersion);
-        Control = new PluginControlService(options.ManifestPath, Store, Registry, Console.Ui);
         _diagnostics = new DiagnosticsService(options.HostVersion);
         if (options.AllowedHosts is { Count: > 0 } allowedHosts)
         {
@@ -88,7 +87,7 @@ public sealed class PlatformApplication : IAsyncDisposable
     public ConsoleHost Console { get; }
     public PluginRegistry Registry { get; }
     public PluginStore Store { get; }
-    public PluginControlService Control { get; }
+    public IPluginControlPlane? Control { get; private set; }
     public WebUiServer? WebUi { get; private set; }
     public Uri? Address => WebUi?.Address is { } address ? new Uri(address) : null;
 
@@ -107,7 +106,15 @@ public sealed class PlatformApplication : IAsyncDisposable
         }
 
         _manifest = manifest;
-        await Control.ApplyAllAsync(cancellationToken);
+
+        // The control plane is a plugin contribution: load its fiber first, then
+        // read its capability. Runtime.Close ends this fiber with all the others.
+        await Runtime.LoadAsync(new PluginControlPlaneComponent(
+            _options.ManifestPath, Store, Registry, Console.Ui));
+        var control = Runtime.RequireCapability(ControlPlaneKeys.Service);
+        Control = control;
+
+        await control.ApplyAllAsync(cancellationToken);
         if (_options.Host == UiHostKind.Web)
         {
             WebUi = new WebUiServer(
@@ -115,7 +122,7 @@ public sealed class PlatformApplication : IAsyncDisposable
                 address: _options.Address,
                 allowRemote: _options.AllowRemote,
                 registry: Registry,
-                control: Control,
+                control: control,
                 routeGuard: _routeGuard);
             await WebUi.StartAsync(cancellationToken);
         }

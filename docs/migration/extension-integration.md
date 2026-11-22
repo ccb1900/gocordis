@@ -23,7 +23,7 @@
 | TimerService / Scheduler | 产品无周期作业；SSE 的 PeriodicTimer 足够 |
 | EventDispatcher | Core `OnAsync` 是唯一事件注册权威；多模式派发无产品消费者 |
 | Broker / StableRegistry | 会形成第二注册表/第二生命周期权威 |
-| MarketService / PackageManager | PluginControlService 已是包操作唯一权威，接入会形成两套决策层 |
+| MarketService / PackageManager | `plugin-control-plane` Fiber 提供的 `PluginControlService` 已是包操作唯一权威，接入会形成两套决策层 |
 | GenericHmr / SocksRegistry / EnvService | 产品无对应 HMR/代理/dotenv 场景；通过 HttpService 已给 SOCKS/interceptor 留落点 |
 | ObservationLog SSE | 已记录为 Snapshot+HTTP polling 的接受差异；无序号重放需求，不为状态好看改协议 |
 | FileSystemService 静态资源 | WebAssetPaths 已有安全边界；无挂载/热更新需求，不增加双套路径语义 |
@@ -37,7 +37,7 @@
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 396/396
+dotnet test  Gocordis.sln → 397/397（控制面插件化后连续 3 次全绿）
 npm test                 → 85 passed
 npm run build            → success
 ```

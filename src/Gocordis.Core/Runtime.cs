@@ -163,6 +163,32 @@ public sealed class Runtime : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Read-only capability lookup for composition roots. Resolves the default
+    /// realm's committed provider under the state lock and returns its provided
+    /// value. It records no binding, installs no effect and changes no lifecycle
+    /// state: dependency declarations and reconciliation remain the only way to
+    /// govern activation.
+    /// </summary>
+    public T RequireCapability<T>(Key<T> key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        lock (_stateLock)
+        {
+            var provider = FindProvider(Realm.Default, key);
+            if (provider is null ||
+                provider.State != FiberState.Active ||
+                provider.CurrentActivation?.Phase != ActivationPhase.Committed ||
+                !provider.Provided.TryGetValue(key, out var value))
+            {
+                throw new DependencyMissingException(
+                    $"no active provider for capability '{key.Name}'");
+            }
+
+            return (T)value!;
+        }
+    }
+
     // ---- decision loop ------------------------------------------------------
 
     private async Task RunAsync()

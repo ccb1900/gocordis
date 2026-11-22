@@ -32,6 +32,7 @@
 - 阶段 1：**已验证**（.NET 10 Solution 骨架、依赖边界架构测试、`dotnet build`/`dotnet test` 全绿）。
 - 阶段 2：**已验证**（Core 语义内核完整可运行，含 Realm/MetaKey 与确定性重放）。
 - 阶段 3–6：**已执行**（Manifest/Registry、Managed ALC、WASM/Process、UI/Console/API 均有可运行实现）。
-- **仍未达成的具体能力**（WASM 能力桥、HMR、Windows 专项验证、官方扩展套件、前端资产等）
-  逐项列在 [`final-acceptance.md`](final-acceptance.md) §4，不用总体覆盖率掩盖。
+- **原缺口已逐项关闭**：WASM 能力桥/HMR、Process 边界行为、官方扩展套件、内嵌前端、
+  定理与平台收敛测试；Windows runner 实跑由 CI 配置覆盖（本机 Linux 无法执行）。
+  详见 [`final-acceptance.md`](final-acceptance.md) §4。
 - 后续阶段状态以 [`migration-coverage.md`](migration-coverage.md) 的逐项状态为准，不在本文件重复维护。

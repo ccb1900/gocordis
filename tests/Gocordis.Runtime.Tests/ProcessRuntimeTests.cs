@@ -100,6 +100,51 @@ public sealed class ProcessRuntimeTests
         }
     }
 
+
+    [Fact]
+    public async Task CrashMidCallIsObservedInsteadOfHanging()
+    {
+        await using var client = await ProcessPluginClient.StartAsync(PluginExecutable());
+
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            client.CallAsync("crash", timeout: TimeSpan.FromSeconds(5)));
+
+        Assert.True(client.HasExited);
+    }
+
+    [Fact]
+    public async Task PluginToHostCallsAreRejectedWithMinus32601()
+    {
+        await using var client = await ProcessPluginClient.StartAsync(PluginExecutable());
+
+        var result = await client.CallAsync("callhost", timeout: TimeSpan.FromSeconds(5));
+
+        Assert.NotNull(result);
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (!client.StderrTail.Any(line => line.Contains("-32601", StringComparison.Ordinal)) &&
+               DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        Assert.Contains(client.StderrTail, line => line.Contains("-32601", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task FailedBackendDegradesWithoutFailingTheFiber()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        var component = new ProcessPluginComponent("/definitely/not/a/plugin.exe", new Key<string>("proc"));
+
+        var fiber = await runtime.LoadAsync(component);
+
+        Assert.Equal(FiberState.Active, fiber.State);
+        Assert.Null(fiber.Failure);
+        var diagnostics = runtime.Snapshot().Fibers.Single(f => f.Name == "process-plugin");
+        Assert.Contains("process-diagnostics", diagnostics.Provides);
+        Assert.Contains("plugin_error", diagnostics.Provides);
+    }
+
     private static string PluginExecutable()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

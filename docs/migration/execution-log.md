@@ -58,6 +58,10 @@
 | 49 | 第 4 轮审查（自审） | 继续排查 API 完整性 | 发现 EventKey 无法 Require；补 `Context.Require<T>(EventKey<T>)` 与测试 |
 | 50 | 第 4 轮复核 | 证据驱动 | 17+10+38 = 65 passed |
 | 51 | 第 5 轮终审 | 收尾检查占位符与文档漂移 | `src/`/`samples/` 无 TODO/NotImplemented；仅发现文档计数陈旧，已修正；未发现新的代码缺陷 |
+| 52 | 用户要求关闭所有已记录缺口 | 不以"文档记录"代替完成 | WASM 自定义段/host 桥/HMR、Process 降级/崩溃/-32601、官方扩展套件、内嵌前端、Windows CI、Thm 与平台收敛测试全部实现 |
+| 53 | 缺口关闭后全量验证 | 证据驱动 | baseline + build + 90 passed |
+| 54 | 稳定化：崩溃后进程客户端 Dispose 抛 `IOException: Pipe is broken` | 连续运行 3 次暴露间歇失败，先复现再修 | `ProcessPluginClient.DisposeAsync` 捕获 broken pipe/重复释放；连续 4 次全量测试绿 |
+| 55 | 修正基线校验语义 | 迁移分支已有提交，`HEAD == baseline` 不再成立 | 校验改为"基线是 HEAD 祖先且 main 冻结"；`BASELINE VERIFIED` |
 
 ## 验证结果（持续追加）
 

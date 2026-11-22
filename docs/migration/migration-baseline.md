@@ -8,7 +8,7 @@
 | 项目 | 值 |
 | --- | --- |
 | 冻结分支 | `main`（迁移工作分支 `migration/dotnet`） |
-| HEAD commit | `ed2ef724a24331ecc3fa21974539315fd90212bf` |
+| 基线 commit | `ed2ef724a24331ecc3fa21974539315fd90212bf`（`main` 冻结于此；迁移分支在其之上提交） |
 | commit 时间 | 2026-11-22T07:53:04+08:00 |
 | commit 主题 | `fix(ci): isolate POSIX process-group test from Windows vet` |
 | Go 工具链 | `go1.26.8 linux/amd64` |

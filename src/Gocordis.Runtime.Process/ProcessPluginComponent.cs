@@ -21,23 +21,34 @@ public sealed class ProcessPluginComponent : Component
 
     public override string Name => "process-plugin";
 
-    public override IReadOnlyList<ICapabilityKey> Provide() => [_key];
+    public override IReadOnlyList<ICapabilityKey> Provide() =>
+        [_key, ProcessKeys.Diagnostics, ProcessKeys.ErrorVocabulary];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
-        var client = await ProcessPluginClient.StartAsync(_executable);
+        var diagnostics = new ProcessDiagnostics();
+        context.Provide(ProcessKeys.Diagnostics, diagnostics);
+        ProcessPluginClient? client = null;
         try
         {
+            client = await ProcessPluginClient.StartAsync(_executable);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
             var result = await client.CallAsync("echo", new { text = "ready" }, timeout.Token);
-            var text = result?["text"]?.GetValue<string>() ?? "unavailable";
-            context.Provide(_key, text);
+            context.Provide(_key, result?["text"]?.GetValue<string>() ?? "unavailable");
         }
-        catch
+        catch (Exception ex)
         {
-            await client.DisposeAsync();
-            throw;
+            if (client is not null)
+            {
+                await client.DisposeAsync();
+            }
+
+            // Degrade instead of failing the fiber: the declaration remains
+            // active and consumers can observe the error vocabulary.
+            diagnostics.LastError = ex.Message;
+            context.Provide(_key, "plugin_error");
+            return null;
         }
 
         return async () => await client.DisposeAsync();

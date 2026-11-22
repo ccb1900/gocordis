@@ -14,16 +14,18 @@ public sealed class WasmPluginInstance : IDisposable
     private readonly Module _module;
     private readonly Store _store;
     private readonly Instance _instance;
+    private readonly Linker? _linker;
 
-    private WasmPluginInstance(Engine engine, Module module, Store store, Instance instance)
+    private WasmPluginInstance(Engine engine, Module module, Store store, Instance instance, Linker? linker)
     {
         _engine = engine;
         _module = module;
         _store = store;
         _instance = instance;
+        _linker = linker;
     }
 
-    public static WasmPluginInstance FromWat(string wat, string name = "plugin")
+    public static WasmPluginInstance FromWat(string wat, string name = "plugin", WasmHostBridge? bridge = null)
     {
         var engine = new Engine();
         try
@@ -34,8 +36,14 @@ public sealed class WasmPluginInstance : IDisposable
                 var store = new Store(engine);
                 try
                 {
-                    var instance = new Instance(store, module, []);
-                    return new WasmPluginInstance(engine, module, store, instance);
+                    if (bridge is null)
+                    {
+                        return new WasmPluginInstance(engine, module, store, new Instance(store, module, []), null);
+                    }
+
+                    var linker = new Linker(engine);
+                    linker.DefineFunction("gocordis", "report", new Action<int>(bridge.Report));
+                    return new WasmPluginInstance(engine, module, store, linker.Instantiate(store, module), linker);
                 }
                 catch
                 {
@@ -74,6 +82,7 @@ public sealed class WasmPluginInstance : IDisposable
 
     public void Dispose()
     {
+        _linker?.Dispose();
         _store.Dispose();
         _module.Dispose();
         _engine.Dispose();

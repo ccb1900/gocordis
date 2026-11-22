@@ -47,6 +47,76 @@ public sealed class WasmRuntimeTests
         Assert.Equal(FiberState.Gone, fiber.State);
     }
 
+
+    [Fact]
+    public void ModuleTypeCustomSectionIsReadFromTheBinaryModule()
+    {
+        const string wat = """
+            (module
+              (@custom "module_type" "industrial.camera")
+              (func (export "runtime_component_create") (result i32) i32.const 1)
+              (func (export "runtime_component_destroy") (param i32)))
+            """;
+
+        Assert.Equal("industrial.camera", WasmCustomSections.ReadFromWat(wat, "module_type"));
+        Assert.Null(WasmCustomSections.ReadFromWat(wat, "missing"));
+    }
+
+    [Fact]
+    public void HostCapabilityBridgeReceivesGuestCalls()
+    {
+        const string wat = """
+            (module
+              (import "gocordis" "report" (func $report (param i32)))
+              (func (export "runtime_component_create") (result i32)
+                i32.const 7
+                call $report
+                i32.const 11))
+            """;
+        var bridge = new WasmHostBridge();
+
+        using var instance = WasmPluginInstance.FromWat(wat, "bridged", bridge);
+        var value = instance.Invoke("runtime_component_create");
+
+        Assert.Equal(11, value);
+        Assert.Equal(new[] { 7 }, bridge.Reports);
+    }
+
+    [Fact]
+    public async Task WarmHotSwapReplacesTheModuleAndKeepsTheOldFiberGone()
+    {
+        var key = new Key<int>("hmr-value");
+        const string v1 = """
+            (module
+              (func (export "runtime_component_create") (result i32) i32.const 42)
+              (func (export "runtime_component_destroy") (param i32)))
+            """;
+        const string v2 = """
+            (module
+              (func (export "runtime_component_create") (result i32) i32.const 99)
+              (func (export "runtime_component_destroy") (param i32)))
+            """;
+
+        await using var runtime = new Gocordis.Core.Runtime();
+        var swapper = new WasmHotSwapper(runtime, key);
+        var first = await swapper.ReplaceAsync(v1);
+        var second = await swapper.ReplaceAsync(v2);
+
+        Assert.Equal(FiberState.Gone, first.State);
+        Assert.Equal(FiberState.Active, second.State);
+        Assert.Same(second, swapper.Current);
+
+        var observed = new List<int>();
+        await runtime.LoadAsync(new ProbeComponent("consumer", ctx => observed.Add(ctx.Require(key)), [key]));
+        Assert.Equal(99, Assert.Single(observed));
+
+        const string invalid = """
+            (module (func (export "broken") (result i32)))
+            """;
+        await Assert.ThrowsAnyAsync<Exception>(() => swapper.ReplaceAsync(invalid));
+        Assert.Same(second, swapper.Current);
+    }
+
     private sealed class ProbeComponent : Component
     {
         private readonly Action<Context> _apply;

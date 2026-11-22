@@ -94,7 +94,7 @@ C# 实现不追求与 Go 类型/函数签名一致，只追求逐条满足这里
 | 失败 = raise，不向父传播 | C33 | 插件错误隔离 | `runtime/orchestrator.go:501`、`phase3_contract_test.go:71` | Activation 失败 → Failed；不自动重试；重试 = revision | 迁移语义 |
 | 调和 / target / quiet / 单一权威 | C19–C22 | registry 声明式装载 | `runtime/orchestrator.go:62`、`reconcile.go:19` | 单一 `Reconciler`；外部只提交声明，不写状态 | 迁移语义 |
 | 环检测 | C29、C36 | 编译期/运行期检测 | `runtime/dependency_cycle.go:65` | 装载边界拒绝并给环链诊断 | 迁移语义 |
-| 定理 64 / 68 / 70 / 73 / 80 | C25–C30 | 无 | `runtime/thm*_test.go`、`proof_invariants_test.go` | 仅 Thm70 有 C# 规格；其余未实现（`migration-coverage.md` §8） | 进行中 |
+| 定理 64 / 68 / 70 / 73 / 80 | C25–C30 | 无 | `runtime/thm*_test.go`、`proof_invariants_test.go` | Thm64/68/70/73/80 均有 xUnit 规格（`tests/Gocordis.Conformance.Tests/TheoremTests.cs`） | 已验证 |
 | 事件注册（可逆 effect） | §2.1 p.7、§3.4.2 p.29 | `ctx.on/emit` | `runtime/event_registry.go` | Core 提供 Effect 拥有的事件注册 | 迁移语义 |
 | 事件派发（serial/parallel/bail/waterfall） | **论文无** | `emit/serial/...` | `extensions/event/dispatch.go` | 作为插件系统/扩展能力，不进 Core；R4 类 C | 继承 |
 | Loader / entry（id,url,isolate,intercept,config,disabled） | C40 | loader/include/group | `extensions/loader/*`、`extensions/hmr/*` | `Gocordis.Plugins`；fiber 由 Core 唯一拥有 | 迁移语义 |

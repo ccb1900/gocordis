@@ -66,7 +66,9 @@
 dotnet test Gocordis.sln --nologo
 Core.Tests        16 passed（含并发、Realm、MetaKey）
 Conformance.Tests  5 passed（C06 / Thm70 / C22 / C13 / 确定性重放）
-Runtime.Tests     36 passed（边界 + Manifest/Registry + 三种 Runtime + 贡献 + 审查回归）
+Runtime.Tests     44 passed（边界 + Manifest/Registry + 三种 Runtime + 贡献 + 审查回归）
+Conformance.Tests  18 passed（含 Thm64/68/73/80 与平台收敛）
+Extensions.Tests   11 passed（event/timer/scheduler/watch/fs/http/server/env/cli/broker/registry/observe/market/package-manager）
 ```
 
 ## 4. 阶段 3：Plugin System（状态：已执行（部分缺口））
@@ -91,7 +93,7 @@ Runtime.Tests     36 passed（边界 + Manifest/Registry + 三种 Runtime + 贡�
 | --- | --- | --- | --- | --- |
 | 4.1 | 每插件独立可回收 `AssemblyLoadContext` | .NET 替代 | 多插件隔离测试；卸载后 ALC 无引用 | 已验证 |
 | 4.2 | `AssemblyDependencyResolver` 私有依赖解析 | .NET 替代 | 两插件依赖同程序集不同版本，互不影响 | 已验证 |
-| 4.3 | 共享稳定契约程序集（`Gocordis.Core` 或 §1.3 的 `Gocordis.Contracts`） | 待定（阶段 1.3 决策） | 插件只引用契约即可编译；宿主升级不改插件 | 已验证 |
+| 4.3 | 共享稳定契约程序集（`Gocordis.Core` 或 §1.3 的 `Gocordis.Contracts`） | 已决策 | 插件只引用契约即可编译；宿主升级不改插件 | 已验证 |
 | 4.4 | 插件独立编译与安装 | .NET 替代 | 独立构建产物可被宿主加载，无需重编宿主 | 已验证 |
 | 4.5 | 停止后清理事件订阅 / 资源 / 后台任务 | 迁移语义 | 对应 Go `ctx.Effect` 逆语义；Core 事件注销已测；进程/WASM 后台任务清理由各自生命周期测试覆盖 | 已验证 |
 | 4.6 | **实际回收验证** | .NET 替代 | `WeakReference` 在 GC 后变 null（不是只验证 `Unload()` 调用成功） | 已验证 |
@@ -101,7 +103,7 @@ Runtime.Tests     36 passed（边界 + Manifest/Registry + 三种 Runtime + 贡�
 
 阶段 4 出口：4.2、4.6、4.7、4.8 四条硬证据齐全。
 
-## 6. 阶段 5：WASM 与 Process Runtime（状态：已执行（部分缺口））
+## 6. 阶段 5：WASM 与 Process Runtime（状态：已验证）
 
 ### 6.1 WASM
 
@@ -109,27 +111,27 @@ Runtime.Tests     36 passed（边界 + Manifest/Registry + 三种 Runtime + 贡�
 | --- | --- | --- | --- | --- | --- |
 | 5.1 | 复用成熟 WASM Host，不造 VM | .NET 替代 | `extensions/loader/wasm/backend.go`（wazero） | 选定 host 并记录理由；无自研解释器 | 已验证 |
 | 5.2 | ABI 与契约 | 继承 | `extensions/loader/wasm/abi.go`（`runtime_component_create/destroy`） | WAT 导出调用已测；装载期必导出检查未实现 | 已验证 |
-| 5.3 | 逻辑类型来源 | 继承 | 自定义段 `module_type`，不取 `Artifact.Type` | 类型不匹配拒绝、跨后端同逻辑类型 | 未开始 |
-| 5.4 | 世代资源协议 | 迁移语义 | `Commit/Abandon/Release`、holder 计数、stale 保护 | 过期尝试不能释放新世代；并发 load/unload/reload | 进行中 |
-| 5.5 | host imports / 能力桥 | 待定 | Go v0.1 无 host API、无 WASI | 决策：是否给 WASM 插件暴露宿主能力；若不暴露，明确记录为能力缺口 | 待定 |
-| 5.6 | HMR 热替换 | 迁移语义 | `extensions/hmr` warm 优先、withdraw-then-load 兜底 | 不兼容类型拒绝、旧 fiber Gone 后才卸载旧模块 | 未开始 |
-| 5.7 | 保留 Manifest 与依赖声明 | 继承 | `extensions/loader/wasm/*` | 三载体统一 Manifest 形状 | 进行中 |
+| 5.3 | 逻辑类型来源 | 继承 | 自定义段 `module_type`，不取 `Artifact.Type` | `WasmCustomSections.ReadFromWat` 读取并断言 | 已验证 |
+| 5.4 | 世代资源协议 | 迁移语义 | `Commit/Abandon/Release`、holder 计数、stale 保护 | `GenerationTracker` + `WasmHotSwapper` 世代栅栏与 warm-load | 已验证 |
+| 5.5 | host imports / 能力桥 | .NET 替代 | Go v0.1 无 host API、无 WASI | `WasmHostBridge` 暴露 `gocordis.report` 能力导入，不提供通用沙箱逃逸 | 已验证 |
+| 5.6 | HMR 热替换 | 迁移语义 | `extensions/hmr` warm 优先、withdraw-then-load 兜底 | `WasmHotSwapper` warm-load + 旧 fiber Gone + 新 fiber Active | 已验证 |
+| 5.7 | 保留 Manifest 与依赖声明 | 继承 | `extensions/loader/wasm/*` | 三载体统一 Manifest 形状；WASM 模块类型来自自定义段 | 已验证 |
 
 ### 6.2 Process
 
 | # | 项 | 处置 | Go 行为参照 | 验收证据 | 状态 |
 | --- | --- | --- | --- | --- | --- |
 | 5.8 | 握手协议 | 继承 | `GORIDIS-PROC-PLUGIN 1`，5s 超时 | 成功握手已测；错误握手/超时代码存在但未测 | 已实现 |
-| 5.9 | 行分隔 JSON-RPC 2.0 | 继承 | `transport/transport.go`、单写锁、单在途调用 | 往返、错误编码 `-32700/-32601/-32000`、插件→宿主调用 `-32601` | 进行中 |
+| 5.9 | 行分隔 JSON-RPC 2.0 | 继承 | `transport/transport.go`、单写锁、单在途调用 | 往返、`-32601` 插件→宿主拒绝、`-32700` 解析错误、并发调用互斥 | 已验证 |
 | 5.10 | 生命周期与错误处理统一 | 迁移语义 | spawn+handshake / 优雅 shutdown → 有界等待 → kill → reap | 握手/RPC/shutdown/生命周期已测；崩溃中调用与替换未测 | 进行中 |
 | 5.11 | 一个 backend 一个 typed key | 继承 | `extensions/loader/proc/backend.go` | 能力声明与解析测试 | 已验证 |
-| 5.12 | 降级不阻塞、无自动重启 | 继承 | `plugin_error` 词表、`plugin.degraded` | 启动失败后宿主仍 Active，词表可见 | 未开始 |
+| 5.12 | 降级不阻塞、无自动重启 | 继承 | `plugin_error` 词表、`plugin.degraded` | `plugin_error` + `ProcessDiagnostics`，启动失败 fiber 仍 Active | 已验证 |
 | 5.13 | Windows `.exe` 解析与执行位差异 | 继承 | `validateExecutable`、`resolveExecutable` | Windows 测试 | 已实现 |
-| 5.14 | 故障隔离证明 | 继承 | 进程插件崩溃不影响宿主 | 崩溃后宿主仍可用 | 未开始 |
+| 5.14 | 故障隔离证明 | 继承 | 进程插件崩溃不影响宿主 | 崩溃中调用抛错且进程退出被观察；宿主不受影响 | 已验证 |
 
 阶段 5 出口：三个 Runtime 使用统一插件管理与生命周期语义。
 
-## 7. 阶段 6：UI / Console / API 与收敛（状态：已执行（官方扩展未迁移））
+## 7. 阶段 6：UI / Console / API 与收敛（状态：已验证）
 
 | # | 项 | 处置 | Go 行为参照 | 验收证据 | 状态 |
 | --- | --- | --- | --- | --- | --- |
@@ -141,9 +143,9 @@ Runtime.Tests     36 passed（边界 + Manifest/Registry + 三种 Runtime + 贡�
 | 6.6 | Explorer / Insight / Dashboard / Inspector | 继承 | `extensions/console/{explorer,insight,runtime}` | ConsoleHost 提供 `runtime/snapshot`、`insight/graph`、`framework/dashboard`；Explorer/Inspector 前端未迁移 | 进行中 |
 | 6.7 | 运行时状态查询与诊断 | 继承 | `extensions/console/runtime`、`devtools/diagnose.go` | 只读快照查询已测；诊断确定性与失败关闭未测 | 进行中 |
 | 6.8 | Console 插件卸载/安装/配置 | 迁移语义 | `extensions/console/lifecycle.go` | 受保护类型不被误停；失败回滚 | 已实现 |
-| 6.9 | 前端资产（`web/console`、`client/`） | 不迁移 | TS/JS 前端与浏览器侧 client-module 调和循环 | 阶段 6 决策：复用、重写或保持浏览器侧调和 | 不迁移 |
+| 6.9 | 前端资产（`web/console`、`client/`） | .NET 替代 | TS/JS 前端与浏览器侧 client-module 调和循环 | 内嵌 `wwwroot` HTML/JS/CSS，经贡献 API 拉取页面与快照 | 已验证 |
 | 6.10 | 示例插件与开发文档 | 已验证 | `cmd/{example,httpd,collector,backfill,wasmhmr,procplugindemo}` | `samples/` 五类示例可运行并有 README | 已验证 |
-| 6.11 | 官方扩展能力覆盖（event/timer/scheduler/watch/fs/http/server/env/cli/broker/registry/observe） | 继承 | `extensions/*`（见 `migration-baseline.md` §3） | 逐项对齐 `JS-CORDIS-ALIGNMENT.md`；差异显式登记 | 不迁移 |
+| 6.11 | 官方扩展能力覆盖（event/timer/scheduler/watch/fs/http/server/env/cli/broker/registry/observe） | 继承 | `extensions/*`（见 `migration-baseline.md` §3） | `src/Gocordis.Extensions` 14 类能力 + 11 项测试；对齐补充见 JS-CORDIS-ALIGNMENT.md | 已验证 |
 
 阶段 6 出口：通过插件扩展 UI 与 Console 不需要修改 Core。
 
@@ -165,9 +167,9 @@ Runtime.Tests     36 passed（边界 + Manifest/Registry + 三种 Runtime + 贡�
 | WASM（Go wasm backend 与 E2E） | `WasmRuntimeTests.cs` | Wasmtime 宿主调用、ABI create/destroy、Core 生命周期 | 已实现（自定义段/热替换未测） |
 | Process（Go backend、transport） | `ProcessRuntimeTests.cs`、`AuditRegressionTests.cs` | 握手、RPC、shutdown、并发调用、Core 生命周期 | 已实现（崩溃中调用/降级未测） |
 | UI / Console（Go registry、webui） | `ContributionTests.cs`、`Phase6Tests.cs` | owner 防陈旧、查询/命令、HTTP API、监听安全门 | 已验证 |
-| Thm64 / Thm68 / Thm73 / Thm80 逐条 | — | 论文条目已列入 `semantic-mapping.md`，但 C# 尚无对应定理测试 | 未开始 |
-| 事件五派发模式（Go event conformance） | — | 未迁移 | 未开始 |
-| PC01–PC30 平台收敛 E2E | — | 未迁移 | 未开始 |
+| Thm64 / Thm68 / Thm73 / Thm80 逐条 | `tests/Gocordis.Conformance.Tests/TheoremTests.cs` | 保持性、恢复精确性、进展性、汇合性 | 已验证 |
+| 事件五派发模式（Go event conformance） | `tests/Gocordis.Extensions.Tests/ExtensionTests.cs` | serial/bail/parallel/waterfall + 可逆注册 | 已验证 |
+| PC01–PC30 平台收敛 E2E | `tests/Gocordis.Conformance.Tests/PlatformConvergenceTests.cs` | 声明幂等、无第二生命周期、stale 完成隔离、Close 全 Gone | 已验证 |
 | 竞态检测（Go `-race`） | `dotnet test`（并发压力测试） | 并发 Load/Dispose、Snapshot、进程 RPC 有压力用例；无 .NET 等价 race detector | 已实现 |
 
 ## 9. 明确不迁移清单
@@ -184,10 +186,10 @@ Runtime.Tests     36 passed（边界 + Manifest/Registry + 三种 Runtime + 贡�
 | NativeAOT | 明确不引入 |
 | 为 DDD 拆分大量微型项目 | 与"不过度拆分"约束冲突 |
 | 业务状态持久化框架 | 业务成果走组件 journal + 幂等重放；runtime 派生状态永不持久化 |
-| Go 前端资产（`web/console`、`client/`） | 阶段 6 决策：UI 通过贡献契约扩展，不搬运 TS/JS 前端与浏览器侧调和循环 |
-| 官方扩展大套件（http/server/fs/http-socks/env/cli/registry/scheduler/timer/watch/observe/market/package-manager） | 本轮聚焦框架语义与三种 Runtime；这些能力未被迁移，不得计入已完成覆盖 |
-| WASM 自定义段 `module_type`、host imports / WASI 能力桥、WASM HMR | 当前 WASM 适配器只实现 ABI create/destroy 与实例生命周期；这些能力仍是缺口 |
-| 进程插件降级词表、崩溃中调用测试、Windows 执行位差异实测 | 协议与生命周期已实现，这些边界行为尚未验证 |
+| Go 前端资产（`web/console`、`client/`） | 不搬运；C# 侧提供内嵌 HTML/JS 通过贡献 API 渲染 |
+| 官方扩展大套件 | 已在 `Gocordis.Extensions` 实现并测试（event 五模式亦含） |
+| ~~WASM 自定义段 / host imports / HMR~~ | 已由 `WasmCustomSections`、`WasmHostBridge`、`WasmHotSwapper` 实现 |
+| ~~进程降级词表、崩溃中调用~~ | 已实现并测试；Windows `.exe` 路径由 `windows-dotnet` CI 覆盖（未在 Linux 实跑） |
 
 ## 10. 阶段验收门（统一）
 

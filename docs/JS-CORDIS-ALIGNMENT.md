@@ -72,3 +72,21 @@ server-acl/proxy 的 "需要验证" 已逐条核实并对齐。其余差异均�
 （HTTP file/data URL、SOCKS DNS、package-manager Agent、CLI 输入、远程脚手架模板），
 不再自动扩展。FS 的 JS 专有选项（copy filter/dereference、readFile encoding、
 open flags/mode）同样冻结为接受差异，不计入等价范围。
+
+## C# 迁移对齐补充（2026-11-22）
+
+`migration/dotnet` 分支的 C# 实现按本文件的"部分等价"项逐条收敛：
+
+| 原参照项 | C# 实现 | 对照结论 |
+| --- | --- | --- |
+| loader / include / hmr / group（模块模型差异） | `Gocordis.Plugins.PluginRegistry`（Tomlyn Manifest、组合/补丁、ConfigWatcher）、`Gocordis.Runtime.Managed`（ALC + 私有依赖）、`Gocordis.Runtime.Wasm.WasmHotSwapper` | 能力等价；模块身份按论文 Revision（退役→重插），不追求 JS 原位替换 |
+| Event `emit/serial/parallel/bail/waterfall` | `Gocordis.Extensions.EventDispatcher` | 五模式齐备；注册/注销可逆；parallel 传播 handler 异常 |
+| timer / scheduler / watch | `TimerService`、`Scheduler`、`WatchService` | JS 风格 Timeout/Interval/Debounce/Throttle + 确定性 pump + revision 文件监听 |
+| fs / http / server | `FileSystemService`（挂载路由与防逃逸）、`HttpService`（拦截器）、`ServerHost`（ASP.NET Core） | 用 .NET 成熟库实现，能力覆盖不再标"缺失" |
+| env / cli / broker / registry / observe | `EnvService`、`CliDispatcher`、`Broker<T>`、`StableRegistry<T>`、`ObserveStream<T>` | 对应 JS 官方扩展能力 |
+| market / package-manager | `MarketService`（校验和/版本门）、`PackageManager`（报告/应用/回滚） | 仅本地声明层；插件市场服务端与云端平台仍按范围排除 |
+| WASM 能力桥 | `WasmHostBridge`（`gocordis.report` 导入）、`WasmCustomSections`（`module_type`） | 继承 Go ABI 并补上 Go v0.1 缺失的宿主桥 |
+
+**刻意不接受差异**（论文优先，非能力缺失）：`ctx.foo` Proxy 动态属性、跨 effect 并发撤销、
+`registry.replace()` 保身份替换。详见 `docs/ACCEPTED-DIFFERENCES.md` 与
+`docs/migration/semantic-mapping.md` §4。

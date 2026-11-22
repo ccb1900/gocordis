@@ -23,6 +23,10 @@ public sealed class WebUiServer : IAsyncDisposable
         builder.WebHost.UseUrls(address);
         _app = builder.Build();
 
+        _app.MapGet("/", () => Results.Content(WebResources.Read("index.html"), "text/html"));
+        _app.MapGet("/app.js", () => Results.Content(WebResources.Read("app.js"), "text/javascript"));
+        _app.MapGet("/app.css", () => Results.Content(WebResources.Read("app.css"), "text/css"));
+
         _app.MapGet("/api/meta", () => new JsonObject
         {
             ["frameworkVersion"] = "1",
@@ -69,6 +73,18 @@ public sealed class WebUiServer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _app.DisposeAsync();
+    }
+}
+
+internal static class WebResources
+{
+    public static string Read(string name)
+    {
+        using var stream = typeof(WebUiServer).Assembly
+            .GetManifestResourceStream($"Gocordis.Console.WebUi.{name}") ??
+            throw new InvalidOperationException($"embedded resource '{name}' is missing");
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
     }
 }
 

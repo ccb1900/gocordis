@@ -1,0 +1,5 @@
+body { font-family: system-ui, sans-serif; margin: 2rem; color: #1b1f24; }
+h1 { font-size: 1.6rem; }
+table { border-collapse: collapse; margin-top: 1rem; }
+th, td { border: 1px solid #d0d7de; padding: 0.35rem 0.75rem; text-align: left; }
+section { margin-top: 1.5rem; }

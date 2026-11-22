@@ -7,12 +7,16 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 expected_commit="ed2ef724a24331ecc3fa21974539315fd90212bf"
 
-actual_commit="$(git -C "$repo" rev-parse HEAD)"
-if [[ "$actual_commit" != "$expected_commit" ]]; then
-  echo "BASELINE DRIFT: HEAD=$actual_commit expected=$expected_commit" >&2
+if ! git -C "$repo" merge-base --is-ancestor "$expected_commit" HEAD; then
+  echo "BASELINE DRIFT: baseline $expected_commit is not an ancestor of HEAD" >&2
   exit 1
 fi
-echo "HEAD OK: $actual_commit"
+main_commit="$(git -C "$repo" rev-parse main)"
+if [[ "$main_commit" != "$expected_commit" ]]; then
+  echo "BASELINE DRIFT: main moved from $expected_commit to $main_commit" >&2
+  exit 1
+fi
+echo "BASELINE OK: $expected_commit (ancestor of HEAD; main frozen)"
 
 for doc in migration-plan.md migration-baseline.md semantic-mapping.md migration-coverage.md execution-log.md baseline.sha256; do
   [[ -f "$here/$doc" ]] || { echo "MISSING: docs/migration/$doc" >&2; exit 1; }

@@ -1,5 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <EmbeddedResource Include="wwwroot/index.html" LogicalName="Gocordis.Console.WebUi.index.html" />
+    <EmbeddedResource Include="wwwroot/app.js" LogicalName="Gocordis.Console.WebUi.app.js" />
+    <EmbeddedResource Include="wwwroot/app.css" LogicalName="Gocordis.Console.WebUi.app.css" />
+  </ItemGroup>
+  <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="../Gocordis.Core/Gocordis.Core.csproj" />
     <ProjectReference Include="../Gocordis.Plugins/Gocordis.Plugins.csproj" />

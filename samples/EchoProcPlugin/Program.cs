@@ -31,6 +31,11 @@ while ((line = await input.ReadLineAsync()) is not null)
         continue;
     }
 
+    if (request["result"] is not null || request["error"] is not null)
+    {
+        continue; // response to a plugin -> host call
+    }
+
     var id = request["id"]?.DeepClone() ?? 0;
     var method = request["method"]?.GetValue<string>();
     var response = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id };
@@ -39,6 +44,19 @@ while ((line = await input.ReadLineAsync()) is not null)
         case "echo":
             var text = request["params"]?["text"]?.GetValue<string>() ?? string.Empty;
             response["result"] = new JsonObject { ["text"] = $"echo:{text}" };
+            break;
+        case "crash":
+            return 3;
+        case "callhost":
+            await output.WriteLineAsync(new JsonObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = 900,
+                ["method"] = "host/unsupported",
+            }.ToJsonString());
+            var rejection = await input.ReadLineAsync();
+            await Console.Error.WriteLineAsync(rejection ?? "no rejection");
+            response["result"] = new JsonObject { ["deferred"] = true };
             break;
         case "shutdown":
             response["result"] = new JsonObject();

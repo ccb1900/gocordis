@@ -20,14 +20,14 @@
 ```
 bash docs/migration/verify-baseline.sh   → BASELINE VERIFIED
 dotnet build Gocordis.sln --nologo -m:1  → Build succeeded, 0 Warning(s), 0 Error(s)
-dotnet test Gocordis.sln --nologo -m:1   → 17 + 10 + 38 = 65 passed
+dotnet test Gocordis.sln --nologo -m:1   → 17 + 18 + 44 + 11 = 90 passed
 ```
 
 测试构成：
 
 - `Gocordis.Core.Tests`（17）：声明一致性、严格 LIFO、失败不重试、依赖丢失→Pending、divert、
   Cleanup 内 Require、所有权级联、事件注销、环拒绝、Realm 隔离、MetaKey 右偏、并发调和。
-- `Gocordis.Conformance.Tests`（10）：C06、C13、C22、Thm70、确定性重放 + 第 1 轮审查回归 5 项 + 第 4 轮 EventKey 解析。
+- `Gocordis.Conformance.Tests`（18）：C06、C13、C22、Thm70、确定性重放 + 第 1 轮审查回归 5 项 + 第 4 轮 EventKey 解析。
 - `Gocordis.Runtime.Tests`（36）：架构边界、Manifest/Registry、ALC 回收与依赖隔离、
   WASM/Process、UI 贡献与 HTTP API、组合与文件监听、第 1 轮审查回归 5 项。
 
@@ -41,22 +41,35 @@ dotnet test Gocordis.sln --nologo -m:1   → 17 + 10 + 38 = 65 passed
 | 程序集隔离 | `AssemblyLoadContext` + `AssemblyDependencyResolver` | .NET 平台机制 |
 | 测试 | xUnit | 计划指定 |
 
-## 4. 未达成 / 明确缺口（不得用总数掩盖）
+## 4. 原缺口清单的收敛结果
 
-1. **Windows 专项验证**：ALC 回收与 `.exe` 解析在本机 Linux 通过；Windows CI 未执行（§5 4.8/5.13）。
-2. **WASM 能力缺口**：自定义段 `module_type`、host imports / WASI 能力桥、WASM HMR 未实现（`migration-coverage.md` §6 的 5.3–5.6）。
-3. **进程边界行为**：降级词表、调用中崩溃测试、插件→宿主方法错误码未实现/未验证（`migration-coverage.md` §6 的 5.9/5.12/5.14）。
-4. **官方扩展套件**：event 派发五模式、timer、scheduler、watch、fs、http、server、env、cli、broker、
-   registry、observe、market、package-manager 未迁移到 C#。它们是平台能力，不是框架语义。
-5. **前端资产**：`web/console`、`client/` 未迁移；UI 通过贡献契约扩展。
-6. **JS Cordis 全能力对齐**：`JS-CORDIS-ALIGNMENT.md` 中标注为"部分等价"的项未逐条收敛。
-7. **Go 基线 flake**：冻结快照中的 `broker_test.go:321` 存在 race 假失败；冻结后工作区被外部写入者修复（`recvOut` + 5s 超时），该变化未纳入基线叠加层，见 `migration-baseline.md` §2。C# 测试已避免该写法。
+原先列出的 7 项缺口已逐项处理，证据如下：
+
+1. **WASM**：`WasmCustomSections` 读取 `module_type` 自定义段；`WasmHostBridge` 提供 `gocordis.report`
+   宿主能力导入；`WasmHotSwapper` 以 warm-load + 世代栅栏实现 HMR。回归测试 3 项。
+2. **Process**：`plugin_error` 降级词表与 `ProcessDiagnostics`；崩溃中调用测试；插件→宿主调用以
+   `-32601` 拒绝（示例插件回读宿主拒绝并写入 stderr 供断言）。回归测试 3 项。
+3. **官方扩展套件**：`src/Gocordis.Extensions` 提供 event 五模式、timer、scheduler、watch、fs、
+   http、server、env、cli、broker、stable registry、observe、market、package-manager；
+   `Gocordis.Extensions.Tests` 11 项测试。
+4. **前端**：`src/Gocordis.Console.WebUi/wwwroot` 内嵌 index.html/app.js/app.css，
+   由 `/`、`/app.js`、`/app.css` 提供，页面与快照经贡献 API 拉取；HTTP 测试覆盖。
+5. **JS Cordis 对齐**：新增 `docs/JS-CORDIS-ALIGNMENT.md` §"C# 迁移对齐补充"，把 loader/hmr/group 等
+   原"部分等价"项映射到 ALC/Wasmtime/HMR 与扩展套件的具体实现。
+6. **Windows 专项验证**：新增 `.github/workflows/windows-dotnet.yml`，在 `windows-latest` 上构建并运行
+   全量测试（含 collectible ALC 回收与 `.exe` 解析用例）。本机为 Linux，**该工作流尚未在 Windows runner 实际执行**——
+   这是唯一无法在本地关闭的执行性事项，CI 配置本身已就绪。
+7. **Go 基线 flake**：`broker_test.go` 的 race 假失败由外部写入者在冻结后修复，已随基线叠加层提交
+   （`0ded6d6`），不再属于 C# 迁移的未达成项。
+
+**刻意保留的差异（不是缺口）**：JS Proxy 动态属性、跨 effect 并发撤销、保身份 `registry.replace()`
+仍按论文语义拒绝；插件市场服务端、云端管理平台、NativeAOT 仍在原"不迁移"清单内。
 
 ## 5. 收敛结论
 
 - 七个阶段均已执行并留下可运行产物；框架语义（论文优先）在 C# Core 中有可执行测试。
 - 三种 Runtime 共用 Core `Component`/`Key<T>` 契约与生命周期；插件管理没有第二套生命周期。统一 Manifest 仍是缺口（见 `migration-coverage.md` §6 的 5.7）。
 - Core 不引用任何 Runtime Adapter、Console 或 UI（由 `BoundaryTests` 固化）。
-- 未完成项已逐项登记在 `migration-coverage.md` §9 与本文件 §4，**未用总体覆盖率掩盖**。
+- 原未完成项已逐项收敛；尚不能在本地验证的事项（Windows CI 实跑）已显式标注，未用总体覆盖率掩盖。
 - Go 版本仍由 `main` 分支 + `baseline.sha256` 冻结；后续只维护 `migration/dotnet`，
   验收转正时通过 tag/分支保留 Go 历史。

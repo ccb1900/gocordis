@@ -1,0 +1,22 @@
+name: windows-dotnet
+
+# Windows-specific verification for the .NET migration: collectible ALC reclaim,
+# process plugin .exe resolution and the whole xUnit suite on Windows.
+on:
+  push:
+    branches: [main, migration/dotnet]
+  pull_request:
+    branches: [main, migration/dotnet]
+
+jobs:
+  windows-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build
+        run: dotnet build Gocordis.sln --nologo -m:1
+      - name: Test (includes ALC reclaim and process .exe paths)
+        run: dotnet test Gocordis.sln --nologo --no-build -m:1

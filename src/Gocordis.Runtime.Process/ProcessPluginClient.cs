@@ -149,6 +149,24 @@ public sealed class ProcessPluginClient : IAsyncDisposable
                        throw new EndOfStreamException($"plugin exited during '{method}'");
             var response = JsonNode.Parse(line)?.AsObject() ??
                            throw new InvalidDataException($"invalid RPC response: '{line}'");
+
+            // Plugin -> host method calls are not supported by the v1 protocol.
+            if (response["method"] is not null && response["result"] is null && response["error"] is null)
+            {
+                var rejection = new JsonObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["id"] = response["id"]?.DeepClone() ?? 0,
+                    ["error"] = new JsonObject
+                    {
+                        ["code"] = -32601,
+                        ["message"] = "plugin-to-host calls are not supported",
+                    },
+                };
+                await WriteAsync(rejection.ToJsonString(), cancellationToken);
+                continue;
+            }
+
             if (response["id"]?.GetValue<long>() != id)
             {
                 continue; // notifications are ignored
@@ -208,11 +226,35 @@ public sealed class ProcessPluginClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await ShutdownAsync();
-        _writer.Dispose();
-        _reader.Dispose();
-        _process.Dispose();
-        _writeGate.Dispose();
-        _callGate.Dispose();
+        try
+        {
+            await ShutdownAsync();
+        }
+        catch (IOException)
+        {
+            // A crashed plugin closes the pipe; nothing left to shut down.
+        }
+
+        TryDispose(_writer.Dispose);
+        TryDispose(_reader.Dispose);
+        TryDispose(_process.Dispose);
+        TryDispose(_writeGate.Dispose);
+        TryDispose(_callGate.Dispose);
+    }
+
+    private static void TryDispose(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (IOException)
+        {
+            // broken pipe after plugin exit
+        }
+        catch (ObjectDisposedException)
+        {
+            // already disposed
+        }
     }
 }

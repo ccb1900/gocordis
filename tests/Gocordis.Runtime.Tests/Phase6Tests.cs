@@ -105,6 +105,11 @@ public sealed class Phase6Tests
         await server.StartAsync();
         using var client = new HttpClient { BaseAddress = new Uri(server.Address!) };
 
+        var html = await client.GetStringAsync("/");
+        Assert.Contains("Gocordis Console", html);
+        Assert.Contains("fetch(", await client.GetStringAsync("/app.js"));
+        Assert.Contains("body", await client.GetStringAsync("/app.css"));
+
         var meta = await client.GetStringAsync("/api/meta");
         Assert.Contains("frameworkVersion", meta);
         var snapshot = await client.GetStringAsync("/api/query/runtime/snapshot");

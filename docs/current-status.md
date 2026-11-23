@@ -37,11 +37,11 @@ dotnet test  Gocordis.sln --nologo --no-build -m:1
 bash docs/migration/verify-baseline.sh   # Go baseline drift check
 ```
 
-**Last locally verified** (2026-11-24, branch `dotnet`): C# **547 passed / 1 skipped / 0 failed** across 8 test assemblies (Core 48, Conformance 154, Runtime 158+1 skipped, Extensions 51, Packaging 78, UI 3, Client 2, Product 53; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **102** tests green, plugin-kit tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
+**Last locally verified** (2026-11-24, branch `dotnet`): C# **548 passed / 1 skipped / 0 failed** across 8 test assemblies (Core 48, Conformance 154, Runtime 158+1 skipped, Extensions 51, Packaging 78, UI 3, Client 2, Product 54; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **102** tests green, plugin-kit tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
 
 Task 01 的有限校准基线见 `docs/migration/acceptance-baseline.md`；它区分三个验收域与 E0–E4 证据等级，P0-01…P0-04 均已关闭（真实 Process↔WASM 调用与包闭环由 `CrossBackendCapabilityTests`、`BackendDispatchProductTests` 覆盖）。
 
-Loopback HTTP tests now construct clients with `UseProxy = false`, so the full suite is reproducible with the ambient `HTTP_PROXY`/`HTTPS_PROXY` left set (verified 547/1 skipped/0 failed that way).
+Loopback HTTP tests now construct clients with `UseProxy = false`, so the full suite is reproducible with the ambient `HTTP_PROXY`/`HTTPS_PROXY` left set (verified 548/1 skipped/0 failed that way).
 
 **CI**: no confirmed public CI result for the current HEAD; do not reuse historical 443/443 or other round results as proof for this commit. The Go baseline verification is handled by `verify-baseline.sh`, with drift reported rather than silently accepted.
 

@@ -763,15 +763,15 @@ public static class Program
         return errors == 0 ? 0 : 1;
     }
 
-    /// <summary>
-    /// Validates a package without installing it. Diagnostics are always a JSON
-    /// array of severity/code/message; errors (not warnings) drive exit code 1.
-    /// </summary>
     /// <summary>Delegates to the single product trust parser in Packaging so the
     /// CLI installer and the product runner cannot drift apart.</summary>
     private static PluginTrustPolicy BuildTrustPolicy(string[] args) =>
         PluginTrustPolicy.FromPemFiles(Option(args, "--trust"), OptionValues(args, "--public-key"));
 
+    /// <summary>
+    /// Validates a package without installing it. Diagnostics are always a JSON
+    /// array of severity/code/message; errors (not warnings) drive exit code 1.
+    /// </summary>
     private static async Task<int> PluginDoctorAsync(string[] args)
     {
         var package = Positional(args, 0);
@@ -1142,7 +1142,7 @@ public static class Program
         var path = Positional(args, 0);
         if (path is null)
         {
-            return Fail("usage: app run <manifest> [--store] [--host-version] [--validate-only] [--address] [--allow-remote] [--trust development|trusted-only] [--public-key <pem>]");
+            return Fail("usage: app run <manifest> [--store] [--host-version] [--validate-only] [--address] [--allow-remote] [--allowed-host <host> ...] [--trust development|trusted-only] [--public-key <pem>]");
         }
 
         var validateOnly = args.Contains("--validate-only", StringComparer.Ordinal);
@@ -1166,7 +1166,8 @@ public static class Program
             Host: UiHostKind.Web,
             HostVersion: HostVersion(args),
             ValidateOnly: validateOnly,
-            Trust: trust);
+            Trust: trust,
+            AllowedHosts: OptionValues(args, "--allowed-host"));
 
         return await PlatformRunner.RunAsync(options, new PlatformRunHooks
         {
@@ -1380,6 +1381,7 @@ public static class Program
         gocordis app add <manifest> <pluginId> [--range <version-range>] [--store]
         gocordis app enable|disable <manifest> <pluginId> [--store] [--host-version]
         gocordis app run <manifest> [--store] [--host-version] [--validate-only] [--address]
-                              [--allow-remote] [--trust development|trusted-only] [--public-key <pem> ...]
+                              [--allow-remote] [--allowed-host <host> ...]
+                              [--trust development|trusted-only] [--public-key <pem> ...]
         """);
 }

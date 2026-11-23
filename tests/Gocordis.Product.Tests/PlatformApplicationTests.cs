@@ -176,6 +176,37 @@ public sealed class PlatformApplicationTests
     }
 
     [Fact]
+    public async Task PlatformRunnerAllowedHostFlagsReachTheRouteGuard()
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var code = await PlatformRunner.RunAsync(
+        [
+            "--manifest", manifestPath, "--store", temp.Path("allowed-host-store"),
+            "--host-version", "1.5.0", "--allowed-host", "console.example.com",
+        ], new PlatformRunHooks
+        {
+            WriteStartupBanner = false,
+            WaitForShutdown = false,
+            AfterStartAsync = async app =>
+            {
+                using var client = new HttpClient(new HttpClientHandler { UseProxy = false })
+                {
+                    BaseAddress = app.Address,
+                };
+                using var allowed = new HttpRequestMessage(HttpMethod.Get, "/api/meta");
+                allowed.Headers.Host = "console.example.com";
+                Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(allowed)).StatusCode);
+
+                using var denied = new HttpRequestMessage(HttpMethod.Get, "/api/meta");
+                denied.Headers.Host = "evil.example.com";
+                Assert.Equal(HttpStatusCode.NotFound, (await client.SendAsync(denied)).StatusCode);
+            },
+        });
+        Assert.Equal(0, code);
+    }
+
+    [Fact]
     public async Task PlatformRunnerParsesTrustedOnlyConfiguration()
     {
         using var temp = new TempDir();

@@ -116,3 +116,40 @@ export function buildRuntimeGraph(dto: Partial<InsightGraphDTO> | null | undefin
 export function buildGraph(dto: Partial<InsightGraphDTO> | null | undefined, view: GraphView): G6GraphData {
   return view === "runtime" ? buildRuntimeGraph(dto) : buildDeclaredGraph(dto);
 }
+
+/**
+ * G6 render options for the graph. `container` is REQUIRED: G6's default is a
+ * string id 'container'; when no such element exists its canvas context init
+ * throws "Cannot read properties of undefined (reading 'getContext')". We keep
+ * option construction here so a unit test can lock the container requirement.
+ */
+export function graphOptions(data: G6GraphData, container: string | HTMLElement) {
+  return {
+    container,
+    autoFit: "view" as const,
+    data,
+    layout: { type: "dagre", rankdir: "LR", nodesep: 28, ranksep: 72 },
+    node: {
+      style: {
+        labelText: (d: { data?: { label?: string } }) => d?.data?.label ?? "",
+        labelPlacement: "bottom" as const,
+        size: [124, 38] as [number, number],
+        radius: 8,
+        fill: "#e6f0ff",
+        stroke: "#4d6bfe",
+        lineWidth: 1.5,
+        labelFill: "#1f1f1f",
+        labelFontSize: 11,
+      },
+    },
+    edge: {
+      style: {
+        labelText: (d: { data?: { label?: string } }) => d?.data?.label ?? "",
+        labelFontSize: 10,
+        stroke: "#8a93a6",
+        endArrow: true,
+      },
+    },
+    behaviors: ["drag-canvas", "zoom-canvas", "drag-element"],
+  };
+}

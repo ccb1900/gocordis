@@ -6,37 +6,11 @@ import { Alert, Segmented, Space, Typography } from "antd";
 import type { Graph } from "@antv/g6";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { COMPOSITION, useDomainVersion } from "../lib/projections";
-import { buildGraph, type G6GraphData } from "../lib/insight-graph-g6";
+import { buildGraph, graphOptions, type G6GraphData } from "../lib/insight-graph-g6";
 import type { GraphView, InsightGraphDTO } from "../lib/insight-graph";
 import type { BlockRenderer } from "./registry";
 
-const graphOptions = (data: G6GraphData) => ({
-  autoFit: "view" as const,
-  data,
-  layout: { type: "dagre", rankdir: "LR", nodesep: 28, ranksep: 72 },
-  node: {
-    style: {
-      labelText: (d: { data?: { label?: string } }) => d?.data?.label ?? "",
-      labelPlacement: "bottom" as const,
-      size: [124, 38] as [number, number],
-      radius: 8,
-      fill: "#e6f0ff",
-      stroke: "#4d6bfe",
-      lineWidth: 1.5,
-      labelFill: "#1f1f1f",
-      labelFontSize: 11,
-    },
-  },
-  edge: {
-    style: {
-      labelText: (d: { data?: { label?: string } }) => d?.data?.label ?? "",
-      labelFontSize: 10,
-      stroke: "#8a93a6",
-      endArrow: true,
-    },
-  },
-  behaviors: ["drag-canvas", "zoom-canvas", "drag-element"],
-});
+
 
 export const InsightGraphBlock: BlockRenderer = ({ block, ctx }) => {
   const [data, setData] = useState<InsightGraphDTO | null>(null);
@@ -81,7 +55,7 @@ export const InsightGraphBlock: BlockRenderer = ({ block, ctx }) => {
     let disposed = false;
     void import("@antv/g6").then(({ Graph: G6Graph }) => {
       if (disposed || !containerRef.current || readyRef.current) return;
-      const graph = new G6Graph(graphOptions(graphData));
+      const graph = new G6Graph(graphOptions(graphData, container));
       graphRef.current = graph;
       readyRef.current = true;
       void graph.render();

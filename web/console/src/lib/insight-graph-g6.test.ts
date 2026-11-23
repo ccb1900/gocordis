@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDeclaredGraph, buildGraph, buildRuntimeGraph } from "./insight-graph-g6";
+import { buildDeclaredGraph, buildGraph, buildRuntimeGraph, graphOptions } from "./insight-graph-g6";
 import type { InsightGraphDTO } from "./insight-graph";
 
 const dto: InsightGraphDTO = {
@@ -28,6 +28,18 @@ const dto: InsightGraphDTO = {
   },
   eventSequence: 42,
 };
+
+describe("G6 render options", () => {
+  it("ALWAYS carries the real container — G6 canvas init crashes without it", () => {
+    const container = { nodeName: "DIV" } as unknown as HTMLElement;
+    const opts = graphOptions({ nodes: [], edges: [] }, container);
+    expect(opts.container).toBe(container);
+    // Guard the regression that produced a blank page: dropping container
+    // makes G6 fall back to string 'container', leaving $canvas undefined.
+    expect(opts.container).not.toBe("container");
+    expect(opts.container).toBeTruthy();
+  });
+});
 
 describe("DTO → AntV G6 graph mapping", () => {
   it("maps the declared view into G6 nodes and key edges", () => {

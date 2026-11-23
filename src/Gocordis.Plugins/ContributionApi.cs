@@ -365,6 +365,7 @@ public sealed class ConsoleHost
         Api.RegisterQuery("runtime/events", RuntimeEvents, owner);
         Api.RegisterQuery("framework/dashboard", Dashboard, owner);
         Api.RegisterQuery("insight/graph", InsightGraph, owner);
+        Api.RegisterQuery("config/schema", ConfigSchema, owner);
     }
 
     public Gocordis.Core.Runtime Runtime { get; }
@@ -516,6 +517,30 @@ public sealed class ConsoleHost
     public void AttachRegistry(Plugins.PluginRegistry registry) => _registry = registry;
     private Plugins.PluginRegistry RegistryForInsight() =>
         _registry ?? new Plugins.PluginRegistry(Runtime);
+
+    /// <summary>
+    /// Canonical config/schema wire shape (Go insight/dto.go SchemaList):
+    /// {components:[{type, schema}]} where schema is the generated JSON Schema
+    /// document. The console's ConfigEditor consumes it to drive typed forms;
+    /// an empty list keeps the legacy value-typed editor.
+    /// </summary>
+    private JsonObject ConfigSchema()
+    {
+        var components = new JsonArray();
+        if (_registry is not null)
+        {
+            foreach (var (type, schema) in _registry.SchemasFor())
+            {
+                components.Add(new JsonObject
+                {
+                    ["type"] = type,
+                    ["schema"] = JsonNode.Parse(schema.ToJsonSchema()),
+                });
+            }
+        }
+
+        return new JsonObject { ["components"] = components };
+    }
 
     public JsonObject RuntimeSnapshot()
     {

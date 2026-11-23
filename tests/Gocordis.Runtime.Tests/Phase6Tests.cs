@@ -89,6 +89,9 @@ public sealed class Phase6Tests
         var graph = host.Api.Query("insight/graph")!;
         Assert.NotNull(graph["declared"]);
         Assert.NotNull(graph["runtime"]);
+        // config/schema must be registered (no 404) with the frontend's DTO shape.
+        var schemas = host.Api.Query("config/schema")!;
+        Assert.NotNull(schemas["components"]);
     }
 
     [Fact]

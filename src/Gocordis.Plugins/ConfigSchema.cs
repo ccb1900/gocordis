@@ -245,5 +245,31 @@ public static class PluginRegistrySchemaExtensions
                 return _schemas.TryGetValue(type, out schema);
             }
         }
+
+        /// <summary>Stable snapshot of all registered type→schema pairs, ordered
+        /// by type so the config/schema query is deterministic.</summary>
+        public IReadOnlyList<KeyValuePair<string, ConfigSchema>> Snapshot()
+        {
+            lock (_sync)
+            {
+                return _schemas
+                    .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                    .ToArray();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Read model for the console's <c>config/schema</c> query: the JSON Schema
+    /// document registered for each plugin type. Returns an empty list when the
+    /// registry has no validated factories (the console then keeps its legacy
+    /// value-typed config form).
+    /// </summary>
+    public static IReadOnlyList<KeyValuePair<string, ConfigSchema>> SchemasFor(this PluginRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        return Tables.TryGetValue(registry, out var table)
+            ? table.Snapshot()
+            : Array.Empty<KeyValuePair<string, ConfigSchema>>();
     }
 }

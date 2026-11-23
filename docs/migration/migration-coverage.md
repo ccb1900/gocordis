@@ -72,8 +72,10 @@ R8 历史：412 = Core 27 / Conformance 145 / Runtime 119 / Extensions 59 /
 Packaging 40 / UI 3 / Client 2 / Product 17（连续 3 次本地全绿）
 R9 历史：418 = Core 27 / Conformance 145 / Runtime 123 / Extensions 59 /
 Packaging 41 / UI 3 / Client 2 / Product 18（连续 3 次本地全绿）
-R10 当前最终：442 = Core 33 / Conformance 148 / Runtime 126 / Extensions 60 /
-Packaging 46 / UI 3 / Client 2 / Product 24（连续 3 次本地全绿；Go 基线裁决见 review-round-10.md）
+R10 历史：442 = Core 33 / Conformance 148 / Runtime 126 / Extensions 60 /
+Packaging 46 / UI 3 / Client 2 / Product 24（连续 3 次本地全绿）
+R11 当前最终：443 = Core 33 / Conformance 148 / Runtime 126 / Extensions 60 /
+Packaging 47 / UI 3 / Client 2 / Product 24（连续 3 次本地全绿；实跑修正见 review-round-11.md）
 ```
 
 上述 119 / 123 / 396 均为阶段历史记录，不得与 R8 当前计数混用；阶段状态仍以各节证据为准。

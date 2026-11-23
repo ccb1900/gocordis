@@ -76,7 +76,8 @@ public sealed class PlatformApplicationTests
         Assert.Contains("plugin-control-plane", controlFiber.Provides);
         Assert.NotNull(app.Control);
         Assert.Same(app.Control, app.Runtime.RequireCapability(ControlPlaneKeys.Service));
-        Assert.Contains(app.Console.Ui.Pages(), page => page.Id == "plugin-control-plane");
+        var controlPage = Assert.Single(app.Console.Ui.Pages(), page => page.Id == "plugin-control-plane");
+        Assert.Equal("plugin-explorer", controlPage.Renderer);
 
         // The existing HTTP contract still goes through the resolved capability.
         Assert.NotNull(app.Address);

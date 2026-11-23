@@ -190,14 +190,18 @@ public static class Program
         var output = Positional(args, 1);
         if (source is null || output is null)
         {
-            return Fail("usage: plugin pack|package <sourceDir> <output.gocordis-plugin> [--id] [--version] [--type] [--host-range]");
+            return Fail("usage: plugin pack|package <sourceDir> <output.gocordis-plugin> " +
+                        "[--id] [--version] [--type] [--host-range] [--backend] [--entry-assembly] [--entry-type]");
         }
 
         var manifest = new PluginPackageManifest(
-            Option(args, "--id") ?? new DirectoryInfo(source).Name,
-            Option(args, "--version") ?? "1.0.0",
-            Option(args, "--type") ?? Option(args, "--id") ?? new DirectoryInfo(source).Name,
-            Option(args, "--host-range") ?? "[1.0,)");
+            Id: Option(args, "--id") ?? new DirectoryInfo(source).Name,
+            Version: Option(args, "--version") ?? "1.0.0",
+            Type: Option(args, "--type") ?? Option(args, "--id") ?? new DirectoryInfo(source).Name,
+            HostVersionRange: Option(args, "--host-range") ?? "[1.0,)",
+            Backend: Option(args, "--backend"),
+            EntryAssembly: Option(args, "--entry-assembly"),
+            EntryType: Option(args, "--entry-type"));
         var written = await PluginPackageWriter.CreateAsync(source, manifest, output);
         Write(new { packed = output, written.Id, written.Version, written.Checksum });
         return 0;

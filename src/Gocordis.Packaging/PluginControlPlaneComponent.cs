@@ -48,7 +48,7 @@ public sealed class PluginControlPlaneComponent : Component
                 _ui,
                 ContributionOwner.ForContext(context, "plugin-control-plane", Name),
                 new UiPageDefinition(
-                    "plugin-control-plane", "Plugin control plane", "/plugins/control-plane", "plugins",
+                    "plugin-control-plane", "Plugin control plane", "/plugins/control-plane", "plugin-explorer",
                     Description: "Plugin declarations, packages and lifecycle control"));
         }
 

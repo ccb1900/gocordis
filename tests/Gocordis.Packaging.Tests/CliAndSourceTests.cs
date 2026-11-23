@@ -53,6 +53,26 @@ public sealed class CliAndSourceTests
     }
 
     [Fact]
+    public async Task CliPackDeclaresManagedBackendAndEntry()
+    {
+        using var temp = new TempDir();
+        var source = System.IO.Path.Combine(temp.Root, "source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(System.IO.Path.Combine(source, "demo.dll"), "binary");
+        var package = System.IO.Path.Combine(temp.Root, "demo.gocordis-plugin");
+
+        var result = await RunAsync("plugin", "pack", source, package,
+            "--id", "demo", "--version", "1.0.0", "--type", "demo", "--host-range", "[1.0,)",
+            "--backend", "managed", "--entry-assembly", "demo.dll", "--entry-type", "Demo.Plugin");
+        Assert.Equal(0, result.Code);
+
+        var content = await PluginPackageReader.ReadAsync(package, "1.5.0");
+        Assert.Equal("managed", content.Manifest.Backend);
+        Assert.Equal("demo.dll", content.Manifest.EntryAssembly);
+        Assert.Equal("Demo.Plugin", content.Manifest.EntryType);
+    }
+
+    [Fact]
     public async Task CliCreateGeneratesBuildableAppScaffold()
     {
         using var temp = new TempDir();

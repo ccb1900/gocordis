@@ -12,6 +12,9 @@ Web 控制台并打开浏览器检查页面。
 2. CLI `plugin pack` 没有 `--backend/--entry-assembly/--entry-type`，
    `plugin create` 生成的 C# 插件无法用标准 CLI 打成可执行的 Managed 包。
    已补齐三个选项并加包往返测试。
+3. 空列表文案误导用户去“激活 plugin-explorer 组件”。实际上
+   `plugin-explorer` 只是 Console renderer，数据源是控制面 `/api/plugins`。
+   文案已改为“安装并声明一个插件后刷新；数据来自插件控制面 /api/plugins”。
 
 ## 实时运行证据
 

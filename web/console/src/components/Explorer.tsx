@@ -183,8 +183,9 @@ export function PluginExplorer() {
     [refresh]
   );
 
-  // Honest empty state: the endpoint is part of the hub, so an empty list
-  // means either no plugin is declared or the control component is not active.
+  // Empty list means no declaration is present. The data source is the product
+  // control plane's /api/plugins endpoint; plugin-explorer is only this page's
+  // frontend renderer, not a runtime component that must be activated.
   if (!loading && plugins.length === 0) {
     return (
       <section className="card" style={{ padding: "20px 22px" }}>
@@ -197,7 +198,7 @@ export function PluginExplorer() {
         </div>
         <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />
         {notice && <Alert type="success" showIcon message={notice.text} description={resultDetail(notice.result)} style={{ marginBottom: 12 }} />}
-        <Empty description="插件清单为空：声明一个插件，或激活 plugin-explorer 组件后刷新" />
+        <Empty description="插件清单为空：安装并声明一个插件后刷新；数据来自插件控制面 /api/plugins" />
       </section>
     );
   }

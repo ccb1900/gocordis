@@ -1,31 +1,34 @@
 name: windows-dotnet
 
-# Windows-specific verification for the .NET migration: collectible ALC reclaim,
-# process plugin .exe resolution and the whole xUnit suite on Windows.
-on:
-  push:
-    branches: [main, migration/dotnet]
-  pull_request:
-    branches: [main, migration/dotnet]
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   windows-tests:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
+          global-json-file: global.json
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/console/package-lock.json
-      - name: Frontend build (web/console)
+
+      - name: Console production build
         working-directory: web/console
         run: npm ci && npm run build
-      - name: Build
+
+      - name: Build (.NET solution)
         run: dotnet build Gocordis.sln --nologo -m:1
-      - name: Test (includes ALC reclaim and process .exe paths)
+
+      - name: Test (.NET solution, Windows ALC and process paths)
         run: dotnet test Gocordis.sln --nologo --no-build -m:1

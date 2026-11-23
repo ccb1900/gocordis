@@ -1,0 +1,9 @@
+<Project>
+  <!-- DeclarationGapTests covers the declaration pipeline in Gocordis.Plugins
+       and its CLI/market/package adapters in Gocordis.Extensions. The test
+       project only declares the Plugins reference, so add the Extensions
+       project reference here without editing the shared .csproj. -->
+  <ItemGroup>
+    <ProjectReference Include="$(MSBuildThisFileDirectory)../../src/Gocordis.Extensions/Gocordis.Extensions.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Gocordis.Core/Gocordis.Core.csproj" />
+    <ProjectReference Include="../../src/Gocordis.Packaging/Gocordis.Packaging.csproj" />
+    <ProjectReference Include="../../src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
+    <ProjectReference Include="../../src/Gocordis.Runtime.Managed/Gocordis.Runtime.Managed.csproj" />
+    <ProjectReference Include="../../src/Gocordis.Platform/Gocordis.Platform.csproj" />
+    <ProjectReference Include="../../samples/HttpdHost/HttpdHost.csproj" />
+    <ProjectReference Include="../../samples/BackfillApp/BackfillApp.csproj" />
+    <ProjectReference Include="../../samples/KoishiCase/KoishiCase.csproj" />
+  </ItemGroup>
+</Project>

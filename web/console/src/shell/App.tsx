@@ -105,6 +105,11 @@ export default function App() {
   // composition.* observation moves the composition domain — not on every
   // file event.
   const compositionVersion = useDomainVersion("composition");
+  // Plugin control-plane events (SSE `plugin-state`, folded into the `plugin`
+  // domain by projections) are a declaration change: enabling a UI plugin can
+  // add/remove pages, panels and client modules. Re-read composition and
+  // reconcile modules on that domain too — not only on observations.
+  const pluginVersion = useDomainVersion("plugin");
   useEffect(() => {
     refresh();
     // A ui-client component appearing, disappearing (disable/uninstall) or
@@ -113,7 +118,7 @@ export default function App() {
     // renderers, changed ones re-import. Unchanged modules are left alone.
     void reconcileClientModules();
     return onObservation(() => undefined);
-  }, [refresh, compositionVersion]);
+  }, [refresh, compositionVersion, pluginVersion]);
 
   const active = useMemo(() => pages.find((p) => p.route === path), [pages, path]);
   // "/" 不是任何页面的路由：规范化到组合序第一页（服务端按 order 排序

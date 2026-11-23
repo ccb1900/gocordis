@@ -32,7 +32,18 @@ public sealed class Fiber
     /// <summary>Legacy counter; ActivationId is the authoritative identity.</summary>
     public int Generation { get; internal set; }
 
+    /// <summary>
+    /// Revision of the ownership position. A realm reassignment is a revision:
+    /// it retires this fiber and reinserts a NEW fiber at the next revision.
+    /// </summary>
+    public long Revision { get; internal set; }
+
     public Exception? Failure { get; internal set; }
+
+    /// <summary>Failed inverses from the most recent unwind (never masked as Undone).</summary>
+    public IReadOnlyList<Exception> CleanupFailures { get; internal set; } = [];
+
+    public bool CleanupIncomplete => CleanupFailures.Count > 0;
     internal bool IsActivating { get; set; }
 
     internal Activation? CurrentActivation { get; set; }

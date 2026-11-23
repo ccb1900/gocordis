@@ -34,24 +34,29 @@ public sealed class WasmHotSwapper : IAsyncDisposable
 
     /// <summary>
     /// Release the current fiber only when the supplied generation is still
-    /// current. A stale handle returns false and changes nothing.
+    /// current. A stale handle returns false and changes nothing. Release shares
+    /// the replacement gate, so it can never interleave with a commit's
+    /// withdraw/write-back of _current.
     /// </summary>
     public async Task<bool> ReleaseGenerationAsync(GenerationHandle handle)
     {
-        if (!handle.Release())
+        await _replaceGate.WaitAsync().ConfigureAwait(false);
+        try
         {
-            return false;
-        }
+            // The fence is checked inside the gate: a replacement that committed
+            // first has already advanced the generation and must stay current.
+            if (!handle.Release())
+            {
+                return false;
+            }
 
-        var fiber = _current;
-        _current = null;
-        if (fiber is not null)
+            await RetireCurrentAsync().ConfigureAwait(false);
+            return true;
+        }
+        finally
         {
-            await _runtime.DisposeAsync(fiber);
-            await fiber.GoneAsync();
+            _replaceGate.Release();
         }
-
-        return true;
     }
 
     public async Task<Fiber> ReplaceAsync(string wat)
@@ -81,11 +86,7 @@ public sealed class WasmHotSwapper : IAsyncDisposable
 
             try
             {
-                if (_current is not null)
-                {
-                    await _runtime.DisposeAsync(_current);
-                    await _current.GoneAsync();
-                }
+                await RetireCurrentAsync().ConfigureAwait(false);
 
                 _current = await _runtime.LoadAsync(
                     new WasmComponent(wat, _key, _bridge, _tracker));
@@ -110,14 +111,31 @@ public sealed class WasmHotSwapper : IAsyncDisposable
         }
 
         _disposed = true;
-        await _replaceGate.WaitAsync();
+        await _replaceGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            await ReleaseGenerationAsync(_tracker.Begin());
+            // Invalidate outstanding handles, then retire inside the gate. Do
+            // not route through ReleaseGenerationAsync: its fence could have
+            // been advanced by an earlier queued replacement and would skip
+            // retiring a still-live fiber.
+            _tracker.Begin();
+            await RetireCurrentAsync().ConfigureAwait(false);
         }
         finally
         {
             _replaceGate.Release();
+        }
+    }
+
+    /// <summary>Withdraws and retires _current. Caller must hold _replaceGate.</summary>
+    private async Task RetireCurrentAsync()
+    {
+        var fiber = _current;
+        _current = null;
+        if (fiber is not null)
+        {
+            await _runtime.DisposeAsync(fiber).ConfigureAwait(false);
+            await fiber.GoneAsync().ConfigureAwait(false);
         }
     }
 }

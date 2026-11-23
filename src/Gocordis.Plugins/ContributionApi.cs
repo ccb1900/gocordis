@@ -103,7 +103,8 @@ public sealed class UiContributionRegistry
         {
             EnsureFree("client-module", definition.Name, owner);
             var module = new UiClientModule(
-                definition.Name, definition.Url, definition.Revision, definition.Entry, owner);
+                definition.Name, definition.Url, definition.Revision, definition.Entry, owner,
+                definition.Source, definition.PackageId, definition.PackageVersion, definition.ContentHash);
             _modules[definition.Name] = module;
             return Track("client-module", definition.Name, owner);
         }

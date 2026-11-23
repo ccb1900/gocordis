@@ -49,19 +49,33 @@ public sealed record UiPanel(
     int Order,
     ContributionOwner Owner);
 
-/// <summary>One plugin frontend module contribution served same-origin by the console.</summary>
+/// <summary>
+/// One plugin frontend module contribution served same-origin by the console.
+/// Source is the installed plugin's version directory: the WebUi adapter serves
+/// bytes from there and never from AppContext.BaseDirectory/client-modules.
+/// ContentHash is the digest of the installed module files; together with
+/// Revision it forms the URL's cache key so an upgrade re-imports the module.
+/// </summary>
 public sealed record UiClientModuleDefinition(
     string Name,
     string Url,
     string Revision,
-    string Entry);
+    string Entry,
+    string? Source = null,
+    string? PackageId = null,
+    string? PackageVersion = null,
+    string? ContentHash = null);
 
 public sealed record UiClientModule(
     string Name,
     string Url,
     string Revision,
     string Entry,
-    ContributionOwner Owner);
+    ContributionOwner Owner,
+    string? Source = null,
+    string? PackageId = null,
+    string? PackageVersion = null,
+    string? ContentHash = null);
 
 /// <summary>Idempotent handle whose identity is verified before an owner may undo it.</summary>
 public sealed class UiContributionHandle : IDisposable

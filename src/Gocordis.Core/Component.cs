@@ -37,6 +37,20 @@ public sealed record FiberSnapshot(
     IReadOnlyList<string> Requires,
     IReadOnlyList<string> Provides,
     IReadOnlyList<string> BoundProviders,
-    string? Failure);
+    string? Failure)
+{
+    /// <summary>Revision counter: a realm reassignment creates a new fiber at a higher revision.</summary>
+    public long Revision { get; init; }
 
-public sealed record RuntimeSnapshot(IReadOnlyList<FiberSnapshot> Fibers);
+    /// <summary>True when at least one inverse failed during this fiber's unwind.</summary>
+    public bool CleanupIncomplete { get; init; }
+
+    /// <summary>Messages of inverses that failed during unwind.</summary>
+    public IReadOnlyList<string> CleanupFailures { get; init; } = [];
+}
+
+public sealed record RuntimeSnapshot(IReadOnlyList<FiberSnapshot> Fibers)
+{
+    /// <summary>Cleanup failures are retained even after the offending fiber goes Gone.</summary>
+    public IReadOnlyList<CleanupFailureRecord> CleanupFailures { get; init; } = [];
+}

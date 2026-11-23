@@ -26,6 +26,25 @@ public sealed class Runtime : IAsyncDisposable
     private sealed record DisposeCommand(Fiber Fiber, TaskCompletionSource Reply) : RuntimeCommand;
     private sealed record CloseCommand(TaskCompletionSource Reply) : RuntimeCommand;
 
+    /// <summary>Per-key route declaration, applied only inside the decision domain.</summary>
+    private sealed record IsolateCommand(
+        Fiber Fiber, ICapabilityKey Key, Realm Realm, TaskCompletionSource Reply) : RuntimeCommand;
+
+    /// <summary>
+    /// Paper C34 revision composite: retire the old fiber, deactivate it,
+    /// O-Remove its records and reinsert the same-name component at a fresh
+    /// realm/identity. All steps run on this command loop.
+    /// </summary>
+    private sealed record RehomeCommand(
+        Fiber Fiber,
+        Realm Realm,
+        Component? Replacement,
+        TaskCompletionSource<Fiber> Reply) : RuntimeCommand
+    {
+        internal Dictionary<ICapabilityKey, Realm> CapturedOverrides { get; set; } = [];
+        internal Dictionary<ICapabilityKey, Fiber.MetaState> CapturedMetadata { get; set; } = [];
+    }
+
     private sealed record StepRequestCommand(
         Activation Activation, TaskCompletionSource<bool> Reply) : RuntimeCommand;
 
@@ -65,6 +84,8 @@ public sealed class Runtime : IAsyncDisposable
     private readonly Dictionary<long, Activation> _activations = [];
     private readonly Dictionary<Guid, List<TaskCompletionSource>> _disposeWaiters = [];
     private readonly List<LoadCommand> _awaitingLoads = [];
+    private readonly Dictionary<Guid, RehomeCommand> _pendingRehomes = [];
+    private readonly List<CleanupFailureRecord> _cleanupFailures = [];
     private readonly Dictionary<long, int> _unwindWaiters = [];
     private readonly HashSet<long> _unwinding = [];
     private readonly HashSet<long> _unwindRunning = [];
@@ -119,6 +140,42 @@ public sealed class Runtime : IAsyncDisposable
         return reply.Task;
     }
 
+    /// <summary>
+    /// Paper C34: reassign a fiber to a realm as a revision composite. The old
+    /// fiber is retired and deactivated, its records are removed, then a NEW
+    /// fiber with the same name/component is reinserted at the new realm. The
+    /// returned task completes only when the replacement is Active.
+    /// </summary>
+    public Task<Fiber> RehomeAsync(Fiber fiber, Realm realm, Component? replacement = null)
+    {
+        ArgumentNullException.ThrowIfNull(fiber);
+        ArgumentNullException.ThrowIfNull(realm);
+        if (replacement is not null &&
+            !string.Equals(replacement.Name, fiber.Component.Name, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("a rehome must reinsert the same component name", nameof(replacement));
+        }
+
+        var reply = new TaskCompletionSource<Fiber>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!TryWrite(new RehomeCommand(fiber, realm, replacement, reply)))
+        {
+            throw new ObjectDisposedException(nameof(Runtime));
+        }
+
+        return reply.Task;
+    }
+
+    internal ValueTask IsolateAsync(Fiber fiber, ICapabilityKey key, Realm realm)
+    {
+        var reply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!TryWrite(new IsolateCommand(fiber, key, realm, reply)))
+        {
+            throw new ObjectDisposedException(nameof(Runtime));
+        }
+
+        return new ValueTask(reply.Task);
+    }
+
     internal Task<Fiber> LoadChildAsync(Component component, Fiber parent)
     {
         var reply = new TaskCompletionSource<Fiber>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -163,6 +220,32 @@ public sealed class Runtime : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Read-only capability lookup for composition roots. Resolves the default
+    /// realm's committed provider under the state lock and returns its provided
+    /// value. It records no binding, installs no effect and changes no lifecycle
+    /// state: dependency declarations and reconciliation remain the only way to
+    /// govern activation.
+    /// </summary>
+    public T RequireCapability<T>(Key<T> key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        lock (_stateLock)
+        {
+            var provider = FindProvider(Realm.Default, key);
+            if (provider is null ||
+                provider.State != FiberState.Active ||
+                provider.CurrentActivation?.Phase != ActivationPhase.Committed ||
+                !provider.Provided.TryGetValue(key, out var value))
+            {
+                throw new DependencyMissingException(
+                    $"no active provider for capability '{key.Name}'");
+            }
+
+            return (T)value!;
+        }
+    }
+
     // ---- decision loop ------------------------------------------------------
 
     private async Task RunAsync()
@@ -191,6 +274,12 @@ public sealed class Runtime : IAsyncDisposable
                                 break;
                             case CloseCommand close:
                                 HandleClose(close);
+                                break;
+                            case IsolateCommand isolate:
+                                HandleIsolate(isolate);
+                                break;
+                            case RehomeCommand rehome:
+                                HandleRehome(rehome);
                                 break;
                             case StepRequestCommand request:
                                 HandleStepRequest(request);
@@ -226,7 +315,7 @@ public sealed class Runtime : IAsyncDisposable
         }
     }
 
-    private static void Fail(RuntimeCommand command, Exception ex)
+    private void Fail(RuntimeCommand command, Exception ex)
     {
         switch (command)
         {
@@ -238,6 +327,13 @@ public sealed class Runtime : IAsyncDisposable
                 break;
             case CloseCommand close:
                 close.Reply.TrySetException(ex);
+                break;
+            case IsolateCommand isolate:
+                isolate.Reply.TrySetException(ex);
+                break;
+            case RehomeCommand rehome:
+                rehome.Reply.TrySetException(ex);
+                _pendingRehomes.Remove(rehome.Fiber.Id);
                 break;
             case StepRequestCommand request:
                 request.Reply.TrySetResult(false);
@@ -376,6 +472,132 @@ public sealed class Runtime : IAsyncDisposable
         CheckCloseComplete();
     }
 
+    private void HandleIsolate(IsolateCommand command)
+    {
+        if (_closing)
+        {
+            throw new ObjectDisposedException(nameof(Runtime));
+        }
+
+        if (!_fibers.TryGetValue(command.Fiber.Id, out var current) ||
+            !ReferenceEquals(current, command.Fiber))
+        {
+            command.Reply.TrySetException(new DivertedException());
+            return;
+        }
+
+        // The decision domain owns fiber state; Context only declares the route.
+        command.Fiber.RealmOverrides[command.Key] = command.Realm;
+        _bindingsChanged = true;
+        _pendingReplies.Add(() => command.Reply.TrySetResult());
+    }
+
+    private void HandleRehome(RehomeCommand command)
+    {
+        var fiber = command.Fiber;
+        if (_closing)
+        {
+            throw new ObjectDisposedException(nameof(Runtime));
+        }
+
+        if (!_fibers.TryGetValue(fiber.Id, out var current) || !ReferenceEquals(current, fiber) ||
+            fiber.State != FiberState.Active || fiber.CurrentActivation?.Phase != ActivationPhase.Committed)
+        {
+            command.Reply.TrySetException(new InvalidOperationException("rehome requires an Active fiber"));
+            return;
+        }
+
+        if (_pendingRehomes.ContainsKey(fiber.Id))
+        {
+            command.Reply.TrySetException(new InvalidOperationException("rehome already in progress"));
+            return;
+        }
+
+        // Snapshot the ownership position before the old fiber is torn down:
+        // per-key routes and metadata are inherited by the reinserted fiber,
+        // except for declared keys, which follow the fresh realm.
+        command.CapturedOverrides = new Dictionary<ICapabilityKey, Realm>(
+            fiber.RealmOverrides, ReferenceEqualityComparer.Instance);
+        command.CapturedMetadata = new Dictionary<ICapabilityKey, Fiber.MetaState>(
+            fiber.Metadata, ReferenceEqualityComparer.Instance);
+        _pendingRehomes[fiber.Id] = command;
+
+        // Paper C34: retire -> deactivate (LIFO inverses, children before
+        // parent) -> O-Remove. The reinsert step runs when the old fiber's
+        // unwind reports completion; see CompleteRehome.
+        fiber.Intent = LifecycleIntent.Retired;
+        StartUnwind(fiber, dependencyLoss: false);
+    }
+
+    private void CompleteRehome(Fiber old, RehomeCommand command)
+    {
+        var component = command.Replacement ?? old.Component;
+        var replacement = new Fiber(Guid.NewGuid(), component, old.Parent, old.Generation + 1)
+        {
+            Realm = command.Realm,
+            Revision = old.Revision + 1,
+        };
+
+        var declared = new HashSet<ICapabilityKey>(
+            [.. component.Inject(), .. component.Provide()], ReferenceEqualityComparer.Instance);
+        foreach (var pair in command.CapturedOverrides)
+        {
+            if (!declared.Contains(pair.Key))
+            {
+                replacement.RealmOverrides[pair.Key] = pair.Value;
+            }
+        }
+
+        foreach (var pair in command.CapturedMetadata)
+        {
+            replacement.Metadata[pair.Key] = new Fiber.MetaState
+            {
+                Declared = pair.Value.Declared,
+                Override = pair.Value.Override,
+            };
+        }
+
+        foreach (var key in component.Provide())
+        {
+            var existing = FindProvider(EffectiveRealm(replacement, key), key);
+            if (existing is not null && !ReferenceEquals(existing, old))
+            {
+                command.Reply.TrySetException(new DuplicateProviderException(
+                    $"key '{key.Name}' is already provided after rehome"));
+                return;
+            }
+        }
+
+        _fibers[replacement.Id] = replacement;
+        old.Parent?.AddChild(replacement);
+        var cycle = FindCycle();
+        if (cycle is not null)
+        {
+            _fibers.Remove(replacement.Id);
+            old.Parent?.RemoveChild(replacement);
+            command.Reply.TrySetException(new DependencyCycleException($"dependency cycle: {cycle}"));
+            return;
+        }
+
+        // Same-name reinsert at the same ownership position. Reply is held until
+        // the replacement is Active, just like a regular Load.
+        _awaitingLoads.Add(new LoadCommand(
+            component, old.Parent, command.Realm, command.Reply, AwaitActivation: true)
+        {
+            Created = replacement,
+        });
+        _bindingsChanged = true;
+    }
+
+    private void RecordCleanupFailures(Fiber fiber, CleanupIncompleteException error)
+    {
+        fiber.CleanupFailures = error.InnerExceptions;
+        foreach (var failure in error.InnerExceptions)
+        {
+            _cleanupFailures.Add(new CleanupFailureRecord(fiber.Id, fiber.Component.Name, failure.Message));
+        }
+    }
+
     private void HandleStepRequest(StepRequestCommand command)
     {
         var activation = command.Activation;
@@ -486,12 +708,22 @@ public sealed class Runtime : IAsyncDisposable
         _unwindRunning.Remove(activation.Id);
         if (!activation.IsCurrent || activation.Phase != ActivationPhase.Unwinding)
         {
+            if (command.Error is CleanupIncompleteException staleError)
+            {
+                RecordCleanupFailures(activation.Fiber, staleError);
+            }
+
             ForgetActivation(activation);
             CheckCloseComplete();
             return;
         }
 
         var fiber = activation.Fiber;
+        var cleanupError = command.Error as CleanupIncompleteException;
+        if (cleanupError is not null)
+        {
+            RecordCleanupFailures(fiber, cleanupError);
+        }
         var providerActivations = fiber.Committed.Values.Select(b => b.ActivationId).Distinct().ToArray();
         var providedRealms = new Dictionary<ICapabilityKey, Realm>(ReferenceEqualityComparer.Instance);
         foreach (var key in fiber.Component.Provide())
@@ -526,6 +758,13 @@ public sealed class Runtime : IAsyncDisposable
             fiber.SignalGone();
             CompleteDispose(fiber);
         }
+        else if (cleanupError is not null)
+        {
+            // A failed inverse is a terminal outcome, not a clean Pending that
+            // the reconciler would silently reactivate.
+            fiber.State = FiberState.Failed;
+            fiber.Failure = cleanupError;
+        }
         else if (fiber.Failure is not null)
         {
             fiber.State = FiberState.Failed;
@@ -533,6 +772,11 @@ public sealed class Runtime : IAsyncDisposable
         else
         {
             fiber.State = FiberState.Pending;
+        }
+
+        if (_pendingRehomes.Remove(fiber.Id, out var rehome))
+        {
+            CompleteRehome(fiber, rehome);
         }
 
         foreach (var providerId in providerActivations)
@@ -641,6 +885,7 @@ public sealed class Runtime : IAsyncDisposable
         _realmProviders.Clear();
         _disposeWaiters.Clear();
         _unwindWaiters.Clear();
+        _pendingRehomes.Clear();
     }
 
     private void CompletePendingReplies()
@@ -869,41 +1114,74 @@ public sealed class Runtime : IAsyncDisposable
         // still Require the dependency.
         activation.Cancellation.Cancel();
 
-        var consumers = _fibers.Values.Count(other =>
+        var consumers = _fibers.Values.Where(other =>
             !ReferenceEquals(other, fiber) &&
             other.Committed.Values.Any(b =>
-                b.FiberId == fiber.Id && b.ActivationId == activation.Id));
-        var children = fiber.ChildList.Count(c => c.State != FiberState.Gone);
-        var waiting = consumers + children;
+                b.FiberId == fiber.Id && b.ActivationId == activation.Id)).ToArray();
 
+        // Only a child that still owns an activation can report back through
+        // UnwindCompleted and release this waiter count. An Unwinding child is
+        // included because its in-flight teardown will report; Unwound is already
+        // terminal. A Pending/Failed child has no activation at all, so it must
+        // be retired here instead of stranding the parent's waiter count.
+        var liveChildren = new List<Fiber>();
+        foreach (var child in fiber.ChildList.ToArray())
+        {
+            if (HasReportableActivation(child))
+            {
+                liveChildren.Add(child);
+            }
+            else
+            {
+                RetireActivationlessChild(child);
+            }
+        }
+
+        var waiting = consumers.Length + liveChildren.Count;
         if (waiting > 0)
         {
             _unwindWaiters[activation.Id] = waiting;
-            foreach (var child in fiber.ChildList.ToArray())
+            foreach (var child in liveChildren)
             {
-                if (child.State == FiberState.Gone)
-                {
-                    continue;
-                }
-
                 child.Intent = LifecycleIntent.Retired;
                 StartUnwind(child, dependencyLoss: false);
             }
 
-            foreach (var other in _fibers.Values.ToArray())
+            foreach (var other in consumers)
             {
-                if (!ReferenceEquals(other, fiber) &&
-                    other.Committed.Values.Any(b =>
-                        b.FiberId == fiber.Id && b.ActivationId == activation.Id))
-                {
-                    StartUnwind(other, dependencyLoss: true);
-                }
+                StartUnwind(other, dependencyLoss: true);
             }
 
             return;
         }
 
         BeginUnwindExecution(activation);
+    }
+
+    /// <summary>
+    /// A child participates in teardown only while it has a current activation
+    /// whose completion produces a report. Unwinding still counts: that unwind
+    /// is already running and will release the parent's waiter.
+    /// </summary>
+    private static bool HasReportableActivation(Fiber child) =>
+        child.CurrentActivation is { } activation &&
+        activation.IsCurrent &&
+        activation.Phase != ActivationPhase.Unwound;
+
+    /// <summary>
+    /// Terminal handling for a child with no activation to unwind. It can never
+    /// send UnwindCompleted, so give it the same Gone bookkeeping a completed
+    /// unwind would have produced and detach it from the parent.
+    /// </summary>
+    private void RetireActivationlessChild(Fiber child)
+    {
+        child.Intent = LifecycleIntent.Retired;
+        child.State = FiberState.Gone;
+        _fibers.Remove(child.Id);
+        child.Parent?.RemoveChild(child);
+        child.SignalGone();
+        CompleteDispose(child);
+        _bindingsChanged = true;
     }
 
     private void BeginUnwindExecution(Activation activation)
@@ -922,12 +1200,13 @@ public sealed class Runtime : IAsyncDisposable
 
     private async Task RunUnwindAsync(Activation activation)
     {
+        List<Exception>? failures = null;
         try
         {
             for (var i = activation.Effects.Count - 1; i >= 0; i--)
             {
                 var slot = activation.Effects[i];
-                if (slot.State == EffectState.Undone || slot.Inverse is null)
+                if (slot.State is EffectState.Undone or EffectState.Failed || slot.Inverse is null)
                 {
                     continue;
                 }
@@ -936,21 +1215,25 @@ public sealed class Runtime : IAsyncDisposable
                 try
                 {
                     await slot.Inverse();
+                    slot.State = EffectState.Undone;
                 }
-                catch
+                catch (Exception error)
                 {
-                    // a failing inverse must not prevent the remaining inverses
+                    // Keep unwinding the rest of the stack, but never report a
+                    // failed inverse as a clean Undo.
+                    (failures ??= []).Add(error);
+                    slot.State = EffectState.Failed;
                 }
-
-                slot.State = EffectState.Undone;
             }
         }
         catch
         {
-            // best effort
+            // best effort: still report whatever was collected so far
         }
 
-        TryWrite(new UnwindCompletedCommand(activation, null));
+        TryWrite(new UnwindCompletedCommand(
+            activation,
+            failures is null ? null : new CleanupIncompleteException(failures)));
     }
 
     // ---- capability resolution ---------------------------------------------
@@ -1264,7 +1547,15 @@ public sealed class Runtime : IAsyncDisposable
             f.Component.Inject().Select(k => k.Name).ToArray(),
             f.Component.Provide().Select(k => k.Name).ToArray(),
             f.Committed.Values.Select(b => $"{b.Key.Name}->{b.FiberId}").ToArray(),
-            f.Failure?.Message)).ToArray());
+            f.Failure?.Message)
+        {
+            Revision = f.Revision,
+            CleanupIncomplete = f.CleanupIncomplete,
+            CleanupFailures = [.. f.CleanupFailures.Select(error => error.Message)],
+        }).ToArray())
+        {
+            CleanupFailures = [.. _cleanupFailures],
+        };
     }
 
     public async ValueTask DisposeAsync()

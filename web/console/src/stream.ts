@@ -1,12 +1,22 @@
 import { useEffect, useState } from "react";
-import type { StreamStatus, UIObservation } from "./types";
-import { ingestObservation } from "./lib/projections";
+import type {
+  PluginStateEvent, StreamStatus, UIManifestEvent, UIObservation,
+} from "./types";
+import {
+  ALL, COMPOSITION, PLUGIN, bumpDomains,
+  ingestObservation, ingestPluginState, ingestUIManifest,
+} from "./lib/projections";
 
-// One shared SSE connection per page. Observation only invalidates; state
-// comes from named queries and from projections folding the events.
+// One shared SSE connection per page. `observation` only invalidates; the
+// control plane also emits `plugin-state` (plugin list / runtime snapshot)
+// and `ui-manifest` (composition + client modules). State always comes from
+// named queries — the frame carries just a revision and an action label.
 let source: EventSource | null = null;
+let hasOpened = false;
 const handlers = new Set<(ev: UIObservation) => void>();
 const statusHandlers = new Set<(s: StreamStatus) => void>();
+const pluginHandlers = new Set<(ev: PluginStateEvent) => void>();
+const manifestHandlers = new Set<(ev: UIManifestEvent) => void>();
 
 function report() {
   const s: StreamStatus =
@@ -14,19 +24,65 @@ function report() {
   for (const fn of statusHandlers) fn(s);
 }
 
+function frame(e: Event): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(String((e as MessageEvent).data)) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function pluginFrame(e: Event): PluginStateEvent {
+  const raw = frame(e) ?? {};
+  const revision = Number(raw.revision);
+  return {
+    revision: Number.isFinite(revision) ? revision : 0,
+    action: typeof raw.action === "string" ? raw.action : "",
+  };
+}
+
+function manifestFrame(e: Event): UIManifestEvent {
+  const raw = frame(e) ?? {};
+  const revision = Number(raw.revision);
+  return {
+    revision: Number.isFinite(revision) ? revision : undefined,
+    action: typeof raw.action === "string" ? raw.action : undefined,
+  };
+}
+
 function ensure() {
   if (source) return;
   source = new EventSource("/api/stream");
-  source.addEventListener("observation", (e: MessageEvent) => {
+  source.addEventListener("observation", (e: Event) => {
     try {
-      const ev = JSON.parse(String(e.data)) as UIObservation;
+      const ev = JSON.parse(String((e as MessageEvent).data)) as UIObservation;
       ingestObservation(ev);
       for (const fn of handlers) fn(ev);
     } catch {
       /* ignore malformed frame */
     }
   });
-  source.onopen = report;
+  source.addEventListener("plugin-state", (e: Event) => {
+    const ev = pluginFrame(e);
+    ingestPluginState(ev);
+    for (const fn of pluginHandlers) fn(ev);
+  });
+  source.addEventListener("ui-manifest", (e: Event) => {
+    const ev = manifestFrame(e);
+    ingestUIManifest(ev);
+    for (const fn of manifestHandlers) fn(ev);
+  });
+  source.onopen = () => {
+    // The first open just establishes the baseline: views fetched on mount.
+    // On a later open the socket was down in between, so frames were lost —
+    // force plugin/composition/all consumers to re-fetch authoritative state.
+    if (hasOpened) bumpDomains([PLUGIN, COMPOSITION, ALL]);
+    hasOpened = true;
+    report();
+  };
   source.onerror = report;
 }
 
@@ -40,6 +96,18 @@ export function onStreamStatus(fn: (s: StreamStatus) => void): () => void {
   statusHandlers.add(fn);
   ensure();
   return () => statusHandlers.delete(fn);
+}
+
+export function onPluginState(fn: (ev: PluginStateEvent) => void): () => void {
+  pluginHandlers.add(fn);
+  ensure();
+  return () => pluginHandlers.delete(fn);
+}
+
+export function onUIManifest(fn: (ev: UIManifestEvent) => void): () => void {
+  manifestHandlers.add(fn);
+  ensure();
+  return () => manifestHandlers.delete(fn);
 }
 
 // Observation bursts (a collection touching many files) coalesce into one

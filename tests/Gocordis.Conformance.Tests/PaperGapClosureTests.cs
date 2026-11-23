@@ -1595,6 +1595,151 @@ public sealed class PaperGapClosureTests
             undoLog.OrderBy(kind => kind, StringComparer.Ordinal));
     }
 
+    [Fact]
+    public async Task C32_InertialIteratorLandsCancellableStepBeforeItsInverse()
+    {
+        var log = new List<string>();
+        var stepLanded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseStep = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await using var runtime = new Gocordis.Core.Runtime();
+        var loading = runtime.LoadAsync(new Steps("c32-inertial", context => Steps(context, log, stepLanded, releaseStep)));
+        await stepLanded.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var fiber = runtime.GetFiber(SnapshotOf(runtime, "c32-inertial").Id)!;
+        var disposing = runtime.DisposeAsync(fiber);
+
+        // L-Divert only lands an in-flight step; it cannot abort it. The step
+        // observes cancellation, finishes, and only then is its inverse run.
+        releaseStep.SetResult();
+        var loaded = await loading.WaitAsync(TimeSpan.FromSeconds(5));
+        await disposing.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(FiberState.Gone, loaded.State);
+        Assert.Null(loaded.Failure);
+        Assert.Equal(new[] { "install:1", "install:2", "undo:2", "undo:1" }, log);
+
+        static async IAsyncEnumerable<EffectRegistration> Steps(
+            Context context,
+            List<string> log,
+            TaskCompletionSource landed,
+            TaskCompletionSource release)
+        {
+            yield return EffectRegistration.From(
+                () =>
+                {
+                    log.Add("install:1");
+                    return ValueTask.CompletedTask;
+                },
+                () =>
+                {
+                    log.Add("undo:1");
+                    return ValueTask.CompletedTask;
+                });
+
+            yield return EffectRegistration.From(
+                async () =>
+                {
+                    landed.TrySetResult();
+                    try
+                    {
+                        await Task.Delay(Timeout.Infinite, context.CancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // The revoked step still lands; Core registers its inverse
+                        // before starting the LIFO unwind.
+                    }
+
+                    log.Add("install:2");
+                    await release.Task;
+                },
+                () =>
+                {
+                    log.Add("undo:2");
+                    return ValueTask.CompletedTask;
+                });
+        }
+    }
+
+    [Fact]
+    public async Task C34_RealmReassignmentIsARetireReinsertComposite()
+    {
+        var key = new Key<string>("c34.conformance");
+        var oldRealm = new Realm("c34-conformance-old");
+        var newRealm = new Realm("c34-conformance-new");
+        var log = new List<string>();
+
+        await using var runtime = new Gocordis.Core.Runtime();
+        var oldFiber = await runtime.LoadAsync(new Step(
+            "c34-service",
+            async context =>
+            {
+                context.Provide(key, "old");
+                await context.EffectAsync(
+                    () => ValueTask.CompletedTask,
+                    () =>
+                    {
+                        log.Add("old:deactivate");
+                        return ValueTask.CompletedTask;
+                    });
+                return null;
+            },
+            provide: [key]), realm: oldRealm);
+
+        var oldConsumer = await runtime.LoadAsync(new Step(
+            "c34-old-consumer",
+            context =>
+            {
+                context.Require(key);
+                return Task.CompletedTask;
+            },
+            inject: [key]), realm: oldRealm);
+
+        var replacement = await runtime.RehomeAsync(oldFiber, newRealm, new Step(
+            "c34-service",
+            async context =>
+            {
+                context.Provide(key, "fresh");
+                await context.EffectAsync(
+                    () => ValueTask.CompletedTask,
+                    () =>
+                    {
+                        log.Add("new:deactivate");
+                        return ValueTask.CompletedTask;
+                    });
+                return null;
+            },
+            provide: [key])).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(FiberState.Gone, oldFiber.State);
+        Assert.Equal(FiberState.Active, replacement.State);
+        Assert.NotEqual(oldFiber.Id, replacement.Id);
+        Assert.True(replacement.Revision > oldFiber.Revision);
+        Assert.Equal(new[] { "old:deactivate" }, log);
+        Assert.Equal(FiberState.Pending, oldConsumer.State); // O-Remove, not a silent rebind.
+
+        var snapshot = runtime.Snapshot();
+        Assert.DoesNotContain(snapshot.Fibers, fiber => fiber.Id == oldFiber.Id);
+        Assert.DoesNotContain(snapshot.Fibers.SelectMany(fiber => fiber.BoundProviders),
+            binding => binding.Contains(oldFiber.Id.ToString(), StringComparison.Ordinal));
+
+        string? seen = null;
+        var freshConsumer = await runtime.LoadAsync(new Step(
+            "c34-fresh-consumer",
+            context =>
+            {
+                seen = context.Require(key);
+                return Task.CompletedTask;
+            },
+            inject: [key]), realm: newRealm);
+        Assert.Equal(FiberState.Active, freshConsumer.State);
+        Assert.Equal("fresh", seen);
+
+        await runtime.DisposeAsync(replacement);
+        Assert.Equal(new[] { "old:deactivate", "new:deactivate" }, log);
+    }
+
     private static FiberSnapshot SnapshotOf(Runtime runtime, string name) =>
         runtime.Snapshot().Fibers.Single(fiber => fiber.Name == name);
 

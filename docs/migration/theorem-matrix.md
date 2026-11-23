@@ -60,7 +60,7 @@
 | `runtime/thm80_det_interleaving_test.go:137/163/283` apply-done / withdrawal / revise 交错 | `TheoremMatrixTests.cs:521` `Thm80_Matrix["teardown-order"]` | 移植（拆卸序） | provider/consumer 两种拆卸序终态一致且全 Gone；revise 交错未移植。 |
 | `runtime/theorem_evidence_test.go:139` `TestTheorem80RenamingEquivalence` | `PaperConformanceTests.cs:93` `C13_ObservationEquivalenceIgnoresGenerativeFiberIds` | 移植 | 观察等价忽略生成 fiber id；证明改名下的汇合可比。 |
 | `runtime/thm73_thm80_test.go:1038` `TestThm80TwoIndependentSubsystems` | `PlatformConvergenceTests.cs:28` `PC12_PluginRegistryNeverCreatesASecondLifecycle` | 部分移植 | 第二个应用/第二个生命周期 Authority 由 Koishi case 覆盖（`KoishiCaseTests`），本用例仅覆盖 entry 与 fiber 不重复。 |
-| `runtime/revision_thm80_test.go:201` `TestThm80RevisionEndpointEquivalence`；`runtime/scoped_confluence_test.go:43` `TestThm80ScopedNamespaceConfluence` | —（无 C# 用例） | 接受差异 | C# 无 fiber 保身份 revise；realm 重命名按 retire→新 fiber，故不做"端点等价"逐条对照（见 `semantic-mapping.md` §4.5/§4.1）。 |
+| `runtime/revision_thm80_test.go:201` `TestThm80RevisionEndpointEquivalence`；`runtime/scoped_confluence_test.go:43` `TestThm80ScopedNamespaceConfluence` | `PaperGapClosureTests.cs` `C34_RealmReassignmentIsARetireReinsertComposite`；`Core.Tests/RevisionSemanticsTests.cs` `RehomeRetiresOldFiberAndReinsertsWithNewIdentityAndRealm` | 移植（跨项目，revision 复合） | C# 拒绝 fiber 保身份替换：realm 重赋值走 `Runtime.RehomeAsync` 的 retire→deactivate→O-Remove→同名重插，新 fiber 的 Id/Generation/Revision 递增；端点性质通过"旧 realm 绑定移除 + 新 realm 可解析"对照，不通过保身份 revise 对照（见 `semantic-mapping.md` §4 裁决 5）。 |
 | `runtime/phase5_generators_test.go:270` `TestPConfConfluenceGeneratedSchedules` | `DeterministicDriver.cs:52` `SameSeedReplaysTheSameInterleaving` | 平台能力替代 | 固定种子重放代替调度生成器；不等价于全调度空间证明。 |
 
 ## 边界与前提
@@ -68,6 +68,12 @@
 - 论文 Thm73 **没有"合作式"前提**（`semantic-mapping.md` §4.1）；C# 的有限步/可取消是无环工程约束，
   不写入定理前提。Go 的 `TestTheoremPreconditionsGate` 对应 C# `DeterministicDriver` 的固定种子重放，
   状态为平台能力替代，不冒充定理证明。
-- Thm43（独立逆任意排列）在 C# 中只有严格 LIFO（`C06_StrictLifoRecoveryLeavesNoResidue`），
-  标为待补，见 `paper-coverage-matrix.md` C14。
+- Thm43（独立逆任意排列）：C# 单 fiber 内保持严格 LIFO（`C06_StrictLifoRecoveryLeavesNoResidue`），
+  跨独立 fiber 的可交换性已有可执行断言：`TheoremMatrixTests.cs` 的
+  `Thm43_IndependentInversesCommuteAcrossPermittedOrders` 与
+  `PaperGapClosureTests.cs` 的 `C14_IndependentInversesCommuteAcrossPermittedOrders`；
+  C14 在 `paper-coverage-matrix.md` 中状态为"已覆盖"，不再标为待补。
+- Thm68/Thm73 之外新增诚实性边界：逆失败仍走完整 LIFO 栈，但失败槽位转 `EffectState.Failed`
+  并由 `Fiber.CleanupFailures` / `RuntimeSnapshot.CleanupFailures` 暴露"清理不完整"
+  （`Core.Tests/InverseFailureTests.cs`），不把失败逆伪装成 Undone 成功。
 - `TheoremTests.cs` 的 4 个单点用例保留为历史基线；新增矩阵是独立用例集，两者不互相计数。

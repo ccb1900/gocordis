@@ -1,9 +1,22 @@
+using System.Text;
 using Gocordis.Core;
 using Gocordis.Runtime.Contracts;
 using Gocordis.Runtime.Managed;
 using Wasmtime;
 
 namespace Gocordis.Runtime.Wasm;
+
+/// <summary>Go WASM backend parity: modules larger than 64 MiB are refused at load time.</summary>
+public sealed class WasmModuleTooLargeException : Exception
+{
+    public WasmModuleTooLargeException(long size)
+        : base($"WASM module is {size} bytes; limit is {WasmPluginInstance.MaxModuleBytes} bytes")
+    {
+        Size = size;
+    }
+
+    public long Size { get; }
+}
 
 /// <summary>
 /// WASM backend built on the mature Wasmtime runtime. It keeps the Go ABI:
@@ -12,6 +25,9 @@ namespace Gocordis.Runtime.Wasm;
 /// </summary>
 public sealed class WasmPluginInstance : IDisposable
 {
+    /// <summary>Go loader/wasm maximum module size (64 MiB).</summary>
+    public const long MaxModuleBytes = 64L * 1024 * 1024;
+
     private readonly Engine _engine;
     private readonly Module _module;
     private readonly Store _store;
@@ -27,41 +43,75 @@ public sealed class WasmPluginInstance : IDisposable
         _linker = linker;
     }
 
+    public static void EnsureModuleSize(long size)
+    {
+        if (size > MaxModuleBytes)
+        {
+            throw new WasmModuleTooLargeException(size);
+        }
+    }
+
     public static WasmPluginInstance FromWat(string wat, string name = "plugin", WasmHostBridge? bridge = null)
     {
+        ArgumentNullException.ThrowIfNull(wat);
+        EnsureModuleSize(Encoding.UTF8.GetByteCount(wat));
+
         var engine = new Engine();
         try
         {
             var module = Module.FromText(engine, name, wat);
+            return Create(engine, module, bridge);
+        }
+        catch
+        {
+            engine.Dispose();
+            throw;
+        }
+    }
+
+    public static WasmPluginInstance FromBytes(byte[] wasm, string name = "plugin", WasmHostBridge? bridge = null)
+    {
+        ArgumentNullException.ThrowIfNull(wasm);
+        EnsureModuleSize(wasm.LongLength);
+
+        var engine = new Engine();
+        try
+        {
+            var module = Module.FromBytes(engine, name, wasm);
+            return Create(engine, module, bridge);
+        }
+        catch
+        {
+            engine.Dispose();
+            throw;
+        }
+    }
+
+    private static WasmPluginInstance Create(Engine engine, Module module, WasmHostBridge? bridge)
+    {
+        try
+        {
+            var store = new Store(engine);
             try
             {
-                var store = new Store(engine);
-                try
+                if (bridge is null)
                 {
-                    if (bridge is null)
-                    {
-                        return new WasmPluginInstance(engine, module, store, new Instance(store, module, []), null);
-                    }
+                    return new WasmPluginInstance(engine, module, store, new Instance(store, module, []), null);
+                }
 
-                    var linker = new Linker(engine);
-                    linker.DefineFunction("gocordis", "report", new Action<int>(bridge.Report));
-                    return new WasmPluginInstance(engine, module, store, linker.Instantiate(store, module), linker);
-                }
-                catch
-                {
-                    store.Dispose();
-                    throw;
-                }
+                var linker = new Linker(engine);
+                linker.DefineFunction("gocordis", "report", new Action<int>(bridge.Report));
+                return new WasmPluginInstance(engine, module, store, linker.Instantiate(store, module), linker);
             }
             catch
             {
-                module.Dispose();
+                store.Dispose();
                 throw;
             }
         }
         catch
         {
-            engine.Dispose();
+            module.Dispose();
             throw;
         }
     }
@@ -110,20 +160,35 @@ public sealed class WasmPluginInstance : IDisposable
 
 public sealed class WasmComponent : Component
 {
-    private readonly string _wat;
     private readonly Key<int> _key;
-    private readonly WasmHostBridge? _bridge;
     private readonly GenerationTracker? _tracker;
+
+    private readonly Func<WasmPluginInstance> _createInstance;
 
     public WasmComponent(
         string wat,
         Key<int> key,
         WasmHostBridge? bridge = null,
         GenerationTracker? tracker = null)
+        : this(() => WasmPluginInstance.FromWat(wat, bridge: bridge), key, tracker)
     {
-        _wat = wat;
+    }
+
+    /// <summary>Binary WASM payload as installed by a platform package.</summary>
+    public WasmComponent(
+        byte[] wasm,
+        Key<int> key,
+        string name = "plugin",
+        WasmHostBridge? bridge = null,
+        GenerationTracker? tracker = null)
+        : this(() => WasmPluginInstance.FromBytes(wasm, name, bridge), key, tracker)
+    {
+    }
+
+    private WasmComponent(Func<WasmPluginInstance> createInstance, Key<int> key, GenerationTracker? tracker)
+    {
+        _createInstance = createInstance;
         _key = key;
-        _bridge = bridge;
         _tracker = tracker;
     }
 
@@ -132,5 +197,5 @@ public sealed class WasmComponent : Component
     public override IReadOnlyList<ICapabilityKey> Provide() => [_key];
 
     public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
-        BackendProtocol.RunAsync(new WasmBackend(_wat, _key, _bridge, _tracker), context);
+        BackendProtocol.RunAsync(new WasmBackend(_createInstance, _key, _tracker), context);
 }

@@ -237,7 +237,7 @@ export interface SettingsProps {
   pluginId: string;
   /** The plugin's current config (null when it has none yet). */
   config: Record<string, unknown> | null;
-  /** Persist the edited config (api.setPluginConfig); resolves after the
+  /** Persist the edited config (api.savePluginConfig); resolves after the
    * save round-trip so the component can report success. */
   onSaved: (config: Record<string, unknown>) => Promise<void>;
 }

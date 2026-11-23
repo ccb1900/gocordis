@@ -1,19 +1,47 @@
+using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 
 namespace Gocordis.Extensions;
+
+/// <summary>Write semantics aligned with JS Cordis 4.0.0-rc.13+ filesystem options.</summary>
+public sealed record FileWriteOptions(bool Exclusive = false, bool Atomic = false);
+
+/// <summary>Copy semantics aligned with JS Cordis 4.0.0-rc.13+ filesystem options.</summary>
+public sealed record FileCopyOptions(
+    bool Overwrite = false, bool Exclusive = false, bool Atomic = false);
 
 /// <summary>Mount-routed filesystem with path-escape guard and reversible watchers.</summary>
 public sealed class FileSystemService : IAsyncDisposable
 {
     private readonly Dictionary<string, string> _mounts = new(StringComparer.Ordinal);
     private readonly List<FileSystemWatcher> _watchers = [];
+    private readonly object _mountsSync = new();
     private readonly object _watchersSync = new();
 
     public void Mount(string prefix, string root)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prefix);
-        _mounts[prefix] = Path.GetFullPath(root);
+        lock (_mountsSync)
+        {
+            _mounts[prefix] = Path.GetFullPath(root);
+        }
+    }
+
+    /// <summary>Mounts a root and returns a handle that removes only this mount.</summary>
+    public IDisposable MountScoped(string prefix, string root)
+    {
+        Mount(prefix, root);
+        return new Subscription(() => Unmount(prefix));
+    }
+
+    public bool Unmount(string prefix)
+    {
+        lock (_mountsSync)
+        {
+            return _mounts.Remove(prefix);
+        }
     }
 
     // Mount prefixes must match on a path BOUNDARY, not as a raw string prefix:
@@ -24,14 +52,222 @@ public sealed class FileSystemService : IAsyncDisposable
         path.StartsWith(prefix + "/", comparison) ||
         path.StartsWith(prefix + "\\", comparison);
 
-    public async Task WriteAsync(string path, byte[] content)
+    public Task WriteAsync(string path, byte[] content) =>
+        WriteAsync(path, content, new FileWriteOptions());
+
+    public async Task WriteAsync(string path, byte[] content, FileWriteOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
         var resolved = Resolve(path);
-        Directory.CreateDirectory(Path.GetDirectoryName(resolved)!);
-        await File.WriteAllBytesAsync(resolved, content);
+        var directory = Path.GetDirectoryName(resolved)!;
+        Directory.CreateDirectory(directory);
+
+        if (!options.Atomic)
+        {
+            var mode = options.Exclusive ? FileMode.CreateNew : FileMode.Create;
+            await using var file = new FileStream(resolved, mode, FileAccess.Write, FileShare.None,
+                4096, FileOptions.Asynchronous);
+            await file.WriteAsync(content);
+            return;
+        }
+
+        // Atomic writes stage in the destination directory, then publish with a
+        // same-volume move. Exclusive atomic writes use the non-overwriting move.
+        var temp = Path.Combine(directory,
+            $".{Path.GetFileName(resolved)}.gocordis-tmp-{Guid.NewGuid():N}");
+        try
+        {
+            await using (var staged = new FileStream(temp, FileMode.CreateNew, FileAccess.Write,
+                             FileShare.None, 4096, FileOptions.Asynchronous))
+            {
+                await staged.WriteAsync(content);
+            }
+
+            File.Move(temp, resolved, overwrite: !options.Exclusive);
+            temp = null!;
+        }
+        finally
+        {
+            if (temp is not null && File.Exists(temp))
+            {
+                File.Delete(temp);
+            }
+        }
     }
 
     public Task<byte[]> ReadAsync(string path) => File.ReadAllBytesAsync(Resolve(path));
+
+    /// <summary>Reads the entire file. Named after the BCL for discoverability.</summary>
+    public Task<byte[]> ReadAllBytesAsync(string path) => ReadAsync(path);
+
+    public async Task<string> ReadAllTextAsync(string path) => Encoding.UTF8.GetString(await ReadAsync(path));
+
+    public async Task WriteAllTextAsync(string path, string content) =>
+        await WriteAsync(path, Encoding.UTF8.GetBytes(content));
+
+    public async Task WriteAllTextAsync(string path, string content, FileWriteOptions options) =>
+        await WriteAsync(path, Encoding.UTF8.GetBytes(content), options);
+
+    /// <summary>
+    /// Reads at most <paramref name="count"/> bytes from <paramref name="offset"/>.
+    /// A negative count reads to end of file; an offset past EOF yields an empty result.
+    /// </summary>
+    public async Task<byte[]> ReadRangeAsync(string path, long offset, int count)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        var resolved = Resolve(path);
+        await using var file = new FileStream(resolved, FileMode.Open, FileAccess.Read, FileShare.Read,
+            4096, FileOptions.Asynchronous);
+        if (offset > 0)
+        {
+            file.Seek(offset, SeekOrigin.Begin);
+        }
+
+        using var collected = new MemoryStream();
+        var buffer = new byte[8192];
+        var remaining = count < 0 ? long.MaxValue : (long)count;
+        while (remaining > 0)
+        {
+            var wanted = (int)Math.Min(buffer.Length, remaining);
+            var read = await file.ReadAsync(buffer.AsMemory(0, wanted));
+            if (read == 0)
+            {
+                break;
+            }
+
+            await collected.WriteAsync(buffer.AsMemory(0, read));
+            remaining -= read;
+        }
+
+        return collected.ToArray();
+    }
+
+    /// <summary>Deletes a file or directory. Non-recursive deletion of a non-empty directory fails.</summary>
+    public Task RemoveAsync(string path, bool recursive = false)
+    {
+        var resolved = Resolve(path);
+        if (Directory.Exists(resolved))
+        {
+            Directory.Delete(resolved, recursive);
+        }
+        else if (File.Exists(resolved))
+        {
+            File.Delete(resolved);
+        }
+        else
+        {
+            throw new FileNotFoundException($"no such file or directory: '{path}'");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Creates a directory; with recursive: false a missing parent is an error.</summary>
+    public Task MkdirAsync(string path, bool recursive = false)
+    {
+        var resolved = Resolve(path);
+        if (!recursive)
+        {
+            var trimmed = resolved.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var parent = Path.GetDirectoryName(trimmed);
+            if (parent is not null && !Directory.Exists(parent))
+            {
+                throw new DirectoryNotFoundException($"parent directory does not exist: '{path}'");
+            }
+        }
+
+        Directory.CreateDirectory(resolved);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Copies within the mounted namespace; an existing destination needs overwrite: true.</summary>
+    public Task CopyAsync(string source, string destination, bool overwrite = false) =>
+        CopyAsync(source, destination, new FileCopyOptions(Overwrite: overwrite));
+
+    public async Task CopyAsync(string source, string destination, FileCopyOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var from = Resolve(source);
+        var to = Resolve(destination);
+        var directory = Path.GetDirectoryName(to)!;
+        Directory.CreateDirectory(directory);
+
+        if (!options.Atomic)
+        {
+            var mode = options.Exclusive || !options.Overwrite
+                ? FileMode.CreateNew
+                : FileMode.Create;
+            await using var input = new FileStream(from, FileMode.Open, FileAccess.Read, FileShare.Read,
+                4096, FileOptions.Asynchronous);
+            await using var output = new FileStream(to, mode, FileAccess.Write, FileShare.None,
+                4096, FileOptions.Asynchronous);
+            await input.CopyToAsync(output);
+            return;
+        }
+
+        var temp = Path.Combine(directory,
+            $".{Path.GetFileName(to)}.gocordis-tmp-{Guid.NewGuid():N}");
+        try
+        {
+            await using (var input = new FileStream(from, FileMode.Open, FileAccess.Read, FileShare.Read,
+                             4096, FileOptions.Asynchronous))
+            await using (var staged = new FileStream(temp, FileMode.CreateNew, FileAccess.Write,
+                             FileShare.None, 4096, FileOptions.Asynchronous))
+            {
+                await input.CopyToAsync(staged);
+            }
+
+            File.Move(temp, to, overwrite: options.Overwrite && !options.Exclusive);
+            temp = null!;
+        }
+        finally
+        {
+            if (temp is not null && File.Exists(temp))
+            {
+                File.Delete(temp);
+            }
+        }
+    }
+
+
+    /// <summary>Moves a file or directory within the mounted namespace.</summary>
+    public Task MoveAsync(string source, string destination)
+    {
+        var from = Resolve(source);
+        var to = Resolve(destination);
+        Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+        if (Directory.Exists(from))
+        {
+            Directory.Move(from, to);
+        }
+        else
+        {
+            File.Move(from, to);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task<bool> ExistsAsync(string path)
+    {
+        var resolved = Resolve(path);
+        return Task.FromResult(File.Exists(resolved) || Directory.Exists(resolved));
+    }
+
+    public Task<IReadOnlyList<string>> ListAsync(string path)
+    {
+        var resolved = Resolve(path);
+        if (!Directory.Exists(resolved))
+        {
+            throw new DirectoryNotFoundException($"no such directory: '{path}'");
+        }
+
+        IReadOnlyList<string> names = Directory.GetFileSystemEntries(resolved)
+            .Select(entry => Path.GetFileName(entry))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        return Task.FromResult(names);
+    }
 
     public IDisposable Watch(string path, Action<string> onChange)
     {
@@ -75,10 +311,14 @@ public sealed class FileSystemService : IAsyncDisposable
         var comparison = OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
-        var match = _mounts
-            .Where(pair => PrefixMatches(path, pair.Key, comparison))
-            .OrderByDescending(pair => pair.Key.Length)
-            .FirstOrDefault();
+        KeyValuePair<string, string> match;
+        lock (_mountsSync)
+        {
+            match = _mounts
+                .Where(pair => PrefixMatches(path, pair.Key, comparison))
+                .OrderByDescending(pair => pair.Key.Length)
+                .FirstOrDefault();
+        }
         if (match.Key is null)
         {
             throw new InvalidOperationException($"no mount matches '{path}'");
@@ -138,6 +378,12 @@ public sealed class FileSystemService : IAsyncDisposable
             watcher.EnableRaisingEvents = false;
             watcher.Dispose();
         }
+
+        lock (_mountsSync)
+        {
+            _mounts.Clear();
+        }
+
         await ValueTask.CompletedTask;
     }
 
@@ -151,29 +397,170 @@ public sealed class FileSystemService : IAsyncDisposable
     }
 }
 
-/// <summary>HttpClient with ordered, reversible interceptors.</summary>
+/// <summary>Linearizable, read-only view of the HTTP service's ownership.</summary>
+/// <param name="Closed">Whether the service has been closed.</param>
+/// <param name="Active">Requests that have not yet returned.</param>
+/// <param name="OpenStreams">Live stream bodies handed to callers but not yet closed.</param>
+/// <param name="Interceptors">Currently installed next-chain interceptors.</param>
+public sealed record HttpState(bool Closed, int Active, int OpenStreams, int Interceptors);
+
+/// <summary>
+/// HttpClient with ordered, reversible next-chain interceptors. Stream bodies are
+/// service-owned until closed: request completion and stream closure are distinct.
+/// </summary>
 public sealed class HttpService : IAsyncDisposable
 {
     private readonly HttpClient _client = new();
+    private readonly object _sync = new();
     private readonly List<Func<HttpRequestMessage, ValueTask>> _interceptors = [];
+    private readonly List<ChainRegistration> _chain = [];
+    private readonly HashSet<StreamLease> _leases = [];
+    private bool _closed;
+    private int _active;
+    private int _openStreams;
+    private int _disposed;
 
     public void SetBaseAddress(Uri uri) => _client.BaseAddress = uri;
 
+    /// <summary>Adds a side-effect interceptor (runs before the next-chain).</summary>
     public IDisposable AddInterceptor(Func<HttpRequestMessage, ValueTask> interceptor)
     {
-        _interceptors.Add(interceptor);
-        return new Subscription(() => _interceptors.Remove(interceptor));
-    }
-
-    public async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request)
-    {
-        foreach (var interceptor in _interceptors.ToArray())
+        ArgumentNullException.ThrowIfNull(interceptor);
+        lock (_sync)
         {
-            await interceptor(request);
+            EnsureOpen();
+            _interceptors.Add(interceptor);
         }
 
-        return await _client.SendAsync(request);
+        return new Subscription(() =>
+        {
+            lock (_sync)
+            {
+                _interceptors.Remove(interceptor);
+            }
+        });
     }
+
+    /// <summary>
+    /// Adds a next-chain link. Links run in registration order; a link may
+    /// short-circuit by returning without invoking <paramref name="next"/>.
+    /// </summary>
+    public IDisposable AddInterceptorChain(
+        Func<HttpRequestMessage, Func<Task<HttpResponseMessage>>, Task<HttpResponseMessage>> interceptor)
+    {
+        ArgumentNullException.ThrowIfNull(interceptor);
+        var registration = new ChainRegistration(interceptor);
+        lock (_sync)
+        {
+            EnsureOpen();
+            _chain.Add(registration);
+        }
+
+        return new Subscription(() =>
+        {
+            lock (_sync)
+            {
+                _chain.Remove(registration);
+            }
+        });
+    }
+
+    public HttpState State()
+    {
+        lock (_sync)
+        {
+            return new HttpState(_closed, _active, _openStreams, _chain.Count);
+        }
+    }
+
+    public async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token = default)
+    {
+        Func<HttpRequestMessage, Task<HttpResponseMessage>> pipeline;
+        Func<HttpRequestMessage, ValueTask>[] simple;
+        lock (_sync)
+        {
+            EnsureOpen();
+            _active++;
+            simple = _interceptors.ToArray();
+            pipeline = BuildPipeline(req => _client.SendAsync(req, token));
+        }
+
+        try
+        {
+            foreach (var interceptor in simple)
+            {
+                await interceptor(request);
+            }
+
+            return await pipeline(request);
+        }
+        finally
+        {
+            lock (_sync)
+            {
+                _active--;
+            }
+        }
+    }
+
+    /// <summary>Returns a response whose body is live; the lease is released on close.</summary>
+    public async Task<StreamResponse> SendStreamAsync(HttpRequestMessage request, CancellationToken token = default)
+    {
+        Func<HttpRequestMessage, Task<HttpResponseMessage>> pipeline;
+        Func<HttpRequestMessage, ValueTask>[] simple;
+        lock (_sync)
+        {
+            EnsureOpen();
+            _active++;
+            simple = _interceptors.ToArray();
+            pipeline = BuildPipeline(req => _client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token));
+        }
+
+        try
+        {
+            foreach (var interceptor in simple)
+            {
+                await interceptor(request);
+            }
+
+            var response = await pipeline(request);
+            try
+            {
+                // Buffer once: the live Body stream and Content.ReadAsStringAsync()
+                // are two independent consumers of the same response bytes.
+                var bytes = await response.Content.ReadAsByteArrayAsync();
+                var body = new MemoryStream(bytes, writable: false);
+                var lease = new StreamLease(this, body);
+                response.Content = new LeasedHttpContent(new ByteArrayContent(bytes), lease);
+                lock (_sync)
+                {
+                    _openStreams++;
+                    _leases.Add(lease);
+                }
+
+                return new StreamResponse(response, body, lease);
+            }
+            catch
+            {
+                response.Dispose();
+                throw;
+            }
+        }
+        finally
+        {
+            lock (_sync)
+            {
+                _active--;
+            }
+        }
+    }
+
+    public Task<StreamResponse> GetStreamAsync(string uri, CancellationToken token = default) =>
+        SendStreamAsync(new HttpRequestMessage(HttpMethod.Get, uri), token);
+
+    /// <summary>Transport-shaped call: the returned response body stays live and owned.</summary>
+    public async Task<HttpResponseMessage> RoundTripAsync(HttpRequestMessage request, CancellationToken token = default) =>
+        (await SendStreamAsync(request, token)).Detach();
 
     public async Task<string> GetStringAsync(string uri)
     {
@@ -183,8 +570,178 @@ public sealed class HttpService : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        StreamLease[] leases;
+        lock (_sync)
+        {
+            _closed = true;
+            leases = _leases.ToArray();
+            _leases.Clear();
+        }
+
+        foreach (var lease in leases)
+        {
+            lease.Stream.Dispose();
+            lease.Release();
+        }
+
         _client.Dispose();
         await ValueTask.CompletedTask;
+    }
+
+    // Called with _sync held: registrations are captured in order, so the first
+    // registered link is the outermost one.
+    private Func<HttpRequestMessage, Task<HttpResponseMessage>> BuildPipeline(
+        Func<HttpRequestMessage, Task<HttpResponseMessage>> terminal)
+    {
+        var pipeline = terminal;
+        for (var index = _chain.Count - 1; index >= 0; index--)
+        {
+            var current = _chain[index].Interceptor;
+            var inner = pipeline;
+            pipeline = request => current(request, () => inner(request));
+        }
+
+        return pipeline;
+    }
+
+    private void EnsureOpen()
+    {
+        if (_closed)
+        {
+            throw new InvalidOperationException("http service closed");
+        }
+    }
+
+    private sealed class ChainRegistration
+    {
+        public ChainRegistration(
+            Func<HttpRequestMessage, Func<Task<HttpResponseMessage>>, Task<HttpResponseMessage>> interceptor) =>
+            Interceptor = interceptor;
+
+        public Func<HttpRequestMessage, Func<Task<HttpResponseMessage>>, Task<HttpResponseMessage>> Interceptor { get; }
+    }
+
+    internal sealed class StreamLease
+    {
+        private readonly HttpService _owner;
+        private int _released;
+
+        public StreamLease(HttpService owner, Stream stream)
+        {
+            _owner = owner;
+            Stream = stream;
+        }
+
+        public Stream Stream { get; }
+
+        public void Release()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0)
+            {
+                return;
+            }
+
+            lock (_owner._sync)
+            {
+                _owner._openStreams--;
+                _owner._leases.Remove(this);
+            }
+        }
+    }
+
+    private sealed class LeasedHttpContent : HttpContent
+    {
+        private readonly HttpContent _inner;
+        private readonly StreamLease _lease;
+        private int _disposed;
+
+        public LeasedHttpContent(HttpContent inner, StreamLease lease)
+        {
+            _inner = inner;
+            _lease = lease;
+            foreach (var header in inner.Headers)
+            {
+                Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            _inner.CopyToAsync(stream);
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = _inner.Headers.ContentLength ?? -1;
+            return length >= 0;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                try
+                {
+                    _inner.Dispose();
+                }
+                finally
+                {
+                    _lease.Release();
+                }
+            }
+
+            base.Dispose(disposing);
+        }
+    }
+
+    /// <summary>A live HTTP response body. Closing it releases the service-owned lease.</summary>
+    public sealed class StreamResponse : IAsyncDisposable
+    {
+        private readonly HttpResponseMessage _response;
+        private readonly StreamLease _lease;
+        private int _released;
+
+        internal StreamResponse(HttpResponseMessage response, Stream body, StreamLease lease)
+        {
+            _response = response;
+            _lease = lease;
+            Body = body;
+        }
+
+        public int StatusCode => (int)_response.StatusCode;
+        public HttpResponseHeaders Headers => _response.Headers;
+        public Stream Body { get; }
+
+        /// <summary>Hands the owned response to a transport-shaped caller.</summary>
+        internal HttpResponseMessage Detach()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0)
+            {
+                throw new InvalidOperationException("stream response already released");
+            }
+
+            return _response;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+            {
+                try
+                {
+                    _response.Dispose();
+                }
+                finally
+                {
+                    _lease.Release();
+                }
+            }
+
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class Subscription : IDisposable
@@ -197,10 +754,13 @@ public sealed class HttpService : IAsyncDisposable
     }
 }
 
-/// <summary>dotenv-style configuration with process-env precedence and rollback.</summary>
+/// <summary>
+/// dotenv-style configuration with four-file precedence, mode selection and
+/// stack-based reversible population of the process environment.
+/// </summary>
 public sealed class EnvService : IAsyncDisposable
 {
-    private readonly List<(string Key, string? Previous)> _changes = [];
+    private readonly List<IDisposable> _layers = [];
 
     public static IReadOnlyDictionary<string, string> Parse(string text)
     {
@@ -227,8 +787,55 @@ public sealed class EnvService : IAsyncDisposable
         return result;
     }
 
-    public void Apply(IReadOnlyDictionary<string, string> values, bool processWins = true)
+    /// <summary>
+    /// Explicit mode wins; otherwise NODE_ENV; otherwise "development".
+    /// </summary>
+    public static string ResolveMode(string? mode)
     {
+        if (!string.IsNullOrWhiteSpace(mode))
+        {
+            return mode;
+        }
+
+        var fromEnvironment = Environment.GetEnvironmentVariable("NODE_ENV");
+        return string.IsNullOrWhiteSpace(fromEnvironment) ? "development" : fromEnvironment;
+    }
+
+    /// <summary>
+    /// Merges .env, .env.local, .env.{mode} and .env.{mode}.local in that order;
+    /// later files win and missing files are ignored.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> LoadFromDirectory(string directory, string? mode = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
+        var selected = ResolveMode(mode);
+        var merged = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var name in new[] { ".env", ".env.local", $".env.{selected}", $".env.{selected}.local" })
+        {
+            var path = Path.Combine(directory, name);
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            foreach (var pair in Parse(File.ReadAllText(path)))
+            {
+                merged[pair.Key] = pair.Value;
+            }
+        }
+
+        return merged;
+    }
+
+    /// <summary>
+    /// Pushes a layer onto the process-environment stacks. The returned handle
+    /// withdraws only this layer (LIFO by ownership, not by value equality).
+    /// With processWins: true, variables already present are left untouched.
+    /// </summary>
+    public static IDisposable ApplyLayer(IReadOnlyDictionary<string, string> values, bool processWins = true)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        var layer = new Layer();
         foreach (var (key, value) in values)
         {
             if (processWins && Environment.GetEnvironmentVariable(key) is not null)
@@ -236,21 +843,142 @@ public sealed class EnvService : IAsyncDisposable
                 continue;
             }
 
-            _changes.Add((key, Environment.GetEnvironmentVariable(key)));
-            Environment.SetEnvironmentVariable(key, value);
+            if (!Layer.TryPush(layer, key, value, out var error))
+            {
+                Layer.Unwind(layer);
+                throw error!;
+            }
         }
+
+        return layer;
     }
+
+    /// <summary>Applies a layer owned by this service and rolls it back on dispose.</summary>
+    public void Apply(IReadOnlyDictionary<string, string> values, bool processWins = true) =>
+        _layers.Add(ApplyLayer(values, processWins));
 
     public async ValueTask DisposeAsync()
     {
-        for (var index = _changes.Count - 1; index >= 0; index--)
+        for (var index = _layers.Count - 1; index >= 0; index--)
         {
-            var (key, previous) = _changes[index];
-            Environment.SetEnvironmentVariable(key, previous);
+            _layers[index].Dispose();
         }
 
-        _changes.Clear();
+        _layers.Clear();
         await ValueTask.CompletedTask;
+    }
+
+    private sealed class Layer : IDisposable
+    {
+        private static readonly object Sync = new();
+        private static readonly Dictionary<string, List<Entry>> Stacks = new(StringComparer.Ordinal);
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                Unwind(this);
+            }
+        }
+
+        internal static bool TryPush(Layer owner, string key, string value, out Exception? error)
+        {
+            error = null;
+            lock (Sync)
+            {
+                var stacks = Stacks;
+                var stack = stacks.TryGetValue(key, out var existing) ? existing : [];
+                string prior;
+                bool hadPrior;
+                if (stack.Count > 0)
+                {
+                    var top = stack[^1];
+                    prior = top.Value;
+                    hadPrior = true;
+                }
+                else
+                {
+                    prior = Environment.GetEnvironmentVariable(key) ?? string.Empty;
+                    hadPrior = Environment.GetEnvironmentVariable(key) is not null;
+                }
+
+                try
+                {
+                    Environment.SetEnvironmentVariable(key, value);
+                }
+                catch (Exception ex)
+                {
+                    error = ex;
+                    return false;
+                }
+
+                stack.Add(new Entry(owner, value, prior, hadPrior));
+                stacks[key] = stack;
+            }
+
+            return true;
+        }
+
+        internal static void Unwind(Layer owner)
+        {
+            List<Exception>? errors = null;
+            lock (Sync)
+            {
+                foreach (var (key, stack) in Stacks.ToArray())
+                {
+                    var index = -1;
+                    for (var cursor = stack.Count - 1; cursor >= 0; cursor--)
+                    {
+                        if (ReferenceEquals(stack[cursor].Owner, owner))
+                        {
+                            index = cursor;
+                            break;
+                        }
+                    }
+
+                    if (index < 0)
+                    {
+                        continue;
+                    }
+
+                    var entry = stack[index];
+                    if (index == stack.Count - 1)
+                    {
+                        try
+                        {
+                            // Never clobber a value changed externally after installation.
+                            if (Environment.GetEnvironmentVariable(key) == entry.Value)
+                            {
+                                Environment.SetEnvironmentVariable(key, entry.HadPrior ? entry.Prior : null);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            (errors ??= []).Add(ex);
+                        }
+                    }
+                    else
+                    {
+                        // The entry above inherits this restore target.
+                        stack[index + 1] = stack[index + 1] with { Prior = entry.Prior, HadPrior = entry.HadPrior };
+                    }
+
+                    stack.RemoveAt(index);
+                    if (stack.Count == 0)
+                    {
+                        Stacks.Remove(key);
+                    }
+                }
+            }
+
+            if (errors is not null)
+            {
+                throw new AggregateException(errors);
+            }
+        }
+
+        private sealed record Entry(Layer Owner, string Value, string Prior, bool HadPrior);
     }
 }
 

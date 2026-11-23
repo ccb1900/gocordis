@@ -67,8 +67,18 @@ dotnet test Gocordis.sln --nologo
 批次 A 冻结计数：119 = Core 22 / Conformance 28 / Extensions 19 / Runtime 50
                         （119/119 连续 10 次全绿，见 adr-channel-orchestrator.md）
 批次 A 新增回归后：123（连续 10 次全绿）
-批次 B/C 最终：280 = Core 26 / Conformance 113 / Extensions 35 / Runtime 106（连续 20 次全绿）
+批次 B/C 历史最终：396 = Core 26 / Conformance 113 / Extensions 52 / Runtime 113 / Packaging 7（连续 39 次全绿）
+R8 历史：412 = Core 27 / Conformance 145 / Runtime 119 / Extensions 59 /
+Packaging 40 / UI 3 / Client 2 / Product 17（连续 3 次本地全绿）
+R9 历史：418 = Core 27 / Conformance 145 / Runtime 123 / Extensions 59 /
+Packaging 41 / UI 3 / Client 2 / Product 18（连续 3 次本地全绿）
+R10 历史：442 = Core 33 / Conformance 148 / Runtime 126 / Extensions 60 /
+Packaging 46 / UI 3 / Client 2 / Product 24（连续 3 次本地全绿）
+R11 当前最终：443 = Core 33 / Conformance 148 / Runtime 126 / Extensions 60 /
+Packaging 47 / UI 3 / Client 2 / Product 24（连续 3 次本地全绿；实跑修正见 review-round-11.md）
 ```
+
+上述 119 / 123 / 396 均为阶段历史记录，不得与 R8 当前计数混用；阶段状态仍以各节证据为准。
 
 历史片段（不得与新计数混用）：阶段 2 首批 Core 16 / Conformance 5（C06 / Thm70 / C22 / C13 /
 确定性重放）；随后 Conformance 18（Thm64/68/73/80 与平台收敛）与
@@ -173,7 +183,7 @@ Thm70 现已归位到 `TheoremMatrixTests.Thm70_Matrix`，不再计入 `PaperCon
 | UI / Console（Go registry、webui） | `ContributionTests.cs`、`Phase6Tests.cs` | owner 防陈旧、查询/命令、HTTP API、监听安全门 | 已验证 |
 | Thm64 / Thm68 / Thm73 / Thm80 逐条 | `tests/Gocordis.Conformance.Tests/TheoremTests.cs`（旧单点基线）、`tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs`（新增 5×3 矩阵） | 保持性、恢复精确性、顺序性、进展性、汇合性；Go→C# 逐条映射见 `theorem-matrix.md`。主线程已验证 | 已实现 |
 | 事件五派发模式（Go event conformance） | `tests/Gocordis.Extensions.Tests/ExtensionTests.cs` | serial/bail/parallel/waterfall + 可逆注册 | 已验证 |
-| PC01–PC30 平台收敛 E2E | `tests/Gocordis.Conformance.Tests/PlatformConvergenceTests.cs` | 声明幂等、无第二生命周期、stale 完成隔离、Close 全 Gone（方法后缀是本地序号，**不是** Go gate 编号；对应关系见 `paper-coverage-matrix.md` 开头）。主线程已验证 | 已验证 |
+| PC01–PC30 平台收敛 E2E | `tests/Gocordis.Conformance.Tests/PlatformConvergenceTests.cs` + `ProductGateTests.cs` | 仅代表性 6/30 gate 已移植：声明幂等、无第二生命周期、stale 完成隔离、Close 全 Gone、ID 稳定（本地后缀不是 Go gate 编号）。其余 24 项未移植 | 已验证（代表性 6/30） |
 | 论文 C01–C40 可证伪覆盖矩阵 | `tests/Gocordis.Conformance.Tests/PaperItemMatrixTests.cs`、`docs/migration/paper-coverage-matrix.md` | 40 行逐条校验锚点/状态/证据；38 已覆盖、0 待补、2 接受差异；主线程已验证 | 已实现 |
 | 定理 Go→C# 映射与 JS 差异逐项裁决 | `docs/migration/theorem-matrix.md`、`docs/migration/js-cordis-csharp-differences.md` | 5 定理 ≥3 场景；JS/接受差异每项的 C# 决定与证据。主线程已验证 | 已实现 |
 | 竞态检测（Go `-race`） | `dotnet test`（并发压力测试） | 并发 Load/Dispose、Snapshot、进程 RPC 有压力用例；无 .NET 等价 race detector | 已实现 |
@@ -185,14 +195,14 @@ Thm70 现已归位到 `TheoremMatrixTests.Thm70_Matrix`，不再计入 `PaperCon
 | `industrial-data-collector` | 用户明确冻结；不是框架前置条件 |
 | Go 实现代码本身 | 只作参照；最终只维护 C# 版本 |
 | 第二个 Host | 明确不设计 |
-| Application Package | 明确不设计 |
+| Application Package | 已实现：`Gocordis.Packaging` + `Gocordis.Cli` + `ApplicationLoader` |
 | 插件市场服务端 / 云端插件管理平台 | 不在范围内 |
 | 新 WASM 虚拟机 | 复用成熟 runtime |
 | 自研程序集加载器 | 使用 `AssemblyLoadContext` |
 | NativeAOT | 明确不引入 |
 | 为 DDD 拆分大量微型项目 | 与"不过度拆分"约束冲突 |
 | 业务状态持久化框架 | 业务成果走组件 journal + 幂等重放；runtime 派生状态永不持久化 |
-| Go 前端资产（`web/console`、`client/`） | 不搬运；C# 侧提供内嵌 HTML/JS 通过贡献 API 渲染 |
+| Go 前端资产（`web/console`、`client/`） | `web/console/dist` 由 C# WebUiServer 交付；TS 为产品前端资产，客户端契约由 `Gocordis.Client` 替代 |
 | 官方扩展大套件 | 已在 `Gocordis.Extensions` 实现并测试（event 五模式亦含） |
 | ~~WASM 自定义段 / host imports / HMR~~ | 已由 `WasmCustomSections`、`WasmHostBridge`、`WasmHotSwapper` 实现 |
 | ~~进程降级词表、崩溃中调用~~ | 已实现并测试；Windows `.exe` 路径由 `windows-dotnet` CI 覆盖（未在 Linux 实跑） |

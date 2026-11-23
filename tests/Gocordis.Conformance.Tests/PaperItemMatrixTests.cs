@@ -51,10 +51,9 @@ public sealed class PaperItemMatrixTests
         yield return Item("C29", "Def 72 p.49；Thm 73 pp.49–50", "已覆盖", "Thm73_Matrix");
         yield return Item("C30", "Def 74–76 pp.51–52；Thm 80 pp.54–55", "已覆盖", "Thm80_Matrix");
         yield return Item("C31", "Lemmas 59–62 pp.40–42", "已覆盖", "C31_WritePartitionIsInvariantUnderRenamingAndVestigialRecords");
-        yield return Item("C32", "§4.4 Asynchrony pp.55–56", "已覆盖", "PC19_StaleActivationCannotAffectANewGeneration");
+        yield return Item("C32", "§4.4 Asynchrony pp.55–56", "已覆盖", "C32_InertialIteratorLandsCancellableStepBeforeItsInverse");
         yield return Item("C33", "§4.4 Failure p.56", "已覆盖", "C33_FailureIsIsolatedOnTheFiberAndBlocksReentry");
-        yield return Item("C34", "§4.4 Isolation/Configuration pp.56–57", "接受差异",
-            "C# 无 Rehome API；realm 重赋值按 retire→新 fiber 实现，未逐条对齐 retire→deactivate→O-Remove→同名重插（semantic-mapping.md:C34）。");
+        yield return Item("C34", "§4.4 Isolation/Configuration pp.56–57", "已覆盖", "C34_RealmReassignmentIsARetireReinsertComposite");
         yield return Item("C35", "§6.1 pp.70–71", "已覆盖", "C35_ReversibleBoundaryCoversOwnedEffectsButNotExternalEmission");
         yield return Item("C36", "§6.5 p.74", "已覆盖", "C36_DependencyCyclesAreRejectedAtMountWithAnExplicitChain");
         yield return Item("C37", "§6.3 p.72", "已覆盖", "C37_DeclaredCapabilitiesAreArbitratedAndMetaCanRefinePolicy");

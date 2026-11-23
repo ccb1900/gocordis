@@ -85,10 +85,10 @@ C# 实现不追求与 Go 类型/函数签名一致，只追求逐条满足这里
 | Context / 统一上下文 | C12 | `ctx` 代理（`ctx.foo`） | `runtime/context.go` | 强类型 `Context`；**不实现 JS Proxy 魔法** | 迁移语义 |
 | Fiber / 运行实例 | C16 | registry 中的 fiber | `runtime/fiber.go:19`、`state.go:8` | `Gocordis.Core` Fiber + 状态机 | 迁移语义 |
 | Effect 与 LIFO 恢复 | C02–C06、C26 | effect context（逆按 LIFO） | `runtime/context.go`、`effect_phase_test.go` | `IAsyncDisposable` effect 栈；**严格 LIFO，不并发撤销** | 迁移语义 |
-| Effect 迭代器 / divert | C06、C21、C28、C32 | 无直接对应 | `runtime/component.go:99`、`iterator_test.go:184` | 迭代器提升为主形态；`IAsyncEnumerable` + `CancellationToken` 或等价；per-yield 调度先不做 | 待定（默认论文形态） |
+| Effect 迭代器 / divert | C06、C21、C28、C32 | 无直接对应 | `runtime/component.go:99`、`iterator_test.go:184` | 迭代器为主形态；`IIterativeComponent` + `CancellationToken`；每次 yield 由 Core 命令域做 Install/Divert 决策（含惯性异步步） | 迁移语义（已实现） |
 | 依赖声明与解析 | C07、C08、C17 | `ctx.inject/provide`、typed key | `runtime/providers.go`、`dependency_graph.go` | typed `Key<T>` + provider 解析；一个 key 一个提供者 | 迁移语义 |
 | 依赖消失 → Pending → 自动恢复 | C20–C22 | registry 响应依赖变化 | `runtime/reconcile.go:59`、`phase5_contract_test.go:62` | 同一语义；**不得变成 Failed** | 迁移语义 |
-| Realm 逐 key 隔离 | C10、C34 | 无等同机制 | `runtime/providers.go`、`rehome.go:70` | `Gocordis.Core` Realm；rehome = revision | 迁移语义 |
+| Realm 逐 key 隔离 | C10、C34 | 无等同机制 | `runtime/providers.go`、`rehome.go:70` | `Gocordis.Core` Realm；`Runtime.RehomeAsync` = retire→deactivate→O-Remove→同名重插（新 fiber id/generation/Revision），children 先于 parent | 迁移语义（已实现） |
 | 元数据拦截（monoid、右偏） | C11、C37 | peer dependencies / 配置 | `runtime/context.go` `metaView`、`meta_intercept_test.go` | 派生式、每 Context 快照、不跨 root 泄漏 | 迁移语义 |
 | Ownership / 级联清理 | C18、C19、C26 | 无等同机制 | `runtime/ownership.go:150` | 父子所有权 + 子先于父清理（工程强化） | 迁移语义 |
 | 失败 = raise，不向父传播 | C33 | 插件错误隔离 | `runtime/orchestrator.go:501`、`phase3_contract_test.go:71` | Activation 失败 → Failed；不自动重试；重试 = revision | 迁移语义 |
@@ -116,11 +116,14 @@ C# 实现不追求与 Go 类型/函数签名一致，只追求逐条满足这里
 2. **拦截必须是派生的。** Go 早期把元数据 ι 写进共享 root realm，违反 Def 27 并跨 root 泄漏；已由 `metaView`/`Child()` 快照修复。
    **裁决**：C# 保持每 Context 派生的元数据视图，不跨 root 继承。
 3. **激活形态反转。** 论文默认形态是 effect iterator（C06）；Go 默认是 Apply 一次，`IterComponent` 才开启迭代。
-   **裁决**：C# 以迭代器语义为主形态，"单次 Apply"视为单步迭代器的语法糖；per-yield 调度保留在路线图，不实现。
+   **裁决**：C# 以迭代器语义为主形态，"单次 Apply"视为单步迭代器的语法糖；per-yield 调度已实现——
+   `Runtime.StepsAsync` 逐 yield 经 `StepRequestCommand` / `StepInstalledCommand` 交回命令域裁决，
+   在途步只能落地不能中止（C32），Managed 后端若包裹 `IIterativeComponent` 必须 yielding 给 Core 调度。
 4. **汇合前提要显式编码。** Go 用规范 observable 近似 `≃_K`，Def 76 总性只隐式成立。
    **裁决**：C# 明确定义 `≃`（按 key 操作的可观察等价）与总性前提，不靠近似掩盖。
 5. **拒绝 JS 的保身份替换与跨 effect 并发撤销。** 它们分别与 C34（revision = retire→重插）和 C06（LIFO）冲突。
-   **裁决**：C# 采用 retire→reinsert 与严格顺序 LIFO。
+   **裁决**：C# 采用 retire→reinsert 与严格顺序 LIFO；`RehomeAsync` 退役旧 fiber、撤销其 effect、
+   O-Remove 旧记录并以新 id/Generation/Revision 同名重插，Snapshot 直接观察 revision 变化。
 6. **子先于父清理是工程强化，不是论文要求。** Go 明确接受此强化。
    **裁决**：保留，但文档中不得写成论文条款。
 7. **状态映射固定。** 论文 Inactive ↔ Go `Pending`/`Gone`；论文 Failed outcome ↔ Go `StateFailed`；
@@ -147,17 +150,37 @@ C# 实现不追求与 Go 类型/函数签名一致，只追求逐条满足这里
 
 - 完整观察等价 `≃_K`：Go 用规范 observable 近似（review `:261`）。
 - Def 76 总性：Go 生成器隐含满足，没有显式断言（review `:264`、`:300`）。
-- Thm 43（逆可任意排列）：Go 只实现严格 LIFO，无直接测试。
+- Thm 43（独立逆可任意排列）：Go 只实现严格 LIFO；C# 把 LIFO 限定在单 fiber 内，
+  并以两个独立 fiber 的两种撤销排列做可执行断言：`C14_IndependentInversesCommuteAcrossPermittedOrders`
+  与 `Thm43_IndependentInversesCommuteAcrossPermittedOrders`（见 `TheoremMatrixTests` / `PaperGapClosureTests`）。
+  不再表述为"无直接测试"。
 - Thm 45/47/71：作为证明要素使用，无专门命名测试（Thm 71 由每步 target 检查操作化保证）。
-- 按 yield 调度：确定性驱动未实现（G-05/G-8）。
+- 按 yield 调度：C# Core 已实现每步命令域决策（`Runtime.StepsAsync`）；确定性重放驱动（G-05/G-8）仍未移植，
+  属于平台测试工具，不是论文语义缺口。证据：`C32_InertialIteratorLandsCancellableStepBeforeItsInverse`、
+  `ManagedInnerIteratorIsScheduledStepByStepByCore`。
+- 逆失败诚实性：失败逆继续剩余 LIFO 栈，但槽位转 `EffectState.Failed`，`Fiber.CleanupFailures` /
+  `RuntimeSnapshot.CleanupFailures` 可观察"清理不完整"，不伪装为 Undone 成功。
+  证据：`FailingInverseContinuesTheStackAndIsObservableAsIncomplete`、
+  `FailingInverseOnDependencyLossBlocksReentryInsteadOfPretendingPending`。
 - §6.5 分解策略、§6.7 语言/OS 协同：仅讨论；§6.6 在 C# 迁移中由 `VersionedKey<T>` + peer range 实现（见 `VersioningTests`）。
 
 **Go 有、论文无或论文中性**：
 
 - 事件派发五模式、`BailValue`/`OnValue`/`OnOnce`（ADR-0004）。
-- `Runtime.Snapshot`/EventSink/Subscribe、确定性驱动、`Fiber.Rehome`。
+- `Runtime.Snapshot`/EventSink/Subscribe、确定性驱动；`Fiber.Rehome`（Go 的**保身份短路由**，
+  不是论文 C34 的 revision 复合；C# 只实现论文的 retire→reinsert 形态 `Runtime.RehomeAsync`）。
 - 声明校验（undeclared Require/Provide 拒绝）、`ErrDuplicateProvider`、装载期自依赖拒绝。
 - 平台能力：registry、scheduler、timer、watch、fs、http、server、market、package-manager、console。
+
+### 6.1 P1 语义修复的可执行证据锚点
+
+| 论文条目 / 修复 | 实现锚点（生产代码） | 红→绿证据（测试） |
+| --- | --- | --- |
+| C34 revision 复合 | `src/Gocordis.Core/Runtime.cs` `HandleRehome` / `CompleteRehome`；`Context.IsolateAsync` 走 `IsolateCommand` | `tests/Gocordis.Core.Tests/RevisionSemanticsTests.cs`：`RehomeRetiresOldFiberAndReinsertsWithNewIdentityAndRealm`、`RehomeRetiresChildrenBeforeTheirOwnerAndReinsertsAtTheSamePosition`；`tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs`：`C34_RealmReassignmentIsARetireReinsertComposite` |
+| 迭代器不被后端绕过 | `src/Gocordis.Runtime.Managed/ManagedBackend.cs` `ManagedPluginComponent.IterateAsync`；后端不再对 `IIterativeComponent` 调 `ApplyAsync` | `tests/Gocordis.Runtime.Tests/ManagedRuntimeTests.cs`：`ManagedInnerIteratorIsScheduledStepByStepByCore`、`ManagedInnerIteratorDivertSkipsStepsThatWereNeverRequested` |
+| 逆失败诚实性 | `src/Gocordis.Core/Runtime.cs` `RunUnwindAsync` / `RecordCleanupFailures`；`EffectState.Failed`、`CleanupIncompleteException` | `tests/Gocordis.Core.Tests/InverseFailureTests.cs`：`FailingInverseContinuesTheStackAndIsObservableAsIncomplete`、`FailingInverseOnDependencyLossBlocksReentryInsteadOfPretendingPending` |
+| C32 惯性异步 | `src/Gocordis.Core/Runtime.cs` `StepsAsync` / `HandleStepInstalled` | `tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs`：`C32_InertialIteratorLandsCancellableStepBeforeItsInverse` |
+| Thm43 / C14 独立逆 | Core 严格 LIFO；跨 fiber 可交换 | `tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs`：`Thm43_IndependentInversesCommuteAcrossPermittedOrders`、`C14_IndependentInversesCommuteAcrossPermittedOrders` |
 
 ## 7. 平台边界（review §10 + R4 分类）
 

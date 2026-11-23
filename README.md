@@ -1,3 +1,12 @@
+> **C# 正式入口**：`dotnet run --project src/Gocordis.Platform -- --manifest gocordis.app.json --store ~/.gocordis/plugins`
+> Console 可通过 UI 安装、配置、启停、升级、卸载插件，并查看依赖与运行状态；写操作默认仅 loopback 可用，远程需显式鉴权策略。
+> （不是 `samples/PlatformHost`；后者只是示例）。详见 `docs/migration/final-acceptance.md`。
+
+> **C# 迁移状态**：完整迁移在 [`migration/dotnet-complete`](https://github.com/ccb1900/gocordis/tree/migration/dotnet-complete) 分支。
+> 该分支包含统一 Runtime、Managed/Process/WASM 后端、插件包/CLI、Web/WinForms/Avalonia UI 契约与完整验收账本，
+> 入口见 [docs/migration/final-acceptance.md](docs/migration/final-acceptance.md)。
+> 本文件以下部分描述 Go 基线，Go 仓库已冻结，不再作为新应用入口。
+
 # gocordis — 动态可组合运行时(Go)
 
 以论文 *[A Programming Paradigm for Spatiotemporal Composability](docs/论文.pdf)*

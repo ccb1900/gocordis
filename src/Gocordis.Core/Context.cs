@@ -123,16 +123,23 @@ public sealed class Context
         });
     }
 
-    public void Isolate<T>(Key<T> key, Realm realm)
+    /// <summary>
+    /// Legacy synchronous form. The route change is still applied by the
+    /// Runtime's decision domain (never by writing fiber state here).
+    /// </summary>
+    public void Isolate<T>(Key<T> key, Realm realm) =>
+        IsolateAsync(key, realm).AsTask().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Preferred async form of per-key isolation. The Runtime owns the mutation
+    /// and the resulting reconciliation; this context only declares the route.
+    /// </summary>
+    public ValueTask IsolateAsync<T>(Key<T> key, Realm realm)
     {
         EnsureWritable();
         RequireDeclared(key, [.. _fiber.Component.Inject(), .. _fiber.Component.Provide()]);
         ArgumentNullException.ThrowIfNull(realm);
-        _activation.Runtime.Mutate(() =>
-        {
-            _fiber.RealmOverrides[key] = realm;
-            _activation.Runtime.MarkBindingsChanged();
-        });
+        return _activation.Runtime.IsolateAsync(_fiber, key, realm);
     }
 
     public void DeclareMeta<T, M>(MetaKey<T, M> key, M value)

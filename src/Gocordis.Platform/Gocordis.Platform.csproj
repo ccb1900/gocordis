@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>gocordis-platform</AssemblyName>
+    <RootNamespace>Gocordis.Platform</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Gocordis.Core/Gocordis.Core.csproj" />
+    <ProjectReference Include="../Gocordis.Extensions/Gocordis.Extensions.csproj" />
+    <ProjectReference Include="../Gocordis.Plugins/Gocordis.Plugins.csproj" />
+    <ProjectReference Include="../Gocordis.Packaging/Gocordis.Packaging.csproj" />
+    <ProjectReference Include="../Gocordis.Runtime.Managed/Gocordis.Runtime.Managed.csproj" />
+    <ProjectReference Include="../Gocordis.Runtime.Process/Gocordis.Runtime.Process.csproj" />
+    <ProjectReference Include="../Gocordis.Runtime.Wasm/Gocordis.Runtime.Wasm.csproj" />
+    <ProjectReference Include="../Gocordis.Console.WebUi/Gocordis.Console.WebUi.csproj" />
+    <ProjectReference Include="../Gocordis.UI.Hosts/Gocordis.UI.Hosts.csproj" />
+  </ItemGroup>
+</Project>

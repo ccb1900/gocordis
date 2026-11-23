@@ -19,3 +19,6 @@ bin/
 obj/
 .vs/
 *.user
+
+# BenchmarkDotNet generated artifacts
+BenchmarkDotNet.Artifacts/

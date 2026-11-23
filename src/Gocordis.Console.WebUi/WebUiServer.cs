@@ -676,10 +676,15 @@ public sealed class WebUiServer : IAsyncDisposable
                 ["title"] = page.Title,
                 ["route"] = page.Route,
                 ["renderer"] = page.Renderer,
+                ["order"] = page.Order,
             };
             if (page.Icon is not null)
             {
                 item["icon"] = page.Icon;
+            }
+            if (page.Group is not null)
+            {
+                item["group"] = page.Group;
             }
             if (page.Description is not null)
             {

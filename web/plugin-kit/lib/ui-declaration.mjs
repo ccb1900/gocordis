@@ -33,6 +33,8 @@ export function uiDeclaration({ module, entry, pages = [], panels = [] }) {
       renderer: page.renderer ?? "generic",
       ...(page.icon ? { icon: page.icon } : {}),
       ...(page.description ? { description: page.description } : {}),
+      ...(page.group ? { group: page.group } : {}),
+      ...(page.order !== undefined ? { order: page.order } : {}),
       ...(page.views ? { views: page.views } : {}),
       ...(page.actions ? { actions: page.actions } : {}),
     }]);

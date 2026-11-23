@@ -15,6 +15,7 @@ import {
 import { useObservationGeneration, useStreamStatus, onObservation } from "../stream";
 import { useDomainVersion } from "../lib/projections";
 import { usePath, navigate, replace } from "../router";
+import { buildMenuTree, type MenuNode } from "../lib/menu-tree";
 import { useTheme } from "../theme";
 import { ActionBar } from "./ActionBar";
 import { GenericPage } from "../views/GenericPage";
@@ -60,6 +61,16 @@ const PAGE_ICONS: Record<string, React.ReactNode> = {
 
 function pageIcon(name?: string): React.ReactNode {
   return (name && PAGE_ICONS[name]) || <FileTextOutlined />;
+}
+
+// Map the renderer-agnostic menu tree onto antd's nested item shape.
+function toMenuItems(nodes: MenuNode[]): any[] {
+  return nodes.map((node) => ({
+    key: node.key,
+    icon: node.icon ? pageIcon(node.icon) : undefined,
+    label: node.label,
+    children: node.children ? toMenuItems(node.children) : undefined,
+  }));
 }
 
 // Console shell — the second Cordis application. It renders whatever the
@@ -250,7 +261,7 @@ export default function App() {
           <Menu
             theme="dark" mode="inline"
             selectedKeys={active ? [active.route] : []}
-            items={pages.map((p) => ({ key: p.route, icon: pageIcon(p.icon), label: p.title }))}
+            items={toMenuItems(buildMenuTree(pages))}
             onClick={({ key }) => navigate(key)}
           />
           <div style={{ marginTop: "auto", padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>

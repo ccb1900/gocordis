@@ -6,7 +6,8 @@
       "title": "自定义页面（TSX Client Module）",
       "route": "/showcase/custom",
       "renderer": "showcase-custom-page",
-      "description": "由插件自带的 TSX 前端模块注册并渲染（react/antd 来自控制台门面）"
+      "description": "由插件自带的 TSX 前端模块注册并渲染（react/antd 来自控制台门面）",
+      "group": "时空组合 Showcase/前端扩展"
     }
   ],
   "panels": [
@@ -15,7 +16,9 @@
       "title": "自定义面板（TSX Client Module）",
       "position": "bottom",
       "renderer": "showcase-custom-panel",
-      "pages": ["/showcase/custom"]
+      "pages": [
+        "/showcase/custom"
+      ]
     }
   ]
 }

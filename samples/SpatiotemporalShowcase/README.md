@@ -26,6 +26,14 @@
 | API 查询（views 的数据源） | `showcase/store` `showcase/events` `showcase/trend` `showcase/dashboard` `showcase/config` `showcase/keys` `showcase/worker` | `GET /api/query/<name>` |
 | API 命令（form/json/action 的目标） | `showcase/config.set` `showcase/report` | `POST /api/command/<name>` |
 
+### UI 菜单分级
+
+页面定义可声明 `group`（`/` 分隔的多级路径），控制台据此把菜单渲染成 antd 子菜单；
+没有 `group` 的页面仍是顶级项。`order` 决定同级排序（小的在前，组排在同级页之前）。
+本套件把 `showcase-graph` / `showcase-inspector` / `showcase-framework` 归到
+`时空组合 Showcase/框架能力`，把 TSX 自定义页归到 `时空组合 Showcase/前端扩展`，
+直接演示两级菜单。分组随 `gocordis-ui.json` 与插件一起安装/卸载。
+
 ### 真正的自定义前端（TSX）
 
 `UiClientModule/frontend/src/ui.tsx` 是**完整的 React/TSX 组件**（hooks + antd `Card`/`Descriptions`/`Statistic`/`Tag`/`Alert`/`Button`），不是声明式内置块的组合。它经 `@gocordis/plugin-kit` 用 esbuild 构建成单文件 ESM：`react`/`antd` 的导入在构建期重定向到控制台门面 shim，运行时全页面只有一个 React 实例。该模块在 `register(api)` 里注册页面/面板/块/widget/action/settings 六个扩展点，自定义页面/面板的声明由 kit 写进 `gocordis-ui.json`，随插件包一起安装/卸载。自定义页面通过 `ctx.hubQuery` 读插件自己的 `showcase/store`、`showcase/worker` 查询——前端不碰 Runtime 内部。

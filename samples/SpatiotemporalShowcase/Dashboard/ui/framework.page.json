@@ -1,1 +1,8 @@
-{ "id": "showcase-framework", "title": "框架概览（framework-dashboard）", "route": "/showcase/framework", "renderer": "framework-dashboard", "description": "内置渲染器别名：绑定 framework/dashboard 查询" }
+{
+  "id": "showcase-framework",
+  "title": "框架概览（framework-dashboard）",
+  "route": "/showcase/framework",
+  "renderer": "framework-dashboard",
+  "description": "内置渲染器别名：绑定 framework/dashboard 查询",
+  "group": "时空组合 Showcase/框架能力"
+}

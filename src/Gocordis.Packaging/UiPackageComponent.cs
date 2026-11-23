@@ -57,7 +57,8 @@ internal static class UiPackageBinder
                     Text(obj, "description"),
                     obj["views"]?.DeepClone(),
                     Actions(obj),
-                    Number(obj, "order"))));
+                    Number(obj, "order"),
+                    Text(obj, "group"))));
             }
             else if (resource.Kind.Equals("panel", StringComparison.OrdinalIgnoreCase))
             {

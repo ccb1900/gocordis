@@ -64,6 +64,25 @@ public sealed class UiContributionRegistry
 
     // ---- typed composition -------------------------------------------------
 
+    /// <summary>
+    /// Normalizes a menu group path: '/'-separated nonempty segments, trimmed,
+    /// with a bounded depth so a malformed declaration cannot blow up the menu.
+    /// Null/empty means a top-level menu item (no submenu).
+    /// </summary>
+    internal static string? NormalizeGroup(string? group)
+    {
+        if (string.IsNullOrWhiteSpace(group))
+        {
+            return null;
+        }
+
+        var segments = group.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(segment => segment.Length > 0)
+            .Take(8)
+            .ToArray();
+        return segments.Length == 0 ? null : string.Join('/', segments);
+    }
+
     public UiContributionHandle RegisterPage(ContributionOwner owner, UiPageDefinition definition)
     {
         ArgumentNullException.ThrowIfNull(owner);
@@ -74,7 +93,8 @@ public sealed class UiContributionRegistry
             var page = new UiPage(
                 definition.Id, definition.Title, definition.Route, definition.Renderer,
                 definition.Icon, definition.Description, definition.Views?.DeepClone(),
-                definition.Actions ?? [], definition.Order, owner);
+                definition.Actions ?? [], definition.Order, owner,
+                NormalizeGroup(definition.Group));
             _pages[definition.Id] = page;
             return Track("page", definition.Id, owner);
         }

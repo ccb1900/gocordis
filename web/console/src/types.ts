@@ -22,6 +22,11 @@ export interface UIPage {
   renderer: string;
   /** Menu icon hint from the console's curated set. */
   icon?: string;
+  /** Optional '/'-separated menu group path (e.g. "运维/监控"). Pages sharing
+   * a prefix are nested under antd SubMenus; absent means a top-level item. */
+  group?: string;
+  /** Menu sort hint (lower first); groups inherit the min child order. */
+  order?: number;
   description?: string;
   view?: unknown;
   views?: ViewBlock[];

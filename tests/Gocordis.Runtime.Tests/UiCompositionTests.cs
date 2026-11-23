@@ -92,6 +92,36 @@ public sealed class UiCompositionTests
     }
 
     [Fact]
+    public void PageGroupIsNormalizedAndRoundTrips()
+    {
+        var registry = new UiContributionRegistry();
+        var owner = ContributionOwner.For("plugin", "component");
+        var handle = registry.RegisterPage(owner,
+            new UiPageDefinition("page", "Grouped", "/grouped", "generic",
+                Group: " 运维 / 监控 / "));
+        try
+        {
+            Assert.Equal("运维/监控", Assert.Single(registry.Pages()).Group);
+        }
+        finally
+        {
+            registry.UnregisterPage(handle);
+        }
+
+        // Null / empty groups stay top-level (no submenu).
+        var plain = registry.RegisterPage(owner,
+            new UiPageDefinition("plain", "Plain", "/plain", "generic", Group: "///"));
+        try
+        {
+            Assert.Null(Assert.Single(registry.Pages()).Group);
+        }
+        finally
+        {
+            registry.UnregisterPage(plain);
+        }
+    }
+
+    [Fact]
     public async Task OwnerCarriesActivationIdentity()
     {
         await using var runtime = new Gocordis.Core.Runtime();

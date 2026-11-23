@@ -395,6 +395,75 @@ public sealed class CrossBackendCapabilityTests
     }
 
     [Fact]
+    public async Task DivertedWasmConsumerUnwindsInsteadOfFailing()
+    {
+        var catalog = new CapabilityCatalog();
+        var declaration = CapabilityDeclaration.Parse(
+            "provide|org.example.divert/value|endpoint|1.0.0|text/plain|");
+        catalog.Declare([declaration]);
+        var key = catalog.KeyFor<ICapabilityEndpoint>(
+            new CapabilityId("org.example.divert", "value"), CapabilityValueKind.Endpoint);
+
+        await using var runtime = new Gocordis.Core.Runtime();
+        var provider = await runtime.LoadAsync(new EndpointProviderComponent(
+            key, (_, _) => ValueTask.FromResult(CapabilityEnvelope.Text("ok"))));
+
+        // Park the guest inside runtime_component_create, then retire the fiber.
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        const string wat = """
+            (module
+              (@custom "gocordis.capabilities" "{\"requires\":[{\"id\":\"org.example.divert/value\",\"kind\":\"endpoint\"}]}")
+              (import "gocordis" "capability_buffer" (func $buffer (result i32)))
+              (import "gocordis" "capability_require" (func $require (param i32 i32) (result i32)))
+              (memory (export "memory") 1)
+              (func (export "runtime_component_destroy") (param i32))
+              (func (export "runtime_component_create") (result i32)
+                (local $buf i32)
+                (local $handle i32)
+                (local.set $buf (call $buffer))
+                (i32.store8 (local.get $buf) (i32.const 120))
+                (local.set $handle (call $require (local.get $buf) (i32.const 1)))
+                (local.get $handle))
+              (func (export "capability_invoke") (param i32 i32) (result i32 i32)
+                i32.const 2048
+                i32.const 0))
+            """;
+        // A pure consumer: only a require declaration, so it cannot collide
+        // with the provider's own declaration.
+        var require = CapabilityDeclaration.Parse(
+            "require|org.example.divert/value|endpoint||text/plain|");
+        var component = new WasmCapabilityComponent(wat, "divert-consumer", catalog, [require]);
+        var loading = runtime.LoadAsync(component);
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (runtime.Snapshot().Fibers.FirstOrDefault(
+                    fiber => fiber.Name == "divert-consumer") is { } appearing &&
+                appearing.State != FiberState.Pending)
+            {
+                break;
+            }
+
+            await Task.Delay(10);
+        }
+
+        var snapshotFibers = runtime.Snapshot().Fibers;
+        Assert.Contains(snapshotFibers, fiber => fiber.Name == "divert-consumer");
+        var fiberId = snapshotFibers
+            .Single(fiber => fiber.Name == "divert-consumer").Id;
+        var disposal = runtime.DisposeAsync(runtime.GetFiber(fiberId)!);
+        release.SetResult();
+        var fiber = await loading.WaitAsync(TimeSpan.FromSeconds(5));
+        await disposal.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(FiberState.Gone, fiber.State);
+        Assert.Null(fiber.Failure);
+        await runtime.DisposeAsync(provider);
+    }
+
+    [Fact]
     public async Task RunawayGuestIsInterruptedByTheExecutionBudget()
     {
         var catalog = new CapabilityCatalog();

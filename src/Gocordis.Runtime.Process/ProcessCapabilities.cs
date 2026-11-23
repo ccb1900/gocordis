@@ -85,6 +85,10 @@ public sealed class ProcessCapabilityBridge
             }
         }
 
+        // BLOCKING-call boundary (documented): the request is answered inside
+        // the host's read loop, so the endpoint must complete without the SAME
+        // client being re-entered (self-cycles are rejected at mount); the
+        // activation token bounds the wait cooperatively.
         var response = endpoint.InvokeAsync(
             CapabilityEnvelope.Json(request), _cancellation).AsTask().GetAwaiter().GetResult();
         return new JsonObject { ["response"] = response.AsText() };

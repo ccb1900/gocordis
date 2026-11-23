@@ -273,8 +273,20 @@ public sealed class DelegatingCapabilityEndpoint : ICapabilityEndpoint
     public async ValueTask<CapabilityEnvelope> InvokeAsync(
         CapabilityEnvelope request, CancellationToken cancellationToken)
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        // Enter-then-check: a caller that passed a disposed=0 check must still
+        // be counted by the drain, otherwise Dispose could release the resource
+        // under a call that was linearizing concurrently.
         Interlocked.Increment(ref _inFlight);
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            if (Interlocked.Decrement(ref _inFlight) == 0)
+            {
+                Interlocked.Exchange(ref _drained, null)?.TrySetResult();
+            }
+
+            throw new ObjectDisposedException(nameof(DelegatingCapabilityEndpoint));
+        }
+
         try
         {
             return await _invoke(request, cancellationToken);

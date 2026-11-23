@@ -163,9 +163,12 @@ public sealed class WasmCapabilityBridge
             }
         }
 
-        // Wasmtime imports are synchronous; endpoints used here must complete
-        // without yielding. Managed endpoints are in-process; other backends
-        // are marshalled by their own adapters before they reach this point.
+        // BLOCKING-call boundary (documented): Wasmtime host imports are
+        // synchronous, so a guest capability call blocks the activation task
+        // until the endpoint answers (bounded by the provider's own timeouts).
+        // Self-cycles are impossible by construction — a component cannot both
+        // provide and require the same key (rejected at mount) — so this call
+        // can never re-enter the same guest/process that triggered it.
         var response = endpoint.InvokeAsync(
             CapabilityEnvelope.Json(request), _cancellation).AsTask().GetAwaiter().GetResult();
         var bytes = response.Payload;

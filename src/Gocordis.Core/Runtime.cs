@@ -1489,9 +1489,19 @@ public sealed class Runtime : IAsyncDisposable
             {
                 await handler.Invoke(payload);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex)
             {
-                failure ??= ex;
+                // A handler's own cancellation only vanishes when the EMITTER
+                // is being torn down as well; otherwise it is a real failure.
+                if (ex is OperationCanceledException &&
+                    !emitter.Cancellation.IsCancellationRequested)
+                {
+                    failure ??= ex;
+                }
+                else if (ex is not OperationCanceledException)
+                {
+                    failure ??= ex;
+                }
             }
         }
 

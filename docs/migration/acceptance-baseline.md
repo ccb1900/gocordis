@@ -85,6 +85,30 @@
 - **P2-04 并发与可观察性**：`Runtime.PendingCommands` 命令队列深度观察（入队/执行配对计数，仅观察不是背压闸门）+ 消化测试；`StableRegistry` 订阅契约落码——通知跳过已 Dispose 的 watcher，Dispose 不再合成"最后一次回调"，文档写明快照/Dispose 竞态的边界；`ManagedPluginLoader` 的 Load/Unload 内部串行化（产品路径外直接调用也安全）；`ObserveStream` 明确标注为单消费者工作队列，与 fan-out 的 `ObservationLog` 区分。
 - **P0 遗留关闭（跨平台执行证据）**：Process 后端支持启动参数（`ProcessPluginComponent`/`ProcessBackend` 可携带 arguments）；同一 `dotnet <dll>` 启动路径的 fixture 在 Linux 上**真实执行**（`DotnetHostedProcessFixtureRuns`），并在 Windows 上以 `[WindowsOnlyFact]` 登记（`WindowsDotnetProcessFixtureRuns`）——CI 将分别报告 Passed/Skipped。
 
+## 自审批次（2026-11-23，HEAD 5eb2855 之后）
+
+对 P0–P2 三批改动做了对照式自审（逐条核对本仓测试存在性与真实执行），发现并处置：
+
+1. **修：Endpoint 进入租约的 check-then-increment 竞态**——原实现先查 disposed 再计数，
+   与 Dispose 的 drain 窗口存在缝隙；改为 enter-then-check（先计数后校验），并发撤销
+   下不再可能"漏计后释放"。
+2. **修：Emit 吞掉 handler 自身的取消**——原先所有 `OperationCanceledException` 一律
+   不计失败；现在仅当 emitter 自己在取消时才视为协作取消，否则计为首失败。
+3. **补：capability consumer 的 divert 语义证据**——新增
+   `DivertedWasmConsumerUnwindsInsteadOfFailing`：在 guest 激活途中 retire，
+   断言 Gone 且无 Failure（Pending/撤销路径，而不是 C33 的 Failed）。
+4. **补：阻塞边界的书面化**——WASM import 与 Process read-loop 里的同步端点调用
+   是按协议必然的阻塞点：自环不可能（provide+require 同键在 mount 被拒），
+   注释写明边界与上界来源。
+5. **测试构造错误自纠**：divert 测试初版给纯消费者误传了 provide 声明（撞上
+   provider 的重复声明），修正为 require 声明——它本身也是"声明权威"语义的
+   一次意外验证。
+6. **账本真实性核验**：逐条 grep 确认验收基线引用的每个测试名都真实存在并可执行
+   （含同步 `void` 测试）；`chmod` 绕过确认已移除；六方向互操作测试矩阵齐全。
+
+自审后全量：**507 passed + 1 显式 Skipped（Windows 用例在 POSIX 上登记跳过）/ 0 failed**，
+build 0 warning / 0 error。
+
 ## 冻结规则
 
 1. 本基线只记录**已核实**的证据等级，不把 E0/E1 升级为 E2。

@@ -1,0 +1,193 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 3 benchmark(s) in total *****
+// ***** Building 1 exe(s) in Parallel: Start   *****
+// start dotnet  restore /p:UseSharedCompilation=false /p:BuildInParallel=false /m:1 /p:Deterministic=true /p:Optimize=true /p:IntermediateOutputPath="/home/guojianhang/code/gocordis/tests/Gocordis.Benchmarks/bin/Release/net10.0/999567a1-3782-42dc-a421-c806db95b187/obj/Release/net10.0/" /p:OutDir="/home/guojianhang/code/gocordis/tests/Gocordis.Benchmarks/bin/Release/net10.0/999567a1-3782-42dc-a421-c806db95b187/bin/Release/net10.0/" /p:OutputPath="/home/guojianhang/code/gocordis/tests/Gocordis.Benchmarks/bin/Release/net10.0/999567a1-3782-42dc-a421-c806db95b187/bin/Release/net10.0/" in /home/guojianhang/code/gocordis/tests/Gocordis.Benchmarks/bin/Release/net10.0/999567a1-3782-42dc-a421-c806db95b187
+// command took 3.13 sec and exited with 0
+// start dotnet  build -c Release --no-restore /p:UseSharedCompilation=false /p:BuildInParallel=false /m:1 /p:Deterministic=true /p:Optimize=true /p:IntermediateOutputPath="/home/guojianhang/code/gocordis/tests/Gocordis.Benchmarks/bin/Release/net10.0/999567a1-3782-42dc-a421-c806db95b187/obj/Release/net10.0/" /p:OutDir="/home/guojianhang/code/gocordis/tests/Gocordis.Benchmarks/bin/Release/net10.0/999567a1-3782-42dc-a421-c806db95b187/bin/Release/net10.0/" /p:OutputPath="/home/guojianhang/code/gocordis/tests/Gocordis.Benchmarks/bin/Release/net10.0/999567a1-3782-42dc-a421-c806db95b187/bin/Release/net10.0/" --output "/home/guojianhang/code/gocordis/tests/Gocordis.Benchmarks/bin/Release/net10.0/999567a1-3782-42dc-a421-c806db95b187/bin/Release/net10.0/" in /home/guojianhang/code/gocordis/tests/Gocordis.Benchmarks/bin/Release/net10.0/999567a1-3782-42dc-a421-c806db95b187
+// command took 10.53 sec and exited with 0
+// ***** Done, took 00:00:13 (13.74 sec)   *****
+// Found 3 benchmarks:
+//   PluginRegistrySteadyApplyBenchmarks.SteadyApply: Dry(IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [PluginCount=100]
+//   PluginRegistrySteadyApplyBenchmarks.SteadyApply: Dry(IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [PluginCount=1000]
+//   PluginRegistrySteadyApplyBenchmarks.SteadyApply: Dry(IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [PluginCount=10000]
+
+// **************************
+// Benchmark: PluginRegistrySteadyApplyBenchmarks.SteadyApply: Dry(IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [PluginCount=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet 999567a1-3782-42dc-a421-c806db95b187.dll --anonymousPipes 122 123 --benchmarkName "Gocordis.Benchmarks.PluginRegistrySteadyApplyBenchmarks.SteadyApply(PluginCount: 100)" --job Dry --benchmarkId 0 in /home/guojianhang/code/gocordis/tests/Gocordis.Benchmarks/bin/Release/net10.0/999567a1-3782-42dc-a421-c806db95b187/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.15 (10.0.1526.53008), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Dry(IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 2587896.00 ns, 2.5879 ms/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 2587896.00 ns, 2.5879 ms/op
+// GC:  0 0 0 103576 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1506275 has exited with code 0.
+
+Mean = 2.588 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 2.588 ms, Q1 = 2.588 ms, Median = 2.588 ms, Q3 = 2.588 ms, Max = 2.588 ms
+IQR = 0.000 ms, LowerFence = 2.588 ms, UpperFence = 2.588 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 2 (66.7 %) benchmark(s) to run. Estimated finish 2026-11-23 19:58 (0h 0m from now) **
+// **************************
+// Benchmark: PluginRegistrySteadyApplyBenchmarks.SteadyApply: Dry(IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [PluginCount=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet 999567a1-3782-42dc-a421-c806db95b187.dll --anonymousPipes 122 123 --benchmarkName "Gocordis.Benchmarks.PluginRegistrySteadyApplyBenchmarks.SteadyApply(PluginCount: 1000)" --job Dry --benchmarkId 1 in /home/guojianhang/code/gocordis/tests/Gocordis.Benchmarks/bin/Release/net10.0/999567a1-3782-42dc-a421-c806db95b187/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.15 (10.0.1526.53008), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Dry(IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 4304421.00 ns, 4.3044 ms/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 4304421.00 ns, 4.3044 ms/op
+// GC:  0 0 0 995584 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1506290 has exited with code 0.
+
+Mean = 4.304 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 4.304 ms, Q1 = 4.304 ms, Median = 4.304 ms, Q3 = 4.304 ms, Max = 4.304 ms
+IQR = 0.000 ms, LowerFence = 4.304 ms, UpperFence = 4.304 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 1 (33.3 %) benchmark(s) to run. Estimated finish 2026-11-23 19:58 (0h 0m from now) **
+// **************************
+// Benchmark: PluginRegistrySteadyApplyBenchmarks.SteadyApply: Dry(IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [PluginCount=10000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet 999567a1-3782-42dc-a421-c806db95b187.dll --anonymousPipes 122 123 --benchmarkName "Gocordis.Benchmarks.PluginRegistrySteadyApplyBenchmarks.SteadyApply(PluginCount: 10000)" --job Dry --benchmarkId 2 in /home/guojianhang/code/gocordis/tests/Gocordis.Benchmarks/bin/Release/net10.0/999567a1-3782-42dc-a421-c806db95b187/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.15 (10.0.1526.53008), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Dry(IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1)
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 17333059.00 ns, 17.3331 ms/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 17333059.00 ns, 17.3331 ms/op
+// GC:  0 0 0 9796088 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1506328 has exited with code 0.
+
+Mean = 17.333 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 17.333 ms, Q1 = 17.333 ms, Median = 17.333 ms, Q3 = 17.333 ms, Max = 17.333 ms
+IQR = 0.000 ms, LowerFence = 17.333 ms, UpperFence = 17.333 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+
+// ** Remained 0 (0.0 %) benchmark(s) to run. Estimated finish 2026-11-23 19:59 (0h 0m from now) **
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  BenchmarkDotNet.Artifacts/results/Gocordis.Benchmarks.PluginRegistrySteadyApplyBenchmarks-report.csv
+  BenchmarkDotNet.Artifacts/results/Gocordis.Benchmarks.PluginRegistrySteadyApplyBenchmarks-report-github.md
+  BenchmarkDotNet.Artifacts/results/Gocordis.Benchmarks.PluginRegistrySteadyApplyBenchmarks-report.html
+
+// * Detailed results *
+PluginRegistrySteadyApplyBenchmarks.SteadyApply: Dry(IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [PluginCount=100]
+Runtime = .NET 10.0.15 (10.0.1526.53008), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 2.588 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 2.588 ms, Q1 = 2.588 ms, Median = 2.588 ms, Q3 = 2.588 ms, Max = 2.588 ms
+IQR = 0.000 ms, LowerFence = 2.588 ms, UpperFence = 2.588 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[2.588 ms ; 2.588 ms) | @
+---------------------------------------------------
+
+PluginRegistrySteadyApplyBenchmarks.SteadyApply: Dry(IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [PluginCount=1000]
+Runtime = .NET 10.0.15 (10.0.1526.53008), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 4.304 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 4.304 ms, Q1 = 4.304 ms, Median = 4.304 ms, Q3 = 4.304 ms, Max = 4.304 ms
+IQR = 0.000 ms, LowerFence = 4.304 ms, UpperFence = 4.304 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[4.304 ms ; 4.304 ms) | @
+---------------------------------------------------
+
+PluginRegistrySteadyApplyBenchmarks.SteadyApply: Dry(IterationCount=1, LaunchCount=1, RunStrategy=ColdStart, UnrollFactor=1, WarmupCount=1) [PluginCount=10000]
+Runtime = .NET 10.0.15 (10.0.1526.53008), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 17.333 ms, StdErr = 0.000 ms (0.00%), N = 1, StdDev = 0.000 ms
+Min = 17.333 ms, Q1 = 17.333 ms, Median = 17.333 ms, Q3 = 17.333 ms, Max = 17.333 ms
+IQR = 0.000 ms, LowerFence = 17.333 ms, UpperFence = 17.333 ms
+ConfidenceInterval = [NaN ms; NaN ms] (CI 99.9%), Margin = NaN ms (NaN% of Mean)
+Skewness = NaN, Kurtosis = NaN, MValue = 2
+-------------------- Histogram --------------------
+[17.333 ms ; 17.333 ms) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.14.0, Ubuntu 26.04 (Resolute Raccoon) WSL
+Intel Core i5-14400, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.115
+  [Host] : .NET 10.0.15 (10.0.1526.53008), X64 RyuJIT AVX2
+  Dry    : .NET 10.0.15 (10.0.1526.53008), X64 RyuJIT AVX2
+
+Job=Dry  IterationCount=1  LaunchCount=1  
+RunStrategy=ColdStart  UnrollFactor=1  WarmupCount=1  
+
+| Method      | PluginCount | Mean      | Error | Allocated  |
+|------------ |------------ |----------:|------:|-----------:|
+| SteadyApply | 100         |  2.588 ms |    NA |  101.15 KB |
+| SteadyApply | 1000        |  4.304 ms |    NA |  972.25 KB |
+| SteadyApply | 10000       | 17.333 ms |    NA | 9566.49 KB |
+
+// * Warnings *
+MinIterationTime
+  PluginRegistrySteadyApplyBenchmarks.SteadyApply: Dry -> The minimum observed iteration time is 2.588ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+  PluginRegistrySteadyApplyBenchmarks.SteadyApply: Dry -> The minimum observed iteration time is 4.304ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+  PluginRegistrySteadyApplyBenchmarks.SteadyApply: Dry -> The minimum observed iteration time is 17.333ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+
+// * Legends *
+  PluginCount : Value of the 'PluginCount' parameter
+  Mean        : Arithmetic mean of all measurements
+  Error       : Half of 99.9% confidence interval
+  Allocated   : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 ms        : 1 Millisecond (0.001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:42 (42.22 sec), executed benchmarks: 3
+
+Global total time: 00:00:56 (56.03 sec), executed benchmarks: 3
+// * Artifacts cleanup *
+Artifacts cleanup is finished

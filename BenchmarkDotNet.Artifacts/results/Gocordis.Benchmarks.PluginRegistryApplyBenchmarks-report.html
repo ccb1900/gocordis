@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>Gocordis.Benchmarks.PluginRegistryApplyBenchmarks-20261123-194211</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.14.0, Ubuntu 26.04 (Resolute Raccoon) WSL
+Intel Core i5-14400, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.115
+  [Host]   : .NET 10.0.15 (10.0.1526.53008), X64 RyuJIT AVX2
+  ShortRun : .NET 10.0.15 (10.0.1526.53008), X64 RyuJIT AVX2
+</code></pre>
+<pre><code>Job=ShortRun  IterationCount=3  LaunchCount=1  
+WarmupCount=3  
+</code></pre>
+
+<table>
+<thead><tr><th>Method</th><th>PluginCount</th><th>Mean   </th><th>Error  </th><th>StdDev</th><th>Gen0  </th><th>Gen1  </th><th>Gen2 </th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>ColdApply</td><td>100</td><td>4.730 ms</td><td>3.156 ms</td><td>0.1730 ms</td><td>625.0000</td><td>320.3125</td><td>-</td><td>6.23 MB</td>
+</tr><tr><td>SteadyApply</td><td>100</td><td>4.744 ms</td><td>7.090 ms</td><td>0.3886 ms</td><td>632.8125</td><td>320.3125</td><td>-</td><td>6.32 MB</td>
+</tr><tr><td>ColdApply</td><td>1000</td><td>305.790 ms</td><td>109.374 ms</td><td>5.9951 ms</td><td>56000.0000</td><td>1000.0000</td><td>-</td><td>559.22 MB</td>
+</tr><tr><td>SteadyApply</td><td>1000</td><td>347.965 ms</td><td>52.115 ms</td><td>2.8566 ms</td><td>56000.0000</td><td>1000.0000</td><td>-</td><td>560.11 MB</td>
+</tr><tr><td>ColdApply</td><td>10000</td><td>39,751.649 ms</td><td>8,314.023 ms</td><td>455.7197 ms</td><td>5458000.0000</td><td>5118000.0000</td><td>454000.0000</td><td>55818.13 MB</td>
+</tr><tr><td>SteadyApply</td><td>10000</td><td>39,899.109 ms</td><td>17,094.183 ms</td><td>936.9898 ms</td><td>5462000.0000</td><td>5117000.0000</td><td>457000.0000</td><td>55827.02 MB</td>
+</tr></tbody></table>
+</body>
+</html>

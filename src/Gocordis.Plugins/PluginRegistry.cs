@@ -224,7 +224,10 @@ public sealed class PluginRegistry : IAsyncDisposable
                     throw new ProtectedPluginException(manifest.Id);
                 }
 
-                var fingerprint = Fingerprint(manifest);
+                var fingerprint = _entries.TryGetValue(manifest.Id, out var previous) &&
+                                 ManifestsEquivalent(previous.Manifest, manifest)
+                    ? previous.ConfigurationKey
+                    : Fingerprint(manifest);
                 if (_entries.TryGetValue(manifest.Id, out var current) &&
                     current.ConfigurationKey == fingerprint &&
                     current.Component is { } reused)
@@ -421,7 +424,8 @@ public sealed class PluginRegistry : IAsyncDisposable
         IReadOnlyDictionary<string, Component> staged)
     {
         var keyOwner = new Dictionary<ICapabilityKey, string>(ReferenceEqualityComparer.Instance);
-        var versionedOwners = new List<(string Id, IVersionedKey Key)>();
+        var versionedOwners = new Dictionary<
+            (string Name, Type ValueType), List<(string Id, IVersionedKey Key)>>();
         foreach (var (id, component) in staged)
         {
             foreach (var key in component.Provide())
@@ -429,7 +433,14 @@ public sealed class PluginRegistry : IAsyncDisposable
                 keyOwner[key] = id;
                 if (key is IVersionedKey versioned)
                 {
-                    versionedOwners.Add((id, versioned));
+                    var index = (versioned.Name, versioned.ValueType);
+                    if (!versionedOwners.TryGetValue(index, out var owners))
+                    {
+                        owners = [];
+                        versionedOwners[index] = owners;
+                    }
+
+                    owners.Add((id, versioned));
                 }
             }
         }
@@ -454,12 +465,14 @@ public sealed class PluginRegistry : IAsyncDisposable
 
                 if (key is IVersionedKey requiredVersion)
                 {
+                    // Indexed by (name, value type): no linear scan over all
+                    // versioned providers for every consumer capability.
                     var best = versionedOwners
-                        .Where(candidate => candidate.Key.Name == requiredVersion.Name &&
-                                            candidate.Key.ValueType == requiredVersion.ValueType &&
-                                            requiredVersion.Accepts(candidate.Key.Version))
-                        .OrderByDescending(candidate => candidate.Key.Version)
-                        .FirstOrDefault();
+                        .TryGetValue((requiredVersion.Name, requiredVersion.ValueType), out var owners)
+                        ? owners.Where(candidate => requiredVersion.Accepts(candidate.Key.Version))
+                            .OrderByDescending(candidate => candidate.Key.Version)
+                            .FirstOrDefault()
+                        : default;
                     if (best.Id is not null && ReferenceEquals(best.Id, id))
                     {
                         throw new DependencyCycleException($"plugin '{id}' depends on its own versioned capability");
@@ -517,6 +530,30 @@ public sealed class PluginRegistry : IAsyncDisposable
 
         return ordered;
     }
+
+    /// <summary>
+    /// Cheap semantic equivalence for fingerprint reuse: compares the same
+    /// fields the fingerprint serializes, without allocating a JSON document
+    /// for an unchanged declaration. Config dictionaries are compared by key
+    /// and value, not by reference (ApplicationLoader creates new records).
+    /// </summary>
+    private static bool ManifestsEquivalent(PluginManifest left, PluginManifest right) =>
+        left.Id == right.Id &&
+        left.Type == right.Type &&
+        left.Enabled == right.Enabled &&
+        left.Version == right.Version &&
+        left.Source == right.Source &&
+        left.Checksum == right.Checksum &&
+        left.Backend == right.Backend &&
+        left.EntryAssembly == right.EntryAssembly &&
+        left.EntryType == right.EntryType &&
+        left.Requires.SequenceEqual(right.Requires, StringComparer.Ordinal) &&
+        left.Provides.SequenceEqual(right.Provides, StringComparer.Ordinal) &&
+        left.CapabilitiesOrEmpty.SequenceEqual(right.CapabilitiesOrEmpty, StringComparer.Ordinal) &&
+        (left.SharedAssemblies ?? []).SequenceEqual(right.SharedAssemblies ?? [], StringComparer.Ordinal) &&
+        left.Config.Count == right.Config.Count &&
+        left.Config.All(pair => right.Config.TryGetValue(pair.Key, out var value) &&
+                                Equals(pair.Value, value));
 
     private static string Fingerprint(PluginManifest manifest)
     {

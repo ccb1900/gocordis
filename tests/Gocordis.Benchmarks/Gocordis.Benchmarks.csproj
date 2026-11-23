@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Gocordis.Benchmarks</AssemblyName>
+    <RootNamespace>Gocordis.Benchmarks</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- BenchmarkDotNet is a measurement tool in a standalone project; it is
+         not referenced by the runtime graph and never enters product tests. -->
+    <PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
+    <ProjectReference Include="../../src/Gocordis.Core/Gocordis.Core.csproj" />
+    <ProjectReference Include="../../src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
+  </ItemGroup>
+</Project>

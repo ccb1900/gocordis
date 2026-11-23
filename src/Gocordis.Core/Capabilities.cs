@@ -71,15 +71,18 @@ public delegate ValueTask Cleanup();
 /// One step of an effect iterator: install an effect and return its inverse.
 /// A single <see cref="Component.ApplyAsync"/> is adapted to exactly one step.
 /// </summary>
-public sealed record EffectRegistration(Func<ValueTask<Func<ValueTask>?>> Install)
+public sealed record EffectRegistration(
+    Func<ValueTask<Func<ValueTask>?>> Install,
+    string? Label = null)
 {
-    public static EffectRegistration From(Func<ValueTask> install, Func<ValueTask> inverse)
+    public static EffectRegistration From(
+        Func<ValueTask> install, Func<ValueTask> inverse, string? label = null)
     {
         return new EffectRegistration(async () =>
         {
             await install();
             return inverse;
-        });
+        }, label);
     }
 }
 

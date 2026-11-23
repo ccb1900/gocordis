@@ -204,6 +204,35 @@ export function mapEffects(raw: unknown): EffectRow[] {
   return mapList(raw, mapEffect);
 }
 
+export interface EffectFailureRow {
+  key: string;
+  fiberID: string;
+  activationID: string;
+  slotIndex: number;
+  label: string;
+  isInstall: boolean;
+  exceptionType: string;
+  message: string;
+}
+
+function mapEffectFailure(e: unknown, index: number): EffectFailureRow {
+  const r = asObject(e);
+  return {
+    key: `effect-failure-${index}`,
+    fiberID: text(r.fiberId),
+    activationID: text(r.activationId),
+    slotIndex: numberValue(r.slotIndex),
+    label: text(r.label),
+    isInstall: Boolean(r.isInstall),
+    exceptionType: text(r.exceptionType),
+    message: text(r.message),
+  };
+}
+
+export function mapEffectFailures(raw: unknown): EffectFailureRow[] {
+  return mapList(raw, mapEffectFailure);
+}
+
 // ---- query parsing ----------------------------------------------------------
 
 export interface ParsedSnapshot {
@@ -215,6 +244,7 @@ export interface ParsedSnapshot {
   providers: ProviderRow[];
   dependencies: DependencyRow[];
   effects: EffectRow[];
+  effectFailures: EffectFailureRow[];
 }
 
 /** Parses the `runtime/snapshot` payload. Missing/null arrays become empty
@@ -236,5 +266,6 @@ export function parseSnapshot(data: unknown): ParsedSnapshot {
     providers: mapProviders(raw.providers),
     dependencies: mapDependencies(raw.dependencies),
     effects: mapEffects(raw.effects),
+    effectFailures: mapEffectFailures(raw.effectFailures),
   };
 }

@@ -30,6 +30,10 @@ const snapshot = () => ({
     ownerFiberID: 7, activationID: 9, seq: 4,
     kind: "Provider", key: "codec", state: "Undoing",
   }],
+  effectFailures: [{
+    fiberId: 7, activationId: 9, slotIndex: 1, label: "open-resource",
+    isInstall: true, exceptionType: "InvalidOperationException", message: "install blew up",
+  }],
 });
 
 describe("DTO → table rows", () => {
@@ -59,6 +63,12 @@ describe("DTO → table rows", () => {
       ownerFiberID: "7", activationID: "9", seq: 4,
       kind: "Provider", capabilityKey: "codec", state: "Undoing",
     });
+
+    expect(p.effectFailures).toEqual([{
+      key: "effect-failure-0", fiberID: "7", activationID: "9", slotIndex: 1,
+      label: "open-resource", isInstall: true,
+      exceptionType: "InvalidOperationException", message: "install blew up",
+    }]);
   });
 
   it("uses unique row keys even when identity fields are absent", () => {
@@ -86,7 +96,7 @@ describe("DTO → table rows", () => {
 
 describe("missing-data handling", () => {
   it("never throws on absent, null, primitive or wrapped payloads", () => {
-    const empty = { sequence: 0, runtimeID: "—", state: "—", fibers: [], scopes: [], providers: [], dependencies: [], effects: [] };
+    const empty = { sequence: 0, runtimeID: "—", state: "—", fibers: [], scopes: [], providers: [], dependencies: [], effects: [], effectFailures: [] };
     expect(parseSnapshot(null)).toEqual(empty);
     expect(parseSnapshot(undefined)).toEqual(empty);
     expect(parseSnapshot({})).toEqual(empty);
@@ -104,5 +114,6 @@ describe("missing-data handling", () => {
     expect(p.dependencies).toHaveLength(1);
     expect(p.dependencies[0].capabilityKey).toBe("ok");
     expect(p.effects).toHaveLength(1);
+    expect(p.effectFailures).toEqual([]);
   });
 });

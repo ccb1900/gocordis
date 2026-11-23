@@ -51,7 +51,8 @@ public sealed class Runtime : IAsyncDisposable
         Activation Activation, TaskCompletionSource<bool> Reply) : RuntimeCommand;
 
     private sealed record StepInstalledCommand(
-        Activation Activation, Func<ValueTask>? Inverse, TaskCompletionSource Reply) : RuntimeCommand;
+        Activation Activation, Func<ValueTask>? Inverse, TaskCompletionSource Reply,
+        string? Label = null) : RuntimeCommand;
 
     private sealed record ApplyCompletedCommand(Activation Activation, Exception? Error) : RuntimeCommand;
     private sealed record UnwindCompletedCommand(Activation Activation, Exception? Error) : RuntimeCommand;
@@ -99,6 +100,7 @@ public sealed class Runtime : IAsyncDisposable
     private readonly List<LoadCommand> _awaitingLoads = [];
     private readonly Dictionary<Guid, RehomeCommand> _pendingRehomes = [];
     private readonly List<CleanupFailureRecord> _cleanupFailures = [];
+    private readonly List<EffectFailureRecord> _effectFailures = [];
     private readonly Dictionary<long, int> _unwindWaiters = [];
     private readonly HashSet<long> _unwinding = [];
     private readonly HashSet<long> _unwindRunning = [];
@@ -696,6 +698,44 @@ public sealed class Runtime : IAsyncDisposable
     }
 
     /// <summary>
+    /// Attributes an exception to its effect slot without wrapping it: the fiber
+    /// surface keeps the original exception (C33), while the snapshot gains a
+    /// precise (fiber, activation, slot, label) diagnostic.
+    /// </summary>
+    internal void RecordEffectFailure(
+        Activation activation, EffectSlot slot, Exception failure, bool isInstall, int? slotIndexOverride = null)
+    {
+        Mutate(() =>
+        {
+            var slotIndex = slotIndexOverride ?? activation.Effects.IndexOf(slot);
+            var record = new EffectFailureRecord(
+                activation.Fiber.Id,
+                activation.Id,
+                slotIndex,
+                slot.Label,
+                isInstall,
+                failure.GetType().Name,
+                failure.Message,
+                failure,
+                failure.StackTrace);
+            activation.Fiber.EffectFailures = [.. activation.Fiber.EffectFailures, record];
+            _effectFailures.Add(record);
+
+            // Also attach to the exception itself for host-side diagnostics
+            // that only carry the exception.
+            try
+            {
+                failure.Data["gocordis.effect"] = record;
+            }
+            catch (NotSupportedException)
+            {
+                // Immutable exception implementations are rare; the snapshot
+                // record is authoritative anyway.
+            }
+        });
+    }
+
+    /// <summary>
     /// A compensation inverse that failed while the install error propagates.
     /// The fiber surface keeps the install error (never masked), but the
     /// cleanup-failure record makes the un-compensated effect observable.
@@ -748,7 +788,8 @@ public sealed class Runtime : IAsyncDisposable
 
         if (command.Inverse is not null)
         {
-            activation.Effects.Add(new EffectSlot(command.Inverse) { State = EffectState.Committed });
+            activation.Effects.Add(
+                new EffectSlot(command.Inverse, command.Label) { State = EffectState.Committed });
         }
 
         if (activation.Cancellation.IsCancellationRequested)
@@ -1155,9 +1196,27 @@ public sealed class Runtime : IAsyncDisposable
                     break;
                 }
 
-                var inverse = await step.Install();
+                Func<ValueTask>? inverse;
+                try
+                {
+                    inverse = await step.Install();
+                }
+                catch (Exception installError)
+                {
+                    // Context.EffectAsync already attributed its own install
+                    // failure in Exception.Data; don't record it twice.
+                    if (!installError.Data.Contains("gocordis.effect"))
+                    {
+                        RecordEffectFailure(
+                            activation, new EffectSlot(null, step.Label ?? "step"), installError,
+                            isInstall: true, slotIndexOverride: activation.Effects.Count);
+                    }
+
+                    throw;
+                }
+
                 var reply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                if (!TryWrite(new StepInstalledCommand(activation, inverse, reply)))
+                if (!TryWrite(new StepInstalledCommand(activation, inverse, reply, step.Label)))
                 {
                     throw new ObjectDisposedException(nameof(Runtime));
                 }
@@ -1215,7 +1274,7 @@ public sealed class Runtime : IAsyncDisposable
             }
 
             return null;
-        });
+        }, $"{activation.Fiber.Component.Name}.ApplyAsync");
     }
 
     private void StartUnwind(Fiber fiber, bool dependencyLoss)
@@ -1350,6 +1409,7 @@ public sealed class Runtime : IAsyncDisposable
                     // Keep unwinding the rest of the stack, but never report a
                     // failed inverse as a clean Undo.
                     (failures ??= []).Add(error);
+                    RecordEffectFailure(activation, slot, error, isInstall: false);
                     slot.State = EffectState.Failed;
                 }
             }
@@ -1768,9 +1828,11 @@ public sealed class Runtime : IAsyncDisposable
             Revision = f.Revision,
             CleanupIncomplete = f.CleanupIncomplete,
             CleanupFailures = [.. f.CleanupFailures.Select(error => error.Message)],
+            EffectFailures = [.. f.EffectFailures],
         }).ToArray())
         {
             CleanupFailures = [.. _cleanupFailures],
+            EffectFailures = [.. _effectFailures],
         };
     }
 

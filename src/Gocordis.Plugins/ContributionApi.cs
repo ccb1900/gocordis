@@ -565,7 +565,8 @@ public sealed class ConsoleHost
     public JsonObject RuntimeSnapshot()
     {
         var fibers = new JsonArray();
-        foreach (var fiber in Runtime.Snapshot().Fibers)
+        var snapshot = Runtime.Snapshot();
+        foreach (var fiber in snapshot.Fibers)
         {
             fibers.Add(new JsonObject
             {
@@ -578,6 +579,21 @@ public sealed class ConsoleHost
             });
         }
 
-        return new JsonObject { ["fibers"] = fibers };
+        var effectFailures = new JsonArray();
+        foreach (var failure in snapshot.EffectFailures)
+        {
+            effectFailures.Add(new JsonObject
+            {
+                ["fiberId"] = failure.FiberId.ToString(),
+                ["activationId"] = failure.ActivationId,
+                ["slotIndex"] = failure.SlotIndex,
+                ["label"] = failure.Label,
+                ["isInstall"] = failure.IsInstall,
+                ["exceptionType"] = failure.ExceptionType,
+                ["message"] = failure.Message,
+            });
+        }
+
+        return new JsonObject { ["fibers"] = fibers, ["effectFailures"] = effectFailures };
     }
 }

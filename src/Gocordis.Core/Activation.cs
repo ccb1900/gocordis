@@ -47,13 +47,15 @@ internal enum ActivationPhase
 
 internal sealed class EffectSlot
 {
-    internal EffectSlot(Func<ValueTask>? inverse)
+    internal EffectSlot(Func<ValueTask>? inverse, string? label = null)
     {
         Inverse = inverse;
+        Label = label ?? string.Empty;
         State = inverse is null ? EffectState.Committed : EffectState.Installing;
     }
 
     internal Func<ValueTask>? Inverse { get; }
+    internal string Label { get; set; }
     internal EffectState State { get; set; }
 }
 

@@ -131,6 +131,13 @@ build 0 warning / 0 error。
 - **批量装配**：Core 新增 `LoadBatchAsync`，一次性提交整个声明批次；`PluginRegistry.CommitAsync` 用批次加载替代逐 fiber await，拓扑序与失败语义不变。**快照发布按批次合并**：仅显式批次抑制中间发布，独立的并发 `LoadAsync` 仍逐命令发布（`Thm73InstallingQuiescence` / `PC19` 回归证明在途状态可观察）。
 - **Benchmark 生命周期与热点**：`BenchmarkHost` 同时持有并释放 Runtime + Registry；新增 Capability Invoke、Provider 撤回基准；冷启动成本归因继续由基准数据驱动。
 
+## Effect 失败定位批次
+
+- `EffectRegistration`/`EffectAsync` 增加可选 `Label`（`[CallerMemberName]` 兜底），迭代步骤标签由注册传到 `StepInstalledCommand` 和 `EffectSlot`。
+- 安装失败与逆失败都生成 `EffectFailureRecord(FiberId, ActivationId, SlotIndex, Label, IsInstall, ExceptionType, Message, 原异常对象)`：异常对象通过 `Exception.Data["gocordis.effect"]` 旁路附加，**不包装、不改写**，C33 的 raise 语义与现有异常类型断言不变。
+- 快照与 `runtime/snapshot` 查询新增 `effectFailures`；前端 `runtime-inspector` DTO 与测试同步（真实 payload 经解析器验证）。
+- 迭代步骤失败时槽位索引取失败前的 effect 数；重复归因由 `Exception.Data` 去重。
+
 ## 冻结规则
 
 1. 本基线只记录**已核实**的证据等级，不把 E0/E1 升级为 E2。

@@ -47,10 +47,32 @@ public sealed record FiberSnapshot(
 
     /// <summary>Messages of inverses that failed during unwind.</summary>
     public IReadOnlyList<string> CleanupFailures { get; init; } = [];
+
+    /// <summary>Install/inverse failures attributed to an effect slot.</summary>
+    public IReadOnlyList<EffectFailureRecord> EffectFailures { get; init; } = [];
 }
 
 public sealed record RuntimeSnapshot(IReadOnlyList<FiberSnapshot> Fibers)
 {
     /// <summary>Cleanup failures are retained even after the offending fiber goes Gone.</summary>
     public IReadOnlyList<CleanupFailureRecord> CleanupFailures { get; init; } = [];
+
+    /// <summary>Retained effect-level failures across the whole runtime.</summary>
+    public IReadOnlyList<EffectFailureRecord> EffectFailures { get; init; } = [];
 }
+
+/// <summary>
+/// Which effect slot failed, and with which exception. The original exception
+/// object is retained for in-process diagnostics (never serialized to the UI);
+/// its identity is unchanged so C33 failure semantics survive.
+/// </summary>
+public sealed record EffectFailureRecord(
+    Guid FiberId,
+    long ActivationId,
+    int SlotIndex,
+    string Label,
+    bool IsInstall,
+    string ExceptionType,
+    string Message,
+    Exception Exception,
+    string? StackTrace);

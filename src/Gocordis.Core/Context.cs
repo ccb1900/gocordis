@@ -182,10 +182,13 @@ public sealed class Context
         });
     }
 
-    public async ValueTask EffectAsync(Func<ValueTask> install, Func<ValueTask> inverse)
+    public async ValueTask EffectAsync(
+        Func<ValueTask> install,
+        Func<ValueTask> inverse,
+        [System.Runtime.CompilerServices.CallerMemberName] string? label = null)
     {
         EnsureWritable();
-        var slot = new EffectSlot(inverse);
+        var slot = new EffectSlot(inverse, label);
         _activation.Runtime.Mutate(() =>
         {
             _activation.Effects.Add(slot);
@@ -195,8 +198,9 @@ public sealed class Context
         {
             await install();
         }
-        catch
+        catch (Exception installFailure)
         {
+            _activation.Runtime.RecordEffectFailure(_activation, slot, installFailure, isInstall: true);
             try
             {
                 await inverse();
@@ -207,6 +211,8 @@ public sealed class Context
                 // Never mask the install failure, but a failed compensation must
                 // be OBSERVABLE: the slot is Failed (skipped by the later unwind,
                 // never re-run) and the failure lands in the cleanup record.
+                _activation.Runtime.RecordEffectFailure(
+                    _activation, slot, inverseFailure, isInstall: false);
                 _activation.Runtime.Mutate(() => slot.State = EffectState.Failed);
                 _activation.Runtime.RecordCompensationFailure(_activation, inverseFailure);
             }

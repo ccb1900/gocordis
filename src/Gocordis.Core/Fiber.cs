@@ -54,6 +54,9 @@ public sealed class Fiber
     /// <summary>Failed inverses from the most recent unwind (never masked as Undone).</summary>
     public IReadOnlyList<Exception> CleanupFailures { get; internal set; } = [];
 
+    /// <summary>Effect-level failures, retained for diagnostics only.</summary>
+    public IReadOnlyList<EffectFailureRecord> EffectFailures { get; internal set; } = [];
+
     public bool CleanupIncomplete => CleanupFailures.Count > 0;
     internal bool IsActivating { get; set; }
 

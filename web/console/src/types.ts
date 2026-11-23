@@ -269,6 +269,15 @@ export interface RuntimeSnapshotDTO {
   providers?: RuntimeProviderDTO[];
   dependencies?: RuntimeDependencyDTO[];
   effects?: RuntimeEffectDTO[];
+  effectFailures?: Array<{
+    fiberId?: RuntimeID;
+    activationId?: RuntimeID;
+    slotIndex?: number;
+    label?: string;
+    isInstall?: boolean;
+    exceptionType?: string;
+    message?: string;
+  }>;
 }
 
 export interface RuntimeEventDTO {

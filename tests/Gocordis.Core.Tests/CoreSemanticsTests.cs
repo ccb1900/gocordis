@@ -369,6 +369,69 @@ public sealed class CoreSemanticsTests
     }
 
     [Fact]
+    public async Task IterativeStepFailureIsAttributedToItsRegistrationLabel()
+    {
+        await using var runtime = new Runtime();
+        var fiber = await runtime.LoadAsync(new IterativeFailureComponent());
+
+        Assert.Equal(FiberState.Failed, fiber.State);
+        Assert.Equal("step-2", Assert.Single(runtime.Snapshot().EffectFailures).Label);
+        Assert.True(runtime.Snapshot().EffectFailures[0].IsInstall);
+        Assert.Equal(1, runtime.Snapshot().EffectFailures[0].SlotIndex);
+        Assert.IsType<InvalidOperationException>(fiber.Failure);
+    }
+
+    private sealed class IterativeFailureComponent : Component, IIterativeComponent
+    {
+        public override string Name => "iterative-failure";
+
+        public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
+            throw new NotSupportedException();
+
+        public async IAsyncEnumerable<EffectRegistration> IterateAsync(Context context)
+        {
+            yield return EffectRegistration.From(
+                () => ValueTask.CompletedTask,
+                () => ValueTask.CompletedTask,
+                "step-1");
+            await Task.Yield();
+            yield return EffectRegistration.From(
+                () => throw new InvalidOperationException("step failed"),
+                () => ValueTask.CompletedTask,
+                "step-2");
+        }
+    }
+
+    [Fact]
+    public async Task InstallFailureRecordsTheEffectSlotAndLabelWithoutMaskingTheException()
+    {
+        await using var runtime = new Runtime();
+        var component = new DelegateComponent("attributed", async context =>
+        {
+            await context.EffectAsync(
+                () => throw new InvalidOperationException("install blew up"),
+                () => ValueTask.CompletedTask,
+                "open-resource");
+            return null;
+        });
+
+        var fiber = await runtime.LoadAsync(component);
+
+        Assert.Equal(FiberState.Failed, fiber.State);
+        Assert.IsType<InvalidOperationException>(fiber.Failure);
+        Assert.Equal("install blew up", fiber.Failure?.Message);
+
+        var record = Assert.Single(runtime.Snapshot().EffectFailures);
+        Assert.Equal(fiber.Id, record.FiberId);
+        Assert.Equal(0, record.SlotIndex);
+        Assert.Equal("open-resource", record.Label);
+        Assert.True(record.IsInstall);
+        Assert.Equal("InvalidOperationException", record.ExceptionType);
+        Assert.Contains("install blew up", record.Message);
+        Assert.Same(fiber.Failure, record.Exception);
+    }
+
+    [Fact]
     public async Task FailedCompensationInverseIsObservableAndNotReRun()
     {
         var inverseRuns = 0;
@@ -397,6 +460,8 @@ public sealed class CoreSemanticsTests
         Assert.Contains(snapshot.CleanupFailures, record =>
             record.FiberId == fiber.Id && record.Message == "inverse blew up");
         Assert.Contains(fiber.CleanupFailures, error => error.Message == "inverse blew up");
+        Assert.Contains(runtime.Snapshot().EffectFailures, record =>
+            !record.IsInstall && record.Message == "inverse blew up");
     }
 
     [Fact]

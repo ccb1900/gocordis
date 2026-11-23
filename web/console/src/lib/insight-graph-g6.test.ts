@@ -44,7 +44,7 @@ describe("DTO → AntV G6 graph mapping", () => {
         nodes: [{ id: "alpha", name: "A", type: "a", requires: ["gone"], provides: [] }],
         edges: [{ from: "alpha", to: "gone", key: "gone" }],
       },
-    } as InsightGraphDTO);
+    } as unknown as InsightGraphDTO);
     expect(g.edges[0]).toMatchObject({ target: "gone", data: { satisfied: false } });
     expect(g.edges[0].style?.stroke).toBe("#f5222d");
   });
@@ -65,7 +65,7 @@ describe("DTO → AntV G6 graph mapping", () => {
         nodes: [{ fiberId: "f-9", name: "N", state: "Active", activationId: 1, scopeId: 2, provides: [], requires: [] }],
         edges: [{ consumerFiberId: "f-9", providerFiberId: "f-8", key: "k", status: "Satisfied" }],
       },
-    } as InsightGraphDTO, "runtime");
+    } as unknown as InsightGraphDTO, "runtime");
     expect(g.nodes[0].id).toBe("f-9");
     expect(g.edges[0]).toMatchObject({ source: "f-9", target: "f-8" });
     expect(buildGraph(null, "declared")).toEqual({ nodes: [], edges: [] });

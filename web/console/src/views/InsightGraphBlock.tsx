@@ -1,14 +1,42 @@
 // insight-graph: declared vs runtime dependency graph, rendered with AntV G6.
-// Both views come from one named query; the toggle is local UI state only.
-// Pure DTO → G6 data mapping lives in lib/insight-graph-g6.ts (node-testable);
-// this component only owns the G6 instance lifecycle against the DOM.
+// The G6 instance is created ONCE and kept alive; query/toggle changes call
+// graph.setData + render (never destroy/recreate), so canvas/layout state is
+// stable across the console's frequent SSE-driven re-renders.
 import { Alert, Segmented, Space, Typography } from "antd";
 import type { Graph } from "@antv/g6";
-import { useEffect, useRef, useState } from "react";
-import { ALL, useDomainVersion } from "../lib/projections";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { COMPOSITION, useDomainVersion } from "../lib/projections";
 import { buildGraph, type G6GraphData } from "../lib/insight-graph-g6";
 import type { GraphView, InsightGraphDTO } from "../lib/insight-graph";
 import type { BlockRenderer } from "./registry";
+
+const graphOptions = (data: G6GraphData) => ({
+  autoFit: "view" as const,
+  data,
+  layout: { type: "dagre", rankdir: "LR", nodesep: 28, ranksep: 72 },
+  node: {
+    style: {
+      labelText: (d: { data?: { label?: string } }) => d?.data?.label ?? "",
+      labelPlacement: "bottom" as const,
+      size: [124, 38] as [number, number],
+      radius: 8,
+      fill: "#e6f0ff",
+      stroke: "#4d6bfe",
+      lineWidth: 1.5,
+      labelFill: "#1f1f1f",
+      labelFontSize: 11,
+    },
+  },
+  edge: {
+    style: {
+      labelText: (d: { data?: { label?: string } }) => d?.data?.label ?? "",
+      labelFontSize: 10,
+      stroke: "#8a93a6",
+      endArrow: true,
+    },
+  },
+  behaviors: ["drag-canvas", "zoom-canvas", "drag-element"],
+});
 
 export const InsightGraphBlock: BlockRenderer = ({ block, ctx }) => {
   const [data, setData] = useState<InsightGraphDTO | null>(null);
@@ -17,80 +45,66 @@ export const InsightGraphBlock: BlockRenderer = ({ block, ctx }) => {
   const [view, setView] = useState<GraphView>("declared");
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
+  const readyRef = useRef(false);
   const query = block.query || "insight/graph";
-  const version = useDomainVersion(block.domain ?? ALL);
+  // The dependency graph only changes on composition events (enable/disable/
+  // install), not on every data observation. Using the COMPOSITION domain keeps
+  // the dagre layout stable while the store writer emits data events.
+  const version = useDomainVersion(block.domain ?? COMPOSITION);
+  // api.hubQuery is a stable module function; capture it once so SSE-driven
+  // ctx identity changes cannot restart the query effect.
+  const hubQuery = useRef(ctx.hubQuery).current;
 
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    ctx
-      .hubQuery<InsightGraphDTO>(query)
+    hubQuery<InsightGraphDTO>(query)
       .then((d) => {
-        if (alive) {
-          setData(d ?? null);
-          setError(null);
-        }
+        if (alive) { setData(d ?? null); setError(null); }
       })
       .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)))
       .finally(() => alive && setLoading(false));
-    return () => {
-      alive = false;
-    };
-  }, [query, version, ctx.hubQuery]);
+    return () => { alive = false; };
+    // `version` intentionally refreshes the graph when the composition changes
+    // (enable/disable/install); hubQuery/query are stable.
+  }, [query, version, hubQuery]);
 
-  const graphData: G6GraphData = buildGraph(data, view);
+  // Memoize so unrelated re-renders (loading/error/generation) keep the same
+  // graphData reference and do not trigger a G6 update.
+  const graphData = useMemo(() => buildGraph(data, view), [data, view]);
   const hasData = graphData.nodes.length > 0;
 
-  // One G6 Graph per data/view generation; destroy on change or unmount so no
-  // stale edges or canvas handlers survive a query refresh / toggle.
+  // Create the graph ONCE (lazy import) when the container first has data.
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || !hasData) return;
+    if (!container || readyRef.current || !hasData) return;
     let disposed = false;
-    let graph: Graph | null = null;
-
-    // Load G6 lazily so the ~2 MB graph library is a separate chunk, fetched
-    // only when the dependency-graph page is actually opened.
     void import("@antv/g6").then(({ Graph: G6Graph }) => {
-      if (disposed || !containerRef.current) return;
-      graph = new G6Graph({
-        container,
-        autoFit: "view",
-        data: graphData,
-        layout: { type: "dagre", rankdir: "LR", nodesep: 24, ranksep: 60 },
-        node: {
-          style: {
-            labelText: (d: { data?: { label?: string } }) => d?.data?.label ?? "",
-            labelPlacement: "bottom",
-            size: [116, 36],
-            radius: 8,
-            fill: "#e6f0ff",
-            stroke: "#4d6bfe",
-            lineWidth: 1.5,
-            labelFill: "#1f1f1f",
-            labelFontSize: 11,
-          },
-        },
-        edge: {
-          style: {
-            labelText: (d: { data?: { label?: string } }) => d?.data?.label ?? "",
-            labelFontSize: 10,
-            stroke: "#8a93a6",
-            endArrow: true,
-          },
-        },
-        behaviors: ["drag-canvas", "zoom-canvas", "drag-element"],
-      });
+      if (disposed || !containerRef.current || readyRef.current) return;
+      const graph = new G6Graph(graphOptions(graphData));
       graphRef.current = graph;
+      readyRef.current = true;
       void graph.render();
     });
+    return () => { disposed = true; };
+    // Creation is intentionally one-shot; data changes are handled below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasData]);
 
-    return () => {
-      disposed = true;
-      graphRef.current = null;
-      graph?.destroy();
-    };
-  }, [graphData, hasData]);
+  // Apply data/view changes to the EXISTING graph — no destroy/recreate.
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph || !readyRef.current) return;
+    graph.setData(graphData);
+    void graph.render();
+  }, [graphData]);
+
+  // Destroy only on unmount.
+  useEffect(() => () => {
+    graphRef.current?.destroy();
+    graphRef.current = null;
+    readyRef.current = false;
+  }, []);
 
   const sequence = data?.sequence ?? data?.eventSequence;
   return (
@@ -120,7 +134,7 @@ export const InsightGraphBlock: BlockRenderer = ({ block, ctx }) => {
       )}
       <div
         ref={containerRef}
-        style={{ width: "100%", height: 420, display: hasData ? "block" : "none" }}
+        style={{ width: "100%", height: 460, display: hasData ? "block" : "none" }}
       />
     </div>
   );

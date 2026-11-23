@@ -88,3 +88,5 @@
   [`review-round-10.md`](review-round-10.md)。
   Go 基线当前存在漂移，尚未通过验证，见 `review-round-8.md`。
 - 后续阶段状态以 [`migration-coverage.md`](migration-coverage.md) 的逐项状态为准，不在本文件重复维护。
+
+Existence / authority audit: [`existence-audit.md`](existence-audit.md) (historical record, not current-state claims).

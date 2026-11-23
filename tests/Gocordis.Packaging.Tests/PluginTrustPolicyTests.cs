@@ -19,8 +19,54 @@ public sealed class PluginTrustPolicyTests
 
         var store = new PluginStore(temp.At("store"), "1.0.0");
         await Assert.ThrowsAsync<InvalidPluginPackageException>(() =>
-            store.InstallAsync(package, default, PluginTrustPolicy.TrustedOnly()));
+            store.InstallAsync(package, default, new PluginTrustPolicy(true, ["pinned-key"])));
         Assert.Empty(await store.ListAsync());
+    }
+
+    [Fact]
+    public void TrustedOnlyRejectsAnEmptyKeySet()
+    {
+        Assert.Throws<ArgumentException>(() => PluginTrustPolicy.TrustedOnly());
+        Assert.Throws<ArgumentException>(() => PluginTrustPolicy.TrustedOnly(" "));
+    }
+
+    [Fact]
+    public async Task SignatureFromAnUntrustedKeyIsRejected()
+    {
+        using var temp = new TempDir();
+        var source = temp.At("source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "plugin.dll"), "payload");
+        var package = temp.At("signed.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source, new PluginPackageManifest(
+            "trust-other", "1.0.0", "trust-other", "[1.0,)",
+            Backend: "builtin", EntryAssembly: "plugin.dll"), package);
+
+        var (privateKey, _) = PluginPackageSigner.CreateKeyPair();
+        var (_, otherPublicKey) = PluginPackageSigner.CreateKeyPair();
+        var signed = await PluginPackageSigner.SignAsync(package, privateKey);
+        var store = new PluginStore(temp.At("store"), "1.0.0");
+        await Assert.ThrowsAsync<InvalidPluginPackageException>(() =>
+            store.InstallAsync(signed, default, PluginTrustPolicy.TrustedOnly(otherPublicKey)));
+    }
+
+    [Fact]
+    public async Task RawRequireSignaturePolicyWithoutPinnedKeyIsRejected()
+    {
+        using var temp = new TempDir();
+        var source = temp.At("source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "plugin.dll"), "payload");
+        var package = temp.At("signed.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source, new PluginPackageManifest(
+            "trust-raw", "1.0.0", "trust-raw", "[1.0,)",
+            Backend: "builtin", EntryAssembly: "plugin.dll"), package);
+        var (privateKey, _) = PluginPackageSigner.CreateKeyPair();
+        var signed = await PluginPackageSigner.SignAsync(package, privateKey);
+
+        var store = new PluginStore(temp.At("store"), "1.0.0");
+        await Assert.ThrowsAsync<InvalidPluginPackageException>(() =>
+            store.InstallAsync(signed, default, new PluginTrustPolicy(true, null)));
     }
 
     [Fact]

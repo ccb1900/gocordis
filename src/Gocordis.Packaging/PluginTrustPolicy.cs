@@ -7,8 +7,8 @@ namespace Gocordis.Packaging;
 /// </summary>
 /// <param name="RequireSignature">Reject unsigned packages when true.</param>
 /// <param name="TrustedPublicKeys">
-/// PEM public keys accepted as signers. Empty means "any valid signature" when
-/// RequireSignature is true; callers that need publisher pinning supply keys.
+/// PEM public keys accepted as signers. REQUIRED for <see cref="TrustedOnly"/>:
+/// a policy that merely checks for a signature field is not a trust policy.
 /// </param>
 public sealed record PluginTrustPolicy(
     bool RequireSignature = false,
@@ -18,6 +18,14 @@ public sealed record PluginTrustPolicy(
     public static PluginTrustPolicy Development { get; } = new(false, null);
 
     /// <summary>Trusted-only mode: a valid signature from a pinned key is required.</summary>
-    public static PluginTrustPolicy TrustedOnly(params string[] publicKeys) =>
-        new(true, publicKeys);
+    public static PluginTrustPolicy TrustedOnly(params string[] publicKeys)
+    {
+        if (publicKeys.Length == 0 || publicKeys.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException(
+                "TrustedOnly requires at least one pinned public key", nameof(publicKeys));
+        }
+
+        return new PluginTrustPolicy(true, publicKeys);
+    }
 }

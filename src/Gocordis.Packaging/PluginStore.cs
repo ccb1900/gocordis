@@ -208,34 +208,37 @@ public sealed class PluginStore
         var content = await PluginPackageReader.ReadAsync(packagePath, _hostVersion, cancellationToken);
         if (trust?.RequireSignature == true)
         {
+            var keys = trust.TrustedPublicKeys;
+            if (keys is null || keys.Count == 0 || keys.Any(string.IsNullOrWhiteSpace))
+            {
+                throw new InvalidPluginPackageException(
+                    "trust policy requires a signature but no trusted public key was pinned");
+            }
+
             if (content.Signature is null)
             {
                 throw new InvalidPluginPackageException(
                     $"package '{content.Manifest.Id}' is unsigned and trust policy requires a signature");
             }
 
-            var keys = trust.TrustedPublicKeys;
-            if (keys is { Count: > 0 })
+            var accepted = false;
+            foreach (var key in keys)
             {
-                var accepted = false;
-                foreach (var key in keys)
+                try
                 {
-                    try
-                    {
-                        await PluginPackageSigner.VerifyAsync(packagePath, key, cancellationToken);
-                        accepted = true;
-                        break;
-                    }
-                    catch (Exception ex) when (ex is InvalidPluginPackageException or PackageSignatureException)
-                    {
-                    }
+                    await PluginPackageSigner.VerifyAsync(packagePath, key, cancellationToken);
+                    accepted = true;
+                    break;
                 }
+                catch (Exception ex) when (ex is InvalidPluginPackageException or PackageSignatureException)
+                {
+                }
+            }
 
-                if (!accepted)
-                {
-                    throw new InvalidPluginPackageException(
-                        $"package '{content.Manifest.Id}' is not signed by a trusted publisher");
-                }
+            if (!accepted)
+            {
+                throw new InvalidPluginPackageException(
+                    $"package '{content.Manifest.Id}' is not signed by a trusted publisher");
             }
         }
         await _gate.WaitAsync(cancellationToken);

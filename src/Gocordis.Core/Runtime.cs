@@ -18,6 +18,11 @@ public sealed class Runtime : IAsyncDisposable
 
     private sealed record MutateCommand(Action Mutation, TaskCompletionSource Reply) : RuntimeCommand;
 
+    /// <summary>Last command of a batch: the decision loop closes the batch and
+    /// performs the final snapshot publication before the caller can observe
+    /// completion.</summary>
+    private sealed record BatchCompletedCommand(Guid BatchId, TaskCompletionSource Reply) : RuntimeCommand;
+
     private sealed record LoadCommand(
         Component Component, Fiber? Parent, Realm? Realm,
         TaskCompletionSource<Fiber> Reply, bool AwaitActivation,
@@ -107,6 +112,7 @@ public sealed class Runtime : IAsyncDisposable
     /// would pin plugin types/ALCs long after a fiber is gone.</summary>
     private const int MaxRuntimeEffectFailures = 256;
     private const int MaxFiberEffectFailures = 32;
+    private const int MaxCleanupFailureRecords = 256;
     private readonly Dictionary<long, int> _unwindWaiters = [];
     private readonly HashSet<long> _unwinding = [];
     private readonly HashSet<long> _unwindRunning = [];
@@ -250,6 +256,7 @@ public sealed class Runtime : IAsyncDisposable
         }
 
         var batchId = Guid.NewGuid();
+        var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Interlocked.Increment(ref _batchDepth);
         var replies = new List<Task<Fiber>>(items.Length);
         foreach (var component in items)
@@ -258,6 +265,7 @@ public sealed class Runtime : IAsyncDisposable
             if (!TryWrite(new LoadCommand(component, parent, realm, reply, true, batchId)))
             {
                 Interlocked.Decrement(ref _batchDepth);
+                closed.TrySetResult();
                 throw new ObjectDisposedException(nameof(Runtime));
             }
 
@@ -266,11 +274,19 @@ public sealed class Runtime : IAsyncDisposable
 
         var all = Task.WhenAll(replies);
         _ = all.ContinueWith(
-            _ => Interlocked.Decrement(ref _batchDepth),
+            _ =>
+            {
+                if (!TryWrite(new BatchCompletedCommand(batchId, closed)))
+                {
+                    closed.TrySetResult();
+                }
+            },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
-        return await all;
+        await all;
+        await closed.Task;
+        return all.Result;
     }
 
     internal Task<Fiber> LoadChildAsync(Component component, Fiber parent)
@@ -359,6 +375,9 @@ public sealed class Runtime : IAsyncDisposable
                         _justCommitted.Clear();
                         switch (command)
                         {
+                            case BatchCompletedCommand completed:
+                                HandleBatchCompleted(completed);
+                                break;
                             case MutateCommand mutate:
                                 mutate.Mutation();
                                 _pendingReplies.Add(() => mutate.Reply.TrySetResult());
@@ -716,6 +735,8 @@ public sealed class Runtime : IAsyncDisposable
         {
             _cleanupFailures.Add(new CleanupFailureRecord(fiber.Id, fiber.Component.Name, failure.Message));
         }
+
+        TrimCleanupFailures();
     }
 
     /// <summary>
@@ -779,6 +800,7 @@ public sealed class Runtime : IAsyncDisposable
             activation.Fiber.CleanupFailures = [inverseFailure];
             _cleanupFailures.Add(new CleanupFailureRecord(
                 activation.Fiber.Id, activation.Fiber.Component.Name, inverseFailure.Message));
+            TrimCleanupFailures();
         });
     }
 
@@ -1034,6 +1056,14 @@ public sealed class Runtime : IAsyncDisposable
         }
     }
 
+    private void TrimCleanupFailures()
+    {
+        if (_cleanupFailures.Count > MaxCleanupFailureRecords)
+        {
+            _cleanupFailures.RemoveRange(0, _cleanupFailures.Count - MaxCleanupFailureRecords);
+        }
+    }
+
     private void FlushAwaitingLoads()
     {
         if (_applying.Count > 0 || _unwinding.Count > 0 || _awaitingLoads.Count == 0)
@@ -1091,6 +1121,23 @@ public sealed class Runtime : IAsyncDisposable
         _disposeWaiters.Clear();
         _unwindWaiters.Clear();
         _pendingRehomes.Clear();
+    }
+
+    /// <summary>
+    /// Closes a batch inside the decision domain. The LAST closing batch also
+    /// publishes the snapshot that earlier batch commands suppressed, so no
+    /// subsequent command is needed for the final state to become observable.
+    /// </summary>
+    private void HandleBatchCompleted(BatchCompletedCommand command)
+    {
+        Interlocked.Decrement(ref _batchDepth);
+        if (Volatile.Read(ref _batchDepth) == 0 && _snapshotDirty)
+        {
+            PublishSnapshot();
+            _snapshotDirty = false;
+        }
+
+        _pendingReplies.Add(() => command.Reply.TrySetResult());
     }
 
     private void CompletePendingReplies()

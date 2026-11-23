@@ -99,3 +99,115 @@ public sealed class EffectFailureRetentionTests
         Assert.IsType<InvalidOperationException>(failures[^1].Exception);
     }
 }
+
+public sealed class ConcurrentBatchSnapshotTests
+{
+    [Fact]
+    public async Task InterleavedBatchesPublishFinalSnapshotInBothCompletionOrders()
+    {
+        foreach (var reverse in new[] { false, true })
+        {
+            await using var runtime = new Runtime();
+            var aStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var aGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var bStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var bGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var a = runtime.LoadBatchAsync([
+                new Gated("batch-a", aStarted, aGate), new Plain("batch-a-simple")]);
+            await aStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var b = runtime.LoadBatchAsync([
+                new Gated("batch-b", bStarted, bGate), new Plain("batch-b-simple")]);
+            await bStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            if (reverse)
+            {
+                bGate.SetResult();
+                aGate.SetResult();
+            }
+            else
+            {
+                aGate.SetResult();
+                bGate.SetResult();
+            }
+
+            await Task.WhenAll(a, b).WaitAsync(TimeSpan.FromSeconds(5));
+            var fibers = runtime.Snapshot().Fibers;
+            Assert.Equal(4, fibers.Count);
+            Assert.All(fibers, fiber => Assert.Equal(FiberState.Active, fiber.State));
+        }
+    }
+
+    [Fact]
+    public async Task OneFailingBatchDoesNotPoisonTheOtherBatchesFinalSnapshot()
+    {
+        await using var runtime = new Runtime();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var good = runtime.LoadBatchAsync([
+            new Gated("good", started, gate), new Plain("good-simple")]);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var failing = runtime.LoadBatchAsync([new Failing("bad")]);
+
+        gate.SetResult();
+        await Task.WhenAll(good, failing).WaitAsync(TimeSpan.FromSeconds(5));
+        var fibers = runtime.Snapshot().Fibers;
+        // A failed fiber stays observable as Failed; the healthy batch must
+        // still be fully visible and no fiber may be stuck mid-transition.
+        Assert.True(fibers.Count == 3,
+            string.Join(",", fibers.Select(f => $"{f.Name}:{f.State}")));
+        Assert.Contains(fibers, fiber => fiber.Name == "bad" && fiber.State == FiberState.Failed);
+        Assert.All(fibers.Where(fiber => fiber.Name != "bad"),
+            fiber => Assert.Equal(FiberState.Active, fiber.State));
+        Assert.DoesNotContain(fibers, fiber =>
+            fiber.State is FiberState.Loading or FiberState.Unloading);
+        Assert.DoesNotContain(fibers, fiber =>
+            fiber.State is FiberState.Loading or FiberState.Unloading);
+    }
+
+    private sealed class Plain : Component
+    {
+        public Plain(string name) => Name = name;
+        public override string Name { get; }
+        public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
+            ValueTask.FromResult<Cleanup?>(null);
+    }
+
+    private sealed class Gated : Component
+    {
+        private readonly TaskCompletionSource _started;
+        private readonly TaskCompletionSource _gate;
+        public Gated(string name, TaskCompletionSource started, TaskCompletionSource gate)
+        {
+            Name = name;
+            _started = started;
+            _gate = gate;
+        }
+
+        public override string Name { get; }
+
+        public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            await context.EffectAsync(async () =>
+            {
+                _started.TrySetResult();
+                await _gate.Task;
+            }, static () => ValueTask.CompletedTask);
+            return null;
+        }
+    }
+
+    private sealed class Failing : Component
+    {
+        public Failing(string name) => Name = name;
+        public override string Name { get; }
+
+        public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            await context.EffectAsync(
+                () => throw new InvalidOperationException("batch failure"),
+                static () => ValueTask.CompletedTask);
+            return null;
+        }
+    }
+}

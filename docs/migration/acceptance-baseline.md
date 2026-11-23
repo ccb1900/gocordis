@@ -50,6 +50,14 @@
 - **DTO 分离**：`declaredCapabilityRequires/Provides` 与 `packageDependencies` 分开，包依赖 ID 不再冒充能力契约。
 - **Task 05**：新增 `MixedBackendProductE2ETests`，一个 manifest 中 Managed → Process → WASM 真实调用、按依赖逆序停用/恢复、子进程 PID 与 fiber 回收均有断言。
 
+## 收敛批次（Endpoint 所有权 / 版本 / 契约语义 / 产品 E2E）
+
+- **Endpoint 所有权**：Process/WASM Bridge 释放时只清本地 handle，不再销毁 `Context.Require` 得到的 provider Endpoint；Bridge 重新 Attach 时重置 handle 表和 disposed 标志。回归：`ConsumerReleaseDoesNotDisposeTheSharedProviderEndpoint`（两消费者共享一 provider，先退出的不影响后者；provider 撤回→Pending，恢复→Active）。
+- **版本解析**：`CapabilityCatalog.ValidateCompatibility()` 是唯一的版本门禁——provider 版本不满足 consumer range 或同一 Id 多版本则在装配期拒绝；缺 provider 仍是 Pending。Core 仍保持单 provider/key，不引入第二套选择逻辑。回归：`CapabilityDeclarationTests` 三条版本用例。
+- **统一契约语义**：新增 `CapabilityInvocationException` 的稳定错误码；Process/WASM provider 响应用声明的 `MediaType`；Bridge 使用激活的 `CancellationToken`；WASM 超长 payload 报 `invalid-payload` 而不是裸返回值。回归：`ProviderMediaTypeAndOversizedPayloadHaveOneContractSemantic`。
+- **产品 E2E**：`MixedBackendProductE2ETests` 现覆盖安装→加载→真实跨后端调用→逆序停用→恢复→逆序卸载→停止，并断言子进程 PID 回收与 fiber 清理。
+- **已知测试边界**：Process 互操作 fixture 是 POSIX 脚本，Windows 上直接跳过；这是未关闭的覆盖缺口，不宣称 Windows Process 后端已验收。
+
 ## 冻结规则
 
 1. 本基线只记录**已核实**的证据等级，不把 E0/E1 升级为 E2。

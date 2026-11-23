@@ -225,6 +225,9 @@ public class PlatformApplication : IAsyncDisposable
             SharedAssemblyRegistry.Seal(contractCandidates.ToDictionary(
                 pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value, StringComparer.Ordinal));
 
+            // One version gate for all backends, before any component is created.
+            Capabilities.ValidateCompatibility();
+
             // The control plane is a plugin contribution: load its fiber first,
             // then read its capability. Runtime.Close ends this fiber with all
             // the others, including on a partially failed start.
@@ -349,6 +352,7 @@ public class PlatformApplication : IAsyncDisposable
             if (declarations.Count > 0)
             {
                 Capabilities.Declare(declarations);
+                Capabilities.ValidateCompatibility();
                 return isWat
                     ? new WasmCapabilityComponent(
                         File.ReadAllText(modulePath), manifest.Id, Capabilities, declarations)

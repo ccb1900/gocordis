@@ -111,8 +111,20 @@ public sealed class MixedBackendProductE2ETests
             entry => Assert.Equal(FiberState.Active, entry.Fiber!.State));
         Assert.True(IsAlive(int.Parse(await File.ReadAllTextAsync(pidFile))));
 
+        // Full product closure: uninstall in reverse dependency order, then stop.
+        foreach (var id in new[] { "mixed-b", "mixed-a", "mixed-p" })
+        {
+            var removal = await app.Control!.UninstallAsync(id);
+            Assert.True(removal.Accepted, $"uninstall '{id}' failed: {removal.Error}");
+        }
+
+        Assert.DoesNotContain(app.Runtime.Snapshot().Fibers, fiber =>
+            fiber.Name.StartsWith("mixed-", StringComparison.Ordinal));
+        Assert.False(IsAlive(int.Parse(await File.ReadAllTextAsync(pidFile))));
+
         await app.StopAsync();
-        Assert.Empty(app.Runtime.Snapshot().Fibers);
+        Assert.DoesNotContain(app.Runtime.Snapshot().Fibers, fiber =>
+            fiber.Name.StartsWith("mixed-", StringComparison.Ordinal));
         Assert.False(IsAlive(int.Parse(await File.ReadAllTextAsync(pidFile))));
     }
 

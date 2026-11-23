@@ -413,6 +413,85 @@ public sealed class CrossBackendCapabilityTests
     }
 
     [Fact]
+    public async Task ProviderMediaTypeAndOversizedPayloadHaveOneContractSemantic()
+    {
+        var catalog = new CapabilityCatalog();
+        var declaration = CapabilityDeclaration.Parse(
+            "provide|org.example.media/value|endpoint|1.0.0|text/plain|");
+        catalog.Declare([declaration]);
+        var key = catalog.KeyFor<ICapabilityEndpoint>(
+            new CapabilityId("org.example.media", "value"), CapabilityValueKind.Endpoint);
+
+        const string wat = """
+            (module
+              (@custom "gocordis.capabilities" "{\"provides\":[{\"id\":\"org.example.media/value\",\"kind\":\"endpoint\",\"version\":\"1.0.0\",\"mediaType\":\"text/plain\"}]}")
+              (memory (export "memory") 1)
+              (func (export "runtime_component_destroy") (param i32))
+              (func (export "runtime_component_create") (result i32) i32.const 1)
+              (func (export "capability_invoke") (param i32 i32) (result i32 i32)
+                i32.const 2048
+                i32.const 55
+                i32.store8
+                i32.const 2048
+                i32.const 1))
+            """;
+        await using var runtime = new Gocordis.Core.Runtime();
+        var provider = await runtime.LoadAsync(
+            new WasmCapabilityComponent(wat, "media-provider", catalog, [declaration]));
+        Assert.Equal(FiberState.Active, provider.State);
+
+        var endpoint = runtime.RequireCapability(key);
+        var response = await endpoint.InvokeAsync(
+            CapabilityEnvelope.Json("x"), CancellationToken.None);
+        Assert.Equal("text/plain", response.MediaType);
+
+        var error = await Assert.ThrowsAsync<CapabilityInvocationException>(async () =>
+            await endpoint.InvokeAsync(
+                CapabilityEnvelope.Json(new string('x', 20_000)), CancellationToken.None));
+        Assert.Equal("invalid-payload", error.Code);
+    }
+
+    [Fact]
+    public async Task ConsumerReleaseDoesNotDisposeTheSharedProviderEndpoint()
+    {
+        var catalog = new CapabilityCatalog();
+        var declaration = CapabilityDeclaration.Parse("provide|a/b|endpoint|1.0.0|text/plain|");
+        catalog.Declare([declaration]);
+        var key = catalog.KeyFor<ICapabilityEndpoint>(new CapabilityId("a", "b"), CapabilityValueKind.Endpoint);
+
+        await using var runtime = new Gocordis.Core.Runtime();
+        var provider = await runtime.LoadAsync(new EndpointProviderComponent(
+            key, (_, _) => ValueTask.FromResult(CapabilityEnvelope.Text("ok"))));
+
+        var wat = ConsumerWatFor("a/b");
+        var declarations = WasmCapabilityDeclarations.ReadFromWat(wat);
+        var firstConsumer = await runtime.LoadAsync(
+            new WasmCapabilityComponent(wat, "consumer-1", catalog, declarations));
+        Assert.Equal(FiberState.Active, firstConsumer.State);
+
+        // The first consumer's bridge used to dispose the provider-owned
+        // endpoint, breaking every later caller.
+        await runtime.DisposeAsync(firstConsumer);
+        var shared = runtime.RequireCapability(key);
+        Assert.Equal("ok", (await shared.InvokeAsync(
+            CapabilityEnvelope.Text("x"), CancellationToken.None)).AsText());
+
+        var secondConsumer = await runtime.LoadAsync(
+            new WasmCapabilityComponent(wat, "consumer-2", catalog, declarations));
+        Assert.Equal(FiberState.Active, secondConsumer.State);
+
+        await runtime.DisposeAsync(provider);
+        Assert.Equal(FiberState.Pending, secondConsumer.State);
+
+        var recovered = await runtime.LoadAsync(new EndpointProviderComponent(
+            key, (_, _) => ValueTask.FromResult(CapabilityEnvelope.Text("ok"))));
+        Assert.Equal(FiberState.Active, recovered.State);
+        Assert.Equal(FiberState.Active, secondConsumer.State);
+        Assert.Equal("ok", (await runtime.RequireCapability(key).InvokeAsync(
+            CapabilityEnvelope.Text("x"), CancellationToken.None)).AsText());
+    }
+
+    [Fact]
     public async Task WasmTrapFailsTheProviderWhileWithdrawalOnlyPendsTheConsumer()
     {
         var catalog = new CapabilityCatalog();

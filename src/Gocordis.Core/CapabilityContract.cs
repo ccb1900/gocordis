@@ -5,6 +5,28 @@ using NuGet.Versioning;
 namespace Gocordis.Core;
 
 /// <summary>
+/// A declared consumer range cannot be satisfied by the declared provider
+/// version, or more than one provider claimed the same capability id. This is
+/// an assembly-time rejection; Core still owns the resulting binding.
+/// </summary>
+public sealed class CapabilityVersionException : InvalidOperationException
+{
+    public CapabilityVersionException(string message) : base(message) { }
+}
+
+/// <summary>
+/// Uniform error vocabulary for capability calls across backends. The Code is
+/// stable on the wire so a consumer can distinguish timeout, trap/abort,
+/// withdrawal and malformed payload without parsing backend-specific text.
+/// </summary>
+public sealed class CapabilityInvocationException : InvalidOperationException
+{
+    public CapabilityInvocationException(string code, string message) : base(message) => Code = code;
+
+    public string Code { get; }
+}
+
+/// <summary>
 /// Stable external identity of a capability. This is a host/protocol-layer value,
 /// NOT Core identity: Core still matches capabilities by <see cref="ICapabilityKey"/>
 /// reference identity. The host allocates exactly one Key instance per CapabilityId,
@@ -349,6 +371,56 @@ public sealed class CapabilityCatalog : ICapabilityCatalog
                         declaration.Id, declaration.ValueKind,
                         declaration.Version is null ? null : NuGetVersion.Parse(declaration.Version),
                         declaration.MediaType, declaration.SchemaRef));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Assembly-time version gate. A missing provider is allowed (the consumer
+    /// stays Pending), but an incompatible provider version or two providers
+    /// for one id is rejected. Version selection therefore happens once, here,
+    /// before Core sees any key; Core keeps its single provider-per-key rule.
+    /// </summary>
+    public void ValidateCompatibility()
+    {
+        lock (_gate)
+        {
+            foreach (var group in _declarations
+                         .Where(declaration => declaration.Direction == CapabilityDirection.Provide)
+                         .GroupBy(declaration => declaration.Id))
+            {
+                var versions = group
+                    .Select(declaration => NuGetVersion.Parse(declaration.Version ?? "0.0.0"))
+                    .Distinct()
+                    .ToArray();
+                if (versions.Length > 1)
+                {
+                    throw new CapabilityVersionException(
+                        $"capability '{group.Key}' is provided at {versions.Length} different versions " +
+                        "[" + string.Join(", ", versions) + "]; use distinct ids or Broker<T> for multi-implementation");
+                }
+            }
+
+            foreach (var requirement in _declarations.Where(declaration =>
+                         declaration.Direction == CapabilityDirection.Require &&
+                         declaration.VersionRange is not null))
+            {
+                var provider = _declarations.FirstOrDefault(declaration =>
+                    declaration.Direction == CapabilityDirection.Provide &&
+                    declaration.Id == requirement.Id);
+                if (provider is null)
+                {
+                    continue; // Dependency loss is Pending, never a failed declaration.
+                }
+
+                var version = NuGetVersion.Parse(provider.Version ?? "0.0.0");
+                var range = NuGet.Versioning.VersionRange.Parse(requirement.VersionRange!);
+                if (!range.Satisfies(version))
+                {
+                    throw new CapabilityVersionException(
+                        $"capability '{requirement.Id}' provider version {version} " +
+                        $"does not satisfy consumer range {range}");
                 }
             }
         }

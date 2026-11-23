@@ -18,10 +18,21 @@ public sealed class ProcessCapabilityBridge
     private ProcessPluginClient? _client;
     private int _nextHandle = 1;
     private bool _disposed;
+    private CancellationToken _cancellation;
 
     public void SetRequire(Func<CapabilityId, ICapabilityEndpoint> require) => _require = require;
 
-    internal void Attach(ProcessPluginClient client) => _client = client;
+    public void SetCancellationToken(CancellationToken cancellationToken) => _cancellation = cancellationToken;
+
+    internal void Attach(ProcessPluginClient client)
+    {
+        _client = client;
+        _disposed = false;
+        lock (_gate)
+        {
+            _handles.Clear();
+        }
+    }
 
     public JsonNode? HandleRequest(string method, JsonNode? parameters) => method switch
     {
@@ -50,7 +61,11 @@ public sealed class ProcessCapabilityBridge
 
         lock (_gate)
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_disposed)
+            {
+                throw new NotSupportedException("capability bridge is released");
+            }
+
             var handle = _nextHandle++;
             _handles[handle] = endpoint;
             return new JsonObject { ["handle"] = handle };
@@ -71,28 +86,36 @@ public sealed class ProcessCapabilityBridge
         }
 
         var response = endpoint.InvokeAsync(
-            CapabilityEnvelope.Json(request), CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            CapabilityEnvelope.Json(request), _cancellation).AsTask().GetAwaiter().GetResult();
         return new JsonObject { ["response"] = response.AsText() };
     }
 
     /// <summary>Host → child call for a capability provided by this process.</summary>
     public async ValueTask<CapabilityEnvelope> InvokeProviderAsync(
-        CapabilityId id, CapabilityEnvelope request, CancellationToken cancellationToken)
+        CapabilityId id,
+        CapabilityContract contract,
+        CapabilityEnvelope request,
+        CancellationToken cancellationToken)
     {
-        var client = _client ?? throw new InvalidOperationException("process plugin is not attached");
+        var client = _client
+                     ?? throw new CapabilityInvocationException(
+                         "provider-abort", "process plugin is not attached");
         var result = await client.CallAsync(
             "capability/invoke",
             new { id = id.ToString(), request = request.AsText() },
             cancellationToken);
         var text = result?["response"]?.GetValue<string>()
-                   ?? throw new InvalidOperationException(
-                       $"process capability '{id}' returned no response");
-        return CapabilityEnvelope.Json(text);
+                   ?? throw new CapabilityInvocationException(
+                       "invalid-payload", $"process capability '{id}' returned no response");
+        return new CapabilityEnvelope(contract.MediaType, System.Text.Encoding.UTF8.GetBytes(text));
     }
 
+    /// <summary>
+    /// Releases only this consumer's handles. Endpoints are provider-owned via
+    /// <c>Context.Require</c>; a consumer must never dispose a shared service.
+    /// </summary>
     public ValueTask DisposeAsync()
     {
-        List<ICapabilityEndpoint> endpoints;
         lock (_gate)
         {
             if (_disposed)
@@ -101,19 +124,10 @@ public sealed class ProcessCapabilityBridge
             }
 
             _disposed = true;
-            endpoints = [.. _handles.Values];
             _handles.Clear();
         }
 
-        return ReleaseAll(endpoints);
-    }
-
-    private static async ValueTask ReleaseAll(IEnumerable<ICapabilityEndpoint> endpoints)
-    {
-        foreach (var endpoint in endpoints)
-        {
-            await endpoint.DisposeAsync();
-        }
+        return ValueTask.CompletedTask;
     }
 }
 
@@ -152,6 +166,7 @@ public sealed class ProcessCapabilityComponent : Component
     public async override ValueTask<Cleanup?> ApplyAsync(Context context)
     {
         var bridge = new ProcessCapabilityBridge();
+        bridge.SetCancellationToken(context.CancellationToken);
         bridge.SetRequire(id =>
         {
             var key = _catalog.KeyFor<ICapabilityEndpoint>(id, CapabilityValueKind.Endpoint);
@@ -177,7 +192,8 @@ public sealed class ProcessCapabilityComponent : Component
             var endpoint = new DelegatingCapabilityEndpoint(
                 declaration.Id,
                 contract,
-                (request, cancellationToken) => bridge.InvokeProviderAsync(declaration.Id, request, cancellationToken));
+                (request, cancellationToken) => bridge.InvokeProviderAsync(
+                    declaration.Id, contract, request, cancellationToken));
             context.Provide(key, endpoint);
             await context.EffectAsync(
                 static () => ValueTask.CompletedTask,

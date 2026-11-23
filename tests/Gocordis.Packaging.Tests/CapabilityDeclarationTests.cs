@@ -95,6 +95,48 @@ public sealed class CapabilityDeclarationTests
         Assert.Equal(CapabilityValueKind.Endpoint, declaration.ValueKind);
     }
 
+    [Fact]
+    public void IncompatibleProviderVersionIsRejectedBeforeCoreBinding()
+    {
+        var catalog = new CapabilityCatalog();
+        catalog.Declare([
+            CapabilityDeclaration.Parse("provide|org.example/versioned|endpoint|1.0.0||"),
+            CapabilityDeclaration.Parse("require|org.example/versioned|endpoint|[2.0.0,3.0.0)||"),
+        ]);
+
+        var error = Assert.Throws<CapabilityVersionException>(() => catalog.ValidateCompatibility());
+        Assert.Contains("org.example/versioned", error.Message);
+    }
+
+    [Fact]
+    public void CompatibleRangePassesAndMissingProviderIsNotARejectedDeclaration()
+    {
+        var catalog = new CapabilityCatalog();
+        catalog.Declare([
+            CapabilityDeclaration.Parse("provide|org.example/versioned|endpoint|2.1.0||"),
+            CapabilityDeclaration.Parse("require|org.example/versioned|endpoint|[2.0.0,3.0.0)||"),
+        ]);
+        catalog.ValidateCompatibility();
+
+        var pending = new CapabilityCatalog();
+        pending.Declare([
+            CapabilityDeclaration.Parse("require|org.example/missing|endpoint|[1.0.0,)||"),
+        ]);
+        pending.ValidateCompatibility(); // no provider → Pending, not Failed
+    }
+
+    [Fact]
+    public void TwoProviderVersionsForOneIdAreRejected()
+    {
+        var catalog = new CapabilityCatalog();
+        catalog.Declare([
+            CapabilityDeclaration.Parse("provide|org.example/duplicate|endpoint|1.0.0||"),
+            CapabilityDeclaration.Parse("provide|org.example/duplicate|endpoint|2.0.0||"),
+        ]);
+
+        Assert.Throws<CapabilityVersionException>(() => catalog.ValidateCompatibility());
+    }
+
     private sealed class TempDir : IDisposable
     {
         private readonly string _root = Path.Combine(

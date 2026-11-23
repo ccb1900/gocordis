@@ -74,7 +74,7 @@ R9 历史：418 = Core 27 / Conformance 145 / Runtime 123 / Extensions 59 /
 Packaging 41 / UI 3 / Client 2 / Product 18（连续 3 次本地全绿）
 R10 历史：442 = Core 33 / Conformance 148 / Runtime 126 / Extensions 60 /
 Packaging 46 / UI 3 / Client 2 / Product 24（连续 3 次本地全绿）
-R11 当前最终：443 = Core 33 / Conformance 148 / Runtime 126 / Extensions 60 /
+R11 历史快照：443 = Core 33 / Conformance 148 / Runtime 126 / Extensions 60 /
 Packaging 47 / UI 3 / Client 2 / Product 24（连续 3 次本地全绿；实跑修正见 review-round-11.md）
 ```
 

@@ -92,10 +92,23 @@ public sealed class WasmCapabilityBridge
     private WasmPluginInstance? _instance;
     private int _nextHandle = 1;
     private bool _disposed;
+    private CancellationToken _cancellation;
 
     public void SetRequire(Func<CapabilityId, ICapabilityEndpoint> require) => _require = require;
 
-    internal void Attach(WasmPluginInstance instance) => _instance = instance;
+    public void SetCancellationToken(CancellationToken cancellationToken) => _cancellation = cancellationToken;
+
+    internal void Attach(WasmPluginInstance instance)
+    {
+        _instance = instance;
+        // A component is reactivated after provider recovery: each activation
+        // gets a fresh instance and a fresh handle table.
+        _disposed = false;
+        lock (_gate)
+        {
+            _handles.Clear();
+        }
+    }
 
     /// <summary>Host import gocordis.capability_buffer.</summary>
     public int Buffer() => RequestBufferOffset;
@@ -121,7 +134,11 @@ public sealed class WasmCapabilityBridge
 
         lock (_gate)
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_disposed)
+            {
+                return 0;
+            }
+
             var handle = _nextHandle++;
             _handles[handle] = endpoint;
             return handle;
@@ -149,7 +166,7 @@ public sealed class WasmCapabilityBridge
         // without yielding. Managed endpoints are in-process; other backends
         // are marshalled by their own adapters before they reach this point.
         var response = endpoint.InvokeAsync(
-            CapabilityEnvelope.Json(request), CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            CapabilityEnvelope.Json(request), _cancellation).AsTask().GetAwaiter().GetResult();
         var bytes = response.Payload;
         if (bytes.Length > MaxPayloadBytes)
         {
@@ -176,7 +193,10 @@ public sealed class WasmCapabilityBridge
 
     /// <summary>Host → guest call for a capability provided by this module.</summary>
     public async ValueTask<CapabilityEnvelope> InvokeProviderAsync(
-        CapabilityId id, CapabilityEnvelope request, CancellationToken cancellationToken)
+        CapabilityId id,
+        CapabilityContract contract,
+        CapabilityEnvelope request,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var instance = _instance ?? throw new InvalidOperationException("WASM module is not prepared");
@@ -184,7 +204,8 @@ public sealed class WasmCapabilityBridge
         var bytes = request.Payload;
         if (bytes.Length > MaxPayloadBytes)
         {
-            throw new InvalidOperationException($"WASM capability payload exceeds {MaxPayloadBytes} bytes");
+            throw new CapabilityInvocationException(
+                "invalid-payload", $"WASM capability payload exceeds {MaxPayloadBytes} bytes");
         }
 
         bytes.CopyTo(memory.GetSpan(RequestBufferOffset, bytes.Length));
@@ -197,12 +218,12 @@ public sealed class WasmCapabilityBridge
                 pointer + length <= memory.GetLength())
             {
                 return new CapabilityEnvelope(
-                    request.MediaType, memory.GetSpan(pointer, length).ToArray());
+                    contract.MediaType, memory.GetSpan(pointer, length).ToArray());
             }
         }
 
-        throw new InvalidOperationException(
-            $"WASM capability '{id}' has an invalid capability_invoke result");
+        throw new CapabilityInvocationException(
+            "provider-abort", $"WASM capability '{id}' has an invalid capability_invoke result");
     }
 
     private bool TryRead(int pointer, int length, out string text)
@@ -219,9 +240,15 @@ public sealed class WasmCapabilityBridge
         return true;
     }
 
+    /// <summary>
+    /// Releases only this consumer's handles. The endpoints come from
+    /// <c>Context.Require</c> and are owned by the provider fiber's effect
+    /// stack; disposing them here would kill a service shared by other
+    /// consumers. Provider withdrawal unwinds the consumer fiber, which calls
+    /// this method and clears the stale handles.
+    /// </summary>
     public ValueTask DisposeAsync()
     {
-        List<ICapabilityEndpoint> endpoints;
         lock (_gate)
         {
             if (_disposed)
@@ -230,19 +257,10 @@ public sealed class WasmCapabilityBridge
             }
 
             _disposed = true;
-            endpoints = [.. _handles.Values];
             _handles.Clear();
         }
 
-        return ReleaseAll(endpoints);
-    }
-
-    private static async ValueTask ReleaseAll(IEnumerable<ICapabilityEndpoint> endpoints)
-    {
-        foreach (var endpoint in endpoints)
-        {
-            await endpoint.DisposeAsync();
-        }
+        return ValueTask.CompletedTask;
     }
 }
 
@@ -316,6 +334,7 @@ public sealed class WasmCapabilityComponent : Component
     public async override ValueTask<Cleanup?> ApplyAsync(Context context)
     {
         var bridge = _bridge;
+        bridge.SetCancellationToken(context.CancellationToken);
         bridge.SetRequire(id =>
         {
             var key = _catalog.KeyFor<ICapabilityEndpoint>(id, CapabilityValueKind.Endpoint);
@@ -341,7 +360,8 @@ public sealed class WasmCapabilityComponent : Component
             var endpoint = new DelegatingCapabilityEndpoint(
                 declaration.Id,
                 contract,
-                (request, cancellationToken) => bridge.InvokeProviderAsync(declaration.Id, request, cancellationToken));
+                (request, cancellationToken) => bridge.InvokeProviderAsync(
+                    declaration.Id, contract, request, cancellationToken));
             context.Provide(key, endpoint);
             await context.EffectAsync(
                 static () => ValueTask.CompletedTask,

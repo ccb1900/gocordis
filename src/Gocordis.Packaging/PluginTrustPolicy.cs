@@ -48,7 +48,18 @@ public sealed record PluginTrustPolicy(
         }
 
         var keys = (pemFiles ?? [])
-            .Select(path => File.ReadAllText(path))
+            .Select(path =>
+            {
+                try
+                {
+                    return File.ReadAllText(path);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+                {
+                    throw new ArgumentException(
+                        $"cannot read --public-key '{path}': {ex.Message}", nameof(pemFiles), ex);
+                }
+            })
             .ToArray();
         if (keys.Length == 0)
         {

@@ -176,8 +176,8 @@ public sealed class BackendDispatchProductTests
 
         // Legacy demo adapters stay available to backend-level tests, but the
         // product factory no longer exposes a no-declaration execution path.
-        Assert.Throws<TargetInvocationException>(() => Create("proc", "process", "plugin.sh"));
-        Assert.Throws<TargetInvocationException>(() => Create("wasm", "wasm", "plugin.wat"));
+        AssertRejectedByFactory(() => Create("proc", "process", "plugin.sh"));
+        AssertRejectedByFactory(() => Create("wasm", "wasm", "plugin.wat"));
         Assert.Equal("product-plugin:legacy-type", Create("legacy", null, null).Name);
         Assert.Equal("product-plugin:builtin-type", Create("builtin", "builtin", null).Name);
         Assert.Equal("disabled-plugin", Create("off", "managed", "ghost.dll", enabled: false).Name);
@@ -269,6 +269,13 @@ public sealed class BackendDispatchProductTests
         await new PluginStore(store, HostVersion).InstallAsync(package);
 
         return store;
+    }
+
+    private static void AssertRejectedByFactory(Func<Component> create)
+    {
+        var ex = Assert.Throws<TargetInvocationException>(() => create());
+        var inner = Assert.IsType<InvalidOperationException>(ex.InnerException);
+        Assert.Contains("declares no capabilities", inner.Message, StringComparison.Ordinal);
     }
 
     private static async Task<string> StartRejectedAsync(TempDir temp, string store, string id)

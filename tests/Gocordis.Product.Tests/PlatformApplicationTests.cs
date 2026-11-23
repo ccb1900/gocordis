@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -19,9 +20,31 @@ public sealed class PlatformApplicationTests
     [InlineData("1")]
     public async Task PlatformRunnerRejectsNonWebHostOptions(string host)
     {
-        var code = await PlatformRunner.RunAsync(
-            ["--manifest", "missing.json", "--store", "unused-store", "--host", host]);
-        Assert.Equal(1, code);
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        string[] Args(string value) =>
+        [
+            "--manifest", manifestPath, "--store", temp.Path("store"),
+            "--host-version", "1.5.0", "--validate-only", "--host", value,
+        ];
+
+        // A real manifest proves the only reason for failure is the host value.
+        Assert.Equal(0, await PlatformRunner.RunAsync(Args("web")));
+
+        var original = System.Console.Error;
+        using var errors = new StringWriter();
+        System.Console.SetError(errors);
+        try
+        {
+            Assert.Equal(1, await PlatformRunner.RunAsync(Args(host)));
+        }
+        finally
+        {
+            System.Console.SetError(original);
+        }
+
+        Assert.Contains("is not runnable", errors.ToString(), StringComparison.Ordinal);
+        Assert.Contains("web is the only product UI host", errors.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -36,6 +59,64 @@ public sealed class PlatformApplicationTests
 
         Assert.Same(trust, options.Trust);
         Assert.Same(policy, options.AccessPolicy);
+    }
+
+    [Fact]
+    public async Task ProductRootDeniesRemoteApiWithoutAnAccessPolicy()
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        string Base() => temp.Path("store");
+
+        await using (var locked = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, Base(), Address: "http://127.0.0.1:0",
+            AllowRemote: true, HostVersion: "1.5.0")))
+        {
+            await locked.StartAsync();
+            using var client = new HttpClient { BaseAddress = locked.Address };
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/plugins")).StatusCode);
+            var denied = await client.PostAsJsonAsync("/api/plugins/control",
+                new JsonObject { ["pluginId"] = "absent", ["enable"] = false });
+            Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+        }
+
+        await using (var permitted = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, Base(), Address: "http://127.0.0.1:0",
+            AllowRemote: true, HostVersion: "1.5.0",
+            AccessPolicy: _ => true)))
+        {
+            await permitted.StartAsync();
+            using var client = new HttpClient { BaseAddress = permitted.Address };
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/plugins")).StatusCode);
+            var accepted = await client.PostAsJsonAsync("/api/plugins/control",
+                new JsonObject { ["pluginId"] = "absent", ["enable"] = false });
+            Assert.NotEqual(HttpStatusCode.Forbidden, accepted.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task ProductHostTrustPolicyRejectsControlPlaneInstallOfUnsignedPackage()
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var source = temp.Path("unsigned-source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "entry.txt"), "payload");
+        var package = temp.File("unsigned.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source, new PluginPackageManifest(
+            "unsigned-demo", "1.0.0", "unsigned-demo", "[1.0,)"), package);
+
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, temp.Path("store"), HostVersion: "1.5.0",
+            Trust: PluginTrustPolicy.TrustedOnly("pinned-public-key")));
+        await app.StartAsync();
+
+        await using var stream = File.OpenRead(package);
+        var upload = await app.Control!.UploadAsync(stream, "unsigned.gocordis-plugin");
+        var rejected = await app.Control.InstallAsync(upload.UploadKey);
+        Assert.False(rejected.Accepted);
+        Assert.Contains("signature", rejected.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(await app.Store.ListAsync());
     }
 
     [Fact]
@@ -395,7 +476,8 @@ public sealed class PlatformApplicationTests
     [Fact]
     public void PlatformCliUsageStatesNativeHostBoundary()
     {
-        Assert.Contains("render-plan\nprofiles for future native hosts", PlatformRunner.UsageText, StringComparison.Ordinal);
+        Assert.Contains("render-plan", PlatformRunner.UsageText, StringComparison.Ordinal);
+        Assert.Contains("future native hosts", PlatformRunner.UsageText, StringComparison.Ordinal);
         Assert.Contains("Web is the only runnable UI host", PlatformRunner.UsageText, StringComparison.Ordinal);
         Assert.Contains("--trust development|trusted-only", PlatformRunner.UsageText, StringComparison.Ordinal);
     }

@@ -1,5 +1,12 @@
 # UI 插件生命周期（Client Module Lifecycle）
 
+> **ARCHIVE / Go-era design note.** The anchors and code below refer to the
+> frozen Go baseline. In the .NET product, UI belongs to the package
+> (`gocordis-ui.json`, bound by `UiPackageBinder` as plugin-fiber effects) and
+> the authorization seam is `PlatformHostOptions.AccessPolicy` /
+> `ConsoleAccessPolicy`. Current state lives in `docs/current-status.md` and
+> `docs/guide/ui-host-contract.md`.
+
 本文描述插件前端模块（`ui-client` 组件）在控制台中的完整生命周期：激活、
 停用、重新启用、内容更新与失败回滚。它与 GOCORDIS Runtime 的 activation
 语义一一镜像——前端模块管理器是论文"可逆 effect、LIFO 撤销"在浏览器侧的
@@ -150,25 +157,21 @@ export default function register(api) {
 
 前端的一切可见性控制都只是展示：**`Action.when` 过滤、菜单隐藏、渲染器
 缺失都不撤销底层能力**——`/api/command/*`、`/api/plugins/install|uninstall|
-control`、配置写入始终由服务端决定。控制台保持"无鉴权开发姿态"
-（用户手册 §13），UI-03 提供正式接缝让**应用**（而非框架）落策略：
+control`、配置写入始终由服务端决定。
 
-```go
-srv.SetAccessPolicy(func(ctx context.Context, req webui.AccessRequest) error {
-    if req.Kind == webui.AccessCommand && dangerous(req.Name) && !isAdmin(ctx, req.Request) {
-        return fmt.Errorf("operation %q requires admin", req.Name)
-    }
-    return nil // 默认允许 = 开发姿态不变
-})
+**当前 .NET 产品接缝**（替代下面的 Go-era 说明）：宿主通过
+`PlatformHostOptions.AccessPolicy` 提供 `ConsoleAccessPolicy` 委托，按
+`ConsoleAccessScope`（`Query`/`Command`/`Lifecycle`/`Config`/`Package`/`Read`/`Observe`）授权；
+拒绝返回 `403 forbidden`。**没有策略时 loopback 开放，远程所有受保护 scope 都拒绝**；
+`--allow-remote` 只放宽监听，不会放行 API。CLI 不构造身份策略，远程部署应在认证代理之后由嵌入宿主提供策略。
+
+```csharp
+var options = new PlatformHostOptions(
+    manifestPath, storePath, Address: "http://0.0.0.0:8170", AllowRemote: true,
+    AccessPolicy: scope => scope is ConsoleAccessScope.Read or ConsoleAccessScope.Query);
 ```
 
-- 四类门：`query` / `command` / `lifecycle` / `config`；拒绝 → `403
-  forbidden`，前端经 hubError/块内错误如实显示。
-- `nil` policy = 全允许——接缝存在是事实，默认姿态不变也是事实；把接缝
-  当成安全边界用（部署时不设 policy 就暴露公网）是错误用法，文档负责
-  说清这一点。
-- 接缝在传输层，不是内核 capability 拦截——论文 §6.3 的 provider 按元
-  数据裁决（Def 26/27）仍归 P3/ADR-0002，未因本接缝提前。
+- 接缝在传输层，不是内核 capability 拦截——元数据裁决（ADR-0002）仍归 Core。
 
 ## 一致性契约（中间态与收敛）
 

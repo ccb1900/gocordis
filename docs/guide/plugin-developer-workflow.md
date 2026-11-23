@@ -6,16 +6,17 @@ package, the CLI and a product application manifest — not runtime internals.
 ## End-to-end flow
 
 ```bash
-# 0) one-time: publish the SDK into a local feed
-dotnet pack src/Gocordis.Core/Gocordis.Core.csproj -c Release -o <feed> -p:PackageVersion=1.0.0
-dotnet pack src/Gocordis.Plugins/Gocordis.Plugins.csproj -c Release -o <feed> -p:PackageVersion=1.0.0
-dotnet pack src/Gocordis.Plugin.Sdk/Gocordis.Plugin.Sdk.csproj -c Release -o <feed> -p:PackageVersion=1.0.0
+# 0) publish the SDK into a local feed with a FRESH version on every run
+# NuGet caches by version: reusing 1.0.0 can compile the plugin against an older
+# Core and fail at activation with MissingMethodException.
+SDK_VERSION=1.0.0-local.$(date +%s%N)
+dotnet pack src/Gocordis.Core/Gocordis.Core.csproj -c Release -o <feed> -p:PackageVersion=$SDK_VERSION
+dotnet pack src/Gocordis.Plugins/Gocordis.Plugins.csproj -c Release -o <feed> -p:PackageVersion=$SDK_VERSION
+dotnet pack src/Gocordis.Plugin.Sdk/Gocordis.Plugin.Sdk.csproj -c Release -o <feed> -p:PackageVersion=$SDK_VERSION
 
 # 1) create / develop / build
-# Use a fresh --sdk-version for every local pack; NuGet caches by version and
-# would otherwise reuse an older SDK Core from a previous run.
 gocordis plugin create <dir> --id demo.plugin --name "Demo" --type demo.plugin \
-  --feed <feed> --sdk-version <same-version-used-by-dotnet-pack>
+  --feed <feed> --sdk-version $SDK_VERSION
 cd <dir> && dotnet build
 
 # 2) local preflight (no install, no package)

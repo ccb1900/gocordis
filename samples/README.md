@@ -9,7 +9,7 @@
 | `PluginA/`、`PluginB/` | 分别引用 DepV1/DepV2，验证两个插件共存 |
 | `EchoProcPlugin/` | 进程插件：握手 + 行分隔 JSON-RPC |
 | `UiPlugin/` | 通过 UI/API 贡献接口注册页面与查询，不改 Core |
-| `SpatiotemporalShowcase/` | 严肃的可插拔/时空组合示例：三个真实 managed 包共享契约程序集，演示跨包依赖门控、可逆 effect、事件与声明式 UI（见其 README） |
+| `SpatiotemporalShowcase/` | 严肃的可插拔/时空组合示例：四个真实 managed 包共享契约程序集，演示跨包依赖门控、可逆 effect、事件与声明式 UI（见其 README） |
 
 WASM 示例以 WAT 形式内嵌在 `tests/Gocordis.Runtime.Tests/WasmRuntimeTests.cs`，
 使用 Wasmtime 执行 `runtime_component_create/destroy` ABI。

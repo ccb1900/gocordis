@@ -152,7 +152,7 @@ public sealed class CliProductTests
     }
 
     [Fact]
-    public async Task AppRunForwardsOneTrustPolicyToTheProductHost()
+    public async Task AppRunAcceptsTheSharedTrustConfiguration()
     {
         using var temp = new TempDir();
         var path = await WriteManifestAsync(temp);

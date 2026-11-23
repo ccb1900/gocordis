@@ -319,8 +319,9 @@ public class PlatformApplication : IAsyncDisposable
             {
                 throw new InvalidOperationException(
                     $"process plugin '{manifest.Id}' declares no capabilities; the legacy echo/error " +
-                    "demo path is not a product backend. Declare capabilities with plugin pack --provides " +
-                    "(or the package manifest) and bind them with Inject()/Provide().");
+                    "demo path is not a product backend. Declare capabilities with plugin pack " +
+                    "--capability '<direction>|<ns>/<name>|<kind>|<version>|<media-type>|<schema>' " +
+                    "(or the package manifest's capabilities field) and bind them with Inject()/Provide().");
             }
 
             // The child only gets handles for capabilities it declared.

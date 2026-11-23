@@ -1,5 +1,9 @@
 # Paper-First Roadmap — gocordis v2.0
 
+> **ARCHIVE / Go-era roadmap.** The "Go 落点" columns, `go test`/`gofmt` gates
+> and plan status below describe the frozen Go baseline, not the current .NET
+> product. Current state and verification live in `docs/current-status.md`.
+
 Date: 2026-09-08。Authority: [`论文.pdf`](./论文.pdf)(唯一规范来源,见 [`README.md`](./README.md))。
 本文档取代全部已归档文档中的路线图/映射/矩阵;旧定理编号(T59/T61/T63/T66/T73,沿袭自
 stc-go)自本文起停用,改用论文编号。

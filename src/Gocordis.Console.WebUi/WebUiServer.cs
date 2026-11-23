@@ -1042,8 +1042,8 @@ public sealed class WebUiServer : IAsyncDisposable
     private static IResult Unavailable(string message) =>
         ApiResults.Error(StatusCodes.Status503ServiceUnavailable, "unavailable", message);
 
-    // A remote listener is read-only unless the host supplies an explicit
-    // policy. A supplied policy is authoritative even on a loopback listener.
+    // A remote listener grants NO guarded scope until the host supplies an
+    // explicit policy; a supplied policy is authoritative even on loopback.
     private bool CanAccess(ConsoleAccessScope scope) =>
         _accessPolicy?.Invoke(scope) ?? !_allowRemote;
 

@@ -1,4 +1,4 @@
-# Existence / Authority Audit (2026-11-23, dotnet @ 5570f44+)
+# Existence / Authority Audit (maintained 2026-11-24, dotnet @ 56214b7)
 
 This is an audit of **whether each component should exist**, not a feature review.
 Method: read the current source and the declared project graph, trace actual

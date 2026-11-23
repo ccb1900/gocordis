@@ -4,7 +4,7 @@
 
 | 能力 | 论文条目 | 本套件中的体现 |
 | --- | --- | --- |
-| 可插拔（打包即插件） | C40 | 三个独立包经 CLI `pack/install`、声明驱动装载；禁用/启用/升级/卸载都走控制面 |
+| 可插拔（打包即插件） | C40 | 四个独立包经 CLI `pack/install`、声明驱动装载；禁用/启用/升级/卸载都走控制面 |
 | 空间维 / 反应式 coeffect | C07/C17/C22 | `Worker`、`Dashboard` 通过**共享契约 Key** 声明跨插件依赖；provider 消失 → Pending，恢复 → 自动 Active |
 | 时间维 / 可逆 effect | C02–C06 | 后台 writer、事件订阅、UI/API 贡献都由 `EffectAsync` 安装并逆序撤销（LIFO） |
 | 事件（可逆注册） | §3.4.2 | `StoreChanged` 事件：provider 发、worker 收；订阅是 effect-owned 注册，撤销即消失 |
@@ -134,7 +134,7 @@ for id in showcase-client-module showcase-dashboard showcase-worker showcase-sto
   curl -s -X POST $BASE/api/plugins/control -H 'Content-Type: application/json' \
     -d "{\"pluginId\":\"$id\",\"enable\":false}"
 done
-cat /tmp/showcase-effect.log    # client-module:undo / dashboard:undo / worker:undo / writer:undo / store:undo（严格逆序）
+cat /tmp/showcase.log    # client-module:undo / dashboard:undo / worker:undo / writer:undo / store:undo（严格逆序）
 
 # 7) 按依赖顺序重新启用 → 自动重激活，writer 与客户端模块重新安装
 for id in showcase-store showcase-worker showcase-dashboard showcase-client-module; do

@@ -4,7 +4,7 @@
 
 - **用户手册**:[user-manual.md](user-manual.md) —— 怎么用 gocordis 开发插件化应用
   (概念、组件、生命周期、声明开关、事件、隔离、控制台、观测、测试)。
-- **开发者手册**:[developer-manual.md](developer-manual.md) —— 框架如何构造与维护
+- **开发者手册**:[csharp-developer-manual.md](csharp-developer-manual.md) —— 当前 .NET 框架如何构造与维护（`developer-manual.md` 是 Go 基线归档）
   (内核代码地图、核心机制、扩展/后端开发、测试基础设施、变更流程)。
 
 历史版本见 git 历史。

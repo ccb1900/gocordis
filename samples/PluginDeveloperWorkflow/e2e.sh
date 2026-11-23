@@ -10,7 +10,7 @@ mkdir -p "$OUT/feed" "$OUT/work"
 # keep an older package from a previous run, so the generated plugin compiles
 # against a stale Core and fails at activation with MissingMethodException.
 # A per-run prerelease version makes the local feed authoritative.
-SDK_VERSION="1.0.0-e2e.$(date +%s)"
+SDK_VERSION="1.0.0-e2e.$(date +%s%N)"
 CLI=(dotnet run --project "$ROOT/tools/Gocordis.Cli/Gocordis.Cli.csproj" --no-build --)
 
 for project in Core Plugins Plugin.Sdk; do

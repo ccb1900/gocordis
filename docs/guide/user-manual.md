@@ -167,9 +167,9 @@ gocordis plugin preflight demo-plugin.gocordis-plugin --host-version 1.0.0
 - Fiber = 一次启用；Activation = 一次激活 episode。依赖缺失时状态为 `Pending`，不是 `Failed`。
 - Apply 失败会让本 fiber 失败并撤销已安装的 effect，不向父组件传播、不自动重试；
   修正声明或升级版本后再装载。
-- `runtime/snapshot` 查询包含 Fiber 状态、效果失败槽位（`EffectFailures`，含槽位序号与标签）、
-  清理失败与诊断。历史记录有界（每个 fiber 32 条、全局 256 条）。
-- `cortex/diagnostics`（`devtools/diagnostics`）提供版本与提供方发现结果。
+- `runtime/snapshot` HTTP 查询投影 `fibers` 与 `effectFailures`（槽位序号与标签）；
+  进程内的 `Runtime.Snapshot()` 还带清理失败与诊断字段。历史记录有界（每个 fiber 32 条、全局 256 条）。
+- `devtools/diagnostics` 查询提供版本与提供方发现结果。
 - `Snapshot()` 是只读投影，不能作为恢复源。只有声明（开关/配置）和组件 journal 会持久化；
   Fiber 表与运行时派生状态从不落盘。
 
@@ -193,9 +193,10 @@ gocordis app run ./my-app/gocordis.app.json --store <store> \
 （`PluginTrustPolicy.FromPemFiles`），Web Console 上传安装也继承宿主的策略。
 `trusted-only` 必须提供至少一个 pinned PEM 公钥；空公钥集会直接拒绝。
 
-远程管理要区分监听与授权：`--allow-remote` 只放宽监听地址检查，默认远程**写操作仍被拒绝**。
-需要远程写入时，嵌入宿主必须通过 `PlatformHostOptions.AccessPolicy` 提供明确的
-`ConsoleAccessPolicy`（按 scope 授权），并放在认证代理之后。CLI 不会凭空构造身份策略。
+远程管理要区分监听与授权：`--allow-remote` 只放宽监听地址检查。未提供
+`PlatformHostOptions.AccessPolicy` 时，**所有远程 API scope 都被拒绝**（只有 query 查询保持开放）。
+需要远程管理时，嵌入宿主必须提供按 scope 授权的 `ConsoleAccessPolicy`，并放在认证代理之后；
+CLI 不会凭空构造身份策略。
 
 ## 7. 已知边界
 

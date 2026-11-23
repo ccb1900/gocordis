@@ -1,5 +1,9 @@
 # GoCordis 插件平台（Koishi 对照后的收敛结果）
 
+> **ARCHIVE / Go-era phase plan.** Paths, carrier names and verification gates
+> below refer to the frozen Go baseline. Current .NET product state lives in
+> `docs/current-status.md`; the C# author flow is `docs/guide/plugin-developer-workflow.md`.
+
 基线：Koishi v4 插件体系（用户审查报告）；GoCordis 当前 HEAD。
 本文件记录四阶段落地结果，不新增 Core 语义。
 
@@ -46,14 +50,14 @@ ModuleType、Requires/Provides 描述、Config、Compatibility、Source/Checksum
 ## 5. 阶段 4：Developer Experience
 
 - `extensions/devtools`：`Diagnose`/`DiagnoseAgainst` 纯诊断（身份、版本兼容、重复能力键、checksum、Backend、Source 等），通过 typed key 提供，可逆注册。
-- `cmd/plugin`：`create`（模板脚手架、失败回滚、`--force`）、`doctor`（解析+诊断）、`preflight`（临时 Runtime + Snapshot 摘要，干净关闭且不写用户文件；仅凭 manifest 无法加载时给出 `REQUIRES_BUILD_TIME_REGISTRATION` 诊断）。这是**声明预检**，不是安全沙箱；`sandbox` 只作为兼容别名保留。
+- `cmd/plugin`：`create`（模板脚手架、失败回滚、`--force`）、`doctor`（解析+诊断）、`preflight`（临时 Runtime + Snapshot 摘要，干净关闭且不写用户文件；无法加载时给出 `NO_HOST_FACTORY` / `MISSING_DEPENDENCY` 等诊断）。这是**声明预检**，不是安全沙箱；`sandbox` 只作为兼容别名保留。
 
 ## 6. 验收约束
 
 - 每阶段先写失败测试再实现；并发相关跑 `-race`。
 - 独立审查发现并修复：Manifest API/Runtime 版本混用、SchemaForm 违反 Rules of Hooks、Insight 假测试、Market 误删无关声明/卸载残留/坏目录空白页。
 - 前端 `npm test`、`npx tsc --noEmit`、`npm run build`；Go `gofmt`/`build`/`vet`/`test`/`race` 全绿。
-- 远程插件市场、签名验证、Sandbox 图形化、完整国际化仍属后续产品阶段，不在本轮范围。
+- 远程插件市场、图形化预检、完整国际化仍属后续阶段；签名验证已由 `plugin keygen/sign` 与 `--trust trusted-only` 实现（来源证明，不是安全沙箱）。
 - **热更新边界（当前口径）**：`Gocordis.Extensions.GenericHmr` 与 WASM `WasmHotSwapper`
   只是实验性代际原语，产品宿主没有调用链。当前代码变更走
   build → pack → upgrade（声明 Revision），**不能宣称无打包热更新已完成**。

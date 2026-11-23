@@ -14,7 +14,7 @@ dotnet run --project src/Gocordis.Platform -- \
   [--allow-remote] [--allowed-host <host>] [--trust development|trusted-only] [--public-key <pem>] [--validate-only]
 ```
 
-Console: `http://127.0.0.1:8170/` by default when an explicit address is given. Web is the only runnable host; the CLI rejects `winforms`/`avalonia` because they are render-plan profiles, not native window hosts.
+Console: no fixed default port (`http://127.0.0.1:0` picks an ephemeral port); `8170` is only what the examples pass explicitly via `--address`. Web is the only runnable host; the CLI rejects `winforms`/`avalonia` because they are render-plan profiles, not native window hosts.
 
 ## Runnable full loop
 
@@ -23,7 +23,7 @@ bash samples/SpatiotemporalShowcase/build-and-run.sh /tmp/gocordis-showcase
 # add --run to start the platform; see samples/SpatiotemporalShowcase/README.md for verification steps
 ```
 
-It builds 5 projects + a real TSX frontend (`@gocordis/plugin-kit`), packs 4 real `.gocordis-plugin` packages (`--shared-assembly`, `--provides`, `--dependency`), installs them, writes the declaration, and starts the host. Last run also verified the control-plane loop: all 4 fibers Active, queries/pages/client JS served, disable produced the strict LIFO undo log (`client-module → dashboard → worker → writer → store`), re-enable restored Active and healthy queries.
+It builds 5 projects + a real TSX frontend (`@gocordis/plugin-kit`), packs 4 real `.gocordis-plugin` packages (`--shared-assembly`, `--provides`, `--dependency`), installs them and writes the declaration; add `--run` to start the host. Last run also verified the control-plane loop: all 4 fibers Active, queries/pages/client JS served, disable produced the strict LIFO undo log (`client-module → dashboard → worker → writer → store`), re-enable restored Active and healthy queries.
 
 The empty-directory developer loop (`bash samples/PluginDeveloperWorkflow/e2e.sh <out>`) was re-run green. It now packs a per-run SDK prerelease version: reusing `1.0.0` let NuGet's global cache serve an older Core and caused `MissingMethodException` at plugin activation. E2E test helpers pass `-nodeReuse:false` so reused MSBuild nodes cannot hold redirected stdout pipes open.
 
@@ -37,7 +37,7 @@ dotnet test  Gocordis.sln --nologo --no-build -m:1
 bash docs/migration/verify-baseline.sh   # Go baseline drift check
 ```
 
-**Last locally verified** (2026-11-24, branch `dotnet`): C# **544 passed / 1 skipped / 0 failed** across 8 test assemblies (Core 48, Conformance 154, Runtime 158+1 skipped, Extensions 51, Packaging 78, UI 3, Client 2, Product 50; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **102** tests green, plugin-kit tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
+**Last locally verified** (2026-11-24, branch `dotnet`): C# **546 passed / 1 skipped / 0 failed** across 8 test assemblies (Core 48, Conformance 154, Runtime 158+1 skipped, Extensions 51, Packaging 78, UI 3, Client 2, Product 52; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **102** tests green, plugin-kit tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
 
 Task 01 的有限校准基线见 `docs/migration/acceptance-baseline.md`；它区分三个验收域与 E0–E4 证据等级，P0-01…P0-04 均已关闭（真实 Process↔WASM 调用与包闭环由 `CrossBackendCapabilityTests`、`BackendDispatchProductTests` 覆盖）。
 
@@ -78,8 +78,9 @@ One host-owned `CapabilityCatalog` (`Gocordis.Core`) allocates a single `ICapabi
   `app run`, `PlatformRunner` and Console uploads. `PlatformHostOptions.Trust`
   is now assigned (the earlier parameter shadowing left it null). Default is
   local development (unsigned accepted); no remote marketplace.
-  `--allow-remote` only opens the listener; remote writes require a host-supplied
-  `ConsoleAccessPolicy`. The `plugin preflight` command replaced the misleading
+  `--allow-remote` only opens the listener; without a host-supplied
+  `ConsoleAccessPolicy` every remote API scope is denied (query stays open).
+  The `plugin preflight` command replaced the misleading
   `plugin sandbox` name (old name kept as alias).
 - **Task 04 stability/scale**: BenchmarkDotNet hot-path benchmarks plus repeated
   enable/disable ledger-stability test. Cold 10k apply after batch snapshots is

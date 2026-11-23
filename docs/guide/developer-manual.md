@@ -1,4 +1,8 @@
-# gocordis 开发者手册
+# gocordis 开发者手册（Go 基线归档）
+
+> **ARCHIVE**:本文的路径与代码地图基于冻结的 Go 基线，不是当前 .NET 产品。
+> 当前工程手册是 [`csharp-developer-manual.md`](csharp-developer-manual.md)，
+> 当前状态是 [`../current-status.md`](../current-status.md)。
 
 > **读者**:阅读/修改 gocordis 框架本身的工程师,以及要给框架写扩展
 > (新 loader 后端、新平台能力)的贡献者。

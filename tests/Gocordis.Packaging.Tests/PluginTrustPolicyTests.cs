@@ -31,7 +31,7 @@ public sealed class PluginTrustPolicyTests
     }
 
     [Fact]
-    public async Task SharedTrustParserIsUsedByEveryProductEntrypoint()
+    public async Task FromPemFilesParsesAndValidatesTrustConfiguration()
     {
         using var temp = new TempDir();
         var pem = temp.At("publisher.pem");
@@ -50,6 +50,10 @@ public sealed class PluginTrustPolicyTests
             PluginTrustPolicy.FromPemFiles("trusted-only", null));
         Assert.Throws<ArgumentException>(() =>
             PluginTrustPolicy.FromPemFiles("unrestricted", [pem]));
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            PluginTrustPolicy.FromPemFiles("trusted-only", [temp.At("missing.pem")]));
+        Assert.Contains("--public-key", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]

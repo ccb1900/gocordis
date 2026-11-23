@@ -10,7 +10,7 @@ dotnet run --project src/Gocordis.Platform -- \
   [--trust development|trusted-only] [--public-key <pem>]
 ```
 
-Console 通过 UI 安装、配置、启停、升级、卸载插件，并查看依赖与运行状态；写操作默认仅 loopback 可用，远程需宿主显式提供鉴权策略。`--host` 只接受 `web`；WinForms/Avalonia 是延期的 render-plan profile，不是可运行宿主。`src/Gocordis.Platform` 才是产品宿主；`samples/PlatformHost` 只是示例。
+Console 通过 UI 安装、配置、启停、升级、卸载插件，并查看依赖与运行状态；loopback 默认开放，`--allow-remote` 只放宽监听，没有宿主提供的 `AccessPolicy` 时所有远程 API scope 都被拒绝（query 查询除外）。`--host` 只接受 `web`；WinForms/Avalonia 是延期的 render-plan profile，不是可运行宿主。`src/Gocordis.Platform` 才是产品宿主；`samples/PlatformHost` 只是示例。
 
 ## 从此处开始
 

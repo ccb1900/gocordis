@@ -277,6 +277,7 @@ public sealed class TransitiveContractProductTests
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync(timeout.Token);
+        await Task.WhenAll(stdout, stderr).WaitAsync(timeout.Token);
         var output = await stdout;
         var error = await stderr;
         Assert.True(process.ExitCode == 0, $"dotnet build failed in {directory}: {output}\n{error}");

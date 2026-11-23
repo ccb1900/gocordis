@@ -20,7 +20,7 @@ set is consumed by any host:
 | Panel | `UiPanelDefinition` | rendered SPA panel | deferred | deferred |
 | Settings | package `ConfigSchema` + `config/schema` query | typed form | deferred | deferred |
 | Navigation | page `group`/`order` | menu tree | deferred | deferred |
-| Command | `RegisterApiCommandAsync` | control API | shared control plane | shared control plane |
+| Command | `ApiGateway.RegisterCommand` | control API | shared control plane | shared control plane |
 | Client Module | `gocordis-ui.json` client-module + `UiPackageBinder` | ESM served same-origin | not applicable | not applicable |
 | Host Capability | API queries/commands, no UI code in C# | supported | supported | supported |
 | Degradation | unsupported contribution reported by profile | explicit | explicit | explicit |

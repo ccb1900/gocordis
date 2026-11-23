@@ -234,3 +234,6 @@ dotnet test  Gocordis.sln --nologo -m:1
 - [ ] 新 key / 事件 key 定义在契约层，插件包之间无互相引用；
 - [ ] 接受差异写进 `js-cordis-csharp-differences.md`，未覆盖项写进 `paper-coverage-matrix.md` 的 `待补`；
 - [ ] `dotnet build` / `dotnet test` 与前端 `npm test && npm run build` 全绿；当前状态写入 `docs/current-status.md`（不是历史 execution-log）。
+
+
+Author-facing end-to-end workflow: `docs/guide/plugin-developer-workflow.md` (Task 01). Examples: `samples/PluginDeveloperWorkflow/e2e.sh`.

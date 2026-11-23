@@ -22,3 +22,6 @@ obj/
 
 # BenchmarkDotNet generated artifacts
 BenchmarkDotNet.Artifacts/
+
+# Locally packed SDK feed for plugin development
+local-packages/

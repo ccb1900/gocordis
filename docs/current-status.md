@@ -56,6 +56,25 @@ One host-owned `CapabilityCatalog` (`Gocordis.Core`) allocates a single `ICapabi
 - **Wire contract**: `CapabilityId`, `CapabilityContract` (value kind, SemVer version, media type, schema), `CapabilityDeclaration` (canonical `|`-separated wire form), `CapabilityEnvelope`, `ICapabilityEndpoint`, `DelegatingCapabilityEndpoint`. Version is compatibility metadata, never part of identity; ranges use the existing `NuGet.Versioning` dependency (C38).
 - **Lifecycle**: endpoint registration and handle release are installed as Core effects, so unwind stays strict serial LIFO. Only bindings are reversible; calls to external systems remain subject to C35.
 
+## Platform productization (Task 01–04)
+
+- **Task 01 developer workflow**: `Gocordis.Plugin.Sdk` package + `plugin create`
+  template (no runtime-repo path in generated project), `plugin validate`
+  preflight, `app add` declaration, runnable `samples/PluginDeveloperWorkflow/e2e.sh`
+  from an empty directory; author docs in `docs/guide/plugin-developer-workflow.md`.
+  Deferred: hot reload/debug without packing, exception→effect-slot attribution.
+- **Task 02 UI hosts**: unified contribution contract and scope in
+  `docs/guide/ui-host-contract.md`. Web is the only real host; WinForms/Avalonia
+  are explicitly deferred render-plan profiles, NOT completed native hosts.
+- **Task 03 trust/version**: `ApplicationPlugin` carries VersionRange,
+  LockedVersion, PackageHash, Source; `ApplicationLoader` enforces lock+hash.
+  `PluginTrustPolicy` (Development / TrustedOnly with pinned PEM keys) enforced
+  by `PluginStore.InstallAsync`/`UpgradeAsync`. Local trusted-plugin mode today;
+  no remote marketplace.
+- **Task 04 stability/scale**: BenchmarkDotNet hot-path benchmarks plus repeated
+  enable/disable ledger-stability test. Cold 10k apply after batch snapshots is
+  still O(N²)-ish (FindCycle/Reconcile per command) — see benchmark README.
+
 ## Known boundaries (not "done" claims)
 
 - Managed ALC is **not** a security sandbox; Process/WASM are the isolation boundaries; managed plugins are trusted code. Shared contract assemblies are host-approved, full-identity checked, and process-lifetime (contract upgrades require a controlled host restart).

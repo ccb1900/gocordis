@@ -7,7 +7,13 @@ public sealed record ApplicationPlugin(
     string Id,
     string VersionRange,
     bool Enabled,
-    IReadOnlyDictionary<string, object?>? Config = null);
+    IReadOnlyDictionary<string, object?>? Config = null,
+    // Declaration constraint vs. lock result vs. package entity are distinct:
+    // VersionRange says what is allowed, LockedVersion what actually runs,
+    // PackageHash which bytes were resolved.
+    string? LockedVersion = null,
+    string? PackageHash = null,
+    string? Source = null);
 
 public sealed record ApplicationManifest(
     string Id,
@@ -69,9 +75,17 @@ public sealed class ApplicationLoader
         var declarations = new List<PluginManifest>(application.Plugins.Count);
         foreach (var plugin in application.Plugins)
         {
-            var installed = await _store.ResolveAsync(plugin.Id, plugin.VersionRange, cancellationToken)
+            var selection = plugin.LockedVersion ?? plugin.VersionRange;
+            var installed = await _store.ResolveAsync(plugin.Id, selection, cancellationToken)
                             ?? throw new MissingPluginDependencyException(
-                                $"application '{application.Id}' declares '{plugin.Id}' {plugin.VersionRange}, which is not installed");
+                                $"application '{application.Id}' declares '{plugin.Id}' {selection}, which is not installed");
+            if (plugin.PackageHash is { } expectedHash &&
+                !string.Equals(expectedHash, installed.Manifest.Checksum, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ChecksumMismatchException(
+                    $"application '{application.Id}' locked '{plugin.Id}' to package hash " +
+                    $"'{expectedHash}' but store resolved '{installed.Manifest.Checksum}'");
+            }
 
             declarations.Add(new PluginManifest(
                 installed.Id,

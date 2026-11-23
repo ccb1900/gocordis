@@ -47,16 +47,18 @@ public sealed class PluginToolingTests
         Assert.True(declaration.Enabled);
         Assert.Contains("message", declaration.Config.Keys);
 
-        // Generated outside the repo tree: it must carry its own TFM and resolve
-        // the two contract projects by path derived from the CLI assembly.
+        // Generated outside the repo tree: it references the packaged SDK and a
+        // generated NuGet.Config local feed, never a path into the runtime repo.
         var project = XDocument.Load(projectPath);
         Assert.Equal("Project", project.Root!.Name.LocalName);
         var references = project.Descendants()
-            .Where(element => element.Name.LocalName == "ProjectReference")
+            .Where(element => element.Name.LocalName == "PackageReference")
             .Select(element => element.Attribute("Include")!.Value)
             .ToArray();
-        Assert.Contains(references, path => path.EndsWith("src/Gocordis.Core/Gocordis.Core.csproj", StringComparison.Ordinal));
-        Assert.Contains(references, path => path.EndsWith("src/Gocordis.Plugins/Gocordis.Plugins.csproj", StringComparison.Ordinal));
+        Assert.Contains("Gocordis.Plugin.Sdk", references);
+        Assert.DoesNotContain("ProjectReference", await File.ReadAllTextAsync(projectPath), StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(output, "NuGet.Config")));
+        Assert.True(File.Exists(Path.Combine(output, "README.md")));
 
         var source = await File.ReadAllTextAsync(pluginPath);
         Assert.Contains("Component", source);

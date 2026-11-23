@@ -68,11 +68,17 @@ public sealed class PluginStore
             .FirstOrDefault();
     }
 
-    public async Task<PluginStoreResult> InstallAsync(string packagePath, CancellationToken cancellationToken = default) =>
-        await InstallCoreAsync(packagePath, upgrade: false, cancellationToken);
+    public async Task<PluginStoreResult> InstallAsync(
+        string packagePath,
+        CancellationToken cancellationToken = default,
+        PluginTrustPolicy? trust = null) =>
+        await InstallCoreAsync(packagePath, upgrade: false, cancellationToken, trust);
 
-    public async Task<PluginStoreResult> UpgradeAsync(string packagePath, CancellationToken cancellationToken = default) =>
-        await InstallCoreAsync(packagePath, upgrade: true, cancellationToken);
+    public async Task<PluginStoreResult> UpgradeAsync(
+        string packagePath,
+        CancellationToken cancellationToken = default,
+        PluginTrustPolicy? trust = null) =>
+        await InstallCoreAsync(packagePath, upgrade: true, cancellationToken, trust);
 
     public Task<PluginStoreResult> UninstallAsync(
         string id, string? version = null, CancellationToken cancellationToken = default) =>
@@ -196,9 +202,42 @@ public sealed class PluginStore
     }
 
     private async Task<PluginStoreResult> InstallCoreAsync(
-        string packagePath, bool upgrade, CancellationToken cancellationToken)
+        string packagePath, bool upgrade, CancellationToken cancellationToken,
+        PluginTrustPolicy? trust = null)
     {
         var content = await PluginPackageReader.ReadAsync(packagePath, _hostVersion, cancellationToken);
+        if (trust?.RequireSignature == true)
+        {
+            if (content.Signature is null)
+            {
+                throw new InvalidPluginPackageException(
+                    $"package '{content.Manifest.Id}' is unsigned and trust policy requires a signature");
+            }
+
+            var keys = trust.TrustedPublicKeys;
+            if (keys is { Count: > 0 })
+            {
+                var accepted = false;
+                foreach (var key in keys)
+                {
+                    try
+                    {
+                        await PluginPackageSigner.VerifyAsync(packagePath, key, cancellationToken);
+                        accepted = true;
+                        break;
+                    }
+                    catch (Exception ex) when (ex is InvalidPluginPackageException or PackageSignatureException)
+                    {
+                    }
+                }
+
+                if (!accepted)
+                {
+                    throw new InvalidPluginPackageException(
+                        $"package '{content.Manifest.Id}' is not signed by a trusted publisher");
+                }
+            }
+        }
         await _gate.WaitAsync(cancellationToken);
         try
         {

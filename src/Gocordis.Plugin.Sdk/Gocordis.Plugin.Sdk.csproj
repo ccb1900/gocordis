@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>true</IsPackable>
+    <PackageId>Gocordis.Plugin.Sdk</PackageId>
+    <Description>Compile-time surface for Gocordis plugins: Component, Context, keys, keyspaces and declaration contracts.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Gocordis.Core/Gocordis.Core.csproj" />
+    <ProjectReference Include="../Gocordis.Plugins/Gocordis.Plugins.csproj" />
+    <None Include="README.md" Pack="true" PackagePath="/" />
+    <None Include="build/Gocordis.Plugin.Sdk.props" Pack="true" PackagePath="build/" />
+  </ItemGroup>
+</Project>

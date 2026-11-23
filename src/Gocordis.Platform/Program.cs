@@ -6,14 +6,32 @@ return await PlatformRunner.RunAsync(args);
 namespace Gocordis.Platform
 {
 
+/// <summary>Optional presentation hooks; the composition path stays in Platform.</summary>
+public sealed class PlatformRunHooks
+{
+    /// <summary>Called after StartAsync, before any wait or shutdown.</summary>
+    public Action<PlatformApplication>? AfterStart { get; init; }
+
+    /// <summary>Overrides the default plain-text stderr rendering of a failure.</summary>
+    public Func<Exception, string>? FormatError { get; init; }
+
+    /// <summary>Suppresses the product banner; callers may print their own output.</summary>
+    public bool WriteStartupBanner { get; init; } = true;
+
+    /// <summary>--validate-only or an embedding caller that exits after startup.</summary>
+    public bool WaitForShutdown { get; init; } = true;
+}
+
 public static class PlatformRunner
 {
     public const string UsageText = """
         gocordis-platform [--manifest <file>] [--store <dir>] [--address <url>]
                           [--allow-remote] [--host web|winforms|avalonia]
                           [--host-version <semver>] [--allowed-host <host> ...]
+                          [--validate-only]
 
         winforms/avalonia are render-plan profiles only: no native UI window and no web console.
+        --validate-only reconciles and activates every declaration, then exits without opening a transport.
         """;
 
     public static async Task<int> RunAsync(string[] args)
@@ -24,29 +42,45 @@ public static class PlatformRunner
             return 0;
         }
 
+        return await RunAsync(ParseOptions(args), null);
+    }
+
+    public static async Task<int> RunAsync(PlatformHostOptions options, PlatformRunHooks? hooks = null)
+    {
         try
         {
-            var options = ParseOptions(args);
             await using var app = new PlatformApplication(options);
             await app.StartAsync();
+            hooks?.AfterStart?.Invoke(app);
 
-            if (options.Host == UiHostKind.Web)
+            if (options.ValidateOnly || hooks?.WaitForShutdown == false)
             {
-                System.Console.WriteLine(
-                    $"Gocordis Platform [web] started: manifest={options.ManifestPath}, store={options.StorePath}");
-                if (app.Address is not null)
+                // StartAsync already completed every declaration and effect;
+                // stop here so validation never leaves a listener or fiber.
+                await app.StopAsync();
+                return 0;
+            }
+
+            if (hooks?.WriteStartupBanner ?? true)
+            {
+                if (options.Host == UiHostKind.Web)
                 {
-                    System.Console.WriteLine($"Web console: {app.Address}");
+                    System.Console.WriteLine(
+                        $"Gocordis Platform [web] started: manifest={options.ManifestPath}, store={options.StorePath}");
+                    if (app.Address is not null)
+                    {
+                        System.Console.WriteLine($"Web console: {app.Address}");
+                    }
                 }
-            }
-            else
-            {
-                System.Console.WriteLine(
-                    $"Gocordis Platform [{options.Host}] backend started " +
-                    "(render-plan profile only; no native UI window and no web console)");
-            }
+                else
+                {
+                    System.Console.WriteLine(
+                        $"Gocordis Platform [{options.Host}] backend started " +
+                        "(render-plan profile only; no native UI window and no web console)");
+                }
 
-            System.Console.WriteLine("Press Ctrl+C to stop.");
+                System.Console.WriteLine("Press Ctrl+C to stop.");
+            }
 
             using var shutdown = new CancellationTokenSource();
             ConsoleCancelEventHandler handler = (_, e) =>
@@ -73,7 +107,7 @@ public static class PlatformRunner
         }
         catch (Exception ex)
         {
-            System.Console.Error.WriteLine($"gocordis-platform: {ex.Message}");
+            System.Console.Error.WriteLine(hooks?.FormatError?.Invoke(ex) ?? $"gocordis-platform: {ex.Message}");
             return 1;
         }
     }
@@ -88,6 +122,7 @@ public static class PlatformRunner
         var host = UiHostKind.Web;
         var hostVersion = "1.0.0";
         var allowedHosts = new List<string>();
+        var validateOnly = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -104,6 +139,9 @@ public static class PlatformRunner
                     break;
                 case "--allow-remote":
                     allowRemote = true;
+                    break;
+                case "--validate-only":
+                    validateOnly = true;
                     break;
                 case "--host-version":
                     hostVersion = Value(args, ref i);
@@ -126,7 +164,8 @@ public static class PlatformRunner
             }
         }
 
-        return new PlatformHostOptions(manifest, store, address, allowRemote, host, hostVersion, allowedHosts);
+        return new PlatformHostOptions(
+            manifest, store, address, allowRemote, host, hostVersion, allowedHosts, validateOnly);
     }
 
     private static string Value(string[] args, ref int index)

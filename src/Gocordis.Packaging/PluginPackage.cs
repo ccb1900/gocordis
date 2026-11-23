@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using NuGet.Versioning;
 
 namespace Gocordis.Packaging;
@@ -9,6 +10,20 @@ namespace Gocordis.Packaging;
 public sealed record PluginDependency(string Id, string VersionRange);
 
 public sealed record PackageFile(string Path, string Sha256, long Length);
+
+/// <summary>
+/// One UI resource entry of a plugin package. <paramref name="Kind"/> is
+/// page / panel / client-module, <paramref name="Id"/> is the page or panel id
+/// (or the client module name), and <paramref name="Path"/> is a payload file:
+/// the definition JSON for pages/panels, the ESM entry for client modules.
+/// An inline <paramref name="Definition"/> may replace the definition file in
+/// the manifest; both forms are checksum-covered and path-validated.
+/// </summary>
+public sealed record PackageUiResource(
+    string Kind,
+    string Id,
+    string Path,
+    JsonNode? Definition = null);
 
 /// <summary>
 /// Self-contained plugin package declaration. The package format is a plain zip
@@ -27,11 +42,13 @@ public sealed record PluginPackageManifest(
     IReadOnlyList<PackageFile> Files = null!,
     string? Backend = null,
     string? EntryAssembly = null,
-    string? EntryType = null)
+    string? EntryType = null,
+    IReadOnlyList<PackageUiResource>? Ui = null)
 {
     public IReadOnlyList<PluginDependency> DependenciesOrEmpty => Dependencies ?? [];
     public IReadOnlyList<string> ProvidesOrEmpty => Provides ?? [];
     public IReadOnlyList<PackageFile> FilesOrEmpty => Files ?? [];
+    public IReadOnlyList<PackageUiResource> UiOrEmpty => Ui ?? [];
 }
 
 public sealed record PluginPackageContent(
@@ -123,6 +140,11 @@ public static class PluginPackageWriter
             throw new InvalidPluginPackageException(
                 $"package has {files.Count} payload files; limit is {PluginPackageLimits.MaxPayloadFiles}");
         }
+
+        // UI entries are part of the declaration: every declared path must be
+        // a real payload file, and a bundled gocordis-ui.json is validated too.
+        PluginPackageUi.Validate(manifest, files.Select(file => file.Path).ToArray(),
+            path => File.ReadAllBytes(Path.Combine(sourceDirectory, path)));
 
         if (string.Equals(manifest.Backend, "managed", StringComparison.OrdinalIgnoreCase) &&
             !files.Any(file => string.Equals(file.Path, manifest.EntryAssembly, StringComparison.Ordinal)))
@@ -333,6 +355,21 @@ public static class PluginPackageWriter
                 .Append(':').Append(file.Length).Append('\n');
         }
 
+        // UI declarations are versioned into the checksum only when present:
+        // legacy packages keep the exact old byte sequence. The Definition is
+        // canonicalized so property order in the manifest cannot change the
+        // integrity value.
+        foreach (var resource in manifest.UiOrEmpty
+                     .OrderBy(r => r.Kind, StringComparer.Ordinal)
+                     .ThenBy(r => r.Id, StringComparer.Ordinal)
+                     .ThenBy(r => r.Path, StringComparer.Ordinal))
+        {
+            text.Append("ui=").Append(resource.Kind).Append(':').Append(resource.Id)
+                .Append(':').Append(resource.Path).Append(':')
+                .Append(resource.Definition is null ? "-" : PluginPackageUi.CanonicalJson(resource.Definition))
+                .Append('\n');
+        }
+
         return Sha256(Encoding.UTF8.GetBytes(text.ToString()));
     }
 
@@ -482,6 +519,7 @@ public static class PluginPackageReader
         }
 
         Verify(manifest, files);
+        PluginPackageUi.Validate(manifest, files.Keys, path => files[path]);
         return new PluginPackageContent(manifest, files, signature);
     }
 

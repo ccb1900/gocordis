@@ -12,9 +12,8 @@ namespace Gocordis.Runtime.Wasm;
 /// </summary>
 public sealed class WasmBackend : IPluginBackend
 {
-    private readonly string _wat;
+    private readonly Func<WasmPluginInstance> _createInstance;
     private readonly Key<int> _key;
-    private readonly WasmHostBridge? _bridge;
     private readonly GenerationTracker _tracker;
     private GenerationHandle? _generation;
     private WasmPluginInstance? _instance;
@@ -27,10 +26,28 @@ public sealed class WasmBackend : IPluginBackend
         Key<int> key,
         WasmHostBridge? bridge = null,
         GenerationTracker? tracker = null)
+        : this(() => WasmPluginInstance.FromWat(wat, bridge: bridge), key, tracker)
     {
-        _wat = wat;
+    }
+
+    /// <summary>Binary WASM payload; WAT payloads use the string constructor.</summary>
+    public WasmBackend(
+        byte[] wasm,
+        Key<int> key,
+        string name = "plugin",
+        WasmHostBridge? bridge = null,
+        GenerationTracker? tracker = null)
+        : this(() => WasmPluginInstance.FromBytes(wasm, name, bridge), key, tracker)
+    {
+    }
+
+    internal WasmBackend(
+        Func<WasmPluginInstance> createInstance,
+        Key<int> key,
+        GenerationTracker? tracker)
+    {
+        _createInstance = createInstance;
         _key = key;
-        _bridge = bridge;
         _tracker = tracker ?? new GenerationTracker();
     }
 
@@ -44,7 +61,7 @@ public sealed class WasmBackend : IPluginBackend
     {
         context.ThrowIfDiverted();
         _generation = _tracker.Begin();
-        _instance = WasmPluginInstance.FromWat(_wat, bridge: _bridge);
+        _instance = _createInstance();
         try
         {
             _instance.ValidateRuntimeExports();

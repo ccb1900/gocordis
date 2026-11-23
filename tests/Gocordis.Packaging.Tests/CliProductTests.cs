@@ -103,6 +103,24 @@ public sealed class CliProductTests
     }
 
     [Fact]
+    public async Task AppRunValidateOnlyHonorsManagedBackendDeclaration()
+    {
+        using var temp = new TempDir();
+        var store = temp.Path("store");
+        const string pluginId = "managed-demo";
+        await InstallManagedBackendAsync(temp, store, pluginId);
+        var path = await WriteManifestAsync(temp, new ApplicationPlugin(pluginId, "[1.0,2.0)", true));
+
+        // The old CLI ignored Backend and activated a declaration-only adapter.
+        // A real product run must use the platform factory and therefore fail
+        // on an invalid managed entry assembly instead of pretending success.
+        var run = await RunAsync("app", "run", path, "--store", store,
+            "--host-version", HostVersion, "--validate-only");
+        Assert.NotEqual(0, run.Code);
+        Assert.Contains(pluginId, run.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task AppValidateKeepsItsExistingResolutionSummary()
     {
         using var temp = new TempDir();
@@ -137,6 +155,24 @@ public sealed class CliProductTests
 
     private static string CurrentJson(string path) => JsonNode.Parse(
         File.ReadAllText(path))!.ToJsonString();
+
+    private static async Task InstallManagedBackendAsync(TempDir temp, string store, string id)
+    {
+        var source = temp.Path($"source-{id}");
+        Directory.CreateDirectory(source);
+        // Deliberately not a .NET assembly: a real platform factory must reject
+        // it, while the legacy declaration-only adapter never looks at it.
+        await File.WriteAllTextAsync(Path.Combine(source, "ghost.dll"), "not an assembly");
+        var package = temp.File($"{id}-1.0.0.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source,
+            new PluginPackageManifest(id, "1.0.0", "managed-demo-type", "[1.0,)",
+                Backend: "managed", EntryAssembly: "ghost.dll", EntryType: "Ghost.Plugin"),
+            package);
+
+        var install = await RunAsync("plugin", "install", package,
+            "--store", store, "--host-version", HostVersion);
+        Assert.Equal(0, install.Code);
+    }
 
     private static async Task<string> WriteManifestAsync(TempDir temp, params ApplicationPlugin[] plugins)
     {

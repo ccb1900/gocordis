@@ -14,15 +14,26 @@ public sealed class ProcessBackend : IPluginBackend
 {
     private readonly string _executable;
     private readonly Key<string> _key;
+    private readonly Key<ProcessDiagnostics> _diagnosticsKey;
+    private readonly Key<string> _errorKey;
     private ProcessPluginClient? _client;
     private ProcessDiagnostics? _diagnostics;
     private bool _released;
     private bool _disposed;
 
-    public ProcessBackend(string executable, Key<string> key)
+    public ProcessBackend(
+        string executable,
+        Key<string> key,
+        Key<ProcessDiagnostics>? diagnosticsKey = null,
+        Key<string>? errorKey = null)
     {
         _executable = executable;
         _key = key;
+        // Per-plugin keys keep several process plugins from colliding on the
+        // one-provider-per-key rule; defaults preserve the original single
+        // plugin vocabulary used by existing runtime tests.
+        _diagnosticsKey = diagnosticsKey ?? ProcessKeys.Diagnostics;
+        _errorKey = errorKey ?? ProcessKeys.ErrorVocabulary;
     }
 
     public string BackendId => "process";
@@ -35,7 +46,7 @@ public sealed class ProcessBackend : IPluginBackend
     {
         context.ThrowIfDiverted();
         _diagnostics = new ProcessDiagnostics();
-        context.Provide(ProcessKeys.Diagnostics, _diagnostics);
+        context.Provide(_diagnosticsKey, _diagnostics);
         LastHandle = new BackendHandle(BackendId, 0, BackendPhase.Prepared, _executable);
         return ValueTask.FromResult(LastHandle);
     }
@@ -50,7 +61,7 @@ public sealed class ProcessBackend : IPluginBackend
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
             var result = await _client.CallAsync("echo", new { text = "ready" }, timeout.Token);
             context.Provide(_key, result?["text"]?.GetValue<string>() ?? "unavailable");
-            context.Provide(ProcessKeys.ErrorVocabulary, "ok");
+            context.Provide(_errorKey, "ok");
             LastHandle = prepared.WithPhase(BackendPhase.Activated, resourceId: _client.ProcessId.ToString());
             return LastHandle;
         }
@@ -70,7 +81,7 @@ public sealed class ProcessBackend : IPluginBackend
             }
 
             context.Provide(_key, ProcessErrorPolicy.ErrorVocabulary);
-            context.Provide(ProcessKeys.ErrorVocabulary, ProcessErrorPolicy.ErrorVocabulary);
+            context.Provide(_errorKey, ProcessErrorPolicy.ErrorVocabulary);
             LastHandle = prepared.WithPhase(BackendPhase.Activated, ProcessErrorPolicy.ErrorVocabulary);
             return LastHandle;
         }

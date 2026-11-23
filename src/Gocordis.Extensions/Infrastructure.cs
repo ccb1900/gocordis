@@ -5,6 +5,13 @@ using System.Text;
 
 namespace Gocordis.Extensions;
 
+/// <summary>Write semantics aligned with JS Cordis 4.0.0-rc.13+ filesystem options.</summary>
+public sealed record FileWriteOptions(bool Exclusive = false, bool Atomic = false);
+
+/// <summary>Copy semantics aligned with JS Cordis 4.0.0-rc.13+ filesystem options.</summary>
+public sealed record FileCopyOptions(
+    bool Overwrite = false, bool Exclusive = false, bool Atomic = false);
+
 /// <summary>Mount-routed filesystem with path-escape guard and reversible watchers.</summary>
 public sealed class FileSystemService : IAsyncDisposable
 {
@@ -45,11 +52,47 @@ public sealed class FileSystemService : IAsyncDisposable
         path.StartsWith(prefix + "/", comparison) ||
         path.StartsWith(prefix + "\\", comparison);
 
-    public async Task WriteAsync(string path, byte[] content)
+    public Task WriteAsync(string path, byte[] content) =>
+        WriteAsync(path, content, new FileWriteOptions());
+
+    public async Task WriteAsync(string path, byte[] content, FileWriteOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
         var resolved = Resolve(path);
-        Directory.CreateDirectory(Path.GetDirectoryName(resolved)!);
-        await File.WriteAllBytesAsync(resolved, content);
+        var directory = Path.GetDirectoryName(resolved)!;
+        Directory.CreateDirectory(directory);
+
+        if (!options.Atomic)
+        {
+            var mode = options.Exclusive ? FileMode.CreateNew : FileMode.Create;
+            await using var file = new FileStream(resolved, mode, FileAccess.Write, FileShare.None,
+                4096, FileOptions.Asynchronous);
+            await file.WriteAsync(content);
+            return;
+        }
+
+        // Atomic writes stage in the destination directory, then publish with a
+        // same-volume move. Exclusive atomic writes use the non-overwriting move.
+        var temp = Path.Combine(directory,
+            $".{Path.GetFileName(resolved)}.gocordis-tmp-{Guid.NewGuid():N}");
+        try
+        {
+            await using (var staged = new FileStream(temp, FileMode.CreateNew, FileAccess.Write,
+                             FileShare.None, 4096, FileOptions.Asynchronous))
+            {
+                await staged.WriteAsync(content);
+            }
+
+            File.Move(temp, resolved, overwrite: !options.Exclusive);
+            temp = null!;
+        }
+        finally
+        {
+            if (temp is not null && File.Exists(temp))
+            {
+                File.Delete(temp);
+            }
+        }
     }
 
     public Task<byte[]> ReadAsync(string path) => File.ReadAllBytesAsync(Resolve(path));
@@ -61,6 +104,9 @@ public sealed class FileSystemService : IAsyncDisposable
 
     public async Task WriteAllTextAsync(string path, string content) =>
         await WriteAsync(path, Encoding.UTF8.GetBytes(content));
+
+    public async Task WriteAllTextAsync(string path, string content, FileWriteOptions options) =>
+        await WriteAsync(path, Encoding.UTF8.GetBytes(content), options);
 
     /// <summary>
     /// Reads at most <paramref name="count"/> bytes from <paramref name="offset"/>.
@@ -135,17 +181,54 @@ public sealed class FileSystemService : IAsyncDisposable
     }
 
     /// <summary>Copies within the mounted namespace; an existing destination needs overwrite: true.</summary>
-    public async Task CopyAsync(string source, string destination, bool overwrite = false)
+    public Task CopyAsync(string source, string destination, bool overwrite = false) =>
+        CopyAsync(source, destination, new FileCopyOptions(Overwrite: overwrite));
+
+    public async Task CopyAsync(string source, string destination, FileCopyOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
         var from = Resolve(source);
         var to = Resolve(destination);
-        Directory.CreateDirectory(Path.GetDirectoryName(to)!);
-        await using var input = new FileStream(from, FileMode.Open, FileAccess.Read, FileShare.Read,
-            4096, FileOptions.Asynchronous);
-        await using var output = new FileStream(to, overwrite ? FileMode.Create : FileMode.CreateNew,
-            FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous);
-        await input.CopyToAsync(output);
+        var directory = Path.GetDirectoryName(to)!;
+        Directory.CreateDirectory(directory);
+
+        if (!options.Atomic)
+        {
+            var mode = options.Exclusive || !options.Overwrite
+                ? FileMode.CreateNew
+                : FileMode.Create;
+            await using var input = new FileStream(from, FileMode.Open, FileAccess.Read, FileShare.Read,
+                4096, FileOptions.Asynchronous);
+            await using var output = new FileStream(to, mode, FileAccess.Write, FileShare.None,
+                4096, FileOptions.Asynchronous);
+            await input.CopyToAsync(output);
+            return;
+        }
+
+        var temp = Path.Combine(directory,
+            $".{Path.GetFileName(to)}.gocordis-tmp-{Guid.NewGuid():N}");
+        try
+        {
+            await using (var input = new FileStream(from, FileMode.Open, FileAccess.Read, FileShare.Read,
+                             4096, FileOptions.Asynchronous))
+            await using (var staged = new FileStream(temp, FileMode.CreateNew, FileAccess.Write,
+                             FileShare.None, 4096, FileOptions.Asynchronous))
+            {
+                await input.CopyToAsync(staged);
+            }
+
+            File.Move(temp, to, overwrite: options.Overwrite && !options.Exclusive);
+            temp = null!;
+        }
+        finally
+        {
+            if (temp is not null && File.Exists(temp))
+            {
+                File.Delete(temp);
+            }
+        }
     }
+
 
     /// <summary>Moves a file or directory within the mounted namespace.</summary>
     public Task MoveAsync(string source, string destination)

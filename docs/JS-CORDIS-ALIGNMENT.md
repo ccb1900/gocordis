@@ -95,3 +95,25 @@ Revision（退役→重插）而非 JS 原位替换；公开选项、异常传�
 **刻意不接受差异**（论文优先，非能力缺失）：`ctx.foo` Proxy 动态属性、跨 effect 并发撤销、
 `registry.replace()` 保身份替换。详见 `docs/ACCEPTED-DIFFERENCES.md` 与
 `docs/migration/semantic-mapping.md` §4。
+
+## 增量基线更新（2026-11-23）
+
+发布版基线仍为 `5e2e6c172335d207d11289959322edaaba4447f0`（4.0.0-rc.13）。
+当前上游开发基线更新为 `f4c6b3ae00d6649b0b13cdf108aeb28b66403d87`
+（相对 rc.13 的提交：`feat(fs): add atomic and exclusive writes and copies`）。
+上游发布版 rc.13 还包含 `registry.replace()`、`hmr.reconcile()`、generator epoch、
+loader scope、FS mount/watch 与 package-manager 等变化；论文冲突项仍按上表冻结。
+
+增量对照结论：
+
+- fs：`WriteOptions.exclusive/atomic` 与 `CopyOptions.exclusive/atomic` 已在 C#
+  `FileSystemService` 以原生 `FileStream`/同目录暂存 + `File.Move` 实现，
+  红测 `FsAtomicAndExclusiveWriteAndCopyOptions` 覆盖覆盖写、独占失败、
+  原子失败清理。**该增量能力已闭合**。
+- 其余 rc.13 变化（registry.replace 保身份、HMR 分单元 reconcile、
+  generator epoch、loader scope）仍由 C# 的论文 Revision / 批次事务 /
+  IAsyncEnumerable / manifest-aware factory 以语义等价或接受差异处理，
+  逐项边界继续见 `docs/migration/js-cordis-csharp-differences.md`。
+
+因此，“最新 JS 等价”现在指的是：rc.13 + 当前 main 增量 SHA `f4c6b3a` 的显式对照，
+而不是笼统宣称与上游所有公开 API 逐项一致。

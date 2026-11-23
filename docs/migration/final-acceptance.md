@@ -2,7 +2,7 @@
 
 Branch: `migration/dotnet-complete`
 Go baseline target: `ed2ef724a24331ecc3fa21974539315fd90212bf`
-Go baseline status: **DRIFT** — local `main` is at `44c1f27158d4b765cf16663695de1d587026a3b9`; see `review-round-8.md`.
+Go baseline target: `ed2ef724a24331ecc3fa21974539315fd90212bf` (pinned). Later `main` commits (`44c1f271...`) are upstream evolution; `verify-baseline.sh` reports them as a NOTE while verifying the pinned overlay.
 C# calibrated target: R9 product execution commit `migration/dotnet-complete` `61f15ae1`（历史基线 `488e959d` 已 superseded）
 
 本文件是完整迁移的事实验收报告。所有状态以源码与测试为准。本轮未核验 CI；
@@ -106,7 +106,8 @@ Web/WinForms/Avalonia profile 按各自能力渲染或明确降级。
 - 跨 effect 并发撤销按论文/Go 严格 LIFO，不采用 JS `Promise.all` 并发撤销。
 - Go baseline 的 Race flake 属于冻结 main 的既有问题，不在此分支修改 Go。
 - UI 控制面目前无认证：loopback 是默认安全边界；`--allow-remote` 且未安装 AccessPolicy 时所有写端点返回 403。远程部署必须在进程外或宿主侧提供鉴权。
-- 平台收敛 gate 仅移植代表性 6/30，不宣称 PC01–PC30 全覆盖。
+- 平台收敛 gate 30/30 已逐项裁决，见 [`pc-gate-disposition.md`](pc-gate-disposition.md)；
+  6 个为直接移植，其余为等价覆盖，不存在 Unknown。
 
 ## 7. 冻结条件
 

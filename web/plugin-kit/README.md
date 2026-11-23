@@ -9,6 +9,15 @@ gocordis-plugin-build            # src/ui.tsx -> ui.js
 gocordis-plugin-build src/main.tsx -o dist/ui.js
 ```
 
+每次构建还会在产物同目录写出 `gocordis-ui.json`（及 `ui/pages/*.json`、
+`ui/panels/*.json`），声明 client-module 入口与可选的页面/Panel 定义；
+插件包可直接把这些产物纳入 payload，包读取器会校验路径并纳入 checksum。
+需要自定义页面/Panel 时提供 `--ui-config ui.config.json`：
+
+```json
+{ "module": "demo-ui", "pages": [{ "id": "demo", "title": "Demo", "route": "/demo", "renderer": "demo" }] }
+```
+
 `react` / `react/jsx-runtime` / `react-dom` / `react-dom/client` / `antd`
 的导入在构建期被重定向到本包的 shims：运行时它们来自控制台门面
 （`globalThis.__CORDIS_CONSOLE`）——全页面只有一个 React 实例与渲染器，

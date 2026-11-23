@@ -174,6 +174,10 @@ public sealed class PluginStore
 
                 await WriteStateAsync(state, cancellationToken);
                 Directory.Delete(backupRoot, recursive: true);
+                foreach (var source in moves.Select(move => move.Source).Distinct(StringComparer.Ordinal))
+                {
+                    SafeDeleteEmptyParent(Path.GetDirectoryName(source));
+                }
                 return new PluginStoreResult(targets
                     .Select(p => new PluginChange(PluginChangeKind.Removed, p.Id, p.Version)).ToArray());
             }
@@ -253,6 +257,10 @@ public sealed class PluginStore
                     Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                     await File.WriteAllBytesAsync(target, bytes, cancellationToken);
                 }
+
+                // Derived declaration for the host binder: it lives in the
+                // version directory and is removed with it on upgrade/uninstall.
+                PluginPackageUi.WriteInstalled(staging, content.Manifest, content.Files);
 
                 Directory.CreateDirectory(backupRoot);
                 var affected = new List<InstalledPlugin>();
@@ -365,6 +373,24 @@ public sealed class PluginStore
                 Directory.Move(move.Backup, move.Source);
             }
         }
+    }
+
+    private static void SafeDeleteEmptyParent(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            if (Directory.Exists(path) && !Directory.EnumerateFileSystemEntries(path).Any())
+            {
+                Directory.Delete(path);
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     private static void SafeDeleteDirectory(string path)

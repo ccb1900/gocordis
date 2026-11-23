@@ -160,20 +160,35 @@ public sealed class WasmPluginInstance : IDisposable
 
 public sealed class WasmComponent : Component
 {
-    private readonly string _wat;
     private readonly Key<int> _key;
-    private readonly WasmHostBridge? _bridge;
     private readonly GenerationTracker? _tracker;
+
+    private readonly Func<WasmPluginInstance> _createInstance;
 
     public WasmComponent(
         string wat,
         Key<int> key,
         WasmHostBridge? bridge = null,
         GenerationTracker? tracker = null)
+        : this(() => WasmPluginInstance.FromWat(wat, bridge: bridge), key, tracker)
     {
-        _wat = wat;
+    }
+
+    /// <summary>Binary WASM payload as installed by a platform package.</summary>
+    public WasmComponent(
+        byte[] wasm,
+        Key<int> key,
+        string name = "plugin",
+        WasmHostBridge? bridge = null,
+        GenerationTracker? tracker = null)
+        : this(() => WasmPluginInstance.FromBytes(wasm, name, bridge), key, tracker)
+    {
+    }
+
+    private WasmComponent(Func<WasmPluginInstance> createInstance, Key<int> key, GenerationTracker? tracker)
+    {
+        _createInstance = createInstance;
         _key = key;
-        _bridge = bridge;
         _tracker = tracker;
     }
 
@@ -182,5 +197,5 @@ public sealed class WasmComponent : Component
     public override IReadOnlyList<ICapabilityKey> Provide() => [_key];
 
     public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
-        BackendProtocol.RunAsync(new WasmBackend(_wat, _key, _bridge, _tracker), context);
+        BackendProtocol.RunAsync(new WasmBackend(_createInstance, _key, _tracker), context);
 }

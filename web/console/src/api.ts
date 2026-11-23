@@ -9,12 +9,13 @@
 
 import type {
   ExplorerPlugin, PluginDependencyView, PluginMutationResult,
-  StorePluginEntry, UploadedPackage,
+  StorePluginEntry, UICompositionManifest, UploadedPackage,
 } from "./types";
 import {
   normalizeDependencyView, normalizeMutation, normalizePlugins,
   normalizeStorePlugins, normalizeUpload,
 } from "./lib/plugin-control";
+import { normalizeUiManifest } from "./lib/ui-manifest";
 
 export class ApiError extends Error {
   readonly code: string;
@@ -76,6 +77,12 @@ export function pages() {
 
 export function panels() {
   return get<{ panels: import("./types").UIPanel[] }>("/api/ui/panels").then((r) => r.panels);
+}
+
+/** One snapshot of the host's UI composition, including packaged plugin
+ * modules and their content-hash cache keys. */
+export function uiManifest(): Promise<UICompositionManifest> {
+  return get<unknown>("/api/ui/manifest").then(normalizeUiManifest);
 }
 
 export function hubQuery<T = unknown>(name: string, params?: Record<string, string | number>) {
@@ -149,6 +156,7 @@ export async function pluginConfig(id: string): Promise<Record<string, unknown>>
 export const api = {
   pages,
   panels,
+  uiManifest,
   hubQuery,
   hubCommand,
   plugins,

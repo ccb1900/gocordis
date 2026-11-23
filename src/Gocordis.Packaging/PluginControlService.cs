@@ -887,11 +887,22 @@ public sealed class PluginControlService : IPluginControlPlane
             {
                 if (_componentFactory is { } factory)
                 {
-                    _registry.RegisterComponentFactory(type, factory);
+                    // The host still selects the backend; the control plane
+                    // only decorates the resulting component with UI
+                    // contributions derived from the installed package.
+                    _registry.RegisterComponentFactory(type, manifest =>
+                    {
+                        var inner = factory(manifest);
+                        return _ui is null ? inner : UiPackageBinder.Wrap(inner, manifest);
+                    });
                 }
                 else
                 {
-                    _registry.RegisterFactory(type, _ => new ProductPluginComponent(type, _ui));
+                    _registry.RegisterComponentFactory(type, manifest =>
+                    {
+                        var inner = new ProductPluginComponent(type, _ui);
+                        return _ui is null ? inner : UiPackageBinder.Wrap(inner, manifest);
+                    });
                 }
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("already registered", StringComparison.Ordinal))

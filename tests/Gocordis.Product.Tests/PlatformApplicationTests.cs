@@ -34,6 +34,30 @@ public sealed class PlatformApplicationTests
     }
 
     [Fact]
+    public async Task ValidateOnlyStartsTheRealAssemblyButOpensNoTransport()
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var options = new PlatformHostOptions(manifestPath, temp.Path("store"),
+            Address: "http://127.0.0.1:0", HostVersion: "1.5.0", ValidateOnly: true);
+
+        await using var app = new PlatformApplication(options);
+        await app.StartAsync();
+
+        // The same declaration/effect path ran: the control plane fiber is
+        // active and resolution is observable to the CLI renderer.
+        Assert.Null(app.Address);
+        Assert.NotNull(app.Control);
+        Assert.Contains(app.Runtime.Snapshot().Fibers,
+            fiber => fiber.Name == "plugin-control-plane" && fiber.State == FiberState.Active);
+        Assert.NotNull(app.Manifest);
+        Assert.Empty(app.ResolvedPlugins);
+
+        await app.StopAsync();
+        Assert.Empty(app.Runtime.Snapshot().Fibers);
+    }
+
+    [Fact]
     public async Task ControlPlaneIsAPluginContribution()
     {
         using var temp = new TempDir();

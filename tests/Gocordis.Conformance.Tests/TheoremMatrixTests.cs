@@ -688,6 +688,57 @@ public sealed class TheoremMatrixTests
         }
     }
 
+    /// <summary>
+    /// Evidence anchor for Thm43 (and C14): independent inverses commute across
+    /// the two permitted orders. LIFO is only asserted WITHIN one fiber.
+    /// </summary>
+    [Fact]
+    public async Task Thm43_IndependentInversesCommuteAcrossPermittedOrders()
+    {
+        static async Task<string[]> Run(bool reverse)
+        {
+            var log = new List<string>();
+            await using var runtime = new Gocordis.Core.Runtime();
+            async Task<Fiber> Add(string token) => await runtime.LoadAsync(new Probe(
+                $"thm43-{token}",
+                async context => await context.EffectAsync(
+                    () =>
+                    {
+                        log.Add($"{token}+");
+                        return ValueTask.CompletedTask;
+                    },
+                    () =>
+                    {
+                        log.Add($"{token}-");
+                        return ValueTask.CompletedTask;
+                    })));
+
+            var left = await Add("x");
+            var right = await Add("y");
+            if (reverse)
+            {
+                await runtime.DisposeAsync(right);
+                await runtime.DisposeAsync(left);
+            }
+            else
+            {
+                await runtime.DisposeAsync(left);
+                await runtime.DisposeAsync(right);
+            }
+
+            Assert.Empty(runtime.Snapshot().Fibers);
+            return log.ToArray();
+        }
+
+        var forward = await Run(reverse: false);
+        var reversed = await Run(reverse: true);
+        Assert.Equal(new[] { "x+", "y+", "x-", "y-" }, forward);
+        Assert.Equal(new[] { "x+", "y+", "y-", "x-" }, reversed);
+        Assert.Equal(
+            forward.Where(entry => entry.EndsWith("-", StringComparison.Ordinal)).OrderBy(entry => entry, StringComparer.Ordinal),
+            reversed.Where(entry => entry.EndsWith("-", StringComparison.Ordinal)).OrderBy(entry => entry, StringComparer.Ordinal));
+    }
+
     private sealed class Probe : Component
     {
         private readonly Func<Context, Task> _apply;

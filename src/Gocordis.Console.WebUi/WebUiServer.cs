@@ -177,98 +177,24 @@ public sealed class WebUiServer : IAsyncDisposable
         }));
 
         _app.MapGet("/api/ui/pages", () =>
-        {
-            var pages = new JsonArray();
-            foreach (var page in host.Ui.Pages())
-            {
-                var item = new JsonObject
-                {
-                    ["id"] = page.Id,
-                    ["title"] = page.Title,
-                    ["route"] = page.Route,
-                    ["renderer"] = page.Renderer,
-                };
-                if (page.Icon is not null)
-                {
-                    item["icon"] = page.Icon;
-                }
-                if (page.Description is not null)
-                {
-                    item["description"] = page.Description;
-                }
-                if (page.Views is not null)
-                {
-                    item["views"] = page.Views.DeepClone();
-                }
-                if (page.Actions.Count > 0)
-                {
-                    var actions = new JsonArray();
-                    foreach (var action in page.Actions)
-                    {
-                        var entry = new JsonObject
-                        {
-                            ["label"] = action.Label,
-                            ["command"] = action.Command,
-                        };
-                        if (action.DatePicker)
-                        {
-                            entry["datePicker"] = true;
-                        }
-                        actions.Add(entry);
-                    }
-                    item["actions"] = actions;
-                }
-                pages.Add(item);
-            }
-
-            return ApiResults.Data(new JsonObject { ["pages"] = pages });
-        });
+            ApiResults.Data(new JsonObject { ["pages"] = PageNodes(host.Ui) }));
 
         _app.MapGet("/api/ui/panels", () =>
-        {
-            var panels = new JsonArray();
-            foreach (var panel in host.Ui.Panels())
-            {
-                var item = new JsonObject
-                {
-                    ["id"] = panel.Id,
-                    ["title"] = panel.Title,
-                    ["position"] = panel.Position,
-                    ["renderer"] = panel.Renderer,
-                };
-                if (panel.Pages.Count > 0)
-                {
-                    item["pages"] = new JsonArray(
-                        panel.Pages.Select(page => (JsonNode?)JsonValue.Create(page)).ToArray());
-                }
-                if (panel.Views is not null)
-                {
-                    item["views"] = panel.Views.DeepClone();
-                }
-                panels.Add(item);
-            }
-
-            return ApiResults.Data(new JsonObject { ["panels"] = panels });
-        });
+            ApiResults.Data(new JsonObject { ["panels"] = PanelNodes(host.Ui) }));
 
         _app.MapGet("/api/ui/client-modules", () =>
-        {
-            var revision = host.Ui.Revision;
-            var modules = new JsonArray();
-            foreach (var module in host.Ui.ClientModules())
-            {
-                modules.Add(new JsonObject
-                {
-                    ["name"] = module.Name,
-                    ["url"] = ClientModuleUrl(module, revision),
-                });
-            }
+            ApiResults.Data(ModuleData(host.Ui)));
 
-            return ApiResults.Data(new JsonObject
-            {
-                ["modules"] = modules,
-                ["revision"] = revision,
-            });
+        // One read model for the console's composition snapshot. The existing
+        // narrow endpoints keep their exact wire shape; this endpoint only
+        // composes them so an installed plugin's whole UI declaration is
+        // observable without polling three routes separately.
+        _app.MapGet("/api/ui/manifest", () =>
+        {
+            var data = ModuleData(host.Ui);
+            data["pages"] = PageNodes(host.Ui);
+            data["panels"] = PanelNodes(host.Ui);
+            return ApiResults.Data(data);
         });
 
         _app.MapGet("/api/query/{**name}", (string name) =>
@@ -709,7 +635,12 @@ public sealed class WebUiServer : IAsyncDisposable
             segments = WebAssetPaths.SplitSegments(module.Entry);
         }
 
-        var root = _clientModuleRoot(name);
+        // A packaged plugin carries its own install directory in the module
+        // contribution. That version directory is the authority; the resolver
+        // is only the legacy/host-provided fallback for hand-registered modules.
+        var root = module.Source is { } source && Directory.Exists(source)
+            ? source
+            : _clientModuleRoot(name);
         if (string.IsNullOrWhiteSpace(root))
         {
             return Results.NotFound();
@@ -734,6 +665,104 @@ public sealed class WebUiServer : IAsyncDisposable
             enableRangeProcessing: true);
     }
 
+    private static JsonArray PageNodes(UiContributionRegistry ui)
+    {
+        var pages = new JsonArray();
+        foreach (var page in ui.Pages())
+        {
+            var item = new JsonObject
+            {
+                ["id"] = page.Id,
+                ["title"] = page.Title,
+                ["route"] = page.Route,
+                ["renderer"] = page.Renderer,
+            };
+            if (page.Icon is not null)
+            {
+                item["icon"] = page.Icon;
+            }
+            if (page.Description is not null)
+            {
+                item["description"] = page.Description;
+            }
+            if (page.Views is not null)
+            {
+                item["views"] = page.Views.DeepClone();
+            }
+            if (page.Actions.Count > 0)
+            {
+                var actions = new JsonArray();
+                foreach (var action in page.Actions)
+                {
+                    var entry = new JsonObject
+                    {
+                        ["label"] = action.Label,
+                        ["command"] = action.Command,
+                    };
+                    if (action.DatePicker)
+                    {
+                        entry["datePicker"] = true;
+                    }
+                    actions.Add(entry);
+                }
+                item["actions"] = actions;
+            }
+            pages.Add(item);
+        }
+
+        return pages;
+    }
+
+    private static JsonArray PanelNodes(UiContributionRegistry ui)
+    {
+        var panels = new JsonArray();
+        foreach (var panel in ui.Panels())
+        {
+            var item = new JsonObject
+            {
+                ["id"] = panel.Id,
+                ["title"] = panel.Title,
+                ["position"] = panel.Position,
+                ["renderer"] = panel.Renderer,
+            };
+            if (panel.Pages.Count > 0)
+            {
+                item["pages"] = new JsonArray(
+                    panel.Pages.Select(page => (JsonNode?)JsonValue.Create(page)).ToArray());
+            }
+            if (panel.Views is not null)
+            {
+                item["views"] = panel.Views.DeepClone();
+            }
+            panels.Add(item);
+        }
+
+        return panels;
+    }
+
+    private static JsonObject ModuleData(UiContributionRegistry ui)
+    {
+        var revision = ui.Revision;
+        var modules = new JsonArray();
+        foreach (var module in ui.ClientModules())
+        {
+            modules.Add(new JsonObject
+            {
+                ["name"] = module.Name,
+                ["url"] = ClientModuleUrl(module, revision),
+                ["packageId"] = JsonValue.Create(module.PackageId),
+                ["version"] = JsonValue.Create(module.PackageVersion),
+                ["contentHash"] = JsonValue.Create(module.ContentHash),
+            });
+        }
+
+        return new JsonObject
+        {
+            ["modules"] = modules,
+            ["revision"] = revision,
+        };
+    }
+
     private static string ClientModuleUrl(UiClientModule module, long revision)
     {
         var segments = WebAssetPaths.SplitSegments(module.Entry)
@@ -747,7 +776,14 @@ public sealed class WebUiServer : IAsyncDisposable
         var entry = string.Join('/', segments.Select(Uri.EscapeDataString));
         // A composition revision is part of the URL so a re-registered module
         // always gets a fresh ESM identity even when its file bytes are unchanged.
-        var payload = $"{revision}\u001f{module.Name}\u001f{module.Revision}\u001f{entry}";
+        // Source/version/content-hash are part of the cache key: an upgrade
+        // always produces a fresh ESM identity even when the file name is the
+        // same, so the browser cannot keep a stale module activation.
+        var payload = string.Join('\u001f',
+            revision, module.Name, module.Revision, entry,
+            module.PackageId ?? string.Empty, module.PackageVersion ?? string.Empty,
+            module.ContentHash ?? string.Empty,
+            module.Source ?? string.Empty);
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
         var version = Convert.ToHexString(hash.AsSpan(0, 4)).ToLowerInvariant();
         return $"/client-modules/{Uri.EscapeDataString(module.Name)}/{entry}?v={version}";

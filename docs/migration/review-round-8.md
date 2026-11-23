@@ -57,12 +57,12 @@ WebUi / Registry / Runtime / RouteGuard 各自注入一次 Dispose 故障，断�
 
 ## 4. 未关闭的外部证据项
 
-- **Go 基线验证失败**：`bash docs/migration/verify-baseline.sh` 报告
+- **Go 基线漂移（R10 已裁决）**：当时 `bash docs/migration/verify-baseline.sh` 报告
   `main` 从冻结的 `ed2ef724a24331ecc3fa21974539315fd90212bf`
-  漂移到 `44c1f27158d4b765cf16663695de1d587026a3b9`。
-  本轮没有修改 Go 代码，也没有切换/重置 `main`。该漂移必须由仓库维护方裁决：
-  要么确认新基线并更新冻结脚本，要么把 `main` 恢复到原基线。
-  在此之前，不声称 Go 基线验证通过。
+  前进到 `44c1f27158d4b765cf16663695de1d587026a3b9`。
+  裁决：迁移目标保持冻结在 `ed2ef724...`；后续 Go `main` 提交属于上游演进，
+  不是迁移基线变更。脚本现在报告该差异为 NOTE，并继续验证冻结提交是 HEAD 祖先
+  与 overlay 校验和。该历史条目保留原始失败事实。
 - **CI 未核验**：按用户此前明确约束“不看 CI 结果”，未查询任何 workflow run。
   本报告只记录本地真实执行结果。
 

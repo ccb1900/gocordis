@@ -8,7 +8,7 @@ ID、论文锚点、状态、测试名或文档理由必须与该测试内的 `M
 删除/改名测试、虚报覆盖、删行或改状态都会让该测试变红。
 注意：可执行覆盖矩阵不是数学证明；它固定的是论文条目与可执行断言之间的可证伪映射。
 
-状态计数：已覆盖 38 / 待补 0 / 接受差异 2（共 40 项）。
+状态计数：已覆盖 39 / 待补 0 / 接受差异 1（共 40 项）。
 
 **编号口径必须区分**：下表的 `Cxx` 是论文语义条目编号（`semantic-mapping.md` §2），
 不是平台收敛编号。平台收敛编号 `PC-01`–`PC-30` 来自
@@ -58,9 +58,9 @@ C# `PlatformConvergenceTests.cs` 中的方法后缀是**本地用例序号**，�
 | C29 | Def 72 p.49；Thm 73 pp.49–50 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:413 (`Thm73_Matrix`) | 已覆盖 | Thm73_Matrix |
 | C30 | Def 74–76 pp.51–52；Thm 80 pp.54–55 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:521 (`Thm80_Matrix`) | 已覆盖 | Thm80_Matrix |
 | C31 | Lemmas 59–62 pp.40–42 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:1218 (`C31_WritePartitionIsInvariantUnderRenamingAndVestigialRecords`) | 已覆盖 | C31_WritePartitionIsInvariantUnderRenamingAndVestigialRecords：名字双射后规范化结构（状态/声明边/绑定）相同；retire→重插后旧 fiber id 与旧绑定在 Snapshot 中不可见。 |
-| C32 | §4.4 Asynchrony pp.55–56 | tests/Gocordis.Conformance.Tests/PlatformConvergenceTests.cs:42 (`PC19_StaleActivationCannotAffectANewGeneration`) | 已覆盖 | PC19_StaleActivationCannotAffectANewGeneration |
+| C32 | §4.4 Asynchrony pp.55–56 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:1599 (`C32_InertialIteratorLandsCancellableStepBeforeItsInverse`) | 已覆盖 | C32_InertialIteratorLandsCancellableStepBeforeItsInverse：真实迭代器的在途步含可取消异步等待；外部 Dispose 后该步仍落地，Core 先登记其逆再按 LIFO 撤销（install:1→install:2→undo:2→undo:1）；陈旧完成隔离另见 `PC19_StaleActivationCannotAffectANewGeneration`。 |
 | C33 | §4.4 Failure p.56 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:1321 (`C33_FailureIsIsolatedOnTheFiberAndBlocksReentry`) | 已覆盖 | C33_FailureIsIsolatedOnTheFiberAndBlocksReentry：子 fiber Apply raise → Failed，失败迭代内的逆恰好一次，父保持 Active（不向父传播），后续操作不触发重入。 |
-| C34 | §4.4 Isolation/Configuration pp.56–57 | —（无 C# 测试） | 接受差异 | C# 无 Rehome API；realm 重赋值按 retire→新 fiber 实现，未逐条对齐 retire→deactivate→O-Remove→同名重插（semantic-mapping.md:C34）。 |
+| C34 | §4.4 Isolation/Configuration pp.56–57 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:1666 (`C34_RealmReassignmentIsARetireReinsertComposite`) | 已覆盖 | C34_RealmReassignmentIsARetireReinsertComposite：`Runtime.RehomeAsync` 经命令域 retire 旧 fiber → Deactivate（逆 LIFO）→ O-Remove（旧绑定从 Snapshot 消失、旧 realm consumer 回 Pending）→ 同名重插（新 Id / Generation / Revision），新 realm consumer 解析到新值；children-before-parent 与新身份断言另见 Core `RevisionSemanticsTests`。不再是接受差异。 |
 | C35 | §6.1 pp.70–71 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:1367 (`C35_ReversibleBoundaryCoversOwnedEffectsButNotExternalEmission`) | 已覆盖 | C35_ReversibleBoundaryCoversOwnedEffectsButNotExternalEmission：Context 拥有的 effect 修改被逆恢复，组件主动调用外部 emission（Context 之外的委托）在卸载后仍然存在；据此断言"按位置判定"的可逆边界。 |
 | C36 | §6.5 p.74 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:1404 (`C36_DependencyCyclesAreRejectedAtMountWithAnExplicitChain`) | 已覆盖 | C36_DependencyCyclesAreRejectedAtMountWithAnExplicitChain：二元环在装载边界抛 DependencyCycleException 且消息含 A->B 链，被拒组件不产生 fiber；自依赖同样被拒。 |
 | C37 | §6.3 p.72 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:1451 (`C37_DeclaredCapabilitiesAreArbitratedAndMetaCanRefinePolicy`) | 已覆盖 | C37_DeclaredCapabilitiesAreArbitratedAndMetaCanRefinePolicy：未声明的 get/set 被拒、已声明的 get 解析成功；Meta 声明 10 与覆盖 99 改变子 fiber 读到的策略值而父 Generation 不变。 |
@@ -71,9 +71,11 @@ C# `PlatformConvergenceTests.cs` 中的方法后缀是**本地用例序号**，�
 ## 未覆盖项的处理原则
 
 `待补` 不等于"论文语义已实现"：它表示该项没有可直接执行的单点断言。
-批次 C 补口后 `待补 = 0`；仅 C34/C38 为 `接受差异`，理由逐条写在表里，
-它们不是"待补"的复制粘贴：C34 缺少 Rehome API 导致无法逐条对齐 revision 规则序列，
-C38 是 .NET 依赖管理机制对 K×P 名义命名空间的显式替代。
+批次 C 补口后 `待补 = 0`；P1 语义修复后仅 C38 为 `接受差异`，理由逐条写在表里，
+它不是"待补"的复制粘贴：C38 是 .NET 依赖管理机制对 K×P 名义命名空间的显式替代。
+C34 已由 `Runtime.RehomeAsync` 的 retire→deactivate→O-Remove→同名重插复合覆盖，
+状态从"接受差异"改为"已覆盖"；C14/Thm43 的独立逆排列有可执行断言，
+不再表述为"只有严格 LIFO 无测试"。
 
 新补的 24 项断言中，C08/C14/C39 是**行为等价映射**而非字面复制论文内部对象：
 C08 用公开 FiberState/Context 读门控映射 notify_d 三态，不宣称能读到 notify_d 本身；

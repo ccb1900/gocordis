@@ -74,9 +74,15 @@ public sealed class ManagedBackend : IPluginBackend
         var plugin = _plugin ?? throw new InvalidOperationException("managed backend is not prepared");
         if (context is CoreBackendContext core)
         {
-            // The plugin component is applied through the real Core context so
-            // its Provide calls and effects stay under Runtime authority.
-            _innerCleanup = await plugin.Component.ApplyAsync(core.Core);
+            // A single-step inner component is applied through the real Core
+            // context so its Provide calls and effects stay under Runtime
+            // authority. An IIterativeComponent must NOT be collapsed here:
+            // ManagedPluginComponent yields its steps so the Core iterator
+            // decides Install/Commit/Divert for each one.
+            if (plugin.Component is not IIterativeComponent)
+            {
+                _innerCleanup = await plugin.Component.ApplyAsync(core.Core);
+            }
         }
 
         // The backend publishes a handle capability under the key owned by this
@@ -148,7 +154,7 @@ public sealed class ManagedBackend : IPluginBackend
 /// component's capabilities up front (Core enforces declarations at Apply) and
 /// delegates the whole lifecycle to <see cref="ManagedBackend"/>.
 /// </summary>
-public sealed class ManagedPluginComponent : Component, IDisposable, IAsyncDisposable
+public sealed class ManagedPluginComponent : Component, IIterativeComponent, IDisposable, IAsyncDisposable
 {
     private readonly ManagedPluginLoader _loader;
     private readonly string _id;
@@ -169,6 +175,24 @@ public sealed class ManagedPluginComponent : Component, IDisposable, IAsyncDispo
         _instanceKey = ManagedKeys.ForInstance(id);
     }
 
+    /// <summary>
+    /// Wrap an already staged plugin. Used by hosts that prepare a plugin
+    /// (and by tests that stage an inner IIterativeComponent) before handing it
+    /// to Core; lifecycle authority stays with Core either way.
+    /// </summary>
+    public ManagedPluginComponent(
+        ManagedPluginLoader loader,
+        LoadedManagedPlugin staged,
+        Key<string>? instanceKey = null)
+    {
+        _loader = loader;
+        _id = staged.Id;
+        _assemblyPath = string.Empty;
+        _typeName = string.Empty;
+        _plugin = staged;
+        _instanceKey = instanceKey ?? ManagedKeys.ForInstance(staged.Id);
+    }
+
     public override string Name => _plugin.Component.Name;
 
     public override IReadOnlyList<ICapabilityKey> Inject() => _plugin.Component.Inject();
@@ -176,9 +200,36 @@ public sealed class ManagedPluginComponent : Component, IDisposable, IAsyncDispo
     public override IReadOnlyList<ICapabilityKey> Provide() =>
         [.. _plugin.Component.Provide(), _instanceKey];
 
-    public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
+    public override ValueTask<Cleanup?> ApplyAsync(Context context) => RunProtocolAsync(context);
+
+    private ValueTask<Cleanup?> RunProtocolAsync(Context context) =>
         BackendProtocol.RunAsync(
             new ManagedBackend(_loader, _id, _assemblyPath, _typeName, _plugin, _instanceKey), context);
+
+    /// <summary>
+    /// Core calls this instead of ApplyAsync. When the real plugin is an
+    /// IIterativeComponent its steps are yielded one by one, so the Runtime's
+    /// iterator scheduler owns every Install/Commit/Divert decision. Only the
+    /// backend prepare/publish is a leading step; its Release stays the LAST
+    /// inverse in the LIFO stack (after all inner inverses).
+    /// </summary>
+    public async IAsyncEnumerable<EffectRegistration> IterateAsync(Context context)
+    {
+        async ValueTask PrepareAndActivate()
+        {
+            await RunProtocolAsync(context);
+        }
+
+        yield return EffectRegistration.From(PrepareAndActivate, () => ValueTask.CompletedTask);
+
+        if (_plugin.Component is IIterativeComponent inner)
+        {
+            await foreach (var step in inner.IterateAsync(context))
+            {
+                yield return step;
+            }
+        }
+    }
 
     /// <summary>
     /// Fenced release for a component that was staged by a declaration batch but

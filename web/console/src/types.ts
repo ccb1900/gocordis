@@ -37,6 +37,25 @@ export interface UIPanel {
   views?: ViewBlock[];
 }
 
+/** One entry of GET /api/ui/client-modules. The URL is a same-origin route
+ * into the installing plugin's version directory; its ?v= cache key includes
+ * the installed content hash, so an upgrade re-imports a fresh ESM identity. */
+export interface UIClientModuleRef {
+  name: string;
+  url: string;
+  packageId?: string | null;
+  version?: string | null;
+  contentHash?: string | null;
+}
+
+/** Combined read model from GET /api/ui/manifest. */
+export interface UICompositionManifest {
+  pages: UIPage[];
+  panels: UIPanel[];
+  modules: UIClientModuleRef[];
+  revision: number;
+}
+
 export interface UIObservation {
   type: string;
   sourceId?: string;

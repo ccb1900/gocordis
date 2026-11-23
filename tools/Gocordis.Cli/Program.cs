@@ -4,7 +4,9 @@ using System.Text.Json.Serialization;
 using Gocordis.Console.WebUi;
 using Gocordis.Core;
 using Gocordis.Packaging;
+using Gocordis.Platform;
 using Gocordis.Plugins;
+using Gocordis.UI.Hosts;
 using NuGet.Versioning;
 
 namespace Gocordis.Cli;
@@ -683,7 +685,7 @@ public static class Program
         }
 
         var tempStore = Path.Combine(Path.GetTempPath(), $"gocordis-sandbox-{Guid.NewGuid():N}");
-        Runtime? runtime = null;
+        Gocordis.Core.Runtime? runtime = null;
         PluginRegistry? registry = null;
         try
         {
@@ -695,10 +697,10 @@ public static class Program
             diagnostics.Add(Info("TEMP_STORE_LOADED",
                 $"package loaded into temporary store with {installed.Changes.Count} change(s)"));
 
-            runtime = new Runtime();
+            runtime = new Gocordis.Core.Runtime();
             registry = new PluginRegistry(runtime);
             var type = content.Manifest.Type;
-            registry.RegisterFactory(type, _ => new ProductPluginComponent(type));
+            registry.RegisterFactory(type, _ => new SandboxDeclarationComponent(type));
             var application = new ApplicationManifest(
                 $"sandbox-{content.Manifest.Id}",
                 "1.0.0",
@@ -941,58 +943,45 @@ public static class Program
             return Fail("usage: app run <manifest> [--store] [--host-version] [--validate-only] [--address]");
         }
 
-        var storePath = StorePath(args);
-        var hostVersion = HostVersion(args);
-        var address = Option(args, "--address") ?? "http://127.0.0.1:0";
         var validateOnly = args.Contains("--validate-only", StringComparer.Ordinal);
-        var (app, resolved) = await LoadAndResolveAsync(path, storePath, hostVersion);
+        // The CLI is a thin front end: one Runtime, one Registry and the backend
+        // factory all live in Platform, exactly as in a generated application.
+        var options = new PlatformHostOptions(
+            path,
+            StorePath(args),
+            Option(args, "--address") ?? "http://127.0.0.1:0",
+            AllowRemote: false,
+            Host: UiHostKind.Web,
+            HostVersion: HostVersion(args),
+            ValidateOnly: validateOnly);
 
-        var runtime = new Runtime();
-        var host = new ConsoleHost(runtime);
-        var registry = new PluginRegistry(runtime);
-        WebUiServer? ui = null;
-        var uiStarted = false;
-        try
+        return await PlatformRunner.RunAsync(options, new PlatformRunHooks
         {
-            // Packages stay platform-neutral: the product host declares a generic
-            // adapter per resolved type instead of executing arbitrary package code.
-            // Declaration, resolution and activation still run through Core.
-            foreach (var type in resolved.Select(item => item.Type).Distinct(StringComparer.Ordinal))
+            WriteStartupBanner = false,
+            WaitForShutdown = !validateOnly,
+            FormatError = ex => JsonSerializer.Serialize(new { error = ex.Message }, Json),
+            AfterStart = app =>
             {
-                registry.RegisterFactory(type, _ => new ProductPluginComponent(type));
-            }
-
-            await new ApplicationLoader(new PluginStore(storePath, hostVersion), registry).ApplyAsync(app);
-            WriteResolution(app, resolved);
-            if (validateOnly)
-            {
-                return 0;
-            }
-
-            ui = new WebUiServer(host, address, allowRemote: false, registry: registry);
-            await ui.StartAsync();
-            uiStarted = true;
-            System.Console.WriteLine($"Gocordis app '{app.Id}': {ui.Address}");
-            System.Console.WriteLine("Press Ctrl+C to stop.");
-            await WaitForShutdownAsync();
-            return 0;
-        }
-        finally
-        {
-            // LIFO teardown: transport, then declarations/fibers, then the runtime.
-            if (ui is not null)
-            {
-                if (uiStarted)
+                var manifest = app.Manifest!;
+                Write(new
                 {
-                    await ui.StopAsync();
+                    manifest.Id,
+                    manifest.Version,
+                    manifest.HostVersion,
+                    resolved = app.ResolvedPlugins.Select(item => new
+                    {
+                        item.Id,
+                        item.Version,
+                        item.Enabled,
+                    }),
+                });
+                if (!validateOnly)
+                {
+                    System.Console.WriteLine($"Gocordis app '{manifest.Id}': {app.Address}");
+                    System.Console.WriteLine("Press Ctrl+C to stop.");
                 }
-
-                await ui.DisposeAsync();
-            }
-
-            await registry.DisposeAsync();
-            await runtime.DisposeAsync();
-        }
+            },
+        });
     }
 
     private static async Task<(ApplicationManifest App, IReadOnlyList<ResolvedPlugin> Resolved)> LoadAndResolveAsync(
@@ -1054,18 +1043,18 @@ public static class Program
     private sealed record ResolvedPlugin(string Id, string Version, string Type, bool Enabled);
 
     /// <summary>
-    /// Declaration-only adapter used by the product CLI. Package payloads are not
-    /// executed here (backend runtimes own that); activation still goes through
-    /// Core so manifest errors, fibers and enable/disable are real.
+    /// Declaration-only adapter used by `plugin sandbox` (an explicit no-host-
+    /// factory preflight). `app run` no longer uses it: product assembly belongs
+    /// to PlatformApplication, which dispatches real backends.
     /// </summary>
-    private sealed class ProductPluginComponent : Component
+    private sealed class SandboxDeclarationComponent : Component
     {
-        private readonly Key<string> _key = new($"product-plugin-{Guid.NewGuid():N}");
+        private readonly Key<string> _key = new($"sandbox-plugin-{Guid.NewGuid():N}");
         private readonly string _type;
 
-        public ProductPluginComponent(string type) => _type = type;
+        public SandboxDeclarationComponent(string type) => _type = type;
 
-        public override string Name => $"product-plugin:{_type}";
+        public override string Name => $"sandbox-plugin:{_type}";
 
         public override IReadOnlyList<ICapabilityKey> Provide() => [_key];
 

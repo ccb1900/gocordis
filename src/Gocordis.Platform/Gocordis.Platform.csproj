@@ -10,6 +10,8 @@
     <ProjectReference Include="../Gocordis.Plugins/Gocordis.Plugins.csproj" />
     <ProjectReference Include="../Gocordis.Packaging/Gocordis.Packaging.csproj" />
     <ProjectReference Include="../Gocordis.Runtime.Managed/Gocordis.Runtime.Managed.csproj" />
+    <ProjectReference Include="../Gocordis.Runtime.Process/Gocordis.Runtime.Process.csproj" />
+    <ProjectReference Include="../Gocordis.Runtime.Wasm/Gocordis.Runtime.Wasm.csproj" />
     <ProjectReference Include="../Gocordis.Console.WebUi/Gocordis.Console.WebUi.csproj" />
     <ProjectReference Include="../Gocordis.UI.Hosts/Gocordis.UI.Hosts.csproj" />
   </ItemGroup>

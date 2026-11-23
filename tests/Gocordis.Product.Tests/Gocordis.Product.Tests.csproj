@@ -12,5 +12,6 @@
     <ProjectReference Include="../../src/Gocordis.Platform/Gocordis.Platform.csproj" />
     <ProjectReference Include="../../samples/HttpdHost/HttpdHost.csproj" />
     <ProjectReference Include="../../samples/BackfillApp/BackfillApp.csproj" />
+    <ProjectReference Include="../../samples/KoishiCase/KoishiCase.csproj" />
   </ItemGroup>
 </Project>

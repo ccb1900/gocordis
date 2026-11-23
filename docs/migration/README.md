@@ -39,6 +39,7 @@
 | [`review-round-8.md`](review-round-8.md) | 冻结前修正 | Round 8 Upgrade 依赖判断、清理重试、账本 SHA 与基线漂移 | 红测 + 本地验证 |
 | [`product-execution-chain.md`](product-execution-chain.md) | 产品主链路 | 包 → Managed 后端 → 真实 Component → Core Fiber 的执行闭环 | 与 `ManagedPluginProductE2ETests` 对齐 |
 | [`review-round-9.md`](review-round-9.md) | 产品闭环 | Round 9 真实插件执行、CLI 脚手架、读取安全与共享依赖计划 | 红测 + 本地验证 |
+| [`pc-gate-disposition.md`](pc-gate-disposition.md) | Go 收敛 | PC01–PC30 逐项去向，消除“24 项未移植”无状态描述 | 与 C# 场景测试对齐 |
 | [`../guide/csharp-developer-manual.md`](../guide/csharp-developer-manual.md) | 批次 C | C# 开发者手册：十二铁律 → C# API 与反模式 | 与 `AGENTS.md` 十二铁律逐条锚定 |
 | [`migration-coverage.md`](migration-coverage.md) | 全周期 | 每个 Go 模块迁移到哪个 C# 项目；用什么机制替代；什么不迁移 | 清单逐项推进；状态只能由验收证据推进 |
 | [`execution-log.md`](execution-log.md) | 全周期 | 每一步做了什么、为什么、证据是什么 | 持续追加，不回改历史条目 |

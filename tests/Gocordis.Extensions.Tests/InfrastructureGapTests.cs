@@ -78,6 +78,47 @@ public sealed class InfrastructureGapTests
     }
 
     [Fact]
+    public async Task FsAtomicAndExclusiveWriteAndCopyOptions()
+    {
+        var temp = Path.Combine(Path.GetTempPath(), "gocordis-fs-options-" + Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(temp, "root");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await using var fs = new FileSystemService();
+            fs.Mount("data", root);
+
+            await fs.WriteAsync("data/a.txt", "first"u8.ToArray());
+            await fs.WriteAsync("data/a.txt", "second"u8.ToArray(),
+                new FileWriteOptions(Atomic: true));
+            Assert.Equal("second", await fs.ReadAllTextAsync("data/a.txt"));
+
+            await Assert.ThrowsAsync<IOException>(() => fs.WriteAsync("data/a.txt", "third"u8.ToArray(),
+                new FileWriteOptions(Exclusive: true)));
+            await Assert.ThrowsAsync<IOException>(() => fs.WriteAsync("data/a.txt", "third"u8.ToArray(),
+                new FileWriteOptions(Exclusive: true, Atomic: true)));
+            Assert.Equal("second", await fs.ReadAllTextAsync("data/a.txt"));
+
+            await fs.CopyAsync("data/a.txt", "data/b.txt",
+                new FileCopyOptions(Exclusive: true, Atomic: true));
+            Assert.Equal("second", await fs.ReadAllTextAsync("data/b.txt"));
+            await Assert.ThrowsAsync<IOException>(() => fs.CopyAsync("data/a.txt", "data/b.txt",
+                new FileCopyOptions(Exclusive: true)));
+
+            // A failed atomic write must not strand a temp file in the mount.
+            Directory.CreateDirectory(Path.Combine(root, "blocked"));
+            await Assert.ThrowsAnyAsync<Exception>(() => fs.WriteAsync("data/blocked", "x"u8.ToArray(),
+                new FileWriteOptions(Atomic: true)));
+            Assert.DoesNotContain(Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories),
+                path => Path.GetFileName(path).Contains(".gocordis-tmp-", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(temp, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task EnvFourFilePriorityAndRevert()
     {
         var directory = Path.Combine(Path.GetTempPath(), "gocordis-env-gap-" + Guid.NewGuid().ToString("N"));

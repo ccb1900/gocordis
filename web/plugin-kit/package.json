@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Build kit for gocordis console plugins: self-bundle TSX/JSX + npm libraries into one ui.js, sharing the console's React/antd instances.",
   "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "bin": {
     "gocordis-plugin-build": "bin/gocordis-plugin-build.mjs"
   },

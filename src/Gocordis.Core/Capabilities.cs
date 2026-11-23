@@ -59,6 +59,9 @@ public enum EffectState
     Committed,
     Undoing,
     Undone,
+
+    /// <summary>The inverse ran but failed: the effect is NOT cleanly undone.</summary>
+    Failed,
 }
 
 /// <summary>Inverse of an installed effect. Inverses run in strict LIFO order.</summary>
@@ -108,3 +111,22 @@ public sealed class DivertedException : Exception
 {
     public DivertedException() : base("activation target changed") { }
 }
+
+/// <summary>
+/// An unwind ran every inverse in LIFO order, but at least one inverse failed.
+/// This is never reported as a clean Undo: it is a terminal outcome on the fiber
+/// and an observable cleanup-failure record in the snapshot.
+/// </summary>
+public sealed class CleanupIncompleteException : Exception
+{
+    public CleanupIncompleteException(IEnumerable<Exception> failures)
+        : base($"cleanup incomplete: {failures.Count()} inverse(s) failed")
+    {
+        InnerExceptions = [.. failures];
+    }
+
+    public IReadOnlyList<Exception> InnerExceptions { get; }
+}
+
+/// <summary>Snapshot-level diagnostic for a failed inverse, retained after Gone.</summary>
+public sealed record CleanupFailureRecord(Guid FiberId, string FiberName, string Message);

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO;
 using System.Text.Json.Nodes;
 using Gocordis.Console.WebUi;
@@ -5,6 +6,8 @@ using Gocordis.Core;
 using Gocordis.Extensions;
 using Gocordis.Packaging;
 using Gocordis.Runtime.Managed;
+using Gocordis.Runtime.Process;
+using Gocordis.Runtime.Wasm;
 using Gocordis.Plugins;
 using Gocordis.UI.Hosts;
 using NuGet.Versioning;
@@ -21,7 +24,8 @@ public sealed class PlatformHostOptions
         bool AllowRemote = false,
         UiHostKind Host = UiHostKind.Web,
         string HostVersion = "1.0.0",
-        IReadOnlyList<string>? AllowedHosts = null)
+        IReadOnlyList<string>? AllowedHosts = null,
+        bool ValidateOnly = false)
     {
         if (string.IsNullOrWhiteSpace(ManifestPath))
         {
@@ -41,6 +45,7 @@ public sealed class PlatformHostOptions
         this.Host = Host;
         this.HostVersion = HostVersion;
         this.AllowedHosts = AllowedHosts;
+        this.ValidateOnly = ValidateOnly;
     }
 
     public string ManifestPath { get; }
@@ -50,6 +55,41 @@ public sealed class PlatformHostOptions
     public UiHostKind Host { get; }
     public string HostVersion { get; }
     public IReadOnlyList<string>? AllowedHosts { get; }
+
+    /// <summary>
+    /// Declaration/activation preflight: declarations are fully reconciled and
+    /// every enabled component is activated, but no transport is opened. The
+    /// caller is expected to stop the application immediately after StartAsync.
+    /// </summary>
+    public bool ValidateOnly { get; }
+}
+
+/// <summary>One resolved declaration as seen by the product composition root.</summary>
+public sealed record PlatformResolvedPlugin(string Id, string Version, bool Enabled);
+
+/// <summary>
+/// Stable capability keys for backend-provided values. Key identity is
+/// reference identity, so consumers must resolve keys through this contract
+/// rather than constructing a key with the same name.
+/// </summary>
+public static class PlatformBackendKeys
+{
+    private static readonly ConcurrentDictionary<string, Key<string>> ProcessEchoKeys = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, Key<string>> ProcessErrorKeys = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, Key<ProcessDiagnostics>> ProcessDiagnosticKeys = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, Key<int>> WasmValueKeys = new(StringComparer.Ordinal);
+
+    public static Key<string> ProcessEcho(string pluginId) =>
+        ProcessEchoKeys.GetOrAdd(pluginId, id => new Key<string>($"{id}.process.echo"));
+
+    public static Key<string> ProcessError(string pluginId) =>
+        ProcessErrorKeys.GetOrAdd(pluginId, id => new Key<string>($"{id}.process.error"));
+
+    public static Key<ProcessDiagnostics> ProcessDiagnostics(string pluginId) =>
+        ProcessDiagnosticKeys.GetOrAdd(pluginId, id => new Key<ProcessDiagnostics>($"{id}.process.diagnostics"));
+
+    public static Key<int> WasmValue(string pluginId) =>
+        WasmValueKeys.GetOrAdd(pluginId, id => new Key<int>($"{id}.wasm.value"));
 }
 
 /// <summary>
@@ -63,6 +103,7 @@ public class PlatformApplication : IAsyncDisposable
     private readonly DiagnosticsService _diagnostics;
     private readonly ServerRouteGuard? _routeGuard;
     private ApplicationManifest? _manifest;
+    private readonly List<PlatformResolvedPlugin> _resolved = [];
     private bool _started;
     private bool _stopped;
 
@@ -95,6 +136,12 @@ public class PlatformApplication : IAsyncDisposable
     public WebUiServer? WebUi { get; private set; }
     public Uri? Address => WebUi?.Address is { } address ? new Uri(address) : null;
 
+    /// <summary>The application declaration loaded by StartAsync (read-only).</summary>
+    public ApplicationManifest? Manifest => _manifest;
+
+    /// <summary>Resolved declarations captured by the one product startup path.</summary>
+    public IReadOnlyList<PlatformResolvedPlugin> ResolvedPlugins => _resolved;
+
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (_started)
@@ -112,6 +159,7 @@ public class PlatformApplication : IAsyncDisposable
             }
 
             _manifest = manifest;
+            _resolved.Clear();
 
             // Framework keys are capabilities like any other: one Core fiber
             // provides them, and the registry treats them as host-supplied when
@@ -132,6 +180,7 @@ public class PlatformApplication : IAsyncDisposable
                     continue; // ApplicationLoader reports the missing dependency.
                 }
 
+                _resolved.Add(new PlatformResolvedPlugin(plugin.Id, installed.Version, plugin.Enabled));
                 try
                 {
                     Registry.RegisterComponentFactory(installed.Manifest.Type, componentFactory);
@@ -152,7 +201,9 @@ public class PlatformApplication : IAsyncDisposable
             Control = control;
 
             await control.ApplyAllAsync(cancellationToken);
-            if (_options.Host == UiHostKind.Web)
+            // Validate-only stops after the declaration set is genuinely active:
+            // no transport is opened, so a preflight cannot leave a listener behind.
+            if (_options.Host == UiHostKind.Web && !_options.ValidateOnly)
             {
                 WebUi = new WebUiServer(
                     Console,
@@ -185,37 +236,32 @@ public class PlatformApplication : IAsyncDisposable
     }
 
     /// <summary>
-    /// Selects a backend from the resolved package declaration. Managed plugins
-    /// get a real collectible ALC; legacy declarations keep the placeholder
-    /// adapter, so older packages remain loadable without executing code.
+    /// The one product component factory. Backend selection comes from the
+    /// resolved package declaration; every branch returns an ordinary Core
+    /// component driven by the same PluginRegistry/effect lifecycle. No second
+    /// registry, no separate lifetime authority.
     /// </summary>
-    private Component CreateComponent(PluginManifest manifest)
+    public Component CreateComponent(PluginManifest manifest)
     {
+        ArgumentNullException.ThrowIfNull(manifest);
         if (!manifest.Enabled)
         {
             // Prepare constructs components even for disabled declarations.
             // Returning a zero-capability component keeps disabled plugins from
-            // opening an AssemblyLoadContext until they are actually enabled.
+            // opening an AssemblyLoadContext or spawning a child until enabled.
             return new DisabledPluginComponent();
         }
 
-        if (string.Equals(manifest.Backend, "managed", StringComparison.OrdinalIgnoreCase))
+        var backend = string.IsNullOrWhiteSpace(manifest.Backend) ? "builtin" : manifest.Backend!;
+        if (string.Equals(backend, "managed", StringComparison.OrdinalIgnoreCase))
         {
-            if (string.IsNullOrWhiteSpace(manifest.Source) ||
-                string.IsNullOrWhiteSpace(manifest.EntryAssembly) ||
-                string.IsNullOrWhiteSpace(manifest.EntryType))
+            if (string.IsNullOrWhiteSpace(manifest.EntryType))
             {
                 throw new InvalidOperationException(
-                    $"managed plugin '{manifest.Id}' is missing source or entry metadata");
+                    $"managed plugin '{manifest.Id}' is missing entry type");
             }
 
-            var assemblyPath = Path.Combine(manifest.Source, manifest.EntryAssembly);
-            if (!File.Exists(assemblyPath))
-            {
-                throw new FileNotFoundException(
-                    $"managed entry assembly for '{manifest.Id}' not found: '{assemblyPath}'");
-            }
-
+            var assemblyPath = ResolvePayload(manifest);
             // Prepare stages a new component before Commit retires the old
             // fiber, so the loader key must include the version: otherwise an
             // upgrade would fail with "already loaded" on the same id.
@@ -223,7 +269,68 @@ public class PlatformApplication : IAsyncDisposable
             return Managed.CreateComponent(loaderKey, assemblyPath, manifest.EntryType);
         }
 
-        return new ProductPluginComponent(manifest.Type, Console.Ui);
+        if (string.Equals(backend, "process", StringComparison.OrdinalIgnoreCase))
+        {
+            var executable = ResolvePayload(manifest);
+            return new ProcessPluginComponent(
+                executable,
+                PlatformBackendKeys.ProcessEcho(manifest.Id),
+                PlatformBackendKeys.ProcessDiagnostics(manifest.Id),
+                PlatformBackendKeys.ProcessError(manifest.Id));
+        }
+
+        if (string.Equals(backend, "wasm", StringComparison.OrdinalIgnoreCase))
+        {
+            var modulePath = ResolvePayload(manifest);
+            var key = PlatformBackendKeys.WasmValue(manifest.Id);
+            if (string.Equals(Path.GetExtension(modulePath), ".wat", StringComparison.OrdinalIgnoreCase))
+            {
+                // WAT is a real WASM module compiled by Wasmtime at activation.
+                return new WasmComponent(File.ReadAllText(modulePath), key);
+            }
+
+            return new WasmComponent(File.ReadAllBytes(modulePath), key, name: manifest.Id);
+        }
+
+        if (string.Equals(backend, "builtin", StringComparison.OrdinalIgnoreCase))
+        {
+            // Legacy declaration-only packages remain loadable without executing
+            // package code: the same placeholder adapter as before P2.
+            return new ProductPluginComponent(manifest.Type, Console.Ui);
+        }
+
+        throw new InvalidOperationException(
+            $"unsupported backend '{backend}' declared by plugin '{manifest.Id}'");
+    }
+
+    private static string ResolvePayload(PluginManifest manifest)
+    {
+        if (string.IsNullOrWhiteSpace(manifest.Source) ||
+            string.IsNullOrWhiteSpace(manifest.EntryAssembly))
+        {
+            throw new InvalidOperationException(
+                $"{manifest.Backend} plugin '{manifest.Id}' is missing source or entry metadata");
+        }
+
+        var entry = manifest.EntryAssembly;
+        if (Path.IsPathRooted(entry) ||
+            entry.Split('/', '\\').Any(segment => segment is "." or ".." or ""))
+        {
+            throw new InvalidOperationException(
+                $"unsafe entry assembly '{entry}' for plugin '{manifest.Id}'");
+        }
+
+        var root = Path.GetFullPath(manifest.Source);
+        var payload = Path.GetFullPath(Path.Combine(root, entry));
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (!payload.StartsWith(root + Path.DirectorySeparatorChar, comparison) ||
+            !File.Exists(payload))
+        {
+            throw new FileNotFoundException(
+                $"entry assembly for '{manifest.Id}' not found in package: '{entry}'");
+        }
+
+        return payload;
     }
 
     private sealed class DisabledPluginComponent : Component

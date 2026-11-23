@@ -17,7 +17,7 @@ public sealed class HttpdProbeTests
         Assert.False(string.IsNullOrWhiteSpace(address));
         Assert.True(new Uri(address).Port > 0, $"ephemeral port was not resolved: {address}");
 
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        using var client = new HttpClient(new HttpClientHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(5) };
         Assert.Equal("hello", await host.ProbeAsync(client));
 
         // The wire contract, not just the helper's return value: JSON with one message field.

@@ -335,7 +335,13 @@ public sealed class CoreSemanticsTests
         // One consumer leaves; the index must drop it without touching others.
         await runtime.DisposeAsync(consumers[0]);
         await runtime.DisposeAsync(providerFiber);
-        Assert.All(consumers.Skip(1), fiber => Assert.Equal(FiberState.Pending, fiber.State));
+        // The decision loop settles the remaining consumers asynchronously:
+        // wait for the withdrawal transition instead of sampling one snapshot.
+        foreach (var consumer in consumers.Skip(1))
+        {
+            await WaitForStateAsync(runtime, consumer.Id, FiberState.Pending);
+        }
+
         Assert.Null(consumers[1].Failure);
 
         // A fresh provider re-activates only the remaining indexed consumers.
@@ -344,8 +350,11 @@ public sealed class CoreSemanticsTests
             context.Provide(key, 9);
             return null;
         }, provide: [key]));
-        Assert.Equal(FiberState.Active, replacement.State);
-        Assert.All(consumers.Skip(1), fiber => Assert.Equal(FiberState.Active, fiber.State));
+        await WaitForStateAsync(runtime, replacement.Id, FiberState.Active);
+        foreach (var consumer in consumers.Skip(1))
+        {
+            await WaitForStateAsync(runtime, consumer.Id, FiberState.Active);
+        }
     }
 
     [Fact]
@@ -1062,5 +1071,22 @@ public sealed class CoreSemanticsTests
         await Task.WhenAll(fibers.Select(fiber => runtime.DisposeAsync(fiber)));
         Assert.All(fibers, fiber => Assert.Equal(FiberState.Gone, fiber.State));
         Assert.Empty(runtime.Snapshot().Fibers);
+    }
+
+    private static async Task WaitForStateAsync(Runtime runtime, Guid fiberId, FiberState expected)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            var observed = runtime.Snapshot().Fibers.FirstOrDefault(fiber => fiber.Id == fiberId);
+            if (observed?.State == expected)
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.Fail($"fiber {fiberId} did not reach {expected} within 5s");
     }
 }

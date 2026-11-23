@@ -272,7 +272,7 @@ public sealed class ManagedPluginProductE2ETests
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync(timeout.Token);
-        await Task.WhenAll(stdout, stderr).WaitAsync(timeout.Token);
+        await Task.WhenAll(stdout, stderr).WaitAsync(TimeSpan.FromSeconds(30));
         var buildOut = await stdout;
         var buildError = await stderr;
         Assert.True(process.ExitCode == 0, $"dotnet build failed: {buildOut}\n{buildError}");

@@ -330,8 +330,10 @@ public sealed class WebUiPolicyTests
         return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
     }
 
+    // Loopback tests must not inherit an ambient proxy: a spoofed Host header
+    // would otherwise be routed to the proxy and never reach Kestrel.
     private static HttpClient NewClient(WebUiServer server) =>
-        new() { BaseAddress = new Uri(server.Address!) };
+        new(new HttpClientHandler { UseProxy = false }) { BaseAddress = new Uri(server.Address!) };
 
     private static async Task<HttpResponseMessage> PostJsonAsync(HttpClient client, string path, JsonNode body) =>
         await client.PostAsync(path, new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"));

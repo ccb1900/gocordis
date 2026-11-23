@@ -1,4 +1,6 @@
-# Existence / Authority Audit (maintained 2026-11-24, dotnet @ 56214b7)
+# Existence / Authority Audit (maintained 2026-11-24)
+
+Current per-capability classification; see `docs/current-status.md` for the live HEAD.
 
 This is an audit of **whether each component should exist**, not a feature review.
 Method: read the current source and the declared project graph, trace actual
@@ -102,9 +104,10 @@ a no-declaration package fails at host start.
   `PluginTrustPolicy.FromPemFiles`; Web Console installs inherit the host policy.
   `PlatformHostOptions.Trust` is now actually assigned (the previous parameter
   shadowing left it unset).
-- `--allow-remote` opens a listener only. Remote writes remain denied unless an
-  embedding host supplies `PlatformHostOptions.AccessPolicy`; there is no CLI
-  authentication shortcut. This is documented in `docs/guide/user-manual.md`.
+- `--allow-remote` only opens the listener. Without a host-supplied
+  `PlatformHostOptions.AccessPolicy`, **every guarded remote API scope is denied**
+  (query stays open); there is no CLI authentication shortcut. See
+  `docs/guide/user-manual.md`.
 - `plugin preflight` replaces `plugin sandbox` (alias retained) because it is a
   declaration check, not a security boundary.
 

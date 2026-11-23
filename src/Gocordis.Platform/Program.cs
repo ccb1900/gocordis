@@ -13,6 +13,9 @@ public sealed class PlatformRunHooks
     /// <summary>Called after StartAsync, before any wait or shutdown.</summary>
     public Action<PlatformApplication>? AfterStart { get; init; }
 
+    /// <summary>Async counterpart for callers that must await control-plane work.</summary>
+    public Func<PlatformApplication, Task>? AfterStartAsync { get; init; }
+
     /// <summary>Overrides the default plain-text stderr rendering of a failure.</summary>
     public Func<Exception, string>? FormatError { get; init; }
 
@@ -35,12 +38,14 @@ public static class PlatformRunner
         Web is the only runnable UI host. WinForms/Avalonia are render-plan
         profiles for future native hosts; they are not CLI host options.
         --trust/--public-key configure the same installer policy used by Console uploads.
-        --allow-remote only opens the listener; remote writes still require a
-        host-supplied ConsoleAccessPolicy (programmatic composition root).
+        --allow-remote only opens the listener; without a host-supplied
+        ConsoleAccessPolicy every remote API scope is denied except query.
         --validate-only reconciles and activates every declaration, then exits without opening a transport.
         """;
 
-    public static async Task<int> RunAsync(string[] args)
+    public static Task<int> RunAsync(string[] args) => RunAsync(args, null);
+
+    public static async Task<int> RunAsync(string[] args, PlatformRunHooks? hooks)
     {
         if (args.Contains("--help") || args.Contains("-h"))
         {
@@ -50,7 +55,7 @@ public static class PlatformRunner
 
         try
         {
-            return await RunAsync(ParseOptions(args), null);
+            return await RunAsync(ParseOptions(args), hooks);
         }
         catch (Exception ex)
         {
@@ -66,6 +71,10 @@ public static class PlatformRunner
             await using var app = new PlatformApplication(options);
             await app.StartAsync();
             hooks?.AfterStart?.Invoke(app);
+            if (hooks?.AfterStartAsync is { } afterStartAsync)
+            {
+                await afterStartAsync(app);
+            }
 
             if (options.ValidateOnly || hooks?.WaitForShutdown == false)
             {

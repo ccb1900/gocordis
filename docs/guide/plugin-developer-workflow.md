@@ -59,5 +59,6 @@ contracts assembly; cross-backend capabilities use the host catalog.
   `PlatformRunner` all parse `--trust development|trusted-only` and `--public-key`
   through `PluginTrustPolicy.FromPemFiles`; Console installs inherit the host
   policy. `PlatformHostOptions.Trust` is the programmatic seam. Local development
-  mode is the default; no remote marketplace. `--allow-remote` opens the listener
-  but remote writes still need a host-supplied `ConsoleAccessPolicy`.
+  mode is the default; no remote marketplace. `--allow-remote` only opens the
+  listener: without a host-supplied `ConsoleAccessPolicy`, every remote API
+  scope is denied (query stays open).

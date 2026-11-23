@@ -138,7 +138,7 @@ public sealed class PackageConfigSchemaTests
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync(timeout.Token);
-        await Task.WhenAll(stdout, stderr).WaitAsync(timeout.Token);
+        await Task.WhenAll(stdout, stderr).WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(process.ExitCode == 0, $"dotnet build failed: {await stdout}\n{await stderr}");
     }
 

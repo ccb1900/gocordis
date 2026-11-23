@@ -22,11 +22,13 @@
 
 - 每项语义必须能锚定到论文的 Definition / Theorem / Section 编号;
 - 论文未规定而实现所必需的操作规则,必须在 ADR 中显式声明为 operational refinement;
-- 对照表与已知偏差见 [`ROADMAP.md`](./ROADMAP.md) §1。
+- 当前状态与验证见 [`current-status.md`](./current-status.md)；对照表与已知偏差见
+  [`ACCEPTED-DIFFERENCES.md`](./ACCEPTED-DIFFERENCES.md) 与
+  [`migration/paper-coverage-matrix.md`](./migration/paper-coverage-matrix.md)（`ROADMAP.md` 是 Go 基线归档）。
 
 ## 已归档文档
 
 `docs/` 下 2026-09-08 之前的全部规格/计划/评审文档(38 份,含 `plan/`、`review/`、`specs/`
 子目录)均已标注 **ARCHIVED**,仅作历史参考,不再被引用。其内容(尤其定理编号 T59/T61/
 T63/T66/T73、isolation/intercept 的映射表述)已被论文原文复核修正,以
-[`ROADMAP.md`](./ROADMAP.md) 为准。
+ 当前口径以 [`current-status.md`](./current-status.md) 与 `docs/adr/` 为准。

@@ -12,6 +12,12 @@ using Xunit;
 
 namespace Gocordis.Product.Tests;
 
+// The host-runner tests capture process-global stderr; never interleave them
+// with other test collections that might do the same.
+[CollectionDefinition("PlatformConsole", DisableParallelization = true)]
+public sealed class PlatformConsoleCollection;
+
+[Collection("PlatformConsole")]
 public sealed class PlatformApplicationTests
 {
     [Theory]
@@ -73,8 +79,10 @@ public sealed class PlatformApplicationTests
             AllowRemote: true, HostVersion: "1.5.0")))
         {
             await locked.StartAsync();
-            using var client = new HttpClient { BaseAddress = locked.Address };
+            using var client = new HttpClient(new HttpClientHandler { UseProxy = false }) { BaseAddress = locked.Address };
             Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/plugins")).StatusCode);
+            Assert.Equal(HttpStatusCode.OK,
+                (await client.GetAsync("/api/query/devtools/diagnostics")).StatusCode);
             var denied = await client.PostAsJsonAsync("/api/plugins/control",
                 new JsonObject { ["pluginId"] = "absent", ["enable"] = false });
             Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
@@ -86,7 +94,7 @@ public sealed class PlatformApplicationTests
             AccessPolicy: _ => true)))
         {
             await permitted.StartAsync();
-            using var client = new HttpClient { BaseAddress = permitted.Address };
+            using var client = new HttpClient(new HttpClientHandler { UseProxy = false }) { BaseAddress = permitted.Address };
             Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/plugins")).StatusCode);
             var accepted = await client.PostAsJsonAsync("/api/plugins/control",
                 new JsonObject { ["pluginId"] = "absent", ["enable"] = false });
@@ -117,6 +125,54 @@ public sealed class PlatformApplicationTests
         Assert.False(rejected.Accepted);
         Assert.Contains("signature", rejected.Error, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(await app.Store.ListAsync());
+    }
+
+    [Fact]
+    public async Task PlatformRunnerTrustFlagsAreEnforcedByTheRunningControlPlane()
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var store = temp.Path("runner-trust-store");
+        var source = temp.Path("trust-source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "entry.txt"), "payload");
+        var unsigned = temp.File("runner-unsigned.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source, new PluginPackageManifest(
+            "runner-trust-demo", "1.0.0", "runner-trust-demo", "[1.0,)"), unsigned);
+
+        var (privateKey, publicKey) = PluginPackageSigner.CreateKeyPair();
+        var pem = temp.File("runner-trust.pem");
+        await File.WriteAllTextAsync(pem, publicKey);
+        var signed = await PluginPackageSigner.SignAsync(unsigned, privateKey);
+
+        PlatformApplication? started = null;
+        var code = await PlatformRunner.RunAsync(
+        [
+            "--manifest", manifestPath, "--store", store, "--host-version", "1.5.0",
+            "--validate-only", "--trust", "trusted-only", "--public-key", pem,
+        ], new PlatformRunHooks
+        {
+            WriteStartupBanner = false,
+            AfterStartAsync = async app =>
+            {
+                started = app;
+                await using var stream = File.OpenRead(unsigned);
+                var upload = await app.Control!.UploadAsync(stream, "unsigned.gocordis-plugin");
+                var rejected = await app.Control.InstallAsync(upload.UploadKey);
+                Assert.False(rejected.Accepted);
+                Assert.Contains("signature", rejected.Error, StringComparison.OrdinalIgnoreCase);
+
+                await using var signedStream = File.OpenRead(signed);
+                var signedUpload = await app.Control.UploadAsync(signedStream, "signed.gocordis-plugin");
+                var accepted = await app.Control.InstallAsync(signedUpload.UploadKey);
+                Assert.True(accepted.Accepted, accepted.Error);
+            },
+        });
+
+        Assert.Equal(0, code);
+        Assert.NotNull(started);
+        Assert.Single(await started.Store.ListAsync());
+        Assert.Empty(started.Runtime.Snapshot().Fibers);
     }
 
     [Fact]
@@ -151,7 +207,7 @@ public sealed class PlatformApplicationTests
         await app.StartAsync();
 
         Assert.NotNull(app.Address);
-        using var http = new HttpClient { BaseAddress = app.Address };
+        using var http = new HttpClient(new HttpClientHandler { UseProxy = false }) { BaseAddress = app.Address };
         var meta = JsonNode.Parse(await http.GetStringAsync("/api/meta"));
         Assert.Equal("gocordis-console", meta?["data"]?["kind"]?.GetValue<string>());
         Assert.Equal(UiHostKind.Web, app.RenderPlan().Host);
@@ -208,7 +264,7 @@ public sealed class PlatformApplicationTests
 
         // The existing HTTP contract still goes through the resolved capability.
         Assert.NotNull(app.Address);
-        using var http = new HttpClient { BaseAddress = app.Address };
+        using var http = new HttpClient(new HttpClientHandler { UseProxy = false }) { BaseAddress = app.Address };
         var plugins = JsonNode.Parse(await http.GetStringAsync("/api/plugins"));
         Assert.NotNull(plugins?["data"]);
         var store = JsonNode.Parse(await http.GetStringAsync("/api/plugins/store"));
@@ -333,7 +389,7 @@ public sealed class PlatformApplicationTests
         await app.StartAsync();
         Assert.NotNull(app.Address);
 
-        using var http = new HttpClient { BaseAddress = app.Address };
+        using var http = new HttpClient(new HttpClientHandler { UseProxy = false }) { BaseAddress = app.Address };
         using var allowed = new HttpRequestMessage(HttpMethod.Get, "/api/meta");
         allowed.Headers.Host = "console.example.com";
         Assert.Equal(System.Net.HttpStatusCode.OK, (await http.SendAsync(allowed)).StatusCode);
@@ -381,7 +437,7 @@ public sealed class PlatformApplicationTests
         await app.StartAsync();
 
         Assert.Contains("devtools/diagnostics", app.Console.Api.Queries);
-        using var http = new HttpClient { BaseAddress = app.Address };
+        using var http = new HttpClient(new HttpClientHandler { UseProxy = false }) { BaseAddress = app.Address };
         var payload = JsonNode.Parse(await http.GetStringAsync("/api/query/devtools/diagnostics"));
         var findings = payload?["data"]?["diagnostics"]?.AsArray()
                        ?? throw new InvalidOperationException("diagnostics query returned no array");
@@ -476,8 +532,7 @@ public sealed class PlatformApplicationTests
     [Fact]
     public void PlatformCliUsageStatesNativeHostBoundary()
     {
-        Assert.Contains("render-plan", PlatformRunner.UsageText, StringComparison.Ordinal);
-        Assert.Contains("future native hosts", PlatformRunner.UsageText, StringComparison.Ordinal);
+        Assert.Matches(@"render-plan\s+profiles for future native hosts", PlatformRunner.UsageText);
         Assert.Contains("Web is the only runnable UI host", PlatformRunner.UsageText, StringComparison.Ordinal);
         Assert.Contains("--trust development|trusted-only", PlatformRunner.UsageText, StringComparison.Ordinal);
     }

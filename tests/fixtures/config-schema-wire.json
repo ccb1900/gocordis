@@ -1,0 +1,17 @@
+{
+  "components": [
+    {
+      "type": "echo",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["batch"],
+        "properties": {
+          "batch": { "type": "integer", "default": 8 },
+          "mode": { "type": "string", "enum": ["fast", "slow"], "default": "fast" },
+          "enabled": { "type": "boolean", "default": true }
+        }
+      }
+    }
+  ]
+}

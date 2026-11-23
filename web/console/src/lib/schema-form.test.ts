@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   applyConditionals, fieldSpecsFor, inferFieldSpecs, schemaForType, schemaToFieldSpecs,
   type ConfigSchemaDTO, type FieldSpec, type JSONSchema,
@@ -90,6 +92,23 @@ describe("fallback behavior", () => {
     expect(fieldSpecsFor(dto, "beta", fallback)).toBe(fallback);
     expect(fieldSpecsFor(null, "alpha", fallback)).toBe(fallback);
     expect(fieldSpecsFor(dto, undefined, fallback)).toBe(fallback);
+  });
+
+  it("renders fields from the REAL C# config/schema wire fixture (no drift)", () => {
+    // Same JSON file the .NET Phase6Tests asserts against. If the backend shape
+    // changes, either test fails — this is the backend→frontend closed loop.
+    const wire = JSON.parse(
+      readFileSync(resolve(process.cwd(), "../../tests/fixtures/config-schema-wire.json"), "utf8"),
+    ) as ConfigSchemaDTO;
+    const specs = fieldSpecsFor(wire, "echo", fallback);
+    expect(specs.map((f) => f.key).sort()).toEqual(["batch", "enabled", "mode"]);
+    expect(specs.find((f) => f.key === "batch")).toMatchObject({
+      type: "number", required: true, default: 8,
+    });
+    expect(specs.find((f) => f.key === "enabled")).toMatchObject({ type: "bool", default: true });
+    expect(specs.find((f) => f.key === "mode")).toMatchObject({
+      type: "select", options: ["fast", "slow"], default: "fast",
+    });
   });
 
   it("infers legacy specs from config values", () => {

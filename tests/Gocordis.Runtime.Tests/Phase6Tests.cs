@@ -246,6 +246,45 @@ public sealed class Phase6Tests
         return await read;
     }
 
+    [Fact]
+    public async Task ConfigSchemaQueryReturnsRegisteredSchemaMatchingSharedWireFixture()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        var schema = new ConfigSchema
+        {
+            Type = "object",
+            Required = ["batch"],
+            Properties = new Dictionary<string, ConfigSchema>(StringComparer.Ordinal)
+            {
+                ["batch"] = new ConfigSchema { Type = "integer", Default = 8 },
+                ["mode"] = new ConfigSchema { Type = "string", Enum = ["fast", "slow"], Default = "fast" },
+                ["enabled"] = new ConfigSchema { Type = "boolean", Default = true },
+            },
+        };
+        registry.RegisterValidatedFactory("echo", schema, _ => new EchoComponent());
+
+        var host = new ConsoleHost(runtime);
+        host.AttachRegistry(registry);
+        var result = host.Api.Query("config/schema")!;
+
+        // The wire payload is a shared fixture also consumed by the frontend
+        // schema-form test; deep-equality locks the backend→frontend contract.
+        var fixture = JsonNode.Parse(await File.ReadAllTextAsync(
+            Path.Combine(FindRepoRoot(), "tests", "fixtures", "config-schema-wire.json")))!;
+        Assert.True(JsonNode.DeepEquals(fixture, result),
+            $"config/schema drift: got {result.ToJsonString()}, want {fixture.ToJsonString()}");
+    }
+
+    private static string FindRepoRoot()
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "Gocordis.sln"))) return dir.FullName;
+        }
+        throw new DirectoryNotFoundException("Gocordis.sln not found");
+    }
+
     private sealed class EchoComponent : Component
     {
         private readonly Key<int> _key = new($"echo-{Guid.NewGuid():N}");

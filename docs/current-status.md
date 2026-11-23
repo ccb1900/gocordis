@@ -62,15 +62,17 @@ One host-owned `CapabilityCatalog` (`Gocordis.Core`) allocates a single `ICapabi
   template (no runtime-repo path in generated project), `plugin validate`
   preflight, `app add` declaration, runnable `samples/PluginDeveloperWorkflow/e2e.sh`
   from an empty directory; author docs in `docs/guide/plugin-developer-workflow.md`.
-  Deferred: hot reload/debug without packing, exception→effect-slot attribution.
+  Deferred: hot reload/debug without packing. Effect-slot attribution is
+  implemented (see below).
 - **Task 02 UI hosts**: unified contribution contract and scope in
   `docs/guide/ui-host-contract.md`. Web is the only real host; WinForms/Avalonia
   are explicitly deferred render-plan profiles, NOT completed native hosts.
 - **Task 03 trust/version**: `ApplicationPlugin` carries VersionRange,
   LockedVersion, PackageHash, Source; `ApplicationLoader` enforces lock+hash.
   `PluginTrustPolicy` (Development / TrustedOnly with pinned PEM keys) enforced
-  by `PluginStore.InstallAsync`/`UpgradeAsync`. Local trusted-plugin mode today;
-  no remote marketplace.
+  by `PluginStore.InstallAsync`/`UpgradeAsync`, wired into the CLI
+  (`--trust`, `--public-key`) and `PlatformHostOptions.Trust`. Default is local
+  development (unsigned accepted); no remote marketplace.
 - **Task 04 stability/scale**: BenchmarkDotNet hot-path benchmarks plus repeated
   enable/disable ledger-stability test. Cold 10k apply after batch snapshots is
   still O(N²)-ish (FindCycle/Reconcile per command) — see benchmark README.

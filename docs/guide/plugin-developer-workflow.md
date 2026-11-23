@@ -47,10 +47,12 @@ contracts assembly; cross-backend capabilities use the host catalog.
   currently goes through build → pack → upgrade, which preserves paper
   Revision semantics. A file-watch debug mode must retarget as a revision, not
   an in-place fiber replacement.
-- **Error-to-Activation attribution**: diagnostics expose plugin ids, fiber
-  ids and cleanup failures; mapping an arbitrary exception to the exact effect
-  slot is still work.
+- **Error-to-Activation attribution**: installed. `EffectFailureRecord` exposes
+  fiber, activation, slot index and label in `runtime/snapshot`; history is
+  bounded (256 runtime / 32 per fiber) to avoid pinning unloaded plugin types.
 - **Native WinForms/Avalonia hosts**: see `ui-host-contract.md`; only Web is a
   real host today.
-- **Trust policy / version lock**: see `docs/current-status.md`; local trusted
-  plugin mode today.
+- **Trust policy / version lock**: CLI install/upgrade accept `--trust
+  development|trusted-only` and `--public-key`; product host uses
+  `PlatformHostOptions.Trust`. Local development mode is the default; no remote
+  marketplace.

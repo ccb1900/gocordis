@@ -1,0 +1,8 @@
+<Project>
+  <!-- Re-export the public authoring surface to plugin source files. Runtime
+       internals are deliberately absent. -->
+  <ItemGroup>
+    <Using Include="Gocordis.Core" />
+    <Using Include="Gocordis.Plugins" />
+  </ItemGroup>
+</Project>

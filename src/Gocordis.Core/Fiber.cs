@@ -26,6 +26,9 @@ public sealed class Fiber
     public Guid Id { get; }
     public Component Component { get; }
 
+    /// <summary>Which declaration batch submitted this fiber, if any.</summary>
+    internal Guid? BatchId { get; set; }
+
     /// <summary>
     /// Declared key NAMES captured once at load (decision domain). Snapshot must
     /// never re-invoke component declarations: a component whose declarations

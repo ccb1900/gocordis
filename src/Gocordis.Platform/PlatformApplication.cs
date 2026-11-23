@@ -25,7 +25,8 @@ public sealed class PlatformHostOptions
         UiHostKind Host = UiHostKind.Web,
         string HostVersion = "1.0.0",
         IReadOnlyList<string>? AllowedHosts = null,
-        bool ValidateOnly = false)
+        bool ValidateOnly = false,
+        PluginTrustPolicy? Trust = null)
     {
         if (string.IsNullOrWhiteSpace(ManifestPath))
         {
@@ -46,6 +47,7 @@ public sealed class PlatformHostOptions
         this.HostVersion = HostVersion;
         this.AllowedHosts = AllowedHosts;
         this.ValidateOnly = ValidateOnly;
+        Trust = Trust ?? PluginTrustPolicy.Development;
     }
 
     public string ManifestPath { get; }
@@ -62,6 +64,9 @@ public sealed class PlatformHostOptions
     /// caller is expected to stop the application immediately after StartAsync.
     /// </summary>
     public bool ValidateOnly { get; }
+
+    /// <summary>Package trust policy used by the control plane installer.</summary>
+    public PluginTrustPolicy Trust { get; }
 }
 
 /// <summary>One resolved declaration as seen by the product composition root.</summary>
@@ -231,7 +236,8 @@ public class PlatformApplication : IAsyncDisposable
                 ApplyDeclarationPlanAsync,
                 () => string.Join("|", Capabilities.Declarations
                     .Select(declaration => declaration.ToWireString())
-                    .OrderBy(value => value, StringComparer.Ordinal))));
+                    .OrderBy(value => value, StringComparer.Ordinal)),
+                _options.Trust));
             var control = Runtime.RequireCapability(ControlPlaneKeys.Service);
             Control = control;
 

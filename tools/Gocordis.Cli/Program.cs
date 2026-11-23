@@ -330,10 +330,16 @@ public static class Program
                     return Fail($"usage: plugin {command} <package> [--store] [--host-version]");
                 }
 
+                var trust = BuildTrustPolicy(rest);
+                if (trust is null)
+                {
+                    return Fail("--trusted-only requires at least one --public-key <pem>");
+                }
+
                 var result = command == "install"
-                    ? await store.InstallAsync(package)
-                    : await store.UpgradeAsync(package);
-                Write(new { result.Changes });
+                    ? await store.InstallAsync(package, default, trust)
+                    : await store.UpgradeAsync(package, default, trust);
+                Write(new { result.Changes, trust = trust.RequireSignature ? "trusted-only" : "development" });
                 return 0;
             }
             case "uninstall":
@@ -591,11 +597,10 @@ public static class Program
                                 Entries.Remove(entry);
                                 return ValueTask.CompletedTask;
                             });
-                        return () =>
-                        {
-                            Entries.Clear();
-                            return ValueTask.CompletedTask;
-                        };
+                        // Ownership is single: EffectAsync's inverse removes
+                        // exactly this entry. Returning another cleanup here
+                        // would clear entries owned by other fibers.
+                        return null;
                     }
                 }
                 """
@@ -758,6 +763,27 @@ public static class Program
     /// Validates a package without installing it. Diagnostics are always a JSON
     /// array of severity/code/message; errors (not warnings) drive exit code 1.
     /// </summary>
+    /// <summary>Product trust configuration. Development keeps the historical
+    /// unsigned-package behavior; --trusted-only additionally pins publishers.</summary>
+    private static PluginTrustPolicy? BuildTrustPolicy(string[] args)
+    {
+        var mode = Option(args, "--trust") ?? "development";
+        if (mode is "development")
+        {
+            return PluginTrustPolicy.Development;
+        }
+
+        if (mode is not "trusted-only")
+        {
+            return null;
+        }
+
+        var keys = OptionValues(args, "--public-key")
+            .Select(path => File.ReadAllText(path))
+            .ToArray();
+        return keys.Length == 0 ? null : PluginTrustPolicy.TrustedOnly(keys);
+    }
+
     private static async Task<int> PluginDoctorAsync(string[] args)
     {
         var package = Positional(args, 0);
@@ -1049,8 +1075,17 @@ public static class Program
             Path.GetDirectoryName(Path.GetFullPath(path))!, "plugins");
         var store = new PluginStore(storePath, HostVersion(args));
         var range = Option(args, "--range") ?? "1.0.0";
-        _ = VersionRange.TryParse(range, out _);
+        if (!VersionRange.TryParse(range, out _))
+        {
+            return Fail($"invalid version range '{range}'");
+        }
+
         var resolved = await store.ResolveAsync(pluginId, range);
+        if (resolved is null)
+        {
+            return Fail($"plugin '{pluginId}' matching '{range}' is not installed in '{storePath}'");
+        }
+
         var application2 = application with
         {
             Plugins =
@@ -1058,15 +1093,15 @@ public static class Program
                 .. application.Plugins,
                 new ApplicationPlugin(
                     pluginId, range, true,
-                    LockedVersion: resolved?.Version,
-                    PackageHash: resolved?.Manifest.Checksum),
+                    LockedVersion: resolved.Version,
+                    PackageHash: resolved.Manifest.Checksum),
             ],
         };
         await application2.SaveAsync(path);
         Write(new
         {
             manifest = path, id = pluginId, versionRange = range,
-            lockedVersion = resolved?.Version, packageHash = resolved?.Manifest.Checksum,
+            lockedVersion = resolved.Version, packageHash = resolved.Manifest.Checksum,
         });
         return 0;
     }
@@ -1282,7 +1317,7 @@ public static class Program
             "--store", "--host-version", "--address", "--id", "--name", "--version", "--type", "--host-range", "--source",
             "--output", "--out", "--key", "--public-key", "--backend", "--entry-assembly", "--entry-type",
             "--shared-assembly", "--allowed-host", "--host-version-range", "--provides", "--dependency",
-            "--config-schema", "--capability",
+            "--config-schema", "--capability", "--trust", "--public-key",
         };
         var flags = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -1337,7 +1372,7 @@ public static class Program
         gocordis plugin sandbox <packagePath> [--host-version]
         gocordis plugin fetch <id> <versionRange> --source <url> [--output <path>] [--host-version]
         gocordis registry serve <directory> [--address] [--allow-remote]
-        gocordis plugin install|upgrade <package> [--store] [--host-version]
+        gocordis plugin install|upgrade <package> [--store] [--host-version] [--trust development|trusted-only] [--public-key <pem> ...]
         gocordis plugin uninstall <id> [--version] [--store] [--host-version]
         gocordis plugin list [--store] [--host-version]
         gocordis plugin resolve <id> <range> [--source] [--host-version]

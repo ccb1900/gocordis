@@ -1,4 +1,8 @@
+# Build output directories are ignored, but the SDK's packaged MSBuild props
+# is source (it is what re-exports the authoring surface to plugin projects).
 build/
+!src/Gocordis.Plugin.Sdk/build/
+!src/Gocordis.Plugin.Sdk/build/Gocordis.Plugin.Sdk.props
 web/console/node_modules/
 web/console/dist/
 

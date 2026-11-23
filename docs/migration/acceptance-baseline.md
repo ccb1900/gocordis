@@ -138,6 +138,15 @@ build 0 warning / 0 error。
 - 快照与 `runtime/snapshot` 查询新增 `effectFailures`；前端 `runtime-inspector` DTO 与测试同步（真实 payload 经解析器验证）。
 - 迭代步骤失败时槽位索引取失败前的 effect 数；重复归因由 `Exception.Data` 去重。
 
+## 审查整改批次（针对 16a95f3 静态核查）
+
+1. **SDK props 真缺失**：`.gitignore` 的 `build/` 把 `Gocordis.Plugin.Sdk/build/*.props` 排除在提交外，导致远端包缺少导出公开开发面的 MSBuild props。已加例外并强制纳入版本控制，空目录 E2E 重新实跑。
+2. **批次隔离**：`_batchDepth` 仍保留作为"批次活跃"门闩，但快照抑制只对**属于批次**的命令生效（Load/Step/Apply/Unwind 带 Fiber.BatchId）；独立 LoadAsync 的命令始终发布在途快照。批次结束后所有命令恢复发布，避免最终快照停在 Unloading。新增并发测试。
+3. **模板单一所有权**：生成组件只保留 `EffectAsync` 的逆，不再返回 `Entries.Clear()` 做二次清理。
+4. **app add 失败路径**：非法版本范围或未安装的插件均拒绝写入清单，成功时必写 LockedVersion/PackageHash；新增 CLI 测试。
+5. **信任策略接入入口**：CLI `--trust development|trusted-only` + `--public-key`，`PlatformHostOptions.Trust` 控制面路径；CLI 测试验证未签名/固定发布者。
+6. **Effect 诊断有界**：运行期最多 256 条、单 fiber 最多 32 条，仍保留原异常用于 C33 传播。
+
 ## 冻结规则
 
 1. 本基线只记录**已核实**的证据等级，不把 E0/E1 升级为 E2。

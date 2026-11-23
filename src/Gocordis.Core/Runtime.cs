@@ -20,7 +20,8 @@ public sealed class Runtime : IAsyncDisposable
 
     private sealed record LoadCommand(
         Component Component, Fiber? Parent, Realm? Realm,
-        TaskCompletionSource<Fiber> Reply, bool AwaitActivation) : RuntimeCommand
+        TaskCompletionSource<Fiber> Reply, bool AwaitActivation,
+        Guid? BatchId = null) : RuntimeCommand
     {
         internal Fiber? Created { get; set; }
     }
@@ -101,6 +102,11 @@ public sealed class Runtime : IAsyncDisposable
     private readonly Dictionary<Guid, RehomeCommand> _pendingRehomes = [];
     private readonly List<CleanupFailureRecord> _cleanupFailures = [];
     private readonly List<EffectFailureRecord> _effectFailures = [];
+
+    /// <summary>Diagnostic history is bounded: retaining exceptions forever
+    /// would pin plugin types/ALCs long after a fiber is gone.</summary>
+    private const int MaxRuntimeEffectFailures = 256;
+    private const int MaxFiberEffectFailures = 32;
     private readonly Dictionary<long, int> _unwindWaiters = [];
     private readonly HashSet<long> _unwinding = [];
     private readonly HashSet<long> _unwindRunning = [];
@@ -148,6 +154,17 @@ public sealed class Runtime : IAsyncDisposable
     public long PendingCommands => Interlocked.Read(ref _pendingCommands);
 
     private long _pendingCommands;
+    private bool _snapshotDirty;
+
+    private static Guid? BatchIdOf(RuntimeCommand command) => command switch
+    {
+        LoadCommand load => load.BatchId,
+        StepRequestCommand step => step.Activation.Fiber.BatchId,
+        StepInstalledCommand installed => installed.Activation.Fiber.BatchId,
+        ApplyCompletedCommand applied => applied.Activation.Fiber.BatchId,
+        UnwindCompletedCommand unwound => unwound.Activation.Fiber.BatchId,
+        _ => null,
+    };
     private long _batchDepth;
 
     private bool TryWrite(RuntimeCommand command)
@@ -232,12 +249,13 @@ public sealed class Runtime : IAsyncDisposable
             return single;
         }
 
+        var batchId = Guid.NewGuid();
         Interlocked.Increment(ref _batchDepth);
         var replies = new List<Task<Fiber>>(items.Length);
         foreach (var component in items)
         {
             var reply = new TaskCompletionSource<Fiber>(TaskCreationOptions.RunContinuationsAsynchronously);
-            if (!TryWrite(new LoadCommand(component, parent, realm, reply, AwaitActivation: true)))
+            if (!TryWrite(new LoadCommand(component, parent, realm, reply, true, batchId)))
             {
                 Interlocked.Decrement(ref _batchDepth);
                 throw new ObjectDisposedException(nameof(Runtime));
@@ -376,15 +394,17 @@ public sealed class Runtime : IAsyncDisposable
 
                         Interlocked.Decrement(ref _pendingCommands);
                         Reconcile();
-                        // A batch of awaited LoadCommands shares ONE snapshot
-                        // publication at FlushAwaitingLoads; a single command
-                        // still sees a fresh snapshot before its reply.
-                        // Only explicit batch loads suppress intermediate
-                        // publications; independent concurrent LoadAsync calls
-                        // must keep their in-flight states observable.
-                        if (Volatile.Read(ref _batchDepth) == 0)
+                        // A command is suppressed only while an explicit batch
+                        // is active AND the command belongs to that batch. Once
+                        // the batch completes, every command publishes again.
+                        if (Volatile.Read(ref _batchDepth) > 0 && BatchIdOf(command) is not null)
+                        {
+                            _snapshotDirty = true;
+                        }
+                        else
                         {
                             PublishSnapshot();
+                            _snapshotDirty = false;
                         }
 
                         FlushAwaitingLoads();
@@ -453,6 +473,7 @@ public sealed class Runtime : IAsyncDisposable
         var fiber = new Fiber(Guid.NewGuid(), command.Component, command.Parent, generation: 0)
         {
             Realm = realm,
+            BatchId = command.BatchId,
             CapturedInjectKeys = [.. command.Component.Inject()],
             CapturedProvideKeys = [.. command.Component.Provide()],
             CapturedRequires = [.. command.Component.Inject().Select(k => k.Name)],
@@ -718,8 +739,19 @@ public sealed class Runtime : IAsyncDisposable
                 failure.Message,
                 failure,
                 failure.StackTrace);
-            activation.Fiber.EffectFailures = [.. activation.Fiber.EffectFailures, record];
+            EffectFailureRecord[] perFiber =
+            [
+                .. activation.Fiber.EffectFailures,
+                record,
+            ];
+            activation.Fiber.EffectFailures = perFiber.Length > MaxFiberEffectFailures
+                ? perFiber[^MaxFiberEffectFailures..]
+                : perFiber;
             _effectFailures.Add(record);
+            if (_effectFailures.Count > MaxRuntimeEffectFailures)
+            {
+                _effectFailures.RemoveRange(0, _effectFailures.Count - MaxRuntimeEffectFailures);
+            }
 
             // Also attach to the exception itself for host-side diagnostics
             // that only carry the exception.
@@ -1013,6 +1045,12 @@ public sealed class Runtime : IAsyncDisposable
         {
             // One publication for the whole batch, before any of its replies.
             PublishSnapshot();
+        }
+
+        if (_snapshotDirty)
+        {
+            PublishSnapshot();
+            _snapshotDirty = false;
         }
 
         foreach (var load in _awaitingLoads)

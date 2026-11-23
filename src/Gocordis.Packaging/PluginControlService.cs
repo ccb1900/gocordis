@@ -176,6 +176,10 @@ public sealed class PluginControlService : IPluginControlPlane
     /// </summary>
     public Func<string>? DeclarationFingerprint { get; init; }
 
+    /// <summary>Host-configured package trust policy; defaults to local
+    /// development mode (unsigned packages accepted).</summary>
+    public PluginTrustPolicy Trust { get; init; } = PluginTrustPolicy.Development;
+
     public long Revision => Interlocked.Read(ref _revision);
 
     public async Task ApplyAllAsync(CancellationToken ct = default)
@@ -465,7 +469,7 @@ public sealed class PluginControlService : IPluginControlPlane
                 var addedPackage = !installedBefore.Any(package =>
                     string.Equals(package.Id, id, StringComparison.Ordinal) &&
                     string.Equals(package.Version, version, StringComparison.Ordinal));
-                var storeResult = await _store.InstallAsync(path, token);
+                var storeResult = await _store.InstallAsync(path, token, Trust);
 
                 var updated = application with
                 {
@@ -575,7 +579,7 @@ public sealed class PluginControlService : IPluginControlPlane
                 var addedPackage = !installedBefore.Any(package =>
                     string.Equals(package.Id, id, StringComparison.Ordinal) &&
                     string.Equals(package.Version, newVersion, StringComparison.Ordinal));
-                var storeResult = await _store.InstallAsync(path, token);
+                var storeResult = await _store.InstallAsync(path, token, Trust);
                 var installedNew = (await _store.ListAsync(token)).FirstOrDefault(package =>
                     string.Equals(package.Id, id, StringComparison.Ordinal) &&
                     string.Equals(package.Version, newVersion, StringComparison.Ordinal));

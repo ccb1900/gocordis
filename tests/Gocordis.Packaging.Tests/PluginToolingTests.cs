@@ -63,6 +63,8 @@ public sealed class PluginToolingTests
         var source = await File.ReadAllTextAsync(pluginPath);
         Assert.Contains("Component", source);
         Assert.Contains("context.EffectAsync", source);
+        Assert.DoesNotContain("Entries.Clear", source, StringComparison.Ordinal);
+        Assert.Contains("return null;", source, StringComparison.Ordinal);
         Assert.Contains("ValueTask<Cleanup?>", source);
         Assert.Contains("Demo Plugin", source);
     }

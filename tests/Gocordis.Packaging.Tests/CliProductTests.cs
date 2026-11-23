@@ -121,6 +121,65 @@ public sealed class CliProductTests
     }
 
     [Fact]
+    public async Task PluginInstallHonorsTrustedOnlyPolicyAtTheCliEntrypoint()
+    {
+        using var temp = new TempDir();
+        var store = temp.Path("trust-store");
+        var source = temp.Path("trust-source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "entry.txt"), "payload");
+        var package = temp.File("trust.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source,
+            new PluginPackageManifest("trust-demo", "1.0.0", "product-demo", "[1.0,)"), package);
+        var (privateKey, publicKey) = PluginPackageSigner.CreateKeyPair();
+        var privatePath = temp.File("key.private.pem");
+        var publicPath = temp.File("key.public.pem");
+        await File.WriteAllTextAsync(privatePath, privateKey);
+        await File.WriteAllTextAsync(publicPath, publicKey);
+
+        var unsigned = await RunAsync("plugin", "install", package,
+            "--store", store, "--host-version", HostVersion,
+            "--trust", "trusted-only", "--public-key", publicPath);
+        Assert.NotEqual(0, unsigned.Code);
+        Assert.Empty(await new PluginStore(store, HostVersion).ListAsync());
+
+        var signed = await PluginPackageSigner.SignAsync(package, privateKey);
+        var accepted = await RunAsync("plugin", "install", signed,
+            "--store", store, "--host-version", HostVersion,
+            "--trust", "trusted-only", "--public-key", publicPath);
+        Assert.Equal(0, accepted.Code);
+        Assert.Single(await new PluginStore(store, HostVersion).ListAsync());
+    }
+
+    [Fact]
+    public async Task AppAddRejectsInvalidRangeAndUninstalledPlugins()
+    {
+        using var temp = new TempDir();
+        var store = temp.Path("store");
+        await InstallDemoAsync(temp, store, "add-demo");
+        var path = await WriteManifestAsync(temp);
+
+        var invalidRange = await RunAsync("app", "add", path, "add-demo",
+            "--range", "not-a-range", "--store", store, "--host-version", HostVersion);
+        Assert.NotEqual(0, invalidRange.Code);
+        Assert.Contains("invalid version range", invalidRange.Error, StringComparison.Ordinal);
+
+        var missing = await RunAsync("app", "add", path, "absent-demo",
+            "--range", "1.0.0", "--store", store, "--host-version", HostVersion);
+        Assert.NotEqual(0, missing.Code);
+        Assert.Contains("not installed", missing.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty((await ApplicationManifest.LoadAsync(path)).Plugins);
+
+        var added = await RunAsync("app", "add", path, "add-demo",
+            "--range", "[1.0,2.0)", "--store", store, "--host-version", HostVersion);
+        Assert.Equal(0, added.Code);
+        var plugin = Assert.Single((await ApplicationManifest.LoadAsync(path)).Plugins);
+        Assert.Equal("add-demo", plugin.Id);
+        Assert.NotNull(plugin.LockedVersion);
+        Assert.NotNull(plugin.PackageHash);
+    }
+
+    [Fact]
     public async Task AppValidateKeepsItsExistingResolutionSummary()
     {
         using var temp = new TempDir();

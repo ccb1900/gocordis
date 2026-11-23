@@ -17,6 +17,7 @@ public sealed class PluginControlPlaneComponent : Component
     private readonly Func<IReadOnlyList<string>, bool>? _sharedAssemblyApproval;
     private readonly Func<IReadOnlyList<string>, Task<IDeclarationTransaction>>? _declarationPlan;
     private readonly Func<string>? _declarationFingerprint;
+    private readonly PluginTrustPolicy _trust;
 
     public PluginControlPlaneComponent(
         string ManifestPath,
@@ -26,7 +27,8 @@ public sealed class PluginControlPlaneComponent : Component
         Func<PluginManifest, Component>? ComponentFactory = null,
         Func<IReadOnlyList<string>, bool>? SharedAssemblyApproval = null,
         Func<IReadOnlyList<string>, Task<IDeclarationTransaction>>? DeclarationPlan = null,
-        Func<string>? DeclarationFingerprint = null)
+        Func<string>? DeclarationFingerprint = null,
+        PluginTrustPolicy? Trust = null)
     {
         _manifestPath = ManifestPath ?? throw new ArgumentNullException(nameof(ManifestPath));
         _store = Store ?? throw new ArgumentNullException(nameof(Store));
@@ -36,6 +38,7 @@ public sealed class PluginControlPlaneComponent : Component
         _sharedAssemblyApproval = SharedAssemblyApproval;
         _declarationPlan = DeclarationPlan;
         _declarationFingerprint = DeclarationFingerprint;
+        _trust = Trust ?? PluginTrustPolicy.Development;
     }
 
     private readonly Func<PluginManifest, Component>? _componentFactory;
@@ -51,6 +54,7 @@ public sealed class PluginControlPlaneComponent : Component
             _declarationPlan)
         {
             DeclarationFingerprint = _declarationFingerprint,
+            Trust = _trust,
         };
         // Context.Provide installs its own LIFO inverse; no cleanup stack here.
         context.Provide(ControlPlaneKeys.Service, service);

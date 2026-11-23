@@ -178,6 +178,11 @@ public class PlatformApplication : IAsyncDisposable
             // factories HERE would bypass that wrapper, so we only resolve the
             // declaration report; ApplyAllAsync owns factory registration.
             Func<PluginManifest, Component> componentFactory = CreateComponent;
+            // Collect ALL candidate copies of every declared shared contract
+            // from installed (checksum-verified) packages. The HOST seals one
+            // identity before any plugin fiber activates — no plugin can decide
+            // which contract version lands in the Default ALC.
+            var contractCandidates = new Dictionary<string, List<string>>(StringComparer.Ordinal);
             foreach (var plugin in manifest.Plugins)
             {
                 var installed = await Store.ResolveAsync(plugin.Id, plugin.VersionRange, cancellationToken);
@@ -188,11 +193,20 @@ public class PlatformApplication : IAsyncDisposable
 
                 _resolved.Add(new PlatformResolvedPlugin(plugin.Id, installed.Version, plugin.Enabled));
 
-                // Only the HOST may approve shared contract assemblies. Names
-                // come from installed (and therefore checksum-verified) packages,
-                // never from arbitrary plugin code at load time.
-                SharedAssemblyRegistry.Allow(installed.Manifest.SharedAssembliesOrEmpty);
+                foreach (var contract in installed.Manifest.SharedAssembliesOrEmpty)
+                {
+                    if (!contractCandidates.TryGetValue(contract, out var paths))
+                    {
+                        paths = [];
+                        contractCandidates[contract] = paths;
+                    }
+
+                    paths.Add(Path.Combine(Path.GetFullPath(installed.InstallPath), contract + ".dll"));
+                }
             }
+
+            SharedAssemblyRegistry.Seal(contractCandidates.ToDictionary(
+                pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value, StringComparer.Ordinal));
 
             // The control plane is a plugin contribution: load its fiber first,
             // then read its capability. Runtime.Close ends this fiber with all

@@ -110,6 +110,9 @@ public static class SharedAssemblyRegistry
         // Framework contracts are always shared by PluginLoadContext.
         "Gocordis.Core", "Gocordis.Plugins",
     };
+    // name → identity the HOST sealed into Default ALC before any plugin loaded.
+    private static readonly Dictionary<string, SharedAssemblyIdentity> Sealed =
+        new(StringComparer.Ordinal);
 
     /// <summary>Approve a simple assembly name for process-level sharing. The
     /// host calls this for names declared by installed (and thus verified)
@@ -134,6 +137,109 @@ public static class SharedAssemblyRegistry
     public static bool IsAllowed(string simpleName)
     {
         lock (Sync) return Allowed.Contains(simpleName);
+    }
+
+    /// <summary>
+    /// HOST-ONLY contract sealing. Called once during application assembly,
+    /// BEFORE any plugin fiber is activated. For every shared contract name the
+    /// host supplies ALL candidate copies (one per declaring package). The
+    /// registry verifies every candidate has the same full identity (name,
+    /// version, culture, public key token, MVID and SHA-256), then loads ONE
+    /// canonical copy into the Default ALC and records that identity as sealed.
+    ///
+    /// After sealing, plugin loads can only REUSE the sealed identity — no
+    /// "first plugin wins" promotion remains. A package whose contract differs
+    /// from the sealed identity is rejected at activation with a clear conflict.
+    /// This is the product rule for process-level contract version governance.
+    /// </summary>
+    /// <param name="candidates">simple name → all candidate DLL paths supplied by installed packages</param>
+    /// <returns>the sealed identities, keyed by simple name</returns>
+    /// <exception cref="SharedAssemblyConflictException">
+    /// Candidates for one name do not share one identity, or a name is already
+    /// sealed with a different identity (contract upgrade needs a host restart).
+    /// </exception>
+    public static IReadOnlyDictionary<string, SharedAssemblyIdentity> Seal(
+        IReadOnlyDictionary<string, IReadOnlyList<string>> candidates)
+    {
+        lock (Sync)
+        {
+            foreach (var (name, paths) in candidates)
+            {
+                var copies = (paths ?? []).Where(p => !string.IsNullOrWhiteSpace(p)).Distinct(StringComparer.Ordinal).ToArray();
+                if (copies.Length == 0)
+                {
+                    throw new FileNotFoundException($"shared contract '{name}' has no candidate DLL supplied by the host");
+                }
+
+                var identities = new List<SharedAssemblyIdentity>(copies.Length);
+                foreach (var path in copies)
+                {
+                    if (!File.Exists(path))
+                    {
+                        throw new FileNotFoundException($"shared contract '{name}' candidate not found: '{path}'");
+                    }
+
+                    var identity = SharedAssemblyIdentity.FromFile(path);
+                    if (!string.Equals(identity.Name, name, StringComparison.Ordinal))
+                    {
+                        throw new SharedAssemblyConflictException(
+                            $"shared contract '{name}' candidate '{path}' declares assembly name '{identity.Name}'");
+                    }
+
+                    identities.Add(identity);
+                }
+
+                var canonical = identities[0];
+                for (var i = 1; i < identities.Count; i++)
+                {
+                    if (!canonical.Matches(identities[i]))
+                    {
+                        throw new SharedAssemblyConflictException(
+                            $"shared contract '{name}' has more than one identity across installed packages: " +
+                            $"[{canonical.Describe()}] vs [{identities[i].Describe()}]. " +
+                            "The host must resolve one contract identity before activation.");
+                    }
+                }
+
+                if (Sealed.TryGetValue(name, out var already))
+                {
+                    if (!already.Matches(canonical))
+                    {
+                        throw new SharedAssemblyConflictException(
+                            $"shared contract '{name}' is already sealed as [{already.Describe()}] and cannot be " +
+                            "replaced in-process; upgrading a contract requires a host restart.");
+                    }
+
+                    continue;
+                }
+
+                var loaded = AssemblyLoadContext.Default.Assemblies
+                    .FirstOrDefault(a => string.Equals(a.GetName().Name, name, StringComparison.Ordinal));
+                if (loaded is null)
+                {
+                    // The HOST chooses the canonical copy — not the first plugin
+                    // that happens to load.
+                    AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.GetFullPath(copies[0]));
+                }
+                else if (!canonical.Matches(SharedAssemblyIdentity.FromLoaded(loaded)))
+                {
+                    throw new SharedAssemblyConflictException(
+                        $"shared contract '{name}' conflicts with an assembly already loaded in the default context; " +
+                        "a contract upgrade requires a host restart.");
+                }
+
+                Allowed.Add(name);
+                Sealed[name] = canonical;
+            }
+
+            return new Dictionary<string, SharedAssemblyIdentity>(Sealed, StringComparer.Ordinal);
+        }
+    }
+
+    /// <summary>The identity the host sealed for a contract, or null if unsealed.</summary>
+    public static SharedAssemblyIdentity? SealedIdentity(string name)
+    {
+        lock (Sync) return Sealed.TryGetValue(name, out var identity) ? identity : null;
     }
 
     /// <summary>
@@ -184,6 +290,22 @@ public static class SharedAssemblyRegistry
                 {
                     throw new SharedAssemblyConflictException(
                         $"shared assembly name '{name}' does not match payload identity '{declared.Name}'");
+                }
+
+                // A sealed contract is host-owned: verify against the sealed
+                // identity and NEVER load the plugin's own copy. This removes
+                // the "first plugin wins" behaviour entirely.
+                if (Sealed.TryGetValue(name, out var sealedIdentity))
+                {
+                    if (!declared.Matches(sealedIdentity))
+                    {
+                        throw new SharedAssemblyConflictException(
+                            $"shared contract '{name}' in this plugin [{declared.Describe()}] differs from the " +
+                            $"host-sealed identity [{sealedIdentity.Describe()}]. " +
+                            "Contract upgrades require a host restart.");
+                    }
+
+                    continue; // reuse the host-sealed Default ALC instance
                 }
 
                 var loaded = AssemblyLoadContext.Default.Assemblies

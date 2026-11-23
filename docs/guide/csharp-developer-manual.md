@@ -90,6 +90,18 @@ default ALC 一次，`PluginLoadContext` 对共享名返回 `null`，回落到 d
 回归证据：`SharedAssemblyRegistryTests`（批准门、完整身份冲突、名称不符、进程级不换身份）、
 `SharedContractPackagingTests.SharedContractAcrossTwoPackagesGatesTheConsumer`。
 
+### 2.1.1 三层依赖（不可混为一谈）
+
+| 层 | 表达 | 机制 | 失败形态 |
+| --- | --- | --- | --- |
+| 包依赖 | B 需要安装 A 的某版本 | `PluginDependency` + 版本范围，安装/升级/卸载反向检查 | 安装被拒 / 升级被阻 |
+| 契约依赖 | B 编译期引用 A 的接口/类型/DTO/Key | 共享契约程序集（`--shared-assembly`），宿主统一封存进 Default ALC | 类型身份不一致 / 加载冲突 |
+| 能力依赖 | B 需要 A 的运行时能力才允许激活 | `Inject()/Provide()` + 强 `Key<T>`，Core 调和 | B 保持 `Pending`，依赖恢复自动重激活 |
+
+程序集能加载 ≠ 能力已提供；包依赖满足 ≠ 能力实现已 Active。B 可以只引用契约、声明所需能力，由 Runtime 决定实际提供者——这才是可替换的低耦合组合。
+
+ALC 归属是产品规则：Core / Plugins / 共享契约在 **Default ALC**（单一类型身份、宿主所有）；每个插件实现程序集与私有依赖在**各自的独立可回收 ALC**（独立卸载、允许不同私有版本）。不把所有插件塞进 Default ALC，也不假设插件之间完全不能共享类型。共享契约由宿主在装配阶段校验所有副本的完整身份后封存一份；插件加载只能复用，不能抢先决定版本；契约升级需重启宿主。
+
 ### 2.2 打包插件的 UI 与依赖声明
 
 插件的 UI **属于插件包**，不写进控制面或框架代码：页面/面板/客户端模块声明在包根的

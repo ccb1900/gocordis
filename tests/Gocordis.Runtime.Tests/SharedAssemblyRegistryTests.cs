@@ -69,6 +69,40 @@ public sealed class SharedAssemblyRegistryTests
     }
 
     [Fact]
+    public void HostSealVerifiesAllCandidateCopiesThenLocksTheCanonicalIdentity()
+    {
+        var name = "Sealed." + Guid.NewGuid().ToString("N");
+        var dir = Path.Combine(Path.GetTempPath(), "gocordis-seal-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var source = typeof(Gocordis.Core.Component).Assembly.Location;
+        // Use an already-approved framework name so Seal need not load a new
+        // assembly; two identical copies from distinct paths must be accepted.
+        var a = Path.Combine(dir, "a");
+        var b = Path.Combine(dir, "b");
+        Directory.CreateDirectory(a); Directory.CreateDirectory(b);
+        File.Copy(source, Path.Combine(a, "Gocordis.Core.dll"));
+        File.Copy(source, Path.Combine(b, "Gocordis.Core.dll"));
+
+        var result = SharedAssemblyRegistry.Seal(new Dictionary<string, IReadOnlyList<string>>
+        {
+            ["Gocordis.Core"] = new[] { Path.Combine(a, "Gocordis.Core.dll"), Path.Combine(b, "Gocordis.Core.dll") },
+        });
+        Assert.True(result.ContainsKey("Gocordis.Core"));
+        Assert.NotNull(SharedAssemblyRegistry.SealedIdentity("Gocordis.Core"));
+
+        // A different copy for the same sealed name is rejected (no in-process swap).
+        var c = Path.Combine(dir, "c"); Directory.CreateDirectory(c);
+        File.WriteAllBytes(Path.Combine(c, "Gocordis.Core.dll"),
+            File.ReadAllBytes(source).Concat(new byte[] { 0 }).ToArray());
+        var ex = Assert.Throws<SharedAssemblyConflictException>(() =>
+            SharedAssemblyRegistry.Seal(new Dictionary<string, IReadOnlyList<string>>
+            {
+                ["Gocordis.Core"] = new[] { Path.Combine(c, "Gocordis.Core.dll") },
+            }));
+        Assert.Contains("already sealed", ex.Message);
+    }
+
+    [Fact]
     public void IdentityIncludesMvidAndContentHash()
     {
         var core = SharedAssemblyIdentity.FromFile(typeof(Gocordis.Core.Component).Assembly.Location);

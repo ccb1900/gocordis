@@ -83,9 +83,28 @@ Theorem anchors: Thm64↔C25, Thm68↔C26, Thm70↔C27, Thm73↔C29, Thm80↔C30
 
 ## 5. Plugins: develop, package, compose, execute
 
+### The three dependency layers (MUST keep distinct)
+
+Never collapse these into one mechanism — an assembly resolving says nothing about a capability being Active:
+
+| Layer | Expresses | Mechanism | Failure mode |
+|---|---|---|---|
+| **Package dependency** | plugin B needs plugin A's package/version installed | `PluginDependency` + version range; install/upgrade/uninstall reverse checks (`PluginDependencyPlanner`, `PluginStore`) | install rejected / upgrade blocked |
+| **Contract (assembly) dependency** | B compiles against A's interfaces, types, DTOs, keys | shared contracts assembly (`--shared-assembly`) loaded once into Default ALC | type-identity mismatch / load conflict |
+| **Capability dependency** | B needs A's runtime capability before it may activate | `Component.Inject()/Provide()` over strong `Key<T>`; Core reconciliation | B stays `Pending` until a provider is Active; withdraws on loss |
+
+**Shared contracts, isolated implementations.** The correct ALC placement is a product rule, not an accident:
+
+- `Gocordis.Core`, `Gocordis.Plugins`, shared contracts → **Default ALC** (one type identity, host-owned)
+- each plugin's implementation assembly and private third-party deps → **that plugin's own collectible ALC** (independent unload; different plugins may use different private versions)
+
+Do **not** promote every plugin assembly to Default ALC, and do **not** assume plugins can share no types at all.
+
+**Contract ownership**: the HOST seals one stable ABI identity during assembly (`SharedAssemblyRegistry.Seal`), verifying *all* candidate copies across installed packages are byte-identical, then loads one canonical copy. Plugins may only reuse the sealed identity; a differing copy is rejected, a contract upgrade needs a host restart. Ordinary plugins cannot decide the process-wide contract version by loading first.
+
 - Implement `Component`: `Name`, `Inject()`, `Provide()`, `ApplyAsync` (single-step) or `IIterativeComponent.IterateAsync` (per-step divert). Declare exactly what you use; keys/`EventKey`s live in a shared contracts assembly (`static readonly`, reference identity).
 - In-process composition: app/plugin projects reference Core (+Plugins) and the contracts project; never plugin→plugin or plugin→app.
-- **Packaged form** (the real deployment shape): one `.gocordis-plugin` per plugin, declared with `plugin pack … --backend managed --entry-assembly <dll> --entry-type <type>`; cross-plugin typed keys **MUST** use `--shared-assembly <ContractsName>` — that DLL is promoted into `AssemblyLoadContext.Default` so every plugin sees one `Key<T>` identity; without it gating silently fails. Declare `--provides <name>` / `--dependency <id>@<range>` so the control plane's dependency view is real.
+- **Packaged form** (the real deployment shape): one `.gocordis-plugin` per plugin, declared with `plugin pack … --backend managed --entry-assembly <dll> --entry-type <type>`; cross-plugin typed keys **MUST** use `--shared-assembly <ContractsName>` — the host seals that DLL into `AssemblyLoadContext.Default` so every plugin sees one `Key<T>` identity; without it gating silently fails. Declare `--provides <name>` / `--dependency <id>@<range>` so the control plane's dependency view is real; a package dependency is not a capability guarantee — the consumer still waits on `Inject()`.
 - Trust boundary: **Managed plugins are trusted code, not a sandbox.** ALC is collectible, not isolating; use Process/WASM for untrusted code. Only host-approved contract assemblies may be shared (see `SharedAssemblyRegistry`), full identity is checked, and shared assemblies have **process lifetime** — upgrading a shared contract requires a controlled host restart.
 - UI belongs to the package: pages/panels/client modules in `gocordis-ui.json` (or inline `manifest.ui`), bound as effects of the plugin's fiber by `UiPackageBinder`; install brings UI, disable/uninstall reverses it. C# contributes data capabilities (API queries/commands), not hardcoded console UI. Pages may declare `group` (`/`-separated) for hierarchical menus and `order` for sibling sorting. A TSX frontend is built by `@gocordis/plugin-kit` (`web/plugin-kit`) into one ESM served same-origin; react/antd come from the console facade (one React instance).
 - Composition root selects backends and registers the factory; control plane decorates it with UI binding. Do **not** pre-register raw factories in `PlatformApplication` (that bypasses UI binding).

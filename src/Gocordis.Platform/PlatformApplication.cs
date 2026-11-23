@@ -229,7 +229,9 @@ public class PlatformApplication : IAsyncDisposable
                 _options.ManifestPath, Store, Registry, Console.Ui, componentFactory,
                 names => names.All(SharedAssemblyRegistry.IsApproved),
                 ApplyDeclarationPlanAsync,
-                RestoreDeclarationPlanAsync));
+                () => string.Join("|", Capabilities.Declarations
+                    .Select(declaration => declaration.ToWireString())
+                    .OrderBy(value => value, StringComparer.Ordinal))));
             var control = Runtime.RequireCapability(ControlPlaneKeys.Service);
             Control = control;
 
@@ -344,7 +346,27 @@ public class PlatformApplication : IAsyncDisposable
             var fromModule = isWat
                 ? WasmCapabilityDeclarations.ReadFromWat(File.ReadAllText(modulePath))
                 : WasmCapabilityDeclarations.Read(File.ReadAllBytes(modulePath));
-            var declarations = Merge(fromManifest, fromModule);
+            // Bidirectional consistency: a WASM module cannot add, drop or
+            // change a declaration relative to its package manifest. Merge by
+            // group-first used to hide conflicting versions/media types.
+            if (fromManifest.Count == 0 && fromModule.Count == 0)
+            {
+                var legacyKey = PlatformBackendKeys.WasmValue(manifest.Id);
+                return isWat
+                    ? new WasmComponent(File.ReadAllText(modulePath), legacyKey)
+                    : new WasmComponent(File.ReadAllBytes(modulePath), legacyKey, name: manifest.Id);
+            }
+
+            if (fromManifest.Count != fromModule.Count ||
+                fromManifest.Any(declaration => !fromModule.Any(declaration.Equals)))
+            {
+                throw new InvalidOperationException(
+                    $"WASM capability declarations for plugin '{manifest.Id}' differ from its package " +
+                    $"manifest: manifest=[{string.Join(" | ", fromManifest.Select(d => d.ToWireString()))}] " +
+                    $"module=[{string.Join(" | ", fromModule.Select(d => d.ToWireString()))}]");
+            }
+
+            var declarations = fromManifest;
             if (declarations.Count > 0)
             {
                 Capabilities.EnsureConsistent(declarations);
@@ -355,14 +377,6 @@ public class PlatformApplication : IAsyncDisposable
                         File.ReadAllBytes(modulePath), manifest.Id, Capabilities, declarations);
             }
 
-            var key = PlatformBackendKeys.WasmValue(manifest.Id);
-            if (isWat)
-            {
-                // WAT is a real WASM module compiled by Wasmtime at activation.
-                return new WasmComponent(File.ReadAllText(modulePath), key);
-            }
-
-            return new WasmComponent(File.ReadAllBytes(modulePath), key, name: manifest.Id);
         }
 
         if (string.Equals(backend, "builtin", StringComparison.OrdinalIgnoreCase))
@@ -376,48 +390,56 @@ public class PlatformApplication : IAsyncDisposable
             $"unsupported backend '{backend}' declared by plugin '{manifest.Id}'");
     }
 
-    private IReadOnlyList<CapabilityDeclaration> _declarationPlanSnapshot = [];
-
     /// <summary>
-    /// The one declaration-plan entry point for startup AND dynamic install.
-    /// The plan is replaced wholesale (Key instances are kept for stable
-    /// identity) and validated before any component is constructed; a failed
-    /// apply restores the previous plan, so a rolled-back transaction cannot
-    /// leave capability declarations behind.
+    /// Self-contained transaction: captures its own baseline and restores it,
+    /// never a shared field that a later operation could overwrite.
     /// </summary>
-    private Task ApplyDeclarationPlanAsync(IReadOnlyList<string> capabilityWire)
+    private sealed class DeclarationPlanTransaction : IDeclarationTransaction
     {
-        _declarationPlanSnapshot = Capabilities.Declarations;
-        Capabilities.Replace(capabilityWire.Select(CapabilityDeclaration.Parse));
-        Capabilities.ValidateCompatibility();
-        return Task.CompletedTask;
+        private readonly CapabilityCatalog _catalog;
+        private readonly IReadOnlyList<CapabilityDeclaration> _previous;
+
+        public DeclarationPlanTransaction(
+            CapabilityCatalog catalog, IReadOnlyList<CapabilityDeclaration> previous)
+        {
+            _catalog = catalog;
+            _previous = previous;
+        }
+
+        public Task RollbackAsync()
+        {
+            _catalog.Replace(_previous);
+            return Task.CompletedTask;
+        }
     }
 
-    private Task RestoreDeclarationPlanAsync()
+    private async Task<IDeclarationTransaction> ApplyDeclarationPlanAsync(
+        IReadOnlyList<string> capabilityWire)
     {
-        Capabilities.Replace(_declarationPlanSnapshot);
-        return Task.CompletedTask;
+        var previous = Capabilities.Declarations;
+        try
+        {
+            Capabilities.Replace(capabilityWire.Select(CapabilityDeclaration.Parse));
+            Capabilities.ValidateCompatibility();
+        }
+        catch
+        {
+            Capabilities.Replace(previous); // a rejected plan never leaks
+            throw;
+        }
+
+        return new DeclarationPlanTransaction(Capabilities, previous);
     }
 
-    /// <summary>Deduplicates declarations from manifest and module metadata.</summary>
-    private static IReadOnlyList<CapabilityDeclaration> Merge(
-        IReadOnlyList<CapabilityDeclaration> first,
-        IReadOnlyList<CapabilityDeclaration> second) =>
-        first.Concat(second)
-            .GroupBy(declaration =>
-                (declaration.Id, declaration.Direction, declaration.ValueKind))
-            .Select(group => group.First())
-            .ToArray();
-
-    /// <summary>Stable, order-independent fingerprint of a declaration's config.
-    /// Used only to give each staged managed component a distinct loader key; it
-    /// is derived state, never persisted.</summary>
+    /// <summary>Stable, order-independent fingerprint of a declaration's config.</summary>
     private static string ConfigFingerprint(IReadOnlyDictionary<string, object?> config)
     {
         var ordered = config.OrderBy(pair => pair.Key, StringComparer.Ordinal)
             .ToDictionary(pair => pair.Key, pair => pair.Value);
-        var bytes = System.Text.Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(ordered));
-        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..12].ToLowerInvariant();
+        var bytes = System.Text.Encoding.UTF8.GetBytes(
+            System.Text.Json.JsonSerializer.Serialize(ordered));
+        return Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(bytes))[..12].ToLowerInvariant();
     }
 
     /// <summary>

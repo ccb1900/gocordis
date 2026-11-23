@@ -139,8 +139,6 @@ public sealed class PluginControlService : IPluginControlPlane
     private readonly UiContributionRegistry? _ui;
     private readonly Func<PluginManifest, Component>? _componentFactory;
     private readonly Func<IReadOnlyList<string>, bool>? _sharedAssemblyApproval;
-    private readonly Func<IReadOnlyList<string>, Task>? _declarationPlan;
-    private readonly Func<Task>? _declarationRollback;
     private readonly ApplicationLoader _loader;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly HashSet<string> _registeredTypes = new(StringComparer.Ordinal);
@@ -154,8 +152,7 @@ public sealed class PluginControlService : IPluginControlPlane
         UiContributionRegistry? Ui = null,
         Func<PluginManifest, Component>? ComponentFactory = null,
         Func<IReadOnlyList<string>, bool>? SharedAssemblyApproval = null,
-        Func<IReadOnlyList<string>, Task>? DeclarationPlan = null,
-        Func<Task>? DeclarationRollback = null)
+        Func<IReadOnlyList<string>, Task<IDeclarationTransaction>>? DeclarationPlan = null)
     {
         _manifestPath = ManifestPath ?? throw new ArgumentNullException(nameof(ManifestPath));
         _store = Store ?? throw new ArgumentNullException(nameof(Store));
@@ -164,15 +161,20 @@ public sealed class PluginControlService : IPluginControlPlane
         // The host owns backend selection; Packaging never references a backend.
         _componentFactory = ComponentFactory;
         _sharedAssemblyApproval = SharedAssemblyApproval;
-        _declarationPlan = DeclarationPlan;
-        _declarationRollback = DeclarationRollback;
         _loader = new ApplicationLoader(Store, Registry)
         {
             DeclarationPlan = DeclarationPlan,
-            DeclarationRollback = DeclarationRollback,
         };
         CleanStaleUploads();
     }
+
+    /// <summary>
+    /// Host-supplied read-only declaration fingerprint (Platform owns the
+    /// catalog; Packaging never references a backend or the catalog directly).
+    /// Included in the transaction baseline so a partial catalog rollback is
+    /// reported, not silently accepted.
+    /// </summary>
+    public Func<string>? DeclarationFingerprint { get; init; }
 
     public long Revision => Interlocked.Read(ref _revision);
 
@@ -793,7 +795,8 @@ public sealed class PluginControlService : IPluginControlPlane
         bool ManifestExisted,
         byte[] ManifestBytes,
         string[] StoreVersions,
-        string[] RuntimeFingerprint);
+        string[] RuntimeFingerprint,
+        string? DeclarationFingerprint);
 
     private async Task<MutationBaseline> CaptureBaselineAsync(CancellationToken ct)
     {
@@ -803,7 +806,8 @@ public sealed class PluginControlService : IPluginControlPlane
             .Select(package => $"{package.Id}@{package.Version}")
             .OrderBy(value => value, StringComparer.Ordinal)
             .ToArray();
-        return new MutationBaseline(existed, bytes, storeVersions, RuntimeFingerprint());
+        return new MutationBaseline(
+            existed, bytes, storeVersions, RuntimeFingerprint(), ReadDeclarationFingerprint());
     }
 
     private string[] RuntimeFingerprint() =>
@@ -811,6 +815,9 @@ public sealed class PluginControlService : IPluginControlPlane
             .Select(entry => $"{entry.Manifest.Id}:{entry.Manifest.Enabled}:{entry.Fiber?.State}")
             .OrderBy(value => value, StringComparer.Ordinal)
             .ToArray();
+
+    private string? ReadDeclarationFingerprint() =>
+        DeclarationFingerprint?.Invoke() is { } fingerprint ? fingerprint : null;
 
     private async Task<string?> CompensateAsync(
         MutationBaseline baseline, IReadOnlyList<Func<Task>> inverses)
@@ -916,6 +923,12 @@ public sealed class PluginControlService : IPluginControlPlane
         if (!RuntimeFingerprint().SequenceEqual(baseline.RuntimeFingerprint))
         {
             errors.Add("runtime declarations differ after rollback");
+        }
+
+        if (baseline.DeclarationFingerprint is { } expected &&
+            !string.Equals(ReadDeclarationFingerprint(), expected, StringComparison.Ordinal))
+        {
+            errors.Add("capability declarations differ after rollback");
         }
 
         return errors;

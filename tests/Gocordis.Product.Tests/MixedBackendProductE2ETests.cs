@@ -191,14 +191,9 @@ public sealed class MixedBackendProductE2ETests
             fiber.Name.StartsWith("dyn-", StringComparison.Ordinal));
     }
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task DynamicUpgradeKeepsCompatibleCapabilityLiveWithNewGeneration()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
-
         using var temp = new TempDir();
         var store = temp.At("store");
         Directory.CreateDirectory(store);
@@ -266,6 +261,82 @@ public sealed class MixedBackendProductE2ETests
         await app.StopAsync();
         Assert.DoesNotContain(app.Runtime.Snapshot().Fibers, fiber =>
             fiber.Name.StartsWith("up-", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RealConsumerStaysCompatibleAcrossProviderUpgradesAndRejectsIncompatible()
+    {
+        var managedDll = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../../tests/fixtures/CatalogPlugin/bin/Debug/net10.0/CatalogPlugin.dll"));
+        Assert.True(File.Exists(managedDll), $"missing managed fixture '{managedDll}'");
+
+        using var temp = new TempDir();
+        var store = temp.At("store");
+        Directory.CreateDirectory(store);
+
+        async Task<string> PackProvider(string version)
+        {
+            var source = temp.At("src-provider-" + version);
+            Directory.CreateDirectory(source);
+            File.Copy(managedDll, Path.Combine(source, "CatalogPlugin.dll"));
+            var package = temp.At($"provider-{version}.gocordis-plugin");
+            await PluginPackageWriter.CreateAsync(source, new PluginPackageManifest(
+                "ver-provider", version, "ver-provider", "[1.0,)",
+                Backend: "managed", EntryAssembly: "CatalogPlugin.dll",
+                EntryType: "CatalogPlugin.CatalogComponent",
+                Capabilities: [$"provide|{Ping}|endpoint|{version}|text/plain|"]), package);
+            return package;
+        }
+
+        var consumerSource = temp.At("src-consumer");
+        Directory.CreateDirectory(consumerSource);
+        File.Copy(managedDll, Path.Combine(consumerSource, "CatalogPlugin.dll"));
+        var consumerPackage = temp.At("consumer.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(consumerSource, new PluginPackageManifest(
+            "ver-consumer", "1.0.0", "ver-consumer", "[1.0,)",
+            Backend: "managed", EntryAssembly: "CatalogPlugin.dll",
+            EntryType: "CatalogPlugin.VersionedConsumer",
+            Capabilities: [$"require|{Ping}|endpoint|[1.0.0,3.0.0)|text/plain|"]), consumerPackage);
+        await new PluginStore(store, HostVersion).InstallAsync(consumerPackage);
+
+        var v1 = await PackProvider("1.0.0");
+        await new PluginStore(store, HostVersion).InstallAsync(v1);
+        var manifestPath = temp.At("app.json");
+        await new ApplicationManifest("ver-app", "1.0.0", HostVersion,
+            [
+                new ApplicationPlugin("ver-provider", "1.0.0", true),
+                new ApplicationPlugin("ver-consumer", "1.0.0", true),
+            ]).SaveAsync(manifestPath);
+
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, store, Host: UiHostKind.WinForms, HostVersion: HostVersion));
+        await app.StartAsync();
+
+        FiberSnapshot Consumer() => Assert.Single(app.Runtime.Snapshot().Fibers,
+            fiber => fiber.Name == "versioned-consumer");
+        Assert.Equal(FiberState.Active, Consumer().State);
+
+        var v2 = await PackProvider("2.0.0");
+        var upload2 = await app.Control!.UploadAsync(File.OpenRead(v2), "provider-2.gocordis-plugin");
+        var compatible = await app.Control!.UpgradeAsync("ver-provider", upload2.UploadKey, "[2.0.0,]");
+        Assert.True(compatible.Accepted, $"compatible upgrade failed: {compatible.Error}");
+        Assert.Equal(FiberState.Active, Consumer().State);
+        Assert.Equal("2.0.0", Assert.Single(await app.Control!.ListAsync(),
+            entry => entry.Id == "ver-provider").InstalledVersion);
+
+        var v3 = await PackProvider("3.0.0");
+        var upload3 = await app.Control!.UploadAsync(File.OpenRead(v3), "provider-3.gocordis-plugin");
+        var incompatible = await app.Control!.UpgradeAsync("ver-provider", upload3.UploadKey, "[3.0.0,]");
+        Assert.False(incompatible.Accepted);
+        Assert.Contains("does not satisfy consumer range", incompatible.Error);
+        Assert.Equal(FiberState.Active, Consumer().State);
+        Assert.Equal("2.0.0", Assert.Single(await app.Control!.ListAsync(),
+            entry => entry.Id == "ver-provider").InstalledVersion);
+
+        await app.StopAsync();
+        Assert.DoesNotContain(app.Runtime.Snapshot().Fibers, fiber =>
+            fiber.Name is "versioned-consumer" or "catalog-plugin");
     }
 
     private static string ProcessProviderScript() => """

@@ -173,6 +173,63 @@ public sealed class WasmRuntimeTests
         Assert.Equal(oversized.LongLength, error.Size);
     }
 
+    [Fact]
+    public async Task PlainWasmModuleWithoutBridgeIsInterruptedByTheBudget()
+    {
+        const string wat = """
+            (module
+              (func (export "runtime_component_create") (result i32)
+                (loop $spin (br $spin))
+                i32.const 0)
+              (func (export "runtime_component_destroy") (param i32)))
+            """;
+        await using var runtime = new Gocordis.Core.Runtime();
+        var key = new Key<int>("plain-runaway");
+        var fiber = await runtime.LoadAsync(new WasmComponent(wat, key));
+
+        Assert.Equal(FiberState.Failed, fiber.State);
+        var failure = fiber.Failure as CapabilityInvocationException;
+        Assert.NotNull(failure);
+        Assert.Equal("execution-budget-exceeded", failure.Code);
+    }
+
+    [Fact]
+    public async Task CancellationInterruptsAPlainWasmModuleBeforeTheBudget()
+    {
+        const string wat = """
+            (module
+              (func (export "runtime_component_create") (result i32)
+                (loop $spin (br $spin))
+                i32.const 0)
+              (func (export "runtime_component_destroy") (param i32)))
+            """;
+        await using var runtime = new Gocordis.Core.Runtime();
+        var key = new Key<int>("cancel-runaway");
+        var component = new WasmComponent(wat, key);
+        var loading = runtime.LoadAsync(component);
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (runtime.Snapshot().Fibers.FirstOrDefault(
+                    fiber => fiber.Name == "wasm-plugin") is { } appearing &&
+                appearing.State != FiberState.Pending)
+            {
+                break;
+            }
+
+            await Task.Delay(10);
+        }
+
+        var fiber = runtime.Snapshot().Fibers.Single(f => f.Name == "wasm-plugin");
+        var disposal = runtime.DisposeAsync(runtime.GetFiber(fiber.Id)!);
+        var loaded = await loading.WaitAsync(TimeSpan.FromSeconds(5));
+        await disposal.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(FiberState.Gone, loaded.State);
+        Assert.Null(loaded.Failure);
+    }
+
     private sealed class ProbeComponent : Component
     {
         private readonly Action<Context> _apply;

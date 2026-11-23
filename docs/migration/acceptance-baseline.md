@@ -109,6 +109,15 @@
 自审后全量：**507 passed + 1 显式 Skipped（Windows 用例在 POSIX 上登记跳过）/ 0 failed**，
 build 0 warning / 0 error。
 
+## 终验收敛批次（针对 5eb2855 审查报告六项）
+
+1. **Endpoint 线性化**：`DelegatingCapabilityEndpoint` 的所有 Dispose 共享同一个完成 Task（晚到调用也等待底层资源真正释放/失败）；进入租约采用 enter-then-check；压力测试 `ConcurrentInvokeAndDisposeNeverUseAReleasedEndpoint`（多轮 × 32 Invoke × 4 Dispose）断言释放后零调用进入。
+2. **WASM 全模块预算**：**每个** Store（含无 Bridge 的普通模块）都创建 EpochTicker；`AttachCancellation` 把 Activation token 记录为调用边界标志，中断后的 Instance 标记不可复用。**边界说明**：Wasmtime 不允许跨线程修改 Store/Engine，因此取消不会从外部线程强行打断正在执行的 guest；运行中的无限循环由**调用前武装的 epoch 预算**兜底（10s），取消在下一个 guest 调用边界生效，且在途激活按 divert 语义撤销（fiber Gone 无 Failure）。测试：普通模块跑飞 → `execution-budget-exceeded`；激活期取消 → fiber Gone 无 Failure。
+3. **Catalog 原子事务**：`Replace` 在锁外构建完整候选状态并校验（含同版本多 Provider 拒绝），一次锁内交换；`ValidateCompatibility` 改为纯候选校验；失败零污染（`ReplaceRejectsTwoProviders...` 断言旧声明与 Key 身份不变）。
+4. **WASM 声明双向严格一致**：Manifest 与 Custom Section 按完整结构（Id/方向/版本/范围/媒体类型/Schema）双向相等校验，冲突拒绝；`capability_invoke` 导出在激活前验证，缺失即 Failed（`CapabilityProviderWithoutCapabilityInvokeExportCannotActivate`、`ConflictingWasmDeclarationIsRejectedAtLoadTime`）。
+5. **真实 Consumer 版本链路**：新增 `VersionedConsumer` fixture，`RealConsumerStaysCompatibleAcrossProviderUpgradesAndRejectsIncompatible` 覆盖 v1→v2 兼容升级保持 Active、v2→v3 越界升级被拒且维持 v2 与 Active。
+6. **平台与事务基线**：剩余裸 `return` 全部改为 `[PosixOnlyFact]`；控制面 `MutationBaseline` 纳入宿主提供的只读声明指纹（Platform 提供，Packaging 不碰 Catalog），补偿后比较——`TransactionBaselineDetectsAnUnrestoredDeclarationFingerprint` 验证检测能力。声明计划改为自包含事务对象（`IDeclarationTransaction`），去掉 PlatformApplication 共享快照字段。
+
 ## 冻结规则
 
 1. 本基线只记录**已核实**的证据等级，不把 E0/E1 升级为 E2。

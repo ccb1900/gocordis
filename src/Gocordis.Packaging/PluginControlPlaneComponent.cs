@@ -15,8 +15,8 @@ public sealed class PluginControlPlaneComponent : Component
     private readonly PluginRegistry _registry;
     private readonly UiContributionRegistry? _ui;
     private readonly Func<IReadOnlyList<string>, bool>? _sharedAssemblyApproval;
-    private readonly Func<IReadOnlyList<string>, Task>? _declarationPlan;
-    private readonly Func<Task>? _declarationRollback;
+    private readonly Func<IReadOnlyList<string>, Task<IDeclarationTransaction>>? _declarationPlan;
+    private readonly Func<string>? _declarationFingerprint;
 
     public PluginControlPlaneComponent(
         string ManifestPath,
@@ -25,8 +25,8 @@ public sealed class PluginControlPlaneComponent : Component
         UiContributionRegistry? Ui = null,
         Func<PluginManifest, Component>? ComponentFactory = null,
         Func<IReadOnlyList<string>, bool>? SharedAssemblyApproval = null,
-        Func<IReadOnlyList<string>, Task>? DeclarationPlan = null,
-        Func<Task>? DeclarationRollback = null)
+        Func<IReadOnlyList<string>, Task<IDeclarationTransaction>>? DeclarationPlan = null,
+        Func<string>? DeclarationFingerprint = null)
     {
         _manifestPath = ManifestPath ?? throw new ArgumentNullException(nameof(ManifestPath));
         _store = Store ?? throw new ArgumentNullException(nameof(Store));
@@ -35,7 +35,7 @@ public sealed class PluginControlPlaneComponent : Component
         _componentFactory = ComponentFactory;
         _sharedAssemblyApproval = SharedAssemblyApproval;
         _declarationPlan = DeclarationPlan;
-        _declarationRollback = DeclarationRollback;
+        _declarationFingerprint = DeclarationFingerprint;
     }
 
     private readonly Func<PluginManifest, Component>? _componentFactory;
@@ -48,7 +48,10 @@ public sealed class PluginControlPlaneComponent : Component
     {
         var service = new PluginControlService(
             _manifestPath, _store, _registry, _ui, _componentFactory, _sharedAssemblyApproval,
-            _declarationPlan, _declarationRollback);
+            _declarationPlan)
+        {
+            DeclarationFingerprint = _declarationFingerprint,
+        };
         // Context.Provide installs its own LIFO inverse; no cleanup stack here.
         context.Provide(ControlPlaneKeys.Service, service);
 

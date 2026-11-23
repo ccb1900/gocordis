@@ -208,6 +208,42 @@ public sealed class BackendDispatchProductTests
         Assert.Throws<TargetInvocationException>(() => Create("unknown", "ghost", "plugin.sh"));
     }
 
+    [Fact]
+    public async Task ConflictingWasmDeclarationIsRejectedAtLoadTime()
+    {
+        using var temp = new TempDir();
+        const string id = "wasm-conflict";
+        const string wat = """
+            (module
+              (@custom "gocordis.capabilities" "{\"provides\":[{\"id\":\"org.example.conflict/svc\",\"kind\":\"endpoint\",\"version\":\"2.0.0\",\"mediaType\":\"text/plain\"}]}")
+              (memory (export "memory") 1)
+              (func (export "runtime_component_destroy") (param i32))
+              (func (export "runtime_component_create") (result i32) i32.const 1)
+              (func (export "capability_invoke") (param i32 i32) (result i32 i32)
+                i32.const 2048 i32.const 0))
+            """;
+        var store = temp.Path("store-" + id);
+        var source = temp.Path("source-" + id);
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "plugin.wat"), wat);
+        var package = temp.File(id + ".gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source, new PluginPackageManifest(
+            id, "1.0.0", id, "[1.0,)",
+            Backend: "wasm", EntryAssembly: "plugin.wat",
+            Capabilities: ["provide|org.example.conflict/svc|endpoint|1.0.0|text/plain|"]), package);
+        await new PluginStore(store, HostVersion).InstallAsync(package);
+
+        var manifestPath = temp.File("app-" + id + ".json");
+        await new ApplicationManifest("conflict-app", "1.0.0", HostVersion,
+            [new ApplicationPlugin(id, "1.0.0", true)]).SaveAsync(manifestPath);
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, store, Host: UiHostKind.WinForms, HostVersion: HostVersion));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await app.StartAsync());
+        Assert.Contains("differ from its package manifest", error.InnerException?.Message ?? error.Message);
+    }
+
     private const string ProcessPluginScript = """
         #!/bin/sh
         handshake="GORIDIS-PROC-PLUGIN 1"

@@ -251,9 +251,11 @@ public sealed class DelegatingCapabilityEndpoint : ICapabilityEndpoint
 {
     private readonly Func<CapabilityEnvelope, CancellationToken, ValueTask<CapabilityEnvelope>> _invoke;
     private readonly Func<ValueTask>? _dispose;
+    private readonly object _disposeGate = new();
     private int _disposed;
     private long _inFlight;
     private TaskCompletionSource? _drained;
+    private TaskCompletionSource? _disposalCompletion;
 
     public DelegatingCapabilityEndpoint(
         CapabilityId id,
@@ -306,26 +308,56 @@ public sealed class DelegatingCapabilityEndpoint : ICapabilityEndpoint
     /// in-flight call has finished, so a provider teardown can never abort a
     /// call that was already linearized.
     /// </summary>
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        TaskCompletionSource completion;
+        bool owner;
+        lock (_disposeGate)
         {
-            return;
-        }
-
-        if (Interlocked.Read(ref _inFlight) > 0)
-        {
-            var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            _drained = drained;
-            if (Interlocked.Read(ref _inFlight) > 0)
+            owner = _disposalCompletion is null;
+            if (owner)
             {
-                await drained.Task;
+                completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _disposalCompletion = completion;
+                _disposed = 1;
+            }
+            else
+            {
+                completion = _disposalCompletion!;
             }
         }
 
-        if (_dispose is not null)
+        // Every Dispose caller awaits the SAME promise: even a late caller is
+        // told when the underlying provider resource is actually gone (or
+        // failed to go), instead of assuming success on a no-op return.
+        return owner ? new ValueTask(DisposeCoreAsync(completion)) : new ValueTask(completion.Task);
+    }
+
+    private async Task DisposeCoreAsync(TaskCompletionSource completion)
+    {
+        try
         {
-            await _dispose();
+            if (Interlocked.Read(ref _inFlight) > 0)
+            {
+                var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _drained = drained;
+                if (Interlocked.Read(ref _inFlight) > 0)
+                {
+                    await drained.Task;
+                }
+            }
+
+            if (_dispose is not null)
+            {
+                await _dispose();
+            }
+
+            completion.TrySetResult();
+        }
+        catch (Exception ex)
+        {
+            completion.TrySetException(ex);
+            throw;
         }
     }
 }
@@ -391,14 +423,75 @@ public sealed class CapabilityCatalog : ICapabilityCatalog
     public void Replace(IEnumerable<CapabilityDeclaration> declarations)
     {
         ArgumentNullException.ThrowIfNull(declarations);
+
+        // Build the full candidate state OUTSIDE the gate; a rejected plan must
+        // never leave a half-written catalog behind.
+        var candidateDeclarations = declarations.ToArray();
+        var candidateKinds = new Dictionary<CapabilityId, CapabilityValueKind>();
+        var candidateContracts = new Dictionary<CapabilityId, List<CapabilityContract>>();
+        foreach (var declaration in candidateDeclarations)
+        {
+            if (candidateKinds.TryGetValue(declaration.Id, out var existing) &&
+                existing != declaration.ValueKind)
+            {
+                throw new InvalidOperationException(
+                    $"capability '{declaration.Id}' is declared with conflicting kinds " +
+                    $"'{existing}' and '{declaration.ValueKind}'");
+            }
+
+            candidateKinds[declaration.Id] = declaration.ValueKind;
+            if (declaration.Direction != CapabilityDirection.Provide)
+            {
+                continue;
+            }
+
+            if (!candidateContracts.TryGetValue(declaration.Id, out var contracts))
+            {
+                contracts = [];
+                candidateContracts[declaration.Id] = contracts;
+            }
+
+            contracts.Add(new CapabilityContract(
+                declaration.Id, declaration.ValueKind,
+                declaration.Version is null ? null : NuGetVersion.Parse(declaration.Version),
+                declaration.MediaType, declaration.SchemaRef));
+        }
+
+        // One provider per id — even at the SAME version. The runtime's unique
+        // provider rule must be enforced at assembly time, not discovered later
+        // as a fiber failure during activation.
+        foreach (var group in candidateDeclarations
+                     .Where(declaration => declaration.Direction == CapabilityDirection.Provide)
+                     .GroupBy(declaration => declaration.Id))
+        {
+            if (group.Count() > 1)
+            {
+                throw new CapabilityVersionException(
+                    $"capability '{group.Key}' has {group.Count()} providers; " +
+                    "use distinct ids or Broker<T> for multi-implementation");
+            }
+        }
+
+        ValidateCandidateCompatibility(candidateDeclarations);
+
+        // Single in-lock swap of immutable-by-convention state refs; _keys is
+        // deliberately retained so Key identity outlives every revision.
         lock (_gate)
         {
             _declarations.Clear();
+            _declarations.AddRange(candidateDeclarations);
             _contracts.Clear();
-            _kinds.Clear();
-        }
+            foreach (var (id, contracts) in candidateContracts)
+            {
+                _contracts[id] = contracts;
+            }
 
-        Declare(declarations);
+            _kinds.Clear();
+            foreach (var (id, kind) in candidateKinds)
+            {
+                _kinds[id] = kind;
+            }
+        }
     }
 
     /// <summary>
@@ -475,44 +568,50 @@ public sealed class CapabilityCatalog : ICapabilityCatalog
     /// </summary>
     public void ValidateCompatibility()
     {
+        IReadOnlyList<CapabilityDeclaration> snapshot;
         lock (_gate)
         {
-            foreach (var group in _declarations
-                         .Where(declaration => declaration.Direction == CapabilityDirection.Provide)
-                         .GroupBy(declaration => declaration.Id))
+            snapshot = [.. _declarations];
+        }
+
+        ValidateCandidateCompatibility(snapshot);
+    }
+
+    /// <summary>Pure version gate over a candidate declaration set; no shared
+    /// state is touched, so it can run before the atomic swap.</summary>
+    private static void ValidateCandidateCompatibility(IReadOnlyList<CapabilityDeclaration> declarations)
+    {
+        foreach (var group in declarations
+                     .Where(declaration => declaration.Direction == CapabilityDirection.Provide)
+                     .GroupBy(declaration => declaration.Id))
+        {
+            if (group.Count() > 1)
             {
-                var versions = group
-                    .Select(declaration => NuGetVersion.Parse(declaration.Version ?? "0.0.0"))
-                    .Distinct()
-                    .ToArray();
-                if (versions.Length > 1)
-                {
-                    throw new CapabilityVersionException(
-                        $"capability '{group.Key}' is provided at {versions.Length} different versions " +
-                        "[" + string.Join(", ", versions) + "]; use distinct ids or Broker<T> for multi-implementation");
-                }
+                throw new CapabilityVersionException(
+                    $"capability '{group.Key}' has {group.Count()} providers; " +
+                    "use distinct ids or Broker<T> for multi-implementation");
+            }
+        }
+
+        foreach (var requirement in declarations.Where(declaration =>
+                     declaration.Direction == CapabilityDirection.Require &&
+                     declaration.VersionRange is not null))
+        {
+            var provider = declarations.FirstOrDefault(declaration =>
+                declaration.Direction == CapabilityDirection.Provide &&
+                declaration.Id == requirement.Id);
+            if (provider is null)
+            {
+                continue; // Dependency loss is Pending, never a failed declaration.
             }
 
-            foreach (var requirement in _declarations.Where(declaration =>
-                         declaration.Direction == CapabilityDirection.Require &&
-                         declaration.VersionRange is not null))
+            var version = NuGetVersion.Parse(provider.Version ?? "0.0.0");
+            var range = NuGet.Versioning.VersionRange.Parse(requirement.VersionRange!);
+            if (!range.Satisfies(version))
             {
-                var provider = _declarations.FirstOrDefault(declaration =>
-                    declaration.Direction == CapabilityDirection.Provide &&
-                    declaration.Id == requirement.Id);
-                if (provider is null)
-                {
-                    continue; // Dependency loss is Pending, never a failed declaration.
-                }
-
-                var version = NuGetVersion.Parse(provider.Version ?? "0.0.0");
-                var range = NuGet.Versioning.VersionRange.Parse(requirement.VersionRange!);
-                if (!range.Satisfies(version))
-                {
-                    throw new CapabilityVersionException(
-                        $"capability '{requirement.Id}' provider version {version} " +
-                        $"does not satisfy consumer range {range}");
-                }
+                throw new CapabilityVersionException(
+                    $"capability '{requirement.Id}' provider version {version} " +
+                    $"does not satisfy consumer range {range}");
             }
         }
     }

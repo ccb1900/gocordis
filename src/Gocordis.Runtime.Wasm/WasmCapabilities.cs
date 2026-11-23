@@ -345,7 +345,9 @@ public sealed class WasmCapabilityComponent : Component
             return context.Require(key);
         });
 
-        var backend = new WasmBackend(() => _createInstance(bridge), key: null, _tracker);
+        var backend = new WasmBackend(
+            () => _createInstance(bridge), key: null, _tracker,
+            requiredExports: _provides.Count > 0 ? ["capability_invoke"] : null);
         await BackendProtocol.RunAsync(backend, context);
 
         await context.EffectAsync(

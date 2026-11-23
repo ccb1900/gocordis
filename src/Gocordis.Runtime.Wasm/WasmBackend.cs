@@ -20,6 +20,7 @@ public sealed class WasmBackend : IPluginBackend
     private int _value;
     private bool _released;
     private bool _disposed;
+    private readonly IReadOnlyList<string> _requiredExports;
 
     public WasmBackend(
         string wat,
@@ -44,11 +45,13 @@ public sealed class WasmBackend : IPluginBackend
     internal WasmBackend(
         Func<WasmPluginInstance> createInstance,
         Key<int>? key,
-        GenerationTracker? tracker)
+        GenerationTracker? tracker,
+        IReadOnlyList<string>? requiredExports = null)
     {
         _createInstance = createInstance;
         _key = key;
         _tracker = tracker ?? new GenerationTracker();
+        _requiredExports = requiredExports ?? [];
     }
 
     public string BackendId => "wasm";
@@ -64,7 +67,8 @@ public sealed class WasmBackend : IPluginBackend
         _instance = _createInstance();
         try
         {
-            _instance.ValidateRuntimeExports();
+            _instance.AttachCancellation(context.CancellationToken);
+            _instance.ValidateRuntimeExports(_requiredExports);
         }
         catch
         {

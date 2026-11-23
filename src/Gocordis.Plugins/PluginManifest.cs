@@ -8,6 +8,16 @@ using Tomlyn.Model;
 
 namespace Gocordis.Plugins;
 
+/// <summary>
+/// One capability-declaration plan transaction: the host captures its own
+/// previous/candidate state and owns rollback. The control plane only calls
+/// RollbackAsync when the registry apply fails; no shared snapshot field.
+/// </summary>
+public interface IDeclarationTransaction
+{
+    Task RollbackAsync();
+}
+
 /// <summary>Rejected when a declared checksum does not match the artifact content.</summary>
 public sealed class ChecksumMismatchException : InvalidOperationException
 {

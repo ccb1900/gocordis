@@ -49,9 +49,7 @@ public sealed class ApplicationLoader
     /// component, and a failed apply restores the previous plan so a rolled
     /// back install cannot leave declarations behind.
     /// </summary>
-    public Func<IReadOnlyList<string>, Task>? DeclarationPlan { get; init; }
-
-    public Func<Task>? DeclarationRollback { get; init; }
+    public Func<IReadOnlyList<string>, Task<IDeclarationTransaction>>? DeclarationPlan { get; init; }
 
     public ApplicationLoader(PluginStore store, PluginRegistry registry)
     {
@@ -96,20 +94,23 @@ public sealed class ApplicationLoader
             .SelectMany(manifest => manifest.CapabilitiesOrEmpty)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
-        if (DeclarationPlan is { } plan)
-        {
-            await plan(planWire);
-        }
-
+        IDeclarationTransaction? transaction = null;
         try
         {
+            // The plan itself is inside the try: a rejected candidate must be
+            // rolled back by its own transaction, not left half-applied.
+            if (DeclarationPlan is { } plan)
+            {
+                transaction = await plan(planWire);
+            }
+
             await _registry.ApplyAsync(declarations);
         }
         catch
         {
-            if (DeclarationRollback is { } rollback)
+            if (transaction is not null)
             {
-                await rollback();
+                await transaction.RollbackAsync();
             }
 
             throw;

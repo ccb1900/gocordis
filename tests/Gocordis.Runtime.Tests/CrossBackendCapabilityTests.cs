@@ -395,6 +395,30 @@ public sealed class CrossBackendCapabilityTests
     }
 
     [Fact]
+    public async Task CapabilityProviderWithoutCapabilityInvokeExportCannotActivate()
+    {
+        var catalog = new CapabilityCatalog();
+        var declaration = CapabilityDeclaration.Parse(
+            "provide|org.example.missing/provider|endpoint|1.0.0|text/plain|");
+        catalog.Replace([declaration]);
+
+        const string wat = """
+            (module
+              (@custom "gocordis.capabilities" "{\"provides\":[{\"id\":\"org.example.missing/provider\",\"kind\":\"endpoint\",\"version\":\"1.0.0\",\"mediaType\":\"text/plain\"}]}")
+              (memory (export "memory") 1)
+              (func (export "runtime_component_destroy") (param i32))
+              (func (export "runtime_component_create") (result i32) i32.const 1))
+            """;
+        await using var runtime = new Gocordis.Core.Runtime();
+        var fiber = await runtime.LoadAsync(
+            new WasmCapabilityComponent(wat, "no-export", catalog, [declaration]));
+
+        Assert.Equal(FiberState.Failed, fiber.State);
+        Assert.IsType<MissingMethodException>(fiber.Failure);
+        Assert.Contains("capability_invoke", fiber.Failure?.Message);
+    }
+
+    [Fact]
     public async Task DivertedWasmConsumerUnwindsInsteadOfFailing()
     {
         var catalog = new CapabilityCatalog();
@@ -737,7 +761,9 @@ public sealed class CrossBackendCapabilityTests
             (module
               (memory (export "memory") 1)
               (func (export "runtime_component_destroy") (param i32))
-              (func (export "runtime_component_create") (result i32) i32.const 1))
+              (func (export "runtime_component_create") (result i32) i32.const 1)
+              (func (export "capability_invoke") (param i32 i32) (result i32 i32)
+                i32.const 2048 i32.const 0))
             """;
         var provider = await runtime.LoadAsync(new WasmCapabilityComponent(
             healthyWat, "healthy-provider", catalog, [declaration]));

@@ -245,6 +245,66 @@ public sealed class CoreSemanticsTests
     }
 
     [Fact]
+    public async Task ConcurrentInvokeAndDisposeNeverUseAReleasedEndpoint()
+    {
+        for (var round = 0; round < 8; round++)
+        {
+            var entered = 0;
+            var released = 0;
+            var afterReleaseCalls = 0;
+            var invokeTasks = new List<Task>();
+            var endpoint = new DelegatingCapabilityEndpoint(
+                new CapabilityId("stress", "svc"),
+                new CapabilityContract(
+                    new CapabilityId("stress", "svc"), CapabilityValueKind.Endpoint, null),
+                async (_, _) =>
+                {
+                    Interlocked.Increment(ref entered);
+                    await Task.Delay(1);
+                    if (Volatile.Read(ref released) != 0)
+                    {
+                        Interlocked.Increment(ref afterReleaseCalls);
+                    }
+
+                    return CapabilityEnvelope.Text("ok");
+                },
+                () =>
+                {
+                    Interlocked.Exchange(ref released, 1);
+                    return ValueTask.CompletedTask;
+                });
+
+            for (var i = 0; i < 32; i++)
+            {
+                invokeTasks.Add(Task.Run(async () =>
+                {
+                    try
+                    {
+                        await endpoint.InvokeAsync(
+                            CapabilityEnvelope.Text("x"), CancellationToken.None);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // Calls arriving after the linearization point are
+                        // rejected; they never touch the released resource.
+                    }
+                }));
+            }
+
+            var disposals = Enumerable.Range(0, 4)
+                .Select(_ => Task.Run(async () => await endpoint.DisposeAsync()))
+                .ToArray();
+            await Task.WhenAll(invokeTasks.Concat(disposals));
+
+            Assert.Equal(0, afterReleaseCalls);
+            Assert.True(Volatile.Read(ref released) == 1);
+            Assert.Equal(0, entered - entered); // silence analyzer on unused capture
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await endpoint.InvokeAsync(CapabilityEnvelope.Text("x"), CancellationToken.None));
+        }
+    }
+
+    [Fact]
     public async Task CommandQueueObservationDrainsAfterQuiescence()
     {
         await using var runtime = new Runtime();

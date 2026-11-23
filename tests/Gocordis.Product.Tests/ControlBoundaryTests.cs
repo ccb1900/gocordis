@@ -128,14 +128,9 @@ public sealed class ControlBoundaryTests
             """{"properties":{"value":{"type":"string"}},"type":"object"}""")!);
     }
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task FailedActivationRollsBackStoreManifestRegistryAndCatalogTogether()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return; // POSIX fixture
-        }
-
         using var temp = new TempDir();
         var manifestPath = temp.At("app.json");
         await new ApplicationManifest("consistency-app", "1.0.0", HostVersion, []).SaveAsync(manifestPath);
@@ -144,11 +139,21 @@ public sealed class ControlBoundaryTests
         await using var registry = new PluginRegistry(runtime);
         var manifestBytes = await File.ReadAllBytesAsync(manifestPath);
         var catalog = new CapabilityCatalog();
-        Task PlanAsync(IReadOnlyList<string> wire)
+        async Task<IDeclarationTransaction> PlanAsync(IReadOnlyList<string> wire)
         {
-            catalog.Replace(wire.Select(CapabilityDeclaration.Parse));
-            catalog.ValidateCompatibility();
-            return Task.CompletedTask;
+            var previous = catalog.Declarations;
+            try
+            {
+                catalog.Replace(wire.Select(CapabilityDeclaration.Parse));
+                catalog.ValidateCompatibility();
+            }
+            catch
+            {
+                catalog.Replace(previous);
+                throw;
+            }
+
+            return new TestDeclarationTransaction(catalog, previous);
         }
 
         var control = new PluginControlService(manifestPath, store, registry,
@@ -158,19 +163,13 @@ public sealed class ControlBoundaryTests
                     [CapabilityDeclaration.Parse(
                         "provide|org.example.dead/value|endpoint|1.0.0|text/plain|")])
                 : throw new InvalidOperationException("unreachable"),
-            DeclarationPlan: PlanAsync,
-            DeclarationRollback: () =>
-            {
-                catalog.Replace(Enumerable.Empty<CapabilityDeclaration>());
-                return Task.CompletedTask;
-            });
+            DeclarationPlan: PlanAsync);
 
         var source = temp.At("source");
         Directory.CreateDirectory(source);
         var script = Path.Combine(source, "plugin.py");
         await File.WriteAllTextAsync(script, "#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n");
-        File.SetUnixFileMode(script,
-            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        PlatformFiles.MarkExecutable(script);
         var package = temp.At("dead.gocordis-plugin");
         await PluginPackageWriter.CreateAsync(source, new PluginPackageManifest(
             "dead-provider", "1.0.0", "dead-provider", "[1.0,)",
@@ -190,6 +189,62 @@ public sealed class ControlBoundaryTests
             fiber.Name.StartsWith("process-", StringComparison.Ordinal));
         Assert.Empty(catalog.Declarations);
         Assert.False(catalog.IsDeclared(new CapabilityId("org.example.dead", "value")));
+    }
+
+    [PosixOnlyFact]
+    public async Task TransactionBaselineDetectsAnUnrestoredDeclarationFingerprint()
+    {
+        using var temp = new TempDir();
+        var manifestPath = temp.At("app.json");
+        await new ApplicationManifest("fingerprint-app", "1.0.0", HostVersion, []).SaveAsync(manifestPath);
+        var store = new PluginStore(temp.At("store"), HostVersion);
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+
+        var reads = 0;
+        var control = new PluginControlService(manifestPath, store, registry,
+            ComponentFactory: manifest => new Gocordis.Runtime.Process.ProcessCapabilityComponent(
+                Path.Combine(manifest.Source!, manifest.EntryAssembly!), new CapabilityCatalog(),
+                [CapabilityDeclaration.Parse(
+                    "provide|org.example.dead/value|endpoint|1.0.0|text/plain|")]))
+        {
+            DeclarationFingerprint = () => (++reads).ToString(),
+        };
+
+        var source = temp.At("source");
+        Directory.CreateDirectory(source);
+        var script = Path.Combine(source, "plugin.py");
+        await File.WriteAllTextAsync(script, "#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n");
+        PlatformFiles.MarkExecutable(script);
+        var package = temp.At("dead.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source, new PluginPackageManifest(
+            "dead-fp", "1.0.0", "dead-fp", "[1.0,)",
+            Backend: "process", EntryAssembly: "plugin.py",
+            Capabilities: ["provide|org.example.dead/value|endpoint|1.0.0|text/plain|"]), package);
+        var upload = await control.UploadAsync(File.OpenRead(package), "dead.gocordis-plugin");
+
+        var result = await control.InstallAsync(upload.UploadKey);
+        Assert.False(result.Accepted);
+        Assert.Contains("capability declarations differ after rollback", result.Error);
+    }
+
+    private sealed class TestDeclarationTransaction : IDeclarationTransaction
+    {
+        private readonly CapabilityCatalog _catalog;
+        private readonly IReadOnlyList<CapabilityDeclaration> _previous;
+
+        public TestDeclarationTransaction(
+            CapabilityCatalog catalog, IReadOnlyList<CapabilityDeclaration> previous)
+        {
+            _catalog = catalog;
+            _previous = previous;
+        }
+
+        public Task RollbackAsync()
+        {
+            _catalog.Replace(_previous);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class TempDir : IDisposable

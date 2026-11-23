@@ -35,3 +35,30 @@ public sealed class CatalogComponent : Component
         return null;
     }
 }
+
+/// <summary>
+/// Fixture consumer that requires the catalog capability declared with a peer
+/// range in its package manifest. It exercises the full declaration-plan →
+/// Core binding → upgrade transaction path in product E2E tests.
+/// </summary>
+public sealed class VersionedConsumer : Component
+{
+    private readonly Key<ICapabilityEndpoint> _key;
+
+    public VersionedConsumer(ICapabilityCatalog catalog)
+    {
+        _key = catalog.KeyFor<ICapabilityEndpoint>(
+            new CapabilityId("org.example.catalog", "ping"), CapabilityValueKind.Endpoint);
+    }
+
+    public override string Name => "versioned-consumer";
+
+    public override IReadOnlyList<ICapabilityKey> Inject() => [_key];
+
+    public async override ValueTask<Cleanup?> ApplyAsync(Context context)
+    {
+        var endpoint = context.Require(_key);
+        _ = await endpoint.InvokeAsync(CapabilityEnvelope.Text("x"), context.CancellationToken);
+        return null;
+    }
+}

@@ -153,6 +153,28 @@ public sealed class CapabilityDeclarationTests
         Assert.Contains("endpoint", error.Message);
     }
 
+    [Fact]
+    public void ReplaceRejectsTwoProvidersAtTheSameVersionWithoutMutatingTheCatalog()
+    {
+        var catalog = new CapabilityCatalog();
+        catalog.Replace([
+            CapabilityDeclaration.Parse("provide|org.example/dup|endpoint|1.0.0||"),
+            CapabilityDeclaration.Parse("require|org.example/dup|endpoint|[1.0.0,2.0.0)||"),
+        ]);
+        var stableKey = catalog.KeyFor<ICapabilityEndpoint>(
+            new CapabilityId("org.example", "dup"), CapabilityValueKind.Endpoint);
+
+        Assert.Throws<CapabilityVersionException>(() => catalog.Replace([
+            CapabilityDeclaration.Parse("provide|org.example/dup|endpoint|1.0.0||"),
+            CapabilityDeclaration.Parse("provide|org.example/dup|endpoint|1.0.0||"),
+        ]));
+
+        // The rejected plan left the old declarations AND key identity untouched.
+        Assert.Equal(2, catalog.Declarations.Count);
+        Assert.Same(stableKey, catalog.KeyFor<ICapabilityEndpoint>(
+            new CapabilityId("org.example", "dup"), CapabilityValueKind.Endpoint));
+    }
+
     private sealed class TempDir : IDisposable
     {
         private readonly string _root = Path.Combine(

@@ -44,6 +44,9 @@ public sealed class WasmPluginInstance : IDisposable
     private readonly Instance _instance;
     private readonly Linker? _linker;
     private readonly EpochTicker? _ticker;
+    private CancellationTokenRegistration _cancellation;
+    private volatile bool _interrupted;
+    private volatile bool _destroying;
 
     /// <summary>Exported linear memory, used by the capability bridge when present.</summary>
     internal Memory? Memory { get; }
@@ -133,9 +136,12 @@ public sealed class WasmPluginInstance : IDisposable
                 store.SetLimits(MaxStoreMemoryBytes, 10_000, 1_000, 1_000, 1_000);
                 if (bridge is null && capabilityBridge is null)
                 {
+                    // EVERY module gets the same execution budget, not just
+                    // bridged/capability modules: a plain plugin can spin too.
                     var plain = new Instance(store, module, []);
+                    var plainTicker = new EpochTicker(engine);
                     return new WasmPluginInstance(
-                        engine, module, store, plain, null, plain.GetMemory("memory"), null);
+                        engine, module, store, plain, null, plain.GetMemory("memory"), plainTicker);
                 }
 
                 var linker = new Linker(engine);
@@ -182,8 +188,52 @@ public sealed class WasmPluginInstance : IDisposable
     /// armed per call so an interrupted guest cannot leave the store reusable:
     /// the caller must treat the instance as dead after an interruption trap.
     /// </summary>
+    /// <summary>
+    /// Converts the activation token into a guest interrupt: cancellation arms
+    /// an expired epoch deadline, so the next Wasmtime step traps. After an
+    /// interrupt the instance is marked unusable (never silently reused).
+    /// </summary>
+    internal void AttachCancellation(CancellationToken token)
+    {
+        _cancellation = token.Register(() =>
+        {
+            // Teardown must still be able to call runtime_component_destroy;
+            // cancelling must not turn a clean unwind into a failed cleanup.
+            if (_destroying)
+            {
+                return;
+            }
+
+            _interrupted = true;
+            try
+            {
+                _store.SetEpochDeadline(1);
+                _engine.IncrementEpoch();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The instance was already torn down; nothing to interrupt.
+            }
+        });
+    }
+
     public object? Invoke(string export, TimeSpan budget, params object[] arguments)
     {
+        var isDestroy = string.Equals(export, "runtime_component_destroy", StringComparison.Ordinal);
+        if (isDestroy)
+        {
+            // The inverse runs while the activation token is already cancelled.
+            // Give teardown an effectively infinite deadline so the module can
+            // release its resources and the LIFO effect still completes.
+            _destroying = true;
+            _store.SetEpochDeadline(ulong.MaxValue);
+        }
+        else if (_interrupted)
+        {
+            throw new CapabilityInvocationException(
+                "provider-abort", "WASM instance was cancelled or interrupted");
+        }
+
         var function = _instance.GetFunction(export) ??
                        throw new MissingMethodException($"WASM module has no export '{export}'");
         var ticks = Math.Max(1, (long)(budget.TotalMilliseconds / EpochTickMilliseconds));
@@ -206,8 +256,17 @@ public sealed class WasmPluginInstance : IDisposable
     /// Load-time ABI check. Verified before any capability is published, so a
     /// module missing an export fails activation instead of failing at unwind.
     /// </summary>
-    public void ValidateRuntimeExports()
+    public void ValidateRuntimeExports(IReadOnlyList<string>? requiredExports = null)
     {
+        foreach (var export in requiredExports ?? [])
+        {
+            if (_instance.GetFunction(export) is null)
+            {
+                throw new MissingMethodException(
+                    $"WASM module has no export '{export}' required by its capability declaration");
+            }
+        }
+
         if (_instance.GetFunction("runtime_component_create") is null)
         {
             throw new MissingMethodException("WASM module has no export 'runtime_component_create'");
@@ -229,6 +288,7 @@ public sealed class WasmPluginInstance : IDisposable
 
     public void Dispose()
     {
+        _cancellation.Dispose();
         _ticker?.Dispose();
         _linker?.Dispose();
         _store.Dispose();

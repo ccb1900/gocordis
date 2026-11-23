@@ -70,13 +70,19 @@ pack_and_install() {
     fi
 
     local package="$PACKAGES/$id-1.0.0.gocordis-plugin"
+    local schema_args=()
+    # A package-declared config schema drives the console's typed config form;
+    # it ships with the plugin, not with console code.
+    if [[ -f "$SHOWCASE/$project/config/gocordis-config.schema.json" ]]; then
+        schema_args=(--config-schema "$SHOWCASE/$project/config/gocordis-config.schema.json")
+    fi
     dotnet "$CLI_DLL" plugin pack "$stage" "$package" \
         --id "$id" --version 1.0.0 --type "$id" --host-range "[1.0,)" \
         --backend managed \
         --entry-assembly "$asm.dll" \
         --entry-type "$entry_type" \
         --shared-assembly Showcase.Contracts \
-        "${extra[@]}"
+        "${schema_args[@]}" "${extra[@]}"
     dotnet "$CLI_DLL" plugin install "$package" --store "$STORE" --host-version 1.0.0
 }
 
@@ -100,7 +106,8 @@ cat > "$MANIFEST" <<'JSON'
   "Version": "1.0.0",
   "HostVersion": "1.0.0",
   "Plugins": [
-    { "Id": "showcase-store",          "VersionRange": "[1.0,2.0)", "Enabled": true, "Config": null },
+    { "Id": "showcase-store",          "VersionRange": "[1.0,2.0)", "Enabled": true,
+      "Config": { "intervalMs": 1500, "label": "showcase", "verbose": false, "mode": "steady" } },
     { "Id": "showcase-worker",         "VersionRange": "[1.0,2.0)", "Enabled": true, "Config": null },
     { "Id": "showcase-dashboard",      "VersionRange": "[1.0,2.0)", "Enabled": true, "Config": null },
     { "Id": "showcase-client-module",  "VersionRange": "[1.0,2.0)", "Enabled": true, "Config": null }

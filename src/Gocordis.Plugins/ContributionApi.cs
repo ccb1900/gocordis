@@ -554,7 +554,7 @@ public sealed class ConsoleHost
                 components.Add(new JsonObject
                 {
                     ["type"] = type,
-                    ["schema"] = JsonNode.Parse(schema.ToJsonSchema()),
+                    ["schema"] = schema.DeepClone(),
                 });
             }
         }

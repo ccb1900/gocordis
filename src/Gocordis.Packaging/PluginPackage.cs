@@ -44,7 +44,8 @@ public sealed record PluginPackageManifest(
     string? EntryAssembly = null,
     string? EntryType = null,
     IReadOnlyList<PackageUiResource>? Ui = null,
-    IReadOnlyList<string>? SharedAssemblies = null)
+    IReadOnlyList<string>? SharedAssemblies = null,
+    JsonNode? ConfigSchema = null)
 {
     public IReadOnlyList<PluginDependency> DependenciesOrEmpty => Dependencies ?? [];
     public IReadOnlyList<string> ProvidesOrEmpty => Provides ?? [];
@@ -375,6 +376,14 @@ public static class PluginPackageWriter
             {
                 text.Append("shared=").Append(shared).Append('\n');
             }
+        }
+
+        // Config schema is part of the declaration (it drives the console's
+        // typed config form); version it in the checksum when present.
+        if (manifest.ConfigSchema is not null)
+        {
+            text.Append("config-schema=")
+                .Append(PluginPackageUi.CanonicalJson(manifest.ConfigSchema)).Append('\n');
         }
 
         foreach (var dependency in manifest.DependenciesOrEmpty

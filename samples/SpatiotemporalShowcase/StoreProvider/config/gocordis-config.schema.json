@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["intervalMs"],
+  "properties": {
+    "intervalMs": {
+      "type": "integer",
+      "default": 1500,
+      "title": "写入间隔 (ms)",
+      "description": "后台 writer 每次写入的间隔"
+    },
+    "label": {
+      "type": "string",
+      "default": "showcase",
+      "title": "标签",
+      "description": "该 provider 的显示标签"
+    },
+    "verbose": {
+      "type": "boolean",
+      "default": false,
+      "title": "详细日志",
+      "description": "是否记录每次写入"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["fast", "steady", "slow"],
+      "default": "steady",
+      "title": "写入模式"
+    }
+  }
+}

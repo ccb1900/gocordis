@@ -25,6 +25,7 @@
 | 客户端模块（6 扩展点：widget / block / page / panel / action / settings） | `UiClientModule/frontend/src/ui.tsx` → `ui.js` | `GET /api/ui/client-modules` + `GET /client-modules/showcase-client-module/ui.js` |
 | API 查询（views 的数据源） | `showcase/store` `showcase/events` `showcase/trend` `showcase/dashboard` `showcase/config` `showcase/keys` `showcase/worker` | `GET /api/query/<name>` |
 | API 命令（form/json/action 的目标） | `showcase/config.set` `showcase/report` | `POST /api/command/<name>` |
+| 配置面板类型化表单（表单/JSON、保存生效） | `StoreProvider/config/gocordis-config.schema.json` 随包声明 + manifest `Config` 值 | `GET /api/query/config/schema` + `POST /api/plugins/showcase-store/config` |
 
 ### UI 菜单分级
 
@@ -33,6 +34,14 @@
 本套件把 `showcase-graph` / `showcase-inspector` / `showcase-framework` 归到
 `时空组合 Showcase/框架能力`，把 TSX 自定义页归到 `时空组合 Showcase/前端扩展`，
 直接演示两级菜单。分组随 `gocordis-ui.json` 与插件一起安装/卸载。
+
+### 配置面板示例
+
+`showcase-store` 的包里带了 `config/gocordis-config.schema.json`（通过 `plugin pack --config-schema` 纳入声明并进 checksum），
+`gocordis.app.json` 给它配置了 `intervalMs / label / verbose / mode` 的真实值。宿主在装配阶段把包声明的 schema 注册到
+registry，`GET /api/query/config/schema` 返回 `components:[{type,schema}]`，控制台 ConfigEditor 据此渲染「表单」页的
+integer / string / boolean / enum 字段；「JSON」页可直接编辑同一份配置。点「保存配置」经控制面写入声明存储并重新调和，
+managed 插件的 ALC 以「版本+配置指纹」为 key 重新装载——所以配置变更不会撞 "already loaded"，fiber 保持 Active。
 
 ### 真正的自定义前端（TSX）
 

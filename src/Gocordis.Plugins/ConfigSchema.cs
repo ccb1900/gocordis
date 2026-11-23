@@ -2,6 +2,7 @@ using System.Collections;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Gocordis.Core;
 
 namespace Gocordis.Plugins;
@@ -225,16 +226,41 @@ public static class PluginRegistrySchemaExtensions
         }
     }
 
+    /// <summary>
+    /// Registers a JSON Schema DOCUMENT for a plugin type without a validated
+    /// factory. Used by the host for package-declared schemas so the console's
+    /// ConfigEditor can render typed fields for managed plugins whose factory
+    /// is compiled and cannot carry an in-process ConfigSchema object.
+    /// The schema travels WITH the plugin package, not in console code.
+    /// </summary>
+    public static void RegisterSchema(this PluginRegistry registry, string type, JsonNode schema)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentException.ThrowIfNullOrWhiteSpace(type);
+        ArgumentNullException.ThrowIfNull(schema);
+        var table = Tables.GetValue(registry, static _ => new RegistrySchemas());
+        table.AddDocument(type, schema.DeepClone());
+    }
+
     private sealed class RegistrySchemas
     {
         private readonly object _sync = new();
         private readonly Dictionary<string, ConfigSchema> _schemas = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, JsonNode> _documents = new(StringComparer.Ordinal);
 
         public void Add(string type, ConfigSchema schema)
         {
             lock (_sync)
             {
                 _schemas[type] = schema;
+            }
+        }
+
+        public void AddDocument(string type, JsonNode document)
+        {
+            lock (_sync)
+            {
+                _documents[type] = document;
             }
         }
 
@@ -246,13 +272,19 @@ public static class PluginRegistrySchemaExtensions
             }
         }
 
-        /// <summary>Stable snapshot of all registered type→schema pairs, ordered
-        /// by type so the config/schema query is deterministic.</summary>
-        public IReadOnlyList<KeyValuePair<string, ConfigSchema>> Snapshot()
+        /// <summary>Stable snapshot of all type→JSON-Schema documents, ordered
+        /// by type so the config/schema query is deterministic. A validated
+        /// factory's ConfigSchema is rendered via ToJsonSchema(); a package-
+        /// declared document is used as-is. Documents win on a type collision.</summary>
+        public IReadOnlyList<KeyValuePair<string, JsonNode>> Snapshot()
         {
             lock (_sync)
             {
-                return _schemas
+                return _documents
+                    .Select(pair => new KeyValuePair<string, JsonNode>(pair.Key, pair.Value.DeepClone()))
+                    .Concat(_schemas.Where(pair => !_documents.ContainsKey(pair.Key))
+                        .Select(pair => new KeyValuePair<string, JsonNode>(
+                            pair.Key, JsonNode.Parse(pair.Value.ToJsonSchema())!)))
                     .OrderBy(pair => pair.Key, StringComparer.Ordinal)
                     .ToArray();
             }
@@ -261,15 +293,14 @@ public static class PluginRegistrySchemaExtensions
 
     /// <summary>
     /// Read model for the console's <c>config/schema</c> query: the JSON Schema
-    /// document registered for each plugin type. Returns an empty list when the
-    /// registry has no validated factories (the console then keeps its legacy
-    /// value-typed config form).
+    /// document registered for each plugin type. Returns an empty list when no
+    /// schema is registered (the console then keeps its legacy value-typed form).
     /// </summary>
-    public static IReadOnlyList<KeyValuePair<string, ConfigSchema>> SchemasFor(this PluginRegistry registry)
+    public static IReadOnlyList<KeyValuePair<string, JsonNode>> SchemasFor(this PluginRegistry registry)
     {
         ArgumentNullException.ThrowIfNull(registry);
         return Tables.TryGetValue(registry, out var table)
             ? table.Snapshot()
-            : Array.Empty<KeyValuePair<string, ConfigSchema>>();
+            : Array.Empty<KeyValuePair<string, JsonNode>>();
     }
 }

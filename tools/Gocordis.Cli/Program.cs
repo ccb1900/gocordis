@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Gocordis.Console.WebUi;
 using Gocordis.Core;
@@ -192,7 +193,8 @@ public static class Program
         {
             return Fail("usage: plugin pack|package <sourceDir> <output.gocordis-plugin> " +
                         "[--id] [--version] [--type] [--host-range] [--backend] [--entry-assembly] [--entry-type] " +
-                        "[--shared-assembly <name> ...] [--provides <name> ...] [--dependency <id>@<range> ...]");
+                        "[--shared-assembly <name> ...] [--provides <name> ...] [--dependency <id>@<range> ...] " +
+                        "[--config-schema <json-file>]");
         }
 
         var shared = OptionValues(args, "--shared-assembly");
@@ -221,6 +223,15 @@ public static class Program
             SharedAssemblies: shared.Count > 0 ? shared : null,
             Provides: provides.Count > 0 ? provides : null!,
             Dependencies: dependencies.Length > 0 ? dependencies : null!);
+        var schemaPath = Option(args, "--config-schema");
+        if (schemaPath is not null)
+        {
+            manifest = manifest with
+            {
+                ConfigSchema = JsonNode.Parse(await File.ReadAllTextAsync(schemaPath)),
+            };
+        }
+
         var written = await PluginPackageWriter.CreateAsync(source, manifest, output);
         Write(new { packed = output, written.Id, written.Version, written.Checksum });
         return 0;
@@ -1127,6 +1138,7 @@ public static class Program
             "--store", "--host-version", "--address", "--id", "--name", "--version", "--type", "--host-range", "--source",
             "--output", "--out", "--key", "--public-key", "--backend", "--entry-assembly", "--entry-type",
             "--shared-assembly", "--allowed-host", "--host-version-range", "--provides", "--dependency",
+            "--config-schema",
         };
         var flags = new HashSet<string>(StringComparer.Ordinal)
         {

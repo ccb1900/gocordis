@@ -193,6 +193,14 @@ public class PlatformApplication : IAsyncDisposable
 
                 _resolved.Add(new PlatformResolvedPlugin(plugin.Id, installed.Version, plugin.Enabled));
 
+                // A package-declared config schema belongs to the plugin, not
+                // to console code. Register it with the registry so the
+                // config/schema query can drive the ConfigEditor's typed form.
+                if (installed.Manifest.ConfigSchema is { } schema)
+                {
+                    Registry.RegisterSchema(installed.Manifest.Type, schema);
+                }
+
                 foreach (var contract in installed.Manifest.SharedAssembliesOrEmpty)
                 {
                     if (!contractCandidates.TryGetValue(contract, out var paths))
@@ -279,9 +287,15 @@ public class PlatformApplication : IAsyncDisposable
 
             var assemblyPath = ResolvePayload(manifest);
             // Prepare stages a new component before Commit retires the old
-            // fiber, so the loader key must include the version: otherwise an
-            // upgrade would fail with "already loaded" on the same id.
-            var loaderKey = $"{manifest.Id}@{manifest.Version}";
+            // fiber, so the loader key must include everything that changes the
+            // component: version AND config. A config-only declaration change
+            // otherwise collides with the still-loaded ALC ("already loaded").
+            // Empty-config plugins keep the historical key (id@version); only
+            // configured declarations add a fingerprint suffix. A config-only
+            // change still stages a distinct ALC while the old fiber retires.
+            var loaderKey = manifest.Config.Count == 0
+                ? $"{manifest.Id}@{manifest.Version}"
+                : $"{manifest.Id}@{manifest.Version}:{ConfigFingerprint(manifest.Config)}";
             return Managed.CreateComponent(
                 loaderKey, assemblyPath, manifest.EntryType, manifest.SharedAssemblies);
         }
@@ -318,6 +332,17 @@ public class PlatformApplication : IAsyncDisposable
 
         throw new InvalidOperationException(
             $"unsupported backend '{backend}' declared by plugin '{manifest.Id}'");
+    }
+
+    /// <summary>Stable, order-independent fingerprint of a declaration's config.
+    /// Used only to give each staged managed component a distinct loader key; it
+    /// is derived state, never persisted.</summary>
+    private static string ConfigFingerprint(IReadOnlyDictionary<string, object?> config)
+    {
+        var ordered = config.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
+        var bytes = System.Text.Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(ordered));
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..12].ToLowerInvariant();
     }
 
     private static string ResolvePayload(PluginManifest manifest)

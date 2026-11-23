@@ -310,6 +310,7 @@ public sealed class PluginRegistry : IAsyncDisposable
             }
         }
 
+        var pending = new List<(string Id, PluginManifest Manifest, string Key, Component Component)>();
         foreach (var (id, component) in batch.Ordered)
         {
             var manifest = batch.Desired[id];
@@ -337,7 +338,22 @@ public sealed class PluginRegistry : IAsyncDisposable
                 continue;
             }
 
-            var fiber = await _runtime.LoadAsync(component);
+            pending.Add((id, manifest, configurationKey, component));
+        }
+
+        // One decision-domain batch: lifecycle order is unchanged (components
+        // are submitted in topological order), but snapshot publication and
+        // public replies are coalesced by Core's FlushAwaitingLoads.
+        if (pending.Count == 0)
+        {
+            return;
+        }
+
+        var fibers = await _runtime.LoadBatchAsync(pending.Select(item => item.Component));
+        for (var index = 0; index < pending.Count; index++)
+        {
+            var (id, manifest, configurationKey, component) = pending[index];
+            var fiber = fibers[index];
             batch.LoadedFibers.Add(fiber);
             batch.Applied.Add(component);
             if (fiber.State == FiberState.Failed)

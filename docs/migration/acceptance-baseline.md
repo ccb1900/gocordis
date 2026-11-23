@@ -124,6 +124,13 @@ build 0 warning / 0 error。
 - **反向索引**：Core Runtime 维护 `(Provider FiberId, ActivationId) → Consumer FiberIds` 的 `ConcurrentDictionary` 索引，随 `Committed` 绑定在同一短 Mutate 写路径维护；consumer 撤销/重绑定时摘除旧索引；provider 撤回时按索引只处理受影响消费者，取代 `_fibers.Values.Where(other => other.Committed.Values.Any(...))` 的全表扫描。
 - **回归**：`CatalogPublishesImmutableSnapshotsWithMonotonicRevision`（旧快照不被污染、Revision 单调、Key 身份跨 revision 保持）、`ReverseConsumerIndexTracksWithdrawalAndRebinding`（3 消费者、离场、撤回、恢复全链路）。
 
+## 运行时装配与并发结构收敛批次
+
+- **反向索引简化**：`(FiberId, ActivationId) → HashSet<Guid>` 改为普通 `Dictionary`，所有访问统一经 `Mutate`（`_stateLock`）序列化，去掉不必要的双层 `ConcurrentDictionary` 与第二套并发一致性机制。
+- **Catalog Revision 并发正确**：候选仍在锁外构建，`Revision = current.Revision + 1` 在发布锁内分配；32 并发 `Replace` 测试断言 Revision 恰好 32。`TryDescribe` 改为读取快照中预选好的唯一 Contract，去掉每次 `OrderByDescending`。
+- **批量装配**：Core 新增 `LoadBatchAsync`，一次性提交整个声明批次；`PluginRegistry.CommitAsync` 用批次加载替代逐 fiber await，拓扑序与失败语义不变。**快照发布按批次合并**：仅显式批次抑制中间发布，独立的并发 `LoadAsync` 仍逐命令发布（`Thm73InstallingQuiescence` / `PC19` 回归证明在途状态可观察）。
+- **Benchmark 生命周期与热点**：`BenchmarkHost` 同时持有并释放 Runtime + Registry；新增 Capability Invoke、Provider 撤回基准；冷启动成本归因继续由基准数据驱动。
+
 ## 冻结规则
 
 1. 本基线只记录**已核实**的证据等级，不把 E0/E1 升级为 E2。

@@ -90,8 +90,10 @@ public sealed class Runtime : IAsyncDisposable
     /// provider withdrawal looks up affected consumers directly instead of
     /// scanning every fiber in the runtime.
     /// </summary>
-    private readonly ConcurrentDictionary<
-        (Guid FiberId, long ActivationId), ConcurrentDictionary<Guid, byte>> _consumersByProvider = new();
+    // Plain collection: every access is serialized by _stateLock (Mutate from
+    // activation tasks, Mutate from the decision loop). No second concurrency
+    // mechanism is needed inside the single decision domain.
+    private readonly Dictionary<(Guid FiberId, long ActivationId), HashSet<Guid>> _consumersByProvider = [];
     private readonly Dictionary<long, Activation> _activations = [];
     private readonly Dictionary<Guid, List<TaskCompletionSource>> _disposeWaiters = [];
     private readonly List<LoadCommand> _awaitingLoads = [];
@@ -144,6 +146,7 @@ public sealed class Runtime : IAsyncDisposable
     public long PendingCommands => Interlocked.Read(ref _pendingCommands);
 
     private long _pendingCommands;
+    private long _batchDepth;
 
     private bool TryWrite(RuntimeCommand command)
     {
@@ -205,6 +208,49 @@ public sealed class Runtime : IAsyncDisposable
         }
 
         return new ValueTask(reply.Task);
+    }
+
+    /// <summary>
+    /// Submits a whole declaration batch to the decision loop before awaiting
+    /// any reply. Dependency activation still happens one fiber at a time, but
+    /// snapshots and public replies are published once for the whole batch.
+    /// </summary>
+    public async Task<IReadOnlyList<Fiber>> LoadBatchAsync(
+        IEnumerable<Component> components, Fiber? parent = null, Realm? realm = null)
+    {
+        var items = components.ToArray();
+        if (items.Length <= 1)
+        {
+            var single = new List<Fiber>();
+            foreach (var component in items)
+            {
+                single.Add(await LoadAsync(component, parent, realm));
+            }
+
+            return single;
+        }
+
+        Interlocked.Increment(ref _batchDepth);
+        var replies = new List<Task<Fiber>>(items.Length);
+        foreach (var component in items)
+        {
+            var reply = new TaskCompletionSource<Fiber>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!TryWrite(new LoadCommand(component, parent, realm, reply, AwaitActivation: true)))
+            {
+                Interlocked.Decrement(ref _batchDepth);
+                throw new ObjectDisposedException(nameof(Runtime));
+            }
+
+            replies.Add(reply.Task);
+        }
+
+        var all = Task.WhenAll(replies);
+        _ = all.ContinueWith(
+            _ => Interlocked.Decrement(ref _batchDepth),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return await all;
     }
 
     internal Task<Fiber> LoadChildAsync(Component component, Fiber parent)
@@ -328,7 +374,17 @@ public sealed class Runtime : IAsyncDisposable
 
                         Interlocked.Decrement(ref _pendingCommands);
                         Reconcile();
-                        PublishSnapshot();
+                        // A batch of awaited LoadCommands shares ONE snapshot
+                        // publication at FlushAwaitingLoads; a single command
+                        // still sees a fresh snapshot before its reply.
+                        // Only explicit batch loads suppress intermediate
+                        // publications; independent concurrent LoadAsync calls
+                        // must keep their in-flight states observable.
+                        if (Volatile.Read(ref _batchDepth) == 0)
+                        {
+                            PublishSnapshot();
+                        }
+
                         FlushAwaitingLoads();
                     }
 
@@ -912,6 +968,12 @@ public sealed class Runtime : IAsyncDisposable
             return;
         }
 
+        if (Volatile.Read(ref _batchDepth) > 0)
+        {
+            // One publication for the whole batch, before any of its replies.
+            PublishSnapshot();
+        }
+
         foreach (var load in _awaitingLoads)
         {
             if (load.Created is not null)
@@ -1358,35 +1420,46 @@ public sealed class Runtime : IAsyncDisposable
 
     private void IndexConsumer(Guid providerId, long activationId, Guid consumerId)
     {
-        var consumers = _consumersByProvider.GetOrAdd(
-            (providerId, activationId), _ => new ConcurrentDictionary<Guid, byte>());
-        consumers[consumerId] = 0;
+        Mutate(() =>
+        {
+            if (!_consumersByProvider.TryGetValue((providerId, activationId), out var consumers))
+            {
+                consumers = [];
+                _consumersByProvider[(providerId, activationId)] = consumers;
+            }
+
+            consumers.Add(consumerId);
+        });
     }
 
     private void UnindexConsumer(Guid providerId, long activationId, Guid consumerId)
     {
-        if (_consumersByProvider.TryGetValue((providerId, activationId), out var consumers))
+        Mutate(() =>
         {
-            consumers.TryRemove(consumerId, out _);
-            if (consumers.IsEmpty)
+            if (_consumersByProvider.TryGetValue((providerId, activationId), out var consumers))
             {
-                _consumersByProvider.TryRemove((providerId, activationId), out _);
+                consumers.Remove(consumerId);
+                if (consumers.Count == 0)
+                {
+                    _consumersByProvider.Remove((providerId, activationId));
+                }
             }
-        }
+        });
     }
 
     private Fiber[] ConsumersOf(Guid providerId, long activationId)
     {
-        if (!_consumersByProvider.TryGetValue((providerId, activationId), out var consumers))
+        Fiber[] result = [];
+        Mutate(() =>
         {
-            return [];
-        }
-
-        return consumers.Keys
-            .Select(id => _fibers.GetValueOrDefault(id))
-            .Where(fiber => fiber is not null)
-            .Select(fiber => fiber!)
-            .ToArray();
+            result = _consumersByProvider.TryGetValue((providerId, activationId), out var consumers)
+                ? consumers.Select(id => _fibers.GetValueOrDefault(id))
+                    .Where(fiber => fiber is not null)
+                    .Select(fiber => fiber!)
+                    .ToArray()
+                : [];
+        });
+        return result;
     }
 
     internal T RequireValue<T>(CapabilityKey key, Activation consumer)

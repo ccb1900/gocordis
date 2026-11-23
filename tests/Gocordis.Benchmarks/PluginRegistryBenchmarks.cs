@@ -4,6 +4,34 @@ using Gocordis.Plugins;
 
 namespace Gocordis.Benchmarks;
 
+/// <summary>Benchmark host owns BOTH the Runtime and the Registry. Registry
+/// does not own the Runtime's decision loop; leaking it would pollute repeated
+/// benchmark iterations.</summary>
+internal sealed class BenchmarkHost : IAsyncDisposable
+{
+    public Runtime Runtime { get; } = new();
+    public PluginRegistry Registry { get; }
+
+    public BenchmarkHost(Key<int>[] keys)
+    {
+        Registry = new PluginRegistry(Runtime);
+        for (var i = 0; i < keys.Length; i++)
+        {
+            var index = i;
+            Registry.RegisterFactory($"bench-{index}", _ => new BenchComponent(
+                $"p-{index}",
+                inject: index == 0 ? [] : [keys[index - 1]],
+                provide: [keys[index]]));
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await Registry.DisposeAsync();
+        await Runtime.DisposeAsync();
+    }
+}
+
 /// <summary>
 /// Measures declaration-reconciliation COST only (the control plane), never
 /// capability invocation throughput. A chain of plugins with typed keys gives
@@ -29,49 +57,15 @@ public class PluginRegistryApplyBenchmarks
             .ToArray();
     }
 
-    internal static PluginRegistry CreateRegistry(Key<int>[] keys)
-    {
-        var registry = new PluginRegistry(new Runtime());
-        for (var i = 0; i < keys.Length; i++)
-        {
-            var index = i;
-            registry.RegisterFactory($"bench-{index}", _ => new BenchComponent(
-                $"p-{index}",
-                inject: index == 0 ? [] : [keys[index - 1]],
-                provide: [keys[index]]));
-        }
-
-        return registry;
-    }
-
     /// <summary>Cold apply: new registry, full factory + sort + fiber activation.</summary>
     [Benchmark]
     public async Task ColdApply()
     {
-        await using var registry = CreateRegistry(Keys);
-        await registry.ApplyAsync(Declarations);
+        await using var host = new BenchmarkHost(Keys);
+        await host.Registry.ApplyAsync(Declarations);
     }
 
-    private sealed class BenchComponent : Component
-    {
-        private readonly IReadOnlyList<ICapabilityKey> _inject;
-        private readonly IReadOnlyList<ICapabilityKey> _provide;
 
-        public BenchComponent(
-            string name, IReadOnlyList<ICapabilityKey> inject, IReadOnlyList<ICapabilityKey> provide)
-        {
-            Name = name;
-            _inject = inject;
-            _provide = provide;
-        }
-
-        public override string Name { get; }
-        public override IReadOnlyList<ICapabilityKey> Inject() => _inject;
-        public override IReadOnlyList<ICapabilityKey> Provide() => _provide;
-
-        public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
-            ValueTask.FromResult<Cleanup?>(null);
-    }
 }
 
 /// <summary>
@@ -85,7 +79,7 @@ public class PluginRegistrySteadyApplyBenchmarks
     public int PluginCount { get; set; }
 
     private PluginRegistryApplyBenchmarks _inner = null!;
-    private PluginRegistry _registry = null!;
+    private BenchmarkHost _host = null!;
     private PluginManifest[] _declarations = [];
 
     [GlobalSetup]
@@ -93,14 +87,36 @@ public class PluginRegistrySteadyApplyBenchmarks
     {
         _inner = new PluginRegistryApplyBenchmarks { PluginCount = PluginCount };
         _inner.Setup();
-        _registry = PluginRegistryApplyBenchmarks.CreateRegistry(_inner.Keys);
-        await _registry.ApplyAsync(_inner.Declarations);
+        _host = new BenchmarkHost(_inner.Keys);
+        await _host.Registry.ApplyAsync(_inner.Declarations);
     }
 
     [GlobalCleanup]
-    public async Task Cleanup() => await _registry.DisposeAsync();
+    public async Task Cleanup() => await _host.DisposeAsync();
 
     [Benchmark]
     public async Task SteadyApply() =>
-        await _registry.ApplyAsync(_inner.Declarations.Select(manifest => manifest with { }).ToArray());
+        await _host.Registry.ApplyAsync(
+            _inner.Declarations.Select(manifest => manifest with { }).ToArray());
+}
+
+internal sealed class BenchComponent : Component
+{
+    private readonly IReadOnlyList<ICapabilityKey> _inject;
+    private readonly IReadOnlyList<ICapabilityKey> _provide;
+
+    public BenchComponent(
+        string name, IReadOnlyList<ICapabilityKey> inject, IReadOnlyList<ICapabilityKey> provide)
+    {
+        Name = name;
+        _inject = inject;
+        _provide = provide;
+    }
+
+    public override string Name { get; }
+    public override IReadOnlyList<ICapabilityKey> Inject() => _inject;
+    public override IReadOnlyList<ICapabilityKey> Provide() => _provide;
+
+    public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
+        ValueTask.FromResult<Cleanup?>(null);
 }

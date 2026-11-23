@@ -204,6 +204,18 @@ public sealed class CapabilityDeclarationTests
         Assert.True(catalog.IsDeclared(new CapabilityId("org.example", "next")));
     }
 
+    [Fact]
+    public void ConcurrentReplacementsProduceDistinctMonotonicRevisions()
+    {
+        var catalog = new CapabilityCatalog();
+        Parallel.For(0, 32, index => catalog.Replace([
+            CapabilityDeclaration.Parse(
+                $"provide|org.example/concurrent{index}|endpoint|1.0.0||"),
+        ]));
+
+        Assert.Equal(32, catalog.Revision);
+    }
+
     private sealed class TempDir : IDisposable
     {
         private readonly string _root = Path.Combine(

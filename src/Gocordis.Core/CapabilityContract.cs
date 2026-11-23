@@ -415,10 +415,12 @@ public sealed class CapabilityCatalog : ICapabilityCatalog
 
     public bool TryDescribe(CapabilityId id, out CapabilityContract contract)
     {
+        // The snapshot stores the already-selected provider contract; no
+        // per-read ordering is needed (one provider per id is enforced at build).
         if (Volatile.Read(ref _state).Contracts.TryGetValue(id, out var contracts) &&
             contracts.Length > 0)
         {
-            contract = contracts.OrderByDescending(candidate => candidate.Version).First();
+            contract = contracts[0];
             return true;
         }
 
@@ -434,10 +436,13 @@ public sealed class CapabilityCatalog : ICapabilityCatalog
     public void Replace(IEnumerable<CapabilityDeclaration> declarations)
     {
         ArgumentNullException.ThrowIfNull(declarations);
-        var candidate = Build(declarations, Volatile.Read(ref _state).Revision + 1, validateProviders: true);
+        // Revision is assigned INSIDE the publish lock: two concurrent callers
+        // must never both publish the same monotonic version.
+        var candidate = Build(declarations, 0, validateProviders: true);
         lock (_gate)
         {
-            Volatile.Write(ref _state, candidate);
+            var next = candidate with { Revision = Volatile.Read(ref _state).Revision + 1 };
+            Volatile.Write(ref _state, next);
         }
     }
 
@@ -449,8 +454,8 @@ public sealed class CapabilityCatalog : ICapabilityCatalog
         lock (_gate)
         {
             var current = Volatile.Read(ref _state);
-            Volatile.Write(ref _state,
-                Build(current.All.AddRange(declarations), current.Revision + 1, validateProviders: false));
+            var candidate = Build(current.All.AddRange(declarations), 0, validateProviders: false);
+            Volatile.Write(ref _state, candidate with { Revision = current.Revision + 1 });
         }
     }
 
@@ -507,7 +512,9 @@ public sealed class CapabilityCatalog : ICapabilityCatalog
         var contractsResult = ImmutableDictionary.CreateBuilder<CapabilityId, ImmutableArray<CapabilityContract>>();
         foreach (var (id, list) in contractsLocal)
         {
-            contractsResult[id] = [.. list];
+            // Version gate guarantees at most one provider per id; keep the
+            // highest version once so TryDescribe is a pure dictionary read.
+            contractsResult[id] = [list.OrderByDescending(candidate => candidate.Version).First()];
         }
 
         var indexResult = ImmutableDictionary.CreateBuilder<

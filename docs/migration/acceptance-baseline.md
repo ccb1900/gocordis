@@ -20,8 +20,10 @@
 
 - C02/C03/C04/C05：原账本给 `UNVERIFIED/PARTIAL`，但 `PaperGapClosureTests` 已有定向行为断言
   （左逆、状态/逆不变量、组合结合律、Delta↔Gamma 见证）。校准为 **PARTIAL→E2**；仍不是定理级证明。
-- C29/C30：`Thm73_Matrix` / `Thm80_Matrix` 各三场景，是**性质测试 E3**，不是对论文前提与结论的
-  完整数学验证。校准为 **PARTIAL→E3（前提级未完全验证）**，不得写成 VERIFIED。
+- C29/C30：`Thm73_Matrix` / `Thm80_Matrix` 各三场景之外，`TheoremPremiseTests` 已补上前提级断言
+  （有限名字、无环优先、有限可取消迭代、installing 中 quiescent）和结论级有界穷举
+  （24 种装载序唯一正规形）。校准为 **E3（前提与结论均可执行覆盖，仍是有限状态空间）**。
+  为此修正 `ObservationEquivalence`：Generation 是重试点数，不属于 Def 33 的可观察键级状态。
 - C39：旧证据 `C39_BackendNeutralFactoriesComposeThroughTheCoreContract` 只验证工厂标签，
   **E1/E2，不构成真实 IPC/WASM 互操作**。在 `5795678` 之后，
   `CrossBackendCapabilityTests` 提供真实 Wasmtime 执行与真实子进程 JSON-RPC 的 E2/E3 证据，

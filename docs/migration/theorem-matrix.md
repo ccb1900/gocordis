@@ -49,7 +49,8 @@
 | `runtime/thm73_thm80_test.go:508` `TestThm73QuiescenceAllowsActive` | `TheoremMatrixTests.cs:413` `Thm73_Matrix["independent-providers"]` | 移植 | 4 个无依赖 provider 全部 Active，无 Pending。 |
 | `runtime/obs_test.go:361` `TestThm73QuiescenceSeesInstallingEffect` | `TheoremMatrixTests.cs:413` `Thm73_Matrix["missing-dependency-quiesces"]` | 移植（门控侧） | 缺依赖时稳定在 Pending 且无 Failure；provider 到达后自动激活。"installing effect 可见"由 Core 测试覆盖。 |
 | `runtime/thm73_thm80_test.go:695` `TestThm73AcyclicPrecedenceInvariant` | `Core.Tests/CoreSemanticsTests.cs:317` `DependencyCycleIsRejectedAtMount` | 移植（跨项目） | 环在装载边界拒绝并给环链诊断；Conformance 不重复断言。 |
-| `runtime/theorem_evidence_test.go:125` `TestTheorem73QuiescenceWithInstallingEffect` | —（无 C# 用例） | 待补 | C# 没有"installing 中仍算 quiescent"的等价观察断言；列为未覆盖，不借 Thm73 矩阵冒充。 |
+| `runtime/theorem_evidence_test.go:125` `TestTheorem73QuiescenceWithInstallingEffect` | `TheoremPremiseTests.cs` `Thm73_InstallingEffectIsObservableWhileTheRuntimeIsQuiescent` | 移植 | 阻塞中的 installing effect 下连续两次 Snapshot 观察等价且 fiber 保持 Loading，放开后转 Active。 |
+| —（前提级新增） | `TheoremPremiseTests.cs` `Thm73_PremisesAreEnforced_FiniteNamesAcyclicPrecedenceCancellableSteps`、`Thm73_FiniteIteratorCommitsEveryStepBeforeActivation` | 新增 | 有限名字/无环优先/有限可取消迭代三类前提的可执行断言；三步迭代器提交后才 Active，撤销严格逆序。 |
 
 ## Thm80 汇合（C30）
 
@@ -61,7 +62,7 @@
 | `runtime/theorem_evidence_test.go:139` `TestTheorem80RenamingEquivalence` | `PaperConformanceTests.cs:93` `C13_ObservationEquivalenceIgnoresGenerativeFiberIds` | 移植 | 观察等价忽略生成 fiber id；证明改名下的汇合可比。 |
 | `runtime/thm73_thm80_test.go:1038` `TestThm80TwoIndependentSubsystems` | `PlatformConvergenceTests.cs:28` `PC12_PluginRegistryNeverCreatesASecondLifecycle` | 部分移植 | 第二个应用/第二个生命周期 Authority 由 Koishi case 覆盖（`KoishiCaseTests`），本用例仅覆盖 entry 与 fiber 不重复。 |
 | `runtime/revision_thm80_test.go:201` `TestThm80RevisionEndpointEquivalence`；`runtime/scoped_confluence_test.go:43` `TestThm80ScopedNamespaceConfluence` | `PaperGapClosureTests.cs` `C34_RealmReassignmentIsARetireReinsertComposite`；`Core.Tests/RevisionSemanticsTests.cs` `RehomeRetiresOldFiberAndReinsertsWithNewIdentityAndRealm` | 移植（跨项目，revision 复合） | C# 拒绝 fiber 保身份替换：realm 重赋值走 `Runtime.RehomeAsync` 的 retire→deactivate→O-Remove→同名重插，新 fiber 的 Id/Generation/Revision 递增；端点性质通过"旧 realm 绑定移除 + 新 realm 可解析"对照，不通过保身份 revise 对照（见 `semantic-mapping.md` §4 裁决 5）。 |
-| `runtime/phase5_generators_test.go:270` `TestPConfConfluenceGeneratedSchedules` | `DeterministicDriver.cs:52` `SameSeedReplaysTheSameInterleaving` | 平台能力替代 | 固定种子重放代替调度生成器；不等价于全调度空间证明。 |
+| `runtime/phase5_generators_test.go:270` `TestPConfConfluenceGeneratedSchedules` | `DeterministicDriver.cs:52` `SameSeedReplaysTheSameInterleaving`；`TheoremPremiseTests.cs` `Thm80_AllLoadOrdersOverAFiniteSetReachOneNormalForm` | 有界穷举 | 对 4 个声明的全部 24 种装载序穷举并断言唯一正规形；仍不等价于无限调度空间证明，观察等价已忽略生成 Generation。 |
 
 ## 边界与前提
 

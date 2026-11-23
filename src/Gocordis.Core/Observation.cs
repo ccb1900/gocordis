@@ -2,8 +2,10 @@ namespace Gocordis.Core;
 
 /// <summary>
 /// Paper §3.3.2 / Def 33: recovery and confluence equalities are read up to
-/// observational equivalence. Fiber names (generative identifiers) are ignored;
-/// declared keys, states and binding structure are observed.
+/// observational equivalence. Fiber ids, names and activation generations are
+/// generative/episode counters, not observable key-level state: two schedules
+/// that reach the same declarations, states and bindings are equivalent even
+/// when a consumer was retried a different number of times on its way there.
 /// </summary>
 public static class ObservationEquivalence
 {
@@ -31,7 +33,6 @@ public static class ObservationEquivalence
     {
         return a.Name == b.Name &&
                a.State == b.State &&
-               a.Generation == b.Generation &&
                a.Requires.SequenceEqual(b.Requires) &&
                a.Provides.SequenceEqual(b.Provides) &&
                (a.Failure is null) == (b.Failure is null) &&

@@ -69,6 +69,10 @@ public sealed record LoadedManagedPlugin(
 /// <summary>Managed runtime adapter: load, instantiate and reclaim plugin assemblies.</summary>
 public sealed class ManagedPluginLoader
 {
+    // Concurrency contract: load/unload/dispose are serialized internally so a
+    // direct concurrent caller cannot interleave generation bookkeeping. The
+    // product path additionally serializes via PluginRegistry's gate.
+    private readonly object _pluginsGate = new();
     private readonly Dictionary<string, LoadedManagedPlugin> _plugins = [];
     private readonly ConcurrentDictionary<string, GenerationTracker> _generations =
         new(StringComparer.Ordinal);
@@ -85,6 +89,8 @@ public sealed class ManagedPluginLoader
         Core.ICapabilityCatalog? catalog = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        lock (_pluginsGate)
+        {
         if (_plugins.ContainsKey(id))
         {
             throw new InvalidOperationException($"plugin '{id}' is already loaded");
@@ -119,6 +125,7 @@ public sealed class ManagedPluginLoader
             generation?.Abandon();
             context?.Unload();
             throw;
+        }
         }
     }
 
@@ -155,18 +162,27 @@ public sealed class ManagedPluginLoader
             return false;
         }
 
-        if (!_plugins.Remove(id, out var plugin))
+        lock (_pluginsGate)
         {
-            return false;
-        }
+            if (!_plugins.Remove(id, out var plugin))
+            {
+                return false;
+            }
 
-        plugin.Context.Unload();
-        return true;
+            plugin.Context.Unload();
+            return true;
+        }
     }
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var id in _plugins.Keys.ToArray())
+        string[] ids;
+        lock (_pluginsGate)
+        {
+            ids = [.. _plugins.Keys];
+        }
+
+        foreach (var id in ids)
         {
             Unload(id);
         }

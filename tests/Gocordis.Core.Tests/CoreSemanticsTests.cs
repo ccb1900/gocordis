@@ -245,6 +245,26 @@ public sealed class CoreSemanticsTests
     }
 
     [Fact]
+    public async Task CommandQueueObservationDrainsAfterQuiescence()
+    {
+        await using var runtime = new Runtime();
+        var key = new Key<int>("queue-depth");
+        await runtime.LoadAsync(new DelegateComponent("provider", async context =>
+        {
+            context.Provide(key, 7);
+            return null;
+        }, provide: [key]));
+        Assert.True(runtime.PendingCommands >= 0);
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (runtime.PendingCommands != 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.Equal(0, runtime.PendingCommands);
+    }
+
+    [Fact]
     public async Task FailedCompensationInverseIsObservableAndNotReRun()
     {
         var inverseRuns = 0;

@@ -74,7 +74,7 @@ public sealed class ProcessRuntimeTests
                     break
             """;
         await File.WriteAllTextAsync(path, script);
-        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        PlatformFiles.MarkExecutable(path);
 
         try
         {
@@ -179,11 +179,8 @@ public sealed class ProcessRuntimeTests
                     break
             """;
         await File.WriteAllTextAsync(path, script);
-        if (!OperatingSystem.IsWindows())
-        {
-            File.SetUnixFileMode(path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
+        PlatformFiles.MarkExecutable(path);
+
         try
         {
             await using var client = await ProcessPluginClient.StartAsync(path);
@@ -229,11 +226,8 @@ public sealed class ProcessRuntimeTests
                     break
             """;
         await File.WriteAllTextAsync(path, script);
-        if (!OperatingSystem.IsWindows())
-        {
-            File.SetUnixFileMode(path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
+        PlatformFiles.MarkExecutable(path);
+
         try
         {
             await using var client = await ProcessPluginClient.StartAsync(path);
@@ -248,6 +242,53 @@ public sealed class ProcessRuntimeTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    /// <summary>
+    /// Same dotnet-hosted fixture path on every platform: this is the exact
+    /// execution route a Windows process plugin takes (executable + arguments),
+    /// and it runs for real on POSIX so the shared code path has evidence.
+    /// </summary>
+    [PosixOnlyFact]
+    public async Task DotnetHostedProcessFixtureRuns()
+    {
+        await using var client = await ProcessPluginClient.StartAsync(
+            "dotnet", [FindEchoProcPluginDll()]);
+        var result = await client.CallAsync("echo", new { text = "dotnet-hosted" });
+        Assert.Equal("echo:dotnet-hosted", result!["text"]!.GetValue<string>());
+        await client.ShutdownAsync();
+        Assert.True(client.HasExited);
+    }
+
+    [WindowsOnlyFact]
+    public async Task WindowsDotnetProcessFixtureRuns()
+    {
+        // Windows execution evidence: identical launch route (dotnet + dll).
+        await using var client = await ProcessPluginClient.StartAsync(
+            "dotnet", [FindEchoProcPluginDll()]);
+        var result = await client.CallAsync("echo", new { text = "windows-hosted" });
+        Assert.Equal("echo:windows-hosted", result!["text"]!.GetValue<string>());
+        await client.ShutdownAsync();
+        Assert.True(client.HasExited);
+    }
+
+    private static string FindEchoProcPluginDll()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var candidate = Path.Combine(
+                directory.FullName, "samples", "EchoProcPlugin", "bin",
+                "Debug", "net10.0", "EchoProcPlugin.dll");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            directory = directory.Parent!;
+        }
+
+        throw new FileNotFoundException("EchoProcPlugin.dll was not built");
     }
 
     private static string PluginExecutable()

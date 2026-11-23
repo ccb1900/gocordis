@@ -210,8 +210,7 @@ public sealed class CrossBackendCapabilityTests
             """);
         try
         {
-            File.SetUnixFileMode(script,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            PlatformFiles.MarkExecutable(script);
 
             var catalog = new CapabilityCatalog();
             var declaration = CapabilityDeclaration.Parse(
@@ -279,8 +278,7 @@ public sealed class CrossBackendCapabilityTests
             """);
         try
         {
-            File.SetUnixFileMode(script,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            PlatformFiles.MarkExecutable(script);
 
             await using var runtime = new Gocordis.Core.Runtime();
             var provider = await runtime.LoadAsync(
@@ -371,8 +369,7 @@ public sealed class CrossBackendCapabilityTests
             """.Replace("__ID__", id).Replace("__OBSERVED__", observed.Replace("\\", "\\\\").Replace("\"", "\\\"")));
         try
         {
-            File.SetUnixFileMode(script,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            PlatformFiles.MarkExecutable(script);
 
             await using var runtime = new Gocordis.Core.Runtime();
             var provider = await runtime.LoadAsync(new WasmCapabilityComponent(
@@ -446,8 +443,7 @@ public sealed class CrossBackendCapabilityTests
             """);
         try
         {
-            File.SetUnixFileMode(script,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            PlatformFiles.MarkExecutable(script);
 
             await using var runtime = new Gocordis.Core.Runtime();
             var consumer = await runtime.LoadAsync(new ConsumerComponent(
@@ -595,11 +591,10 @@ public sealed class CrossBackendCapabilityTests
                     send({"jsonrpc":"2.0","id":ident,
                           "error":{"code":-32601,"message":"unknown"}})
             """.Replace("__OBSERVED__", observed.Replace("\\", "\\\\").Replace("\"", "\\\"")));
+        PlatformFiles.MarkExecutable(script);
+
         try
         {
-            File.SetUnixFileMode(script,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
             await using var runtime = new Gocordis.Core.Runtime();
             var provider = await runtime.LoadAsync(new EndpointProviderComponent(
                 key, (_, _) => ValueTask.FromResult(CapabilityEnvelope.Text("ok"))));

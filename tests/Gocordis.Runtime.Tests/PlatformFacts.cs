@@ -18,6 +18,19 @@ public sealed class PosixOnlyFactAttribute : FactAttribute
     }
 }
 
+/// <summary>Author-side executable marking that is safe on every platform.</summary>
+public static class PlatformFiles
+{
+    public static void MarkExecutable(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+}
+
 public sealed class WindowsOnlyFactAttribute : FactAttribute
 {
     public WindowsOnlyFactAttribute()

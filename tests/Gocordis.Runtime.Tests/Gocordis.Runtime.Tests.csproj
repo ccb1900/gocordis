@@ -12,6 +12,7 @@
     <ProjectReference Include="../../src/Gocordis.Runtime.Process/Gocordis.Runtime.Process.csproj" />
     <ProjectReference Include="../../samples/UiPlugin/UiPlugin.csproj" />
     <ProjectReference Include="../fixtures/CatalogPlugin/CatalogPlugin.csproj" />
+    <ProjectReference Include="../../samples/EchoProcPlugin/EchoProcPlugin.csproj" />
     <ProjectReference Include="../../src/Gocordis.Console.WebUi/Gocordis.Console.WebUi.csproj" />
   </ItemGroup>
 </Project>

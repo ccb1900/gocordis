@@ -1,3 +1,4 @@
+using System.Threading;
 using System.Threading.Channels;
 using NuGet.Versioning;
 
@@ -128,10 +129,22 @@ public sealed class Runtime : IAsyncDisposable
         }
     }
 
+    /// <summary>Approximate number of commands accepted but not yet executed by
+    /// the decision loop. Observation only — never a backpressure gate.</summary>
+    public long PendingCommands => Interlocked.Read(ref _pendingCommands);
+
+    private long _pendingCommands;
+
     private bool TryWrite(RuntimeCommand command)
     {
         EnsureLoop();
-        return _commands.Writer.TryWrite(command);
+        var accepted = _commands.Writer.TryWrite(command);
+        if (accepted)
+        {
+            Interlocked.Increment(ref _pendingCommands);
+        }
+
+        return accepted;
     }
 
     // ---- public API ---------------------------------------------------------
@@ -303,6 +316,7 @@ public sealed class Runtime : IAsyncDisposable
                                 break;
                         }
 
+                        Interlocked.Decrement(ref _pendingCommands);
                         Reconcile();
                         PublishSnapshot();
                         FlushAwaitingLoads();

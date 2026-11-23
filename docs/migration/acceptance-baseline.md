@@ -77,6 +77,14 @@
 - **P1-05 Process RPC 防护**：所有插件→主机请求必有 Result/Error（未处理异常→`-32603`，消息截断）；帧大小上限（1 MiB char cap），超限立刻杀死子进程而不是留下阻塞写者；`HasExited` 读取硬化。回归：`OversizedPluginFrameIsRejectedWithoutHangingTheHost`、`UnhandledHostHandlerFailureAnswersMinus32603`。
 - **P1-06 平台证据诚实化**：新增 `PosixOnlyFact`/`WindowsOnlyFact`，被排除平台的测试显式 Skipped（可在 CI 计数中区分），不再用裸 `return` 冒充通过。Windows 真实 Process fixture 仍未实现——这是登记在案的覆盖缺口。
 
+## P2 收敛批次（产品闭环与边界）
+
+- **P2-01 动态升级**：`DynamicUpgradeKeepsCompatibleCapabilityLiveWithNewGeneration`——运行中上传 v1→安装→调用→上传 v2→`UpgradeAsync`→fiber 新代际、`InstalledVersion` 显示 2.0.0、调用仍成功；声明计划随升级重放。
+- **P2-02 事务一致性**：`FailedActivationRollsBackStoreManifestRegistryAndCatalogTogether`——capability-only 进程启动失败导致 apply 失败后，manifest 字节、store 版本、registry 条目、runtime fiber 与 capability catalog 全部回到基线（真实 catalog 通过 Plan/Rollback 接线）。
+- **P2-03 多宿主边界**：`current-status` 明确 WinForms/Avalonia 原生宿主为**显式延期**能力（P2-03），`UiHostKind` 数量不计为已完成宿主。
+- **P2-04 并发与可观察性**：`Runtime.PendingCommands` 命令队列深度观察（入队/执行配对计数，仅观察不是背压闸门）+ 消化测试；`StableRegistry` 订阅契约落码——通知跳过已 Dispose 的 watcher，Dispose 不再合成"最后一次回调"，文档写明快照/Dispose 竞态的边界；`ManagedPluginLoader` 的 Load/Unload 内部串行化（产品路径外直接调用也安全）；`ObserveStream` 明确标注为单消费者工作队列，与 fan-out 的 `ObservationLog` 区分。
+- **P0 遗留关闭（跨平台执行证据）**：Process 后端支持启动参数（`ProcessPluginComponent`/`ProcessBackend` 可携带 arguments）；同一 `dotnet <dll>` 启动路径的 fixture 在 Linux 上**真实执行**（`DotnetHostedProcessFixtureRuns`），并在 Windows 上以 `[WindowsOnlyFact]` 登记（`WindowsDotnetProcessFixtureRuns`）——CI 将分别报告 Passed/Skipped。
+
 ## 冻结规则
 
 1. 本基线只记录**已核实**的证据等级，不把 E0/E1 升级为 E2。

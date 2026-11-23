@@ -160,8 +160,7 @@ public sealed class MixedBackendProductE2ETests
         Directory.CreateDirectory(providerSource);
         var providerScript = Path.Combine(providerSource, "plugin.py");
         await File.WriteAllTextAsync(providerScript, ProcessProviderScript());
-        File.SetUnixFileMode(providerScript,
-            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        PlatformFiles.MarkExecutable(providerScript);
         await PluginPackageWriter.CreateAsync(providerSource, new PluginPackageManifest(
             "dyn-a", "1.0.0", "dyn-a", "[1.0,)",
             Backend: "process", EntryAssembly: "plugin.py",
@@ -190,6 +189,83 @@ public sealed class MixedBackendProductE2ETests
         await app.StopAsync();
         Assert.DoesNotContain(app.Runtime.Snapshot().Fibers, fiber =>
             fiber.Name.StartsWith("dyn-", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task DynamicUpgradeKeepsCompatibleCapabilityLiveWithNewGeneration()
+    {
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        using var temp = new TempDir();
+        var store = temp.At("store");
+        Directory.CreateDirectory(store);
+
+        var managedDll = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../../tests/fixtures/CatalogPlugin/bin/Debug/net10.0/CatalogPlugin.dll"));
+        Assert.True(File.Exists(managedDll), $"missing managed fixture '{managedDll}'");
+        await InstallAsync(temp, store, "up-p", new Dictionary<string, byte[]>
+        {
+            ["CatalogPlugin.dll"] = await File.ReadAllBytesAsync(managedDll),
+        }, new PluginPackageManifest(
+            "up-p", "1.0.0", "up-p", "[1.0,)",
+            Backend: "managed", EntryAssembly: "CatalogPlugin.dll",
+            EntryType: "CatalogPlugin.CatalogComponent",
+            Capabilities: [$"provide|{Ping}|endpoint|1.0.0|text/plain|"]));
+
+        var manifestPath = temp.At("app.json");
+        await new ApplicationManifest("up-app", "1.0.0", HostVersion,
+            [new ApplicationPlugin("up-p", "1.0.0", true)]).SaveAsync(manifestPath);
+
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, store, Host: UiHostKind.WinForms, HostVersion: HostVersion));
+        await app.StartAsync();
+
+        async Task<string> PackVersion(string version)
+        {
+            var source = temp.At("source-up-" + version);
+            Directory.CreateDirectory(source);
+            var script = Path.Combine(source, "plugin.py");
+            await File.WriteAllTextAsync(script, ProcessProviderScript());
+            PlatformFiles.MarkExecutable(script);
+            var package = temp.At($"up-{version}.gocordis-plugin");
+            await PluginPackageWriter.CreateAsync(source, new PluginPackageManifest(
+                "up-a", version, "up-a", "[1.0,)",
+                Backend: "process", EntryAssembly: "plugin.py",
+                Capabilities: [$"provide|{Echo}|endpoint|{version}|text/plain|"]), package);
+            return package;
+        }
+
+        var v1 = await PackVersion("1.0.0");
+        var upload1 = await app.Control!.UploadAsync(File.OpenRead(v1), "up-1.gocordis-plugin");
+        Assert.True((await app.Control!.InstallAsync(upload1.UploadKey)).Accepted);
+
+        var echoKey = app.Capabilities.KeyFor<ICapabilityEndpoint>(
+            new CapabilityId("org.example.mixed", "echo"), CapabilityValueKind.Endpoint);
+        var before = Assert.Single(app.Runtime.Snapshot().Fibers,
+            fiber => fiber.Name == "process-plugin");
+        Assert.Equal("pong", (await app.Runtime.RequireCapability(echoKey).InvokeAsync(
+            CapabilityEnvelope.Text("go"), CancellationToken.None)).AsText());
+
+        var v2 = await PackVersion("2.0.0");
+        var upload2 = await app.Control!.UploadAsync(File.OpenRead(v2), "up-2.gocordis-plugin");
+        var upgraded = await app.Control!.UpgradeAsync("up-a", upload2.UploadKey, "[2.0.0,]");
+        Assert.True(upgraded.Accepted, $"upgrade failed: {upgraded.Error}");
+
+        var after = Assert.Single(app.Runtime.Snapshot().Fibers,
+            fiber => fiber.Name == "process-plugin");
+        Assert.NotEqual(before.Id, after.Id);
+        Assert.Equal("2.0.0", Assert.Single(await app.Control!.ListAsync(),
+            entry => entry.Id == "up-a").InstalledVersion);
+        Assert.Equal("pong", (await app.Runtime.RequireCapability(echoKey).InvokeAsync(
+            CapabilityEnvelope.Text("go"), CancellationToken.None)).AsText());
+
+        await app.StopAsync();
+        Assert.DoesNotContain(app.Runtime.Snapshot().Fibers, fiber =>
+            fiber.Name.StartsWith("up-", StringComparison.Ordinal));
     }
 
     private static string ProcessProviderScript() => """
@@ -245,10 +321,9 @@ public sealed class MixedBackendProductE2ETests
         {
             var path = Path.Combine(source, name);
             await File.WriteAllBytesAsync(path, bytes);
-            if (executable && name == manifest.EntryAssembly && !OperatingSystem.IsWindows())
+            if (executable && name == manifest.EntryAssembly)
             {
-                File.SetUnixFileMode(path,
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                PlatformFiles.MarkExecutable(path);
             }
         }
 

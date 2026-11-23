@@ -398,11 +398,18 @@ public sealed class Broker<T>
     }
 }
 
-/// <summary>Stable membership with atomic replace and immutable snapshots.</summary>
+/// <summary>
+/// Stable membership with atomic replace and immutable snapshots.
+/// Subscription contract: after <see cref="IDisposable.Dispose"/> returns, no
+/// notification STARTED afterwards will call the watcher. A notification whose
+/// membership snapshot was taken before Dispose may still run once for a
+/// watcher that was already disposed concurrently — check your own state in
+/// the callback if you need stronger linearization.
+/// </summary>
 public sealed class StableRegistry<T>
 {
     private readonly Dictionary<string, T> _members = new(StringComparer.Ordinal);
-    private readonly List<Action> _watchers = [];
+    private readonly List<Subscription> _watchers = [];
     private readonly object _sync = new();
 
     public IReadOnlyDictionary<string, T> Snapshot()
@@ -461,29 +468,29 @@ public sealed class StableRegistry<T>
     {
         lock (_sync)
         {
-            _watchers.Add(onChange);
+            var subscription = new Subscription(onChange);
+            _watchers.Add(subscription);
+            return subscription;
         }
-
-        return new Subscription(() =>
-        {
-            lock (_sync)
-            {
-                _watchers.Remove(onChange);
-            }
-        });
     }
 
     private void Notify()
     {
-        Action[] snapshot;
+        Subscription[] snapshot;
         lock (_sync)
         {
-            snapshot = _watchers.ToArray();
+            snapshot = [.. _watchers];
         }
 
         foreach (var watcher in snapshot)
         {
-            watcher();
+            // A watcher disposed before its turn is skipped here, not invoked.
+            if (watcher.IsDisposed)
+            {
+                continue;
+            }
+
+            watcher.Invoke();
         }
     }
 
@@ -493,10 +500,22 @@ public sealed class StableRegistry<T>
 
         public Subscription(Action action) => _action = action;
 
-        public void Dispose() => Interlocked.Exchange(ref _action, null)?.Invoke();
+        public bool IsDisposed => Volatile.Read(ref _action) is null;
+
+        public void Invoke() => _action?.Invoke();
+
+        /// <summary>Release only: a subscription is NOT a notification source,
+        /// so disposal must not synthesize one final callback.</summary>
+        public void Dispose() => Interlocked.Exchange(ref _action, null);
     }
 }
 
+/// <summary>
+/// SINGLE-consumer work queue over one shared channel (not the fan-out
+/// ObservationLog): each subscriber competes for the next item. Use
+/// <see cref="ObservationLog{T}"/> when every subscriber must see the full
+/// event stream.
+/// </summary>
 public sealed class ObserveStream<T> : IAsyncDisposable
 {
     private readonly Channel<(long Sequence, T Item)> _channel =

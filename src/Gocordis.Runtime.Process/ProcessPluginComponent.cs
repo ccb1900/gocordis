@@ -12,6 +12,7 @@ namespace Gocordis.Runtime.Process;
 public sealed class ProcessPluginComponent : Component
 {
     private readonly string _executable;
+    private readonly IReadOnlyList<string> _arguments;
     private readonly Key<string> _key;
     private readonly Key<ProcessDiagnostics> _diagnosticsKey;
     private readonly Key<string> _errorKey;
@@ -20,9 +21,11 @@ public sealed class ProcessPluginComponent : Component
         string executable,
         Key<string> key,
         Key<ProcessDiagnostics>? diagnosticsKey = null,
-        Key<string>? errorKey = null)
+        Key<string>? errorKey = null,
+        IReadOnlyList<string>? arguments = null)
     {
         _executable = executable;
+        _arguments = arguments ?? [];
         _key = key;
         _diagnosticsKey = diagnosticsKey ?? ProcessKeys.Diagnostics;
         _errorKey = errorKey ?? ProcessKeys.ErrorVocabulary;
@@ -35,5 +38,6 @@ public sealed class ProcessPluginComponent : Component
 
     public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
         BackendProtocol.RunAsync(
-            new ProcessBackend(_executable, _key, _diagnosticsKey, _errorKey), context);
+            new ProcessBackend(_executable, _key, _diagnosticsKey, _errorKey,
+                arguments: _arguments), context);
 }

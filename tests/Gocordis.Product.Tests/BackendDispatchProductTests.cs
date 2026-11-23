@@ -240,10 +240,9 @@ public sealed class BackendDispatchProductTests
         await File.WriteAllBytesAsync(payloadPath, payload);
         // The AUTHOR marks the entry executable; the package preserves the bit
         // and the installer restores it. No post-install chmod in tests.
-        if (executable && !OperatingSystem.IsWindows())
+        if (executable)
         {
-            File.SetUnixFileMode(payloadPath,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            PlatformFiles.MarkExecutable(payloadPath);
         }
 
         var package = temp.File($"{id}-1.0.0.gocordis-plugin");

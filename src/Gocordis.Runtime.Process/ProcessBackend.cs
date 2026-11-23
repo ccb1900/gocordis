@@ -13,6 +13,7 @@ namespace Gocordis.Runtime.Process;
 public sealed class ProcessBackend : IPluginBackend
 {
     private readonly string _executable;
+    private readonly IReadOnlyList<string> _arguments;
     private readonly Key<string>? _key;
     private readonly Key<ProcessDiagnostics> _diagnosticsKey;
     private readonly Key<string> _errorKey;
@@ -28,9 +29,11 @@ public sealed class ProcessBackend : IPluginBackend
         Key<string>? key,
         Key<ProcessDiagnostics>? diagnosticsKey = null,
         Key<string>? errorKey = null,
-        ProcessCapabilityBridge? capabilityBridge = null)
+        ProcessCapabilityBridge? capabilityBridge = null,
+        IReadOnlyList<string>? arguments = null)
     {
         _executable = executable;
+        _arguments = arguments ?? [];
         _key = key;
         _capabilityOnly = key is null;
         _capabilityBridge = capabilityBridge;
@@ -66,7 +69,7 @@ public sealed class ProcessBackend : IPluginBackend
         context.ThrowIfDiverted();
         try
         {
-            _client = await ProcessPluginClient.StartAsync(_executable);
+            _client = await ProcessPluginClient.StartAsync(_executable, _arguments);
             if (_capabilityBridge is not null)
             {
                 _capabilityBridge.Attach(_client);

@@ -9,6 +9,20 @@ namespace Gocordis.Extensions.Tests;
 public sealed class ExtensionTests
 {
     [Fact]
+    public void RegistrySubscriptionIsSkippedAfterDispose()
+    {
+        var registry = new StableRegistry<string>();
+        var callbacks = 0;
+        var watch = registry.Watch(() => callbacks++);
+
+        registry.TryAdd("a", "1");
+        Assert.Equal(1, callbacks);
+        watch.Dispose();
+        registry.TryReplace("a", "2");
+        Assert.Equal(1, callbacks); // disposed watcher skipped on next notify
+    }
+
+    [Fact]
     public async Task TimerSemanticsIncludeDebounceAndThrottle()
     {
         await using var timers = new TimerService();

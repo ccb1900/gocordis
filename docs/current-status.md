@@ -34,7 +34,7 @@ dotnet test  Gocordis.sln --nologo --no-build -m:1
 bash docs/migration/verify-baseline.sh   # Go baseline drift check
 ```
 
-**Last locally verified** (2026-11-23, branch `dotnet`): C# **501** tests green, frontend **102** tests green, plugin-kit tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
+**Last locally verified** (2026-11-23, branch `dotnet`): C# tests green with the counts in the latest commit message (PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **102** tests green, plugin-kit tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
 
 Task 01 的有限校准基线见 `docs/migration/acceptance-baseline.md`；它区分三个验收域与 E0–E4 证据等级，P0-01…P0-04 均已关闭（真实 Process↔WASM 调用与包闭环由 `CrossBackendCapabilityTests`、`BackendDispatchProductTests` 覆盖）。
 
@@ -60,7 +60,7 @@ One host-owned `CapabilityCatalog` (`Gocordis.Core`) allocates a single `ICapabi
 
 - Managed ALC is **not** a security sandbox; Process/WASM are the isolation boundaries; managed plugins are trusted code. Shared contract assemblies are host-approved, full-identity checked, and process-lifetime (contract upgrades require a controlled host restart).
 - Package signatures are verifiable provenance, **not** an install-trust chain.
-- WinForms/Avalonia are render-plan profiles, not full native hosts.
+- WinForms/Avalonia are render-plan profiles, not full native hosts. Native window hosts for these profiles are an explicitly DEFERRED product capability (P2-03): do not count `UiHostKind` values as completed hosts.
 - Koishi plugin market / remote distribution / browser-side reconcile loop are product references, not ported runtime features.
 - Paper C38 (`VersionedKey<T>` + NuGet ranges instead of nominal `K×P`) remains the single accepted difference; C34 is covered via `Runtime.RehomeAsync`.
 

@@ -1,4 +1,7 @@
-# Review Round 11 — Live Product Run
+# Review Round 11 — Live Product Run（历史记录）
+
+> 归档说明：以下提交 `effd312c` / 分支 `migration/dotnet-complete` / 443/443 计数均为**当时的历史快照**，
+> 不代表当前 HEAD。当前状态见 [`../current-status.md`](../current-status.md)。
 
 代码提交：`effd312c`。分支：`migration/dotnet-complete`。
 

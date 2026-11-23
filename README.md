@@ -1,57 +1,40 @@
-> **C# 正式入口**：`dotnet run --project src/Gocordis.Platform -- --manifest gocordis.app.json --store ~/.gocordis/plugins`
-> Console 可通过 UI 安装、配置、启停、升级、卸载插件，并查看依赖与运行状态；写操作默认仅 loopback 可用，远程需显式鉴权策略。
-> （不是 `samples/PlatformHost`；后者只是示例）。详见 `docs/migration/final-acceptance.md`。
+# gocordis — Spatiotemporal Composable Runtime (.NET 10)
 
-> **C# 迁移状态**：完整迁移在 [`migration/dotnet-complete`](https://github.com/ccb1900/gocordis/tree/migration/dotnet-complete) 分支。
-> 该分支包含统一 Runtime、Managed/Process/WASM 后端、插件包/CLI、Web/WinForms/Avalonia UI 契约与完整验收账本，
-> 入口见 [docs/migration/final-acceptance.md](docs/migration/final-acceptance.md)。
-> 本文件以下部分描述 Go 基线，Go 仓库已冻结，不再作为新应用入口。
+以论文 *[A Programming Paradigm for Spatiotemporal Composability](docs/论文.pdf)* 为语义来源的插件运行时与应用平台：时间维 = 可逆 effect（LIFO 逆），空间维 = 声明式、反应式解析的 capability。当前仓库是 **.NET 10 产品代码**；Go 树是冻结基线，仅作参照与核验。
 
-# gocordis — 动态可组合运行时(Go)
+## 产品入口
 
-以论文 *[A Programming Paradigm for Spatiotemporal Composability](docs/论文.pdf)*
-为唯一规范来源的插件运行时实现:可逆 effect(时间维)、反应式 coeffect(空间维)、
-统一 context,以及其上的声明式装载、配置调和与热替换。
-
-- **用户手册(从这里开始)**:[docs/guide/user-manual.md](docs/guide/user-manual.md)
-- **开发者手册(框架内幕)**:[docs/guide/developer-manual.md](docs/guide/developer-manual.md)
-- **LLM/代理开发规范**:[AGENTS.md](AGENTS.md)(十二铁律 + 两部分项目结构 + 禁止清单)
-- 语义对照与路线图:[docs/ROADMAP.md](docs/ROADMAP.md)
-- 设计裁决:[docs/adr/](docs/adr/) · 评审记录:[docs/review/](docs/review/)
-- 可运行示例:[cmd/](cmd/)(collector / backfill / httpd / wasmhmr / host / example)
-
-## 一条命令启动控制台
-
-```sh
-go run ./cmd/platform        # 打开 http://127.0.0.1:8170/
+```bash
+dotnet run --project src/Gocordis.Platform -- \
+  --manifest gocordis.app.json --store ~/.gocordis/plugins --address http://127.0.0.1:8170
 ```
 
-无需 npm:`web/console/dist` 被 gitignore,新克隆里没有构建产物,此时 webui
-直接由 `go:embed` 提供**内嵌 bootstrap UI**(`extensions/console/webui/bootstrap/`)。
-它用原生 JS 显示:页面导航(`/api/ui/pages`)、运行时快照表格与计数
-(`/api/query/runtime/snapshot`:fibers / providers / deps / effects)、框架仪表盘
-计数(`/api/query/framework/dashboard`)。查询尚未注册时对应区块给出提示,其余照常工作。
+Console 通过 UI 安装、配置、启停、升级、卸载插件，并查看依赖与运行状态；写操作默认仅 loopback 可用，远程需显式鉴权策略。`src/Gocordis.Platform` 才是产品宿主；`samples/PlatformHost` 只是示例。
 
-Bootstrap 的定位是**开箱即用的基础诊断界面**,不是完整 Console 的等价实现:
-Scopes 表格、事件时间线、诊断明细与插件管理操作仍以完整 SPA 为准。它刻意保持只读、
-零依赖,避免为两种前端维护同一套复杂能力。
+## 从此处开始
 
-需要完整的 React SPA(可选,仅 UI 更丰富,API 不变):
+- **当前状态 / 分支 / 验证计数 / 已知边界**：[`docs/current-status.md`](docs/current-status.md)
+- **Agent 工程宪章（强制）**：[`AGENTS.md`](AGENTS.md)
+- 用户手册：[`docs/guide/user-manual.md`](docs/guide/user-manual.md) · C# 开发手册：[`docs/guide/csharp-developer-manual.md`](docs/guide/csharp-developer-manual.md)
+- 语义对照 / 覆盖账本：`docs/migration/semantic-mapping.md`、`docs/migration/paper-coverage-matrix.md`
+- 语义裁决：论文 → JS Cordis → Go；Koishi 仅作产品组合参照。冻结差异见 `docs/ACCEPTED-DIFFERENCES.md`。
 
-```sh
-make console                # = cd web/console && npm ci && npm run build
+## 可运行全链路示例
+
+```bash
+bash samples/SpatiotemporalShowcase/build-and-run.sh /tmp/gocordis-showcase --run
 ```
 
-只要 dist 中存在 `index.html`,就自动改用完整 SPA;删除 dist 即回退到 bootstrap。
+真实编译 4 个 managed 插件包（共享契约 `--shared-assembly`、能力图 `--provides/--dependency`）、安装、声明、启动产品宿主，并演示严格 LIFO 撤销与依赖重激活。详见 `samples/SpatiotemporalShowcase/README.md`。
 
-地址与环境变量:`GOCORDIS_ADDR`(默认 `127.0.0.1:8170`)、`GOCORDIS_WEB_DIST`
-(指定 dist 目录,不存在时同样回退到 bootstrap)、`GOCORDIS_MANIFEST`、`GOCORDIS_CATALOG_DIR`。
-控制台默认无鉴权,勿直接暴露到公网。详见 [用户手册 §13](docs/guide/user-manual.md#13)。
+## 质量门
 
-```go
-rt, _ := runtime.New()
-f, _ := rt.Load(&MyComponent{})
-_ = f.Ready(ctx)   // Active ⇔ 组件真实在服务
+```bash
+dotnet build Gocordis.sln --nologo -m:1
+dotnet test  Gocordis.sln --nologo --no-build -m:1
+(cd web/console && npm ci && npm test && npm run build)
+(cd web/plugin-kit && npm test)
+bash docs/migration/verify-baseline.sh   # Go 基线漂移检查（不是当前入口）
 ```
 
-质量门:`make verify`(gofmt + vet + test + race),另含确定性种子 fuzz。
+历史迁移过程与评审轮次都在 `docs/migration/`（归档），其中的分支名、SHA 与测试计数**不代表当前状态**。

@@ -1,146 +1,16 @@
 name: ci
 
-on:
-  push:
-  pull_request:
+on: [push, pull_request]
 
-env:
-  # Reproducible toolchain: read by actions/setup-go. Local policy documented in
-  # docs/plan/baseline.md (version-fox-managed Go 1.26.0; GOCACHE is per-run /
-  # per-workspace, never a developer-global cache shared across toolchains).
-  GO_VERSION_FILE: .go-version
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  verify:
+  linux-tests:
+    name: linux .NET + frontend
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: .go-version
-          cache: true
-
-      - name: Format check
-        run: |
-          unformatted=$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))
-          if [ -n "$unformatted" ]; then
-            echo "gofmt required on:"; echo "$unformatted"; exit 1
-          fi
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        run: go test ./...
-
-      - name: Race
-        # Go baseline has a known intermittent broker_test race flake (main is frozen).
-        # Retry only this gate up to 3 times; a real failure still fails CI.
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            echo "race attempt ${attempt}"
-            if go test -race ./...; then exit 0; fi
-            if [ "${attempt}" -eq 3 ]; then
-              echo "race failed after 3 attempts"
-              exit 1
-            fi
-          done
-
-      - name: Race (repeated, concurrency-sensitive suites)
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            echo "repeated-race attempt ${attempt}"
-            if go test -race ./runtime/ -count=3 &&
-               go test -race ./integration/ -count=3 &&
-               go test -race ./extensions/hmr/ -count=3 &&
-               go test -race ./cmd/httpd/ -count=3; then
-              exit 0
-            fi
-            if [ "${attempt}" -eq 3 ]; then
-              echo "repeated race failed after 3 attempts"
-              exit 1
-            fi
-          done
-
-  windows-build:
-    # W-2（R14）：编译层守住 Windows 兼容——build + vet + 测试二进制交叉
-    # 编译，零成本防回退。windows-latest 原生测试 job 可后补（-race 需镜像
-    # 自带 mingw）。
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: .go-version
-          cache: true
-
-      - name: Windows build
-        run: GOOS=windows go build ./...
-
-      - name: Windows vet
-        run: GOOS=windows go vet ./...
-
-      # Cross-compile the test binaries ONLY (`go test -c`). Plain `go test`
-      # would try to EXECUTE the windows .exe on the linux runner and die with
-      # "exec format error". Packages without test files are skipped because
-      # `go test -c` rejects them.
-      - name: Windows test compile (cross-compile only, never executed)
-        run: |
-          set -euo pipefail
-          pkgs=$(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
-          if [ -z "$pkgs" ]; then
-            echo "no test packages"; exit 0
-          fi
-          tmpdir="$(mktemp -d)"
-          trap 'rm -rf "$tmpdir"' EXIT
-          fail=0
-          i=0
-          for pkg in $pkgs; do
-            i=$((i+1))
-            if ! GOOS=windows go test -c -o "$tmpdir/t$i.test.exe" "$pkg"; then
-              echo "windows test compile failed: $pkg"; fail=1
-            fi
-          done
-          exit $fail
-
-  console-web:
-    # UI-01..03 的前端门面是插件 ABI：vitest + tsc 必须在 CI 执行，
-    # 不能只靠提交说明里"本地跑过"（联合审查 P2）。
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: web/console/package-lock.json
-
-      - name: npm ci
-        working-directory: web/console
-        run: npm ci
-
-      - name: Vitest
-        working-directory: web/console
-        run: npm test
-
-      - name: TypeScript check
-        working-directory: web/console
-        run: npx tsc --noEmit
-
-      - name: Production build (tsc + vite)
-        working-directory: web/console
-        run: npm run build
-
-  dotnet-build:
-    # Frontend gate first: .NET is built/tested only after web/console passes
-    # npm ci + npm run build in console-web. SDK version comes from global.json.
-    needs: console-web
-    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -153,9 +23,14 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/console/package-lock.json
-      - name: Frontend build (web/console)
+
+      - name: Plugin kit tests
+        working-directory: web/plugin-kit
+        run: npm ci && npm test
+
+      - name: Console tests and production build
         working-directory: web/console
-        run: npm ci && npm run build
+        run: npm ci && npm test && npx tsc --noEmit && npm run build
 
       - name: Build (.NET solution)
         run: dotnet build Gocordis.sln --nologo -m:1
@@ -163,5 +38,5 @@ jobs:
       - name: Build (PlatformHost sample)
         run: dotnet build samples/PlatformHost/PlatformHost.csproj --nologo -m:1
 
-      - name: Test
+      - name: Test (.NET solution)
         run: dotnet test Gocordis.sln --nologo --no-build -m:1

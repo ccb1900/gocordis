@@ -64,9 +64,10 @@
 - 阶段 2：**已验证**（Core 语义内核完整可运行，含 Realm/MetaKey 与确定性重放）。
 - 阶段 3–6：**已执行**（Manifest/Registry、Managed ALC、WASM/Process、UI/Console/API 均有可运行实现）。
 - **原缺口已逐项关闭**：WASM 能力桥/HMR、Process 边界行为、官方扩展套件、内嵌前端、
-  定理与平台收敛测试；Windows runner 实跑由 GitHub Actions `windows-dotnet` job 覆盖；CI 状态必须按 SHA 核对，
+  定理与平台收敛测试；Windows runner 实跑由 GitHub Actions `windows-dotnet` workflow 覆盖；CI 状态必须按 SHA 核对，
   不得用历史 SHA 的成功结果代表当前提交。历史留痕：`2ccdaad` Windows 曾失败，
-  `62d7de15` 修复后三组 CI 全绿；当前 SHA 以 GitHub Actions 现场结果为准。
+  `62d7de15` 修复后三组 CI 全绿。当前 CI 已移除全部 Go 步骤，仅保留 `ci`
+  与 `windows-dotnet`；当前 SHA 以 GitHub Actions 现场结果为准。
   详见 [`final-acceptance.md`](final-acceptance.md) §4。
 - **批次 A（Channel 驱动生命周期决策域）已完成**：冻结基线 119 项测试
   （Core 22 / Conformance 28 / Extensions 19 / Runtime 50）；新增回归用例后为 **123**，

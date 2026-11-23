@@ -173,8 +173,17 @@ wasm backend 内部以 `moduleGeneration`(ref + holders + committed)为身份:
 | 前端 `npm run build` | 通过 |
 | Windows 测试二进制交叉编译(全 28 包) | 通过 |
 
-CI 配置:`.github/workflows/ci.yml` 含 verify(格式/vet/test/race + 敏感套件重复)、
-windows-build(build/vet/test 交叉编译)、console-web(npm/vitest/tsc/build)三 job。
+上表 Go 命令仅为冻结基线的本地历史证据，**不再进入 CI**。
+
+CI 配置已收敛为两个纯 .NET 工作流：
+
+- `.github/workflows/ci.yml`：plugin-kit 测试、Console 测试/类型检查/生产构建、
+  .NET solution + PlatformHost sample build/test（含 POSIX process fixture），保留 `ci` 状态名。
+- `.github/workflows/windows-dotnet.yml`：Console 生产构建、.NET build/test（含 Windows ALC
+  与 process `.exe` 路径）。
+
+`ci.yml` 中的 setup-go、Go build/vet/test/race 与 Windows Go 交叉编译 job 已全部移除；
+CI 不再安装 Go，也不运行任何 Go 命令。
 
 ---
 

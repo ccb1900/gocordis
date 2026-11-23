@@ -37,8 +37,9 @@ bash docs/migration/verify-baseline.sh  # Go baseline
 - Test：443/443，R11 实跑修正后连续 3 次零失败、零挂起
 - 构成：Core 33 / Conformance 148 / Runtime 126 / Extensions 60 / Packaging 47 / UI 3 / Client 2 / Product 24
 
-CI 状态不在本轮工作流中核验。最终验收以本地构建/测试为准；历史 `6ff30f1c` 曾记录 Go baseline Race
-flake，CI workflow 对该已知 flake 采用最多 3 次有界重试，真实失败不会被掩盖。当前 HEAD 的 CI 结果需由外部流程确认，不在本文件中声称。
+CI 状态不在本轮工作流中核验。最终验收以本地构建/测试为准。当前 CI 仅含
+`ci`（Linux .NET + 前端）与 `windows-dotnet` 两个工作流；Go baseline 的 race flake
+及其重试逻辑已从 `ci.yml` 移除，只作为历史本地证据保留。当前 HEAD 的 CI 结果需由外部流程确认，不在本文件中声称。
 
 ## 3. 产品使用示例
 

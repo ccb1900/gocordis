@@ -31,6 +31,28 @@ public sealed class PluginTrustPolicyTests
     }
 
     [Fact]
+    public async Task SharedTrustParserIsUsedByEveryProductEntrypoint()
+    {
+        using var temp = new TempDir();
+        var pem = temp.At("publisher.pem");
+        await File.WriteAllTextAsync(pem, "pem-public-key");
+
+        Assert.Same(PluginTrustPolicy.Development,
+            PluginTrustPolicy.FromPemFiles(null, null));
+        Assert.Same(PluginTrustPolicy.Development,
+            PluginTrustPolicy.FromPemFiles("development", [pem]));
+
+        var trusted = PluginTrustPolicy.FromPemFiles("trusted-only", [pem]);
+        Assert.True(trusted.RequireSignature);
+        Assert.Equal(["pem-public-key"], trusted.TrustedPublicKeys);
+
+        Assert.Throws<ArgumentException>(() =>
+            PluginTrustPolicy.FromPemFiles("trusted-only", null));
+        Assert.Throws<ArgumentException>(() =>
+            PluginTrustPolicy.FromPemFiles("unrestricted", [pem]));
+    }
+
+    [Fact]
     public async Task SignatureFromAnUntrustedKeyIsRejected()
     {
         using var temp = new TempDir();

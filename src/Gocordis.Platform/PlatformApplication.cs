@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.IO;
 using System.Text.Json.Nodes;
 using Gocordis.Console.WebUi;
@@ -26,7 +25,8 @@ public sealed class PlatformHostOptions
         string HostVersion = "1.0.0",
         IReadOnlyList<string>? AllowedHosts = null,
         bool ValidateOnly = false,
-        PluginTrustPolicy? Trust = null)
+        PluginTrustPolicy? Trust = null,
+        ConsoleAccessPolicy? AccessPolicy = null)
     {
         if (string.IsNullOrWhiteSpace(ManifestPath))
         {
@@ -47,7 +47,10 @@ public sealed class PlatformHostOptions
         this.HostVersion = HostVersion;
         this.AllowedHosts = AllowedHosts;
         this.ValidateOnly = ValidateOnly;
-        Trust = Trust ?? PluginTrustPolicy.Development;
+        this.Trust = Trust ?? PluginTrustPolicy.Development;
+        // No CLI flag fabricates an authentication decision. Remote writes stay
+        // denied until an embedding host supplies an explicit policy here.
+        this.AccessPolicy = AccessPolicy;
     }
 
     public string ManifestPath { get; }
@@ -67,35 +70,17 @@ public sealed class PlatformHostOptions
 
     /// <summary>Package trust policy used by the control plane installer.</summary>
     public PluginTrustPolicy Trust { get; }
+
+    /// <summary>
+    /// Remote-write authorization seam. Null means the console default:
+    /// loopback management is open, remote writes are denied. The product CLI
+    /// never guesses an identity; an embedding host supplies the policy.
+    /// </summary>
+    public ConsoleAccessPolicy? AccessPolicy { get; }
 }
 
 /// <summary>One resolved declaration as seen by the product composition root.</summary>
 public sealed record PlatformResolvedPlugin(string Id, string Version, bool Enabled);
-
-/// <summary>
-/// Stable capability keys for backend-provided values. Key identity is
-/// reference identity, so consumers must resolve keys through this contract
-/// rather than constructing a key with the same name.
-/// </summary>
-public static class PlatformBackendKeys
-{
-    private static readonly ConcurrentDictionary<string, Key<string>> ProcessEchoKeys = new(StringComparer.Ordinal);
-    private static readonly ConcurrentDictionary<string, Key<string>> ProcessErrorKeys = new(StringComparer.Ordinal);
-    private static readonly ConcurrentDictionary<string, Key<ProcessDiagnostics>> ProcessDiagnosticKeys = new(StringComparer.Ordinal);
-    private static readonly ConcurrentDictionary<string, Key<int>> WasmValueKeys = new(StringComparer.Ordinal);
-
-    public static Key<string> ProcessEcho(string pluginId) =>
-        ProcessEchoKeys.GetOrAdd(pluginId, id => new Key<string>($"{id}.process.echo"));
-
-    public static Key<string> ProcessError(string pluginId) =>
-        ProcessErrorKeys.GetOrAdd(pluginId, id => new Key<string>($"{id}.process.error"));
-
-    public static Key<ProcessDiagnostics> ProcessDiagnostics(string pluginId) =>
-        ProcessDiagnosticKeys.GetOrAdd(pluginId, id => new Key<ProcessDiagnostics>($"{id}.process.diagnostics"));
-
-    public static Key<int> WasmValue(string pluginId) =>
-        WasmValueKeys.GetOrAdd(pluginId, id => new Key<int>($"{id}.wasm.value"));
-}
 
 /// <summary>
 /// Product application host. It composes the one Runtime, one PluginRegistry,
@@ -252,6 +237,7 @@ public class PlatformApplication : IAsyncDisposable
                     allowRemote: _options.AllowRemote,
                     registry: Registry,
                     control: control,
+                    accessPolicy: _options.AccessPolicy,
                     routeGuard: _routeGuard);
                 await WebUi.StartAsync(cancellationToken);
             }
@@ -329,18 +315,16 @@ public class PlatformApplication : IAsyncDisposable
         {
             var executable = ResolvePayload(manifest);
             var declarations = PluginManifest.ParseCapabilities(manifest.Capabilities);
-            if (declarations.Count > 0)
+            if (declarations.Count == 0)
             {
-                // Declared capabilities replace the host-invented echo/error keys:
-                // the child only gets handles for capabilities it declared.
-                return new ProcessCapabilityComponent(executable, Capabilities, declarations);
+                throw new InvalidOperationException(
+                    $"process plugin '{manifest.Id}' declares no capabilities; the legacy echo/error " +
+                    "demo path is not a product backend. Declare capabilities with plugin pack --provides " +
+                    "(or the package manifest) and bind them with Inject()/Provide().");
             }
 
-            return new ProcessPluginComponent(
-                executable,
-                PlatformBackendKeys.ProcessEcho(manifest.Id),
-                PlatformBackendKeys.ProcessDiagnostics(manifest.Id),
-                PlatformBackendKeys.ProcessError(manifest.Id));
+            // The child only gets handles for capabilities it declared.
+            return new ProcessCapabilityComponent(executable, Capabilities, declarations);
         }
 
         if (string.Equals(backend, "wasm", StringComparison.OrdinalIgnoreCase))
@@ -357,10 +341,10 @@ public class PlatformApplication : IAsyncDisposable
             // group-first used to hide conflicting versions/media types.
             if (fromManifest.Count == 0 && fromModule.Count == 0)
             {
-                var legacyKey = PlatformBackendKeys.WasmValue(manifest.Id);
-                return isWat
-                    ? new WasmComponent(File.ReadAllText(modulePath), legacyKey)
-                    : new WasmComponent(File.ReadAllBytes(modulePath), legacyKey, name: manifest.Id);
+                throw new InvalidOperationException(
+                    $"WASM plugin '{manifest.Id}' declares no capabilities; the legacy value demo path " +
+                    "is not a product backend. Declare capabilities in the package manifest and in the " +
+                    "gocordis.capabilities custom section, then bind them with Inject()/Provide().");
             }
 
             if (fromManifest.Count != fromModule.Count ||

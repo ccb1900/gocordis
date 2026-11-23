@@ -14,7 +14,7 @@ stc-go)自本文起停用,改用论文编号。
 | §4.1–4.2 | Components/fibers、orchestration、lifecycle(六规则 L-Begin/L-Iter/L-Finish/L-Divert/L-Leave/L-Unload)、confinement | 已实现(含迭代边界 divert) |
 | §4.3 | 元理论:**Theorem 64** (Preservation)、**68** (Recovery exactness)、**70** (Ordering)、**73** (Progress)、**80** (Confluence) | 五套定理测试已实现并按论文编号重锚(P1 完成) |
 | §4.4 | 四个扩展:Asynchrony、Failure、Isolation(K×R 编码)、Configuration/revision | 四项均已实现:Isolation=逐 key realm(ADR-0001),revision=Fiber.Revise 复合(P5) |
-| §5 | 实现:Cordis core library、declarative loader(配置调和 + HMR) | loader/HMR/config 扩展形态已就位,P5 内核原语完成 |
+| §5 | 实现:Cordis core library、declarative loader(配置调和 + HMR) | 声明调和已就位;HMR 仅为实验性原语,**无打包热更新未作为产品能力交付**,代码变更走 pack + 声明 Revision |
 | §6 | 讨论:service multiplexing、access control、sandboxing、语言独立性、依赖类型/版本 | 扩展层逐项落地(broker/proc/wasm);WASM 沙箱形式化与依赖版本为 P7 延后项 |
 
 ## 1. 论文 ↔ 代码对照表(经原文复核,2026-09-08)

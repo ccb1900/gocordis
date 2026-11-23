@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.Loader;
+using Gocordis.Runtime.Contracts;
 
 namespace Gocordis.Runtime.Managed;
 

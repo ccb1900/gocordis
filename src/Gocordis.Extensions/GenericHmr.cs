@@ -1,5 +1,9 @@
 namespace Gocordis.Extensions;
 
+// Experimental primitive only. The product host does not call this path: hot
+// reload without packing is deferred, and a code change goes through
+// build -> pack -> upgrade so paper Revision semantics are preserved.
+
 /// <summary>
 /// Backend-neutral HMR identity. A target is neither a Fiber nor a module: the
 /// host decides what ComponentId means for its loader.

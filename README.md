@@ -6,10 +6,11 @@
 
 ```bash
 dotnet run --project src/Gocordis.Platform -- \
-  --manifest gocordis.app.json --store ~/.gocordis/plugins --address http://127.0.0.1:8170
+  --manifest gocordis.app.json --store ~/.gocordis/plugins --address http://127.0.0.1:8170 \
+  [--trust development|trusted-only] [--public-key <pem>]
 ```
 
-Console 通过 UI 安装、配置、启停、升级、卸载插件，并查看依赖与运行状态；写操作默认仅 loopback 可用，远程需显式鉴权策略。`src/Gocordis.Platform` 才是产品宿主；`samples/PlatformHost` 只是示例。
+Console 通过 UI 安装、配置、启停、升级、卸载插件，并查看依赖与运行状态；写操作默认仅 loopback 可用，远程需宿主显式提供鉴权策略。`--host` 只接受 `web`；WinForms/Avalonia 是延期的 render-plan profile，不是可运行宿主。`src/Gocordis.Platform` 才是产品宿主；`samples/PlatformHost` 只是示例。
 
 ## 从此处开始
 

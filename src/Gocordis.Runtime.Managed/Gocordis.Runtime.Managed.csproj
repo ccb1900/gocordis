@@ -2,5 +2,6 @@
   <ItemGroup>
     <ProjectReference Include="../Gocordis.Core/Gocordis.Core.csproj" />
     <ProjectReference Include="../Gocordis.Plugins/Gocordis.Plugins.csproj" />
+    <ProjectReference Include="../Gocordis.Runtime.Contracts/Gocordis.Runtime.Contracts.csproj" />
   </ItemGroup>
 </Project>

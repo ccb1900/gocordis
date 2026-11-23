@@ -7,6 +7,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Gocordis.Core/Gocordis.Core.csproj" />
     <ProjectReference Include="../../src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
+    <ProjectReference Include="../../src/Gocordis.Runtime.Contracts/Gocordis.Runtime.Contracts.csproj" />
     <ProjectReference Include="../../src/Gocordis.Runtime.Managed/Gocordis.Runtime.Managed.csproj" />
     <ProjectReference Include="../../src/Gocordis.Runtime.Wasm/Gocordis.Runtime.Wasm.csproj" />
     <ProjectReference Include="../../src/Gocordis.Runtime.Process/Gocordis.Runtime.Process.csproj" />

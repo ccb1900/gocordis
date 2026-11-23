@@ -1,566 +1,220 @@
-# gocordis 用户手册
+# Gocordis 用户手册（.NET 10 产品）
 
-> **读者**:使用 gocordis 开发插件化应用的工程师。
-> **性质**:任务导向的实操手册;所有 API 均以当前代码为准(代码为第一性参照),
-> 论文 *A Programming Paradigm for Spatiotemporal Composability*(`docs/论文.pdf`)
-> 是语义的最终裁决来源。
-> **配套**:框架内部架构与贡献流程见《开发者手册》(`developer-manual.md`)。
+> 读者：使用 Gocordis 开发、打包、部署插件化应用的工程师与运维人员。
+> 本手册以当前仓库的 **.NET 10** 产品代码为准；Go 树是冻结基线，仅作参照。
+> 语义权威是论文 *A Programming Paradigm for Spatiotemporal Composability*
+> （`docs/论文.pdf`）。工程约束见根目录 `AGENTS.md`，当前状态见 `docs/current-status.md`。
 
----
+## 1. 产品是什么
 
-## 目录
+Gocordis 是一个基于时空可组合运行时的 .NET 插件应用平台：
 
-1. [gocordis 是什么](#1)
-2. [安装与模块布局](#2)
-3. [核心概念(10 分钟)](#3)
-4. [第一个组件](#4)
-5. [能力与依赖](#5)
-6. [生命周期与错误语义](#6)
-7. [外部资源绑定(ctx.Effect)](#7)
-8. [插件开关与声明存储](#8)
-9. [事件](#9)
-10. [隔离、作用域与命名空间迁移](#10)
-11. [拦截与元数据](#11)
-12. [多实现复用(broker)](#12)
-13. [控制台(extensions/console)](#13)
-14. [可观测性](#14)
-15. [测试](#15)
-16. [边界与最佳实践](#16)
-17. [示例索引](#17)
-18. [插件发布(catalog bundle)](#18)
-19. [故障排查](#19)
+- **时间维**：所有可撤销后果都通过 `EffectAsync` / `Provide` / `OnAsync` / `LoadChildAsync`
+  登记，逆操作严格 LIFO 执行。
+- **空间维**：插件用 `Inject()` / `Provide()` 声明强类型能力；依赖满足时自动激活，
+  依赖撤回时退回 `Pending`，再次满足时自动重激活。没有手工启动顺序。
 
----
+产品由三部分构成：**Runtime**（唯一生命周期权威）、**Application Manifest + Package Store**
+（声明与包）、**三种执行后端**（Managed / Process / WASM）。Web Console 是目前唯一
+可运行的 UI Host；WinForms/Avalonia 只有 render-plan profile，**不是**可运行的宿主选项。
 
-## <a id="1"></a>1. gocordis 是什么
+## 2. 环境准备
 
-gocordis 是论文 *A Programming Paradigm for Spatiotemporal Composability* 的 Go
-实现:一个**动态组合运行时**——组件可以在运行期被安全地装载、卸载、替换、重配,
-同时保证:
-
-- **时间可组合**:卸载组件时,它对环境的一切修改被完整、有序地回滚;
-- **空间可组合**:组件声明依赖,Runtime 反应式地解析、激活、去激活。
-
-仓库分四层:
-
-```
-runtime/       内核:组件模型、生命周期、能力解析、事件流(论文 §2–§5 语义)
-extensions/    平台能力:config/loader/hmr/event/registry/scheduler/broker/
-               observe/console/... 每个都是独立包
-cmd/           可运行示例(collector/backfill/httpd/procplugindemo/wasmhmr)
-integration/   跨包组合验收测试
-```
-
----
-
-## <a id="2"></a>2. 安装与模块布局
+需要 .NET 10 SDK。构建与验证：
 
 ```bash
-go get dynamic-runtime
+dotnet build Gocordis.sln --nologo -m:1
+dotnet test  Gocordis.sln --nologo --no-build -m:1
 ```
 
-要求 Go ≥ 1.24(运行时)。可选依赖按需引入:wazero(WASM 插件)、fsnotify(配置监听)。
-
-应用的项目结构建议(两部分:应用本体 + 插件)见 `AGENTS.md` §2;最小布局:
-
-```
-myapp/
-├── go.mod
-├── manifest.toml            # 声明存储:插件开关 + 配置(持久化在这里)
-├── cmd/myapp/main.go        # 组合根
-├── internal/contracts/      # 契约层:key 定义 + 接口(应用与插件唯一共享物)
-├── internal/app/            # 应用本体组件
-└── plugins/                 # 插件(只 import contracts)
-```
-
----
-
-## <a id="3"></a>3. 核心概念(10 分钟)
-
-| 概念 | 是什么 | 在代码里 |
-|---|---|---|
-| **Component** | 组件的*定义*:声明需要什么、提供什么、启动逻辑 | 实现 `runtime.Component` 接口 |
-| **Fiber** | 组件的*运行实例*,由 Runtime 拥有 | `rt.Load(comp) → *runtime.Fiber` |
-| **能力(Capability)** | 类型化的服务槽位,同命名空间内一 key 一提供者 | `runtime.NewKey[T](name)` |
-| **依赖(Dependency)** | 组件声明"我需要某能力";满足才激活 | `runtime.Requires(key)` |
-| **调和(Reconcile)** | Runtime 持续把实例驱动向"声明要求的状态" | 控制器 `Reconcile` / 内核 sweep |
-| **Effect** | 带逆操作的可追踪副作用;卸载时按 LIFO 回滚 | `ctx.Effect(...)` |
-| **Entry 与 enablement** | 声明条目是存活的身份;fiber 是一次启停 | `Enabled` 开关 / `Dispose`/`Load` |
-
-一个应用 = 一组组件 + 一份声明。**你不写启动顺序**——声明满足即触发。
-
----
-
-## <a id="4"></a>4. 第一个组件
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "time"
-
-    "dynamic-runtime/runtime"
-)
-
-// 类型化 key:能力身份 = (Go 类型, 名字)。
-var greeting = runtime.NewKey[string]("app.greeting")
-
-// Greeter 提供问候语。
-type Greeter struct{}
-
-func (c *Greeter) Name() string                 { return "greeter" }
-func (c *Greeter) Inject() []runtime.Dependency { return nil }
-func (c *Greeter) Provide() []runtime.Capability {
-    return []runtime.Capability{greeting.Capability()}
-}
-func (c *Greeter) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
-    // Provide 是可逆 effect:激活撤销时自动注销。
-    return nil, runtime.Provide(ctx, greeting, "hello")
-}
-
-// Printer 依赖问候语。依赖不满足时它保持 Pending,满足后自动激活。
-type Printer struct{}
-
-func (c *Printer) Name() string { return "printer" }
-func (c *Printer) Inject() []runtime.Dependency {
-    return []runtime.Dependency{runtime.Requires(greeting)}
-}
-func (c *Printer) Provide() []runtime.Capability { return nil }
-func (c *Printer) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
-    v, err := runtime.Require(ctx, greeting)
-    if err != nil {
-        return nil, err
-    }
-    fmt.Println(v)
-    return nil, nil
-}
-
-func main() {
-    rt, err := runtime.New()
-    if err != nil {
-        panic(err)
-    }
-    _, _ = rt.Load(&Greeter{})
-    pf, err := rt.Load(&Printer{}) // 不需要等待 Greeter:门控自动完成
-    if err != nil {
-        panic(err)
-    }
-    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-    defer cancel()
-    if err := pf.Ready(ctx); err != nil { // Ready:Active/Failed/Gone 三态返回
-        panic(err)
-    }
-    _ = rt.Close(ctx)
-}
-```
-
-**要点**:
-
-- `rt.Load(comp)` 表达意图(幂等),状态迁移由 Runtime 内部串行决策域完成;
-- 消费者不等待提供者——两个都 `Load`,门控自动发生;
-- `Provide` 也是可逆 effect:组件卸载时自动注销。
-
----
-
-## <a id="5"></a>5. 能力与依赖
-
-```go
-var db = runtime.NewKey[*sql.DB]("app.db")
-
-// 声明
-func (c *Svc) Inject() []runtime.Dependency {
-    return []runtime.Dependency{runtime.Requires(db)}
-}
-// 使用(仅限声明过的 key;未声明直接报错)
-func (c *Svc) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
-    conn, err := runtime.Require(ctx, db)
-    ...
-}
-```
-
-规则:
-
-- **一个 key,一个提供者**(同一命名空间内);第二个 `Provide` 同 key 会得到
-  `ErrDuplicateProvider`,需要多实现共存用 broker(§12);
-- **取值时机**:在 `Apply`/`Cleanup` 里 `Require`;激活期间依赖被撤走,你的
-  激活会被撤销(依赖消失≠失败,见 §6);
-- 能力背后的**接口**放在应用的 `internal/contracts` 包,插件与应用只共享契约。
-
----
-
-## <a id="6"></a>6. 生命周期与错误语义
-
-| 情形 | Runtime 行为 | 你需要注意 |
-|---|---|---|
-| 声明满足 | Pending → Loading → **Active** | `Apply` 成功返回 |
-| 依赖中途消失 | 撤销已装 effect → **Pending** | 不是失败;依赖恢复自动重新激活 |
-| `Apply` 返回 error / panic | 撤销已装部分 → **Failed** | 错误留在该 fiber(`f.Err()`);不向父传播;**不自动重试** |
-| `Dispose()` | Unloading → **Gone** | effect 按 LIFO 恰好一次回滚 |
-| Failed 后重试 | `Dispose` 清 outcome,再 `Load` | 声明式场景由控制器代劳 |
-| `Runtime.Close` | 全部 fiber 有序撤销 → Gone | |
-
-等待原语:`Ready`(等 Active/Failed/Gone)、`WaitInactive`(等当前激活周期
-结束)、`Gone`(等终态)。随时可读 `State()`/`Err()`。
-
-**给依赖消失的组件写检查点**:`Cleanup` 执行期间,声明的依赖仍然可
-`Require`——把 flush/收尾写在这里,顺序由 Runtime 保证。
-
----
-
-## <a id="7"></a>7. 外部资源绑定(ctx.Effect)
-
-任何需要"启动—就绪—优雅停止"的外部资源(端口、连接池、文件句柄)都按同一
-模式接入:
-
-```go
-func (c *Server) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
-    ln, err := net.Listen("tcp", c.addr)
-    if err != nil {
-        return nil, err
-    }
-    srv := startServing(ln) // 就绪探测通过后才算"在服务"
-
-    // 注册可逆 effect:激活撤销时,优雅关停先于 fiber 终态执行。
-    if err := ctx.Effect(func() (func() error, error) {
-        return func() error { return gracefulStop(srv) }, nil
-    }); err != nil {
-        return nil, err
-    }
-    return nil, nil
-}
-```
-
-两条不变式:**Active ⇔ 资源真实就绪**;**撤销先于终态**。完整样例:
-`cmd/httpd`(HTTP server)、`cmd/backfill`(断电安全 journal)。
-
-**信任边界**:只有经 `ctx.Effect`/`Provide` 注册的后果被追踪;你自己开的
-goroutine、直接写的文件,Runtime 既不追踪也不回滚。
-
----
-
-## <a id="8"></a>8. 插件开关与声明存储
-
-真实应用不要手写 `Load` 顺序,用**声明 → 控制器 → 调和**:
-
-```go
-reg := config.NewFactoryRegistry()
-_ = reg.Register("greeter", config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
-    return &Greeter{}, nil
-}))
-ctrl := config.NewController(rt, reg)
-
-_ = ctrl.Reconcile(ctx, config.Config{Components: []config.ComponentConfig{
-    {ID: "greeter", Type: "greeter"},
-    {ID: "printer", Type: "printer", Enabled: boolPtr(false)}, // 插件开关
-}})
-```
-
-- **`Enabled *bool`**(nil = 启用)是声明的一部分,持久化在声明存储里;
-  disabled 的条目**仍然是被校验过的身份**,只是没有运行中的 fiber;
-- 翻动开关 → 重新 `Reconcile` → Runtime 自动装载/卸载;重启后从声明存储
-  重放,状态原样恢复;
-- 接上文件监听,即可"改文件即启停":
-
-```go
-fw := watch.NewFileWatcher()
-adapter, err := configwatch.New(configwatch.Source{
-    ID: "app", Path: "manifest.toml", Format: configwatch.FormatTOML,
-}, ctrl, fw)
-_ = adapter.Sync(ctx)  // 启动同步
-go adapter.Run(ctx)    // 之后文件变更实时调和
-```
-
-manifest.toml 形态:
-
-```toml
-[[components]]
-id = "greeter"
-type = "greeter"
-
-[[components]]
-id = "printer"
-type = "printer"
-enabled = false
-
-[components.config]
-greeting = "hello"
-```
-
-**持久化三分**(立场):声明(开关/配置)→ 声明存储;业务成果 → 组件层
-journal + 幂等重放(`cmd/backfill` 样例);**runtime 内部状态永不持久化**。
-
----
-
-## <a id="9"></a>9. 事件
-
-插件定义事件用类型化 `EventKey`;处理器注册是**可逆 effect**(随激活撤销)。
-派发模式在 `extensions/event`:
-
-```go
-var evt = runtime.NewEventKey[string]("app.config.changed")
-
-// 组件内注册:
-_ = runtime.On(ctx, evt, func(_ context.Context, payload string) error {
-    log.Println("changed:", payload)
-    return nil
-})
-
-// 派发(五种模式):
-_ = event.Emit(ctx, evt, "v2")                            // 全体可见 handler,错误聚合
-_ = event.Serial(context.Background(), ctx, evt, "v2")    // 严格顺序
-_ = event.Parallel(context.Background(), ctx, evt, "v2")  // 并发执行,按注册序聚合
-_ = event.Bail(context.Background(), ctx, evt, "v2")      // 首错即停
-_ = event.Waterfall(context.Background(), ctx, evt, "v2") // 中间件链
-```
-
-作用域:handler 的可见性由注册者的命名空间路径决定(子 scope 的 handler 只有
-本 scope 及后代能触发)。
-
----
-
-## <a id="10"></a>10. 隔离、作用域与命名空间迁移
-
-- `ctx.Child(comp)`:子组件,继承父的命名空间;父卸载级联子卸载;
-- `ctx.Child(comp, runtime.WithScope())`:子组件获得**独立命名空间**——兄弟
-  scope 互不可见,解析永不回落到父;
-- `ctx.Child(comp, runtime.Isolate(k1, k2))`:**只把列出的 key** 放进新命名
-  空间,其余 key 仍与父共享(逐 key 隔离 + 共享);
-- 运行期迁移命名空间而不重载提供者:
-  `f.Rehome(ctx, runtime.RehomeWithFreshIsolation())` ——提供者不下线,旧命名
-  空间的消费者撤到 Pending(它们的声明未变),新命名空间的消费者自动绑定。
-
----
-
-## <a id="11"></a>11. 拦截与元数据
-
-- **值变换**(读取时改值,可逆,不动依赖图):
-  `runtime.Intercept(ctx, key, func(value T, key Key[T]) (T, error))`;
-- **元数据拦截**(策略/访问控制):key 携带元数据 monoid,provider 是解释器,
-  拦截合并元数据、不改变解析目标、不触发 reload:
-
-```go
-var fsKey = runtime.NewMetaKey[string, fsMeta]("fs", fsZero, mergeFS)
-
-// 提供者:解释元数据
-_ = runtime.ProvideMeta(ctx, fsKey, func(mu fsMeta) string { return render(mu) })
-
-// 消费者:声明元数据(声明不参与满足性判定)
-runtime.RequiresMeta(fsKey, fsDeclared("consumer", "/data"))
-
-// 上下文收紧(可运行时增删,不触发 reload):
-_ = runtime.InterceptMeta(ctx, fsKey, fsMeta{write: false})
-```
-
----
-
-## <a id="12"></a>12. 多实现复用(broker)
-
-同一能力需要多个提供者共存(负载均衡、滚动升级)时用
-`extensions/broker`,不要自造注册表:
-
-```go
-b := broker.New[Codec](nil) // RoundRobin;或 broker.First[Codec]()
-_ = broker.Register(ctx, b, "impl-v2", codecV2) // 可逆注册:卸载自动摘除
-_ = b.Call(func(c Codec) error { ... })          // 消费者依赖稳定的 broker 能力
-```
-
----
-
-## <a id="13"></a>13. 控制台(extensions/console)
-
-控制台是**给其他应用用的通用实现**:UI host(`UIHostKey`)、hub(命名查询/
-命令 + 观测)、页面注册表、explorer(插件巡检与启停)、webui(HTTP + SSE 传输,
-`go:embed` 前端)。
-
-最小装配:
-
-```go
-_, _ = rt.Load(&host.UIComponent{})   // 宿主:注册表 + hub 能力
-srv := webui.New(hostAdapter, assets) // HTTP+SSE 传输(go:embed 前端)
-// 监听地址默认必须是 loopback;非 loopback 需显式 opt-in。
-if err := webui.ValidateListenAddr("127.0.0.1:8080", false); err != nil { panic(err) }
-http.ListenAndServe("127.0.0.1:8080", srv)
-```
-
-> **远程监听**:Web UI **没有内置认证**。默认只绑定 loopback;
-> 绑定 `0.0.0.0` / `:8170` 等非 loopback 地址必须显式 opt-in
-> (`cmd/platform` 用 `GOCORDIS_ALLOW_REMOTE=1`),且由部署者自行提供
-> 认证与网络隔离(防火墙 / VPN / 反向代理);框架只负责拦截误配置并告警。
-
-### 13.1 开箱即用:内嵌 bootstrap 与完整 SPA
-
-一条命令即可拿到可用浏览器 UI(无需 npm):
-
-```sh
-go run ./cmd/platform                       # http://127.0.0.1:8170/
-GOCORDIS_ADDR=127.0.0.1:9000 go run ./cmd/platform       # 改监听地址
-GOCORDIS_WEB_DIST=/path/to/dist go run ./cmd/platform   # 指定构建产物目录
-# 远程监听(需自行提供认证 + 网络隔离,Web UI 无内置认证):
-GOCORDIS_ALLOW_REMOTE=1 GOCORDIS_ADDR=0.0.0.0:8170 go run ./cmd/platform
-```
-
-`web/console/dist` 被 gitignore,新克隆不存在;当传入的 assets 为 nil、目录
-不存在或缺少 `index.html` 时,`webui` 自动提供 `go:embed` 的 **bootstrap UI**
-(`extensions/console/webui/bootstrap/`,纯原生 JS/CSS,零依赖)。它读取
-`/api/ui/pages` 渲染页面导航,读取 `/api/query/runtime/snapshot` 以表格显示
-fibers / providers / dependencies / effects 及各项计数,读取
-`/api/query/framework/dashboard` 显示框架计数;任一查询未注册时只在该区块
-显示"unavailable",不会拖垮整页。动态值一律 `textContent` 写入,不存在 XSS。
-bootstrap 是只读视图,命令/插件启停等操作请用完整 SPA。
-
-完整 React SPA 是**可选升级**:
-
-```sh
-make console            # cd web/console && npm ci && npm run build
-```
-
-只要 dist 内有 `index.html`,`/` 与静态路径就优先服务完整 SPA;删除/清空 dist
-即自动回退。两条路径共用同一套 API 与 DTO。其余环境变量:
-`GOCORDIS_MANIFEST`(声明存储路径)、`GOCORDIS_CATALOG_DIR`(插件目录)。
-控制台默认无鉴权,生产环境需在传输层自行加网关/中间件。
-
-- 应用通过 `hub.RegisterQuery/RegisterCommand` 注册领域查询/命令(可逆);
-- 控制台**没有鉴权**(开发姿态)——暴露到网络前请自行加反代/中间件;
-- 插件启停走声明(`PluginLifecycle`/`Enabled`),由应用决定如何持久化;
-  参考实现:`console.ControllerLifecycle`(声明存储 + 控制器调和驱动);
-- 插件前端模块是 `ui-client` 组件(`host.NewClientModuleComponent`),插件页
-  面声明是 `ui-page` 组件(`host.NewUIPageComponent`)。三者默认**不**在工厂
-  注册表里——组合根按需注册,`procplugin.DiscoverPlugins` 展开出的
-  `ui-client`/`ui-page`/`proc-plugin`/`plugin-error` 声明行才会在调和时生效:
-
-  ```go
-  _ = reg.Register("ui-client", config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
-      return host.NewClientModuleComponent(cc)
-  }))
-  _ = reg.Register("ui-page", config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
-      return host.NewUIPageComponent(cc)
-  }))
-  _ = reg.Register("plugin-error", config.FactoryFunc(func(cc config.ComponentConfig) (runtime.Component, error) {
-      return procplugin.NewErrorComponent(cc)
-  }))
-  ```
-
-  - **follows(插件业务单元)**:manifest 有 backend 时,发现层给该插件的
-    `ui-client`/`ui-page` 行自动加 `follows = <插件名>`——UI 行依赖后端行
-    的存活能力(`host.PluginAliveKey`),停用/移除后端即由 Runtime 依赖规则
-    撤销 UI(Active→Pending),重新启用自动恢复。一个插件一个业务单元,
-    但仍只有一个生命周期权威(§5.2.1,铁律 7)。纯前端插件不带 follows。
-    后端启动失败/进程异常的"降级不阻断"语义不受影响:follows 跟踪的是
-    **声明激活**,不是进程健康。
-  - **plugin-error(坏清单不消失)**:manifest 存在但不可读/解析失败/声明名
-    与目录不符时,发现层产出一行 `plugin-error`(Apply 即报错 → Failed 可见,
-    带原因),而不是静默跳过——坏配置不等于操作员卸载(铁律 6)。修复
-    manifest 后该行被替换,插件自动恢复。
-
-  插件前端的扩展点契约(页面/面板渲染器、widget、设置界面、上下文操作)
-  见 `docs/guide/ui-plugin-lifecycle.md`。
-
----
-
-## <a id="14"></a>14. 可观测性
-
-- **快照**:`snap, _ := rt.Snapshot(ctx)` —— fibers/scopes/providers/
-  dependencies/effects 全量只读投影 + `EventSequence`(线性化锚点);
-- **事件流**:`sub, _ := obs.Subscribe(ctx, snap.EventSequence)` —— 无缝续传
-  的增量事件流。接线:构造 runtime 时挂观察器
-  `runtime.WithEventSink(events.NewObserver())`(`extensions/observe` 提供订阅面(`events.NewObserver()`));
-- 组件内不要 print 状态机——排障用快照与事件流。
-
----
-
-## <a id="15"></a>15. 测试
-
-- 组件测试:普通 `runtime.New()` + `Load` + `Ready` + 断言状态/副作用;
-- 三个必测场景:① Active 行为;② 依赖消失 → Pending → 恢复;③ Dispose 后
-  资源确实消失(端口/句柄);
-- 长激活(`ApplyIter`)必须覆盖 divert 路径(`yield` 返回
-  `runtime.ErrDiverted`);
-- 并发相关:`go test -race`;
-- 仓库自身的定理级证据(Thm 64/68/70/73/80)见 `docs/theorem-verification.md`
-  与 `docs/review/`。
-
----
-
-## <a id="16"></a>16. 边界与最佳实践
-
-1. **信任边界**:仅托管 effect 可逆;外部写入的可逆性不在保证范围;
-2. **合作式假设**:Apply/Cleanup 有限步、可等待(`ctx.Done()`)、依赖图无环;
-3. **单一生命周期权威**:任何代码不得绕过公开 API 改 fiber 状态;
-4. **契约层**:key/事件/接口定义在 contracts 包;插件与应用互不 import;
-5. 禁止清单(手写启动顺序、sleep 等依赖、全局单例、自旋重试……)见
-   `AGENTS.md` §6。
-6. CLI 沙箱边界:`cmd/plugin sandbox` 仅凭 pluginmeta 元数据无法构建插件组件(需宿主编译期注册 config.Factory),它输出 `REQUIRES_BUILD_TIME_REGISTRATION` 诊断并展示空 Runtime 的 snapshot,不改动任何用户文件。`sandbox <manifest> --factory demo` 走公开库 API `sandboxlib.Sandbox(ctx, m, factory, out)`:新建 Runtime + Controller、登记工厂、调和一个声明、打印 snapshot 后干净关闭,不写文件。真实插件由宿主用自己的工厂注册表嵌入该 API(CLI 内置注册表仅有 `demo`)。
-
----
-
-## <a id="17"></a>17. 示例索引
-
-| 示例 | 演示 |
-|---|---|
-| `cmd/collector` | 配置驱动替换、失败隔离 |
-| `cmd/backfill` | 断电安全 journal + 幂等重放 |
-| `cmd/httpd` | 外部资源绑定模式(Active ⇔ serving) |
-| `cmd/procplugindemo` | 进程外插件:独立进程 + JSON-RPC,manifest 开关 |
-| `cmd/wasmhmr` | WASM 插件热替换 |
-| `cmd/host`、`cmd/example` | 最小装配 |
-
----
-
-## <a id="18"></a>18. 插件发布(catalog bundle)
-
-用 `cmd/plugin` 的 CLI 走完一条最短发布链(所有命令都在插件目录外/内按提示使用):
+CLI 名为 `gocordis`（源码在 `tools/Gocordis.Cli`）。查看全部命令：
 
 ```bash
-# 1) 创建:生成 plugin.toml / component.go / go.mod / README.md
-plugin create ./my-plugin --id my-plugin --name "My Plugin" --backend native
-
-# 2) 体检:解析元数据并打印全部诊断;有 error 即非零退出
-plugin doctor ./my-plugin/plugin.toml
-
-# 2b) 可选沙箱:无工厂时只报 REQUIRES_BUILD_TIME_REGISTRATION 并显示空 Runtime
-plugin sandbox ./my-plugin/plugin.toml
-# 宿主已注册工厂时可用公开库 API:sandboxlib.Sandbox(ctx, m, factory, out)
-# CLI 的 --factory demo 仅用于演示工厂路径,不是发布步骤。
-
-# 3) 打包:校验清单 → 计算所有 artifact 的 sha256 → 写回 Source.Checksum
-#    → 生成确定性 tar.gz(manifest 在前,其余文件按名字排序)
-plugin package ./my-plugin                  # 默认 <id>.tar.gz 放在插件目录
-plugin package ./my-plugin --out ./my-plugin.tar.gz
-
-# 4) 放置 catalog:把 tar.gz 复制到宿主仓库的 catalog 目录(例如
-#    <host>/catalog/<id>/),与 catalog 索引条目(清单摘要/路径)一起提交。
-#    catalog 只包含声明与产物:不持久化 fiber 表或 Runtime snapshot。
-
-# 5) 安装:宿主用声明存储启用插件(manifest.toml 增一行 + 组合根注册工厂)
-[[components]]
-id = "my-plugin"
-type = "my-plugin"
-enabled = true
+gocordis --help
 ```
 
-配套规则与边界:
+## 3. 五分钟启动一个应用
 
-- **Native = 编译期**:`backend = "native"` 的插件不是下载即用的二进制——
-  `plugin.toml` 只是描述性元数据,必须**在宿主编译时**注册
-  `config.Factory`(`reg.Register(type, config.FactoryFunc(...))`)才可能激活;
-  `plugin create` 生成的 `component.go` 需要宿主 import 并注册。
-- **远端口市场/签名不在范围内**:本 CLI 只产出本地 catalog-ready 的
-  tar.gz 与 sha256;远程市场发现、上传、签名校验、密钥管理均**不在本仓库范围**,
-  应由宿主/发行方在 catalog 之外自行实现。
-- 打包拒绝非法清单、`..`/绝对路径/符号链接(防止路径逃出 bundle);重复打包
-  同一输入得到逐字节相同的 tarball。已存在的 `Source.Checksum` 会被覆盖。
+应用声明文件是 `gocordis.app.json`，由应用根目录的 `gocordis create` 生成：
 
----
+```bash
+gocordis create ./my-app --id demo.app --version 1.0.0 --host-version 1.0.0
+```
 
-## <a id="19"></a>19. 故障排查
+启动产品宿主：
 
-| 症状 | 原因 | 处理 |
-|---|---|---|
-| `duplicate provider` | 同命名空间已有同 key 提供者 | 检查是否两个组件声明了同 key;多实现用 broker |
-| `unknown component type` | manifest 的 `type` 没有注册工厂 | 组合根 `reg.Register(type, factory)` |
-| 组件卡 Pending | 依赖未满足 | `rt.Snapshot` 看 Dependencies 行的 Waiting 原因 |
-| `UI contribution owner is empty` | 注册页面时 ContributionOwner 缺字段 | 填 PluginID/ComponentID/ActivationID |
-| `sequence predates the retained ring` | 事件锚点早于保留环形 | 重新 `Snapshot` 换新锚点 |
-| 进程外插件握手失败 | 可执行文件未输出握手头 | 确认插件用 `proc.Serve` 且 stdout 无其他输出 |
+```bash
+dotnet run --project src/Gocordis.Platform -- \
+  --manifest ./my-app/gocordis.app.json \
+  --store ~/.gocordis/plugins \
+  --address http://127.0.0.1:8170
+```
+
+打开 `http://127.0.0.1:8170/`。Console 支持插件安装、启停、配置、升级、卸载，
+以及依赖图、运行状态和诊断查询。常用只读接口：
+
+```bash
+curl http://127.0.0.1:8170/api/meta
+curl http://127.0.0.1:8170/api/plugins
+curl http://127.0.0.1:8170/api/query/framework/dashboard
+curl http://127.0.0.1:8170/api/ui/pages
+```
+
+`--host` 只接受 `web`。`winforms` / `avalonia` 会被拒绝——它们是未来原生宿主的
+render-plan 设计，当前没有窗口、消息循环或 Console。
+
+`--validate-only` 会完整执行声明解析、后端装载与 effect 安装，但不监听端口，适合 CI。
+
+## 4. 插件开发闭环
+
+### 4.1 创建与本地开发
+
+SDK 是一个很薄的 MSBuild 包，只向插件项目暴露 `Gocordis.Core` 与 `Gocordis.Plugins`
+的公开创作面（不含 Runtime、Registry、后端实现或 Store）。从空目录开始：
+
+```bash
+# 一次性：把 SDK 与 Core/Plugins 打包到本地 NuGet feed（详细命令见
+# docs/guide/plugin-developer-workflow.md）
+gocordis plugin create ./my-plugin --id demo.plugin --name Demo \
+  --type demo.plugin --feed <local-feed>
+cd my-plugin && dotnet build
+gocordis plugin validate .          # 仅做本地声明预检，不安装
+```
+
+一个最小组件：
+
+```csharp
+using Gocordis.Core;
+
+public static class DemoKeys
+{
+    public static readonly Key<string> Greeting = new("demo.plugin/greeting");
+}
+
+public sealed class DemoComponent : Component
+{
+    public override string Name => "demo-plugin";
+    public override IReadOnlyList<ICapabilityKey> Provide() => [DemoKeys.Greeting];
+
+    public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+    {
+        await context.EffectAsync(
+            () => { context.Provide(DemoKeys.Greeting, "hello"); return ValueTask.CompletedTask; },
+            () => ValueTask.CompletedTask);
+        return null;
+    }
+}
+```
+
+要点：
+
+- `Inject()` / `Provide()` 必须与实际 `Require()` / `Provide()` 完全一致；未声明即抛异常。
+- 需要撤销的外部资源放在 `EffectAsync` 的 install 回调里，逆回调撤销它；不要在
+  `Cleanup` 里新建组件或写死启动顺序。
+- `Context.CancellationToken` 必须被长步骤观察。
+- 插件之间不要互相引用。编译期共享类型（如跨插件 Key）放在一个共享契约程序集，
+  打包时用 `--shared-assembly <name>` 声明，宿主将其封入 Default ALC。
+
+### 4.2 打包、安装、声明
+
+```bash
+gocordis plugin pack ./my-plugin/bin/Debug/net10.0 demo-plugin.gocordis-plugin \
+  --id demo.plugin --version 1.0.0 --type demo.plugin \
+  --backend managed --entry-assembly demo.plugin.dll --entry-type DemoComponent \
+  --capability 'provide|demo.plugin/greeting|endpoint|1.0.0|application/json|'
+
+gocordis plugin install demo-plugin.gocordis-plugin --store ~/.gocordis/plugins \
+  --host-version 1.0.0
+gocordis app add ./my-app/gocordis.app.json demo.plugin --range 1.0.0 \
+  --store ~/.gocordis/plugins
+gocordis app validate ./my-app/gocordis.app.json --store ~/.gocordis/plugins
+gocordis app run ./my-app/gocordis.app.json --store ~/.gocordis/plugins --validate-only
+```
+
+`plugin pack` 把入口、能力声明、共享契约和 UI 资源写进真实 `.gocordis-plugin` 包；
+`app add` 同时写入版本范围、锁定版本与包哈希。包依赖（另一插件的包必须先安装）、
+程序集依赖（共享契约）和能力依赖（运行时 `Inject()/Provide()`）是三层不同的东西，
+不能互相替代。安装了但没有写进应用清单的依赖只产生只读告警
+（`PACKAGE_DEPENDENCY_NOT_DECLARED`），不会被静默当成已满足。
+
+UI 属于包：页面、面板与前端模块写在包的 `gocordis-ui.json`，由宿主作为插件 fiber 的
+effect 绑定；禁用/卸载插件时 UI 自动撤销。C# 端只贡献 API 查询/命令等数据能力。
+
+### 4.3 三种执行后端
+
+| 后端 | 入口 | 能力声明 | 说明 |
+| --- | --- | --- | --- |
+| managed | `.dll` + entry type | `--capability` / 构造函数注入 catalog | .NET 插件，独立 collectible ALC；**不是安全沙箱** |
+| process | 可执行文件 | 包清单必须声明 `--capability` | JSON-RPC 子进程；无能力声明的旧 Echo Demo 路径已从产品工厂移除 |
+| wasm | `.wat` / `.wasm` | 包清单 + `gocordis.capabilities` 自定义段双向一致 | Wasmtime 执行；无能力声明的旧 Value Demo 路径已从产品工厂移除 |
+
+跨后端能力统一为 `CapabilityEnvelope` + `ICapabilityEndpoint`，由宿主唯一的
+`CapabilityCatalog` 分配 Key；版本是兼容性元数据，不参与身份。当前只支持
+`endpoint` 这一种跨后端 ValueKind，其他 Kind 的 Wire 编解码尚未实现。
+
+### 4.4 声明预检（不执行插件）
+
+```bash
+gocordis plugin preflight demo-plugin.gocordis-plugin --host-version 1.0.0
+```
+
+它在临时 Store 与临时 Runtime 中检查声明、依赖和快照，不运行包内代码、不写用户目录，
+输出 `securityBoundary: false`。这是**声明预检**，不是安全沙箱，也不是插件宿主；
+`sandbox` 只是兼容别名。
+
+## 5. 运行时观察与故障定位
+
+- Fiber = 一次启用；Activation = 一次激活 episode。依赖缺失时状态为 `Pending`，不是 `Failed`。
+- Apply 失败会让本 fiber 失败并撤销已安装的 effect，不向父组件传播、不自动重试；
+  修正声明或升级版本后再装载。
+- `runtime/snapshot` 查询包含 Fiber 状态、效果失败槽位（`EffectFailures`，含槽位序号与标签）、
+  清理失败与诊断。历史记录有界（每个 fiber 32 条、全局 256 条）。
+- `cortex/diagnostics`（`devtools/diagnostics`）提供版本与提供方发现结果。
+- `Snapshot()` 是只读投影，不能作为恢复源。只有声明（开关/配置）和组件 journal 会持久化；
+  Fiber 表与运行时派生状态从不落盘。
+
+## 6. 安全与远程管理边界
+
+签名是**来源证明**，不是安装信任链。本地开发默认策略 `development` 接受未签名包；
+正式部署可以锁定发布者：
+
+```bash
+gocordis plugin keygen --out ./keys --name publisher
+gocordis plugin sign demo-plugin.gocordis-plugin --key ./keys/publisher.private.pem \
+  --output demo-plugin.signed.gocordis-plugin
+gocordis plugin install demo-plugin.signed.gocordis-plugin --store <store> \
+  --trust trusted-only --public-key ./keys/publisher.public.pem
+
+gocordis app run ./my-app/gocordis.app.json --store <store> \
+  --trust trusted-only --public-key ./keys/publisher.public.pem
+```
+
+产品宿主（`PlatformRunner` 与 `app run`）和 CLI 安装使用**同一个**信任解析函数
+（`PluginTrustPolicy.FromPemFiles`），Web Console 上传安装也继承宿主的策略。
+`trusted-only` 必须提供至少一个 pinned PEM 公钥；空公钥集会直接拒绝。
+
+远程管理要区分监听与授权：`--allow-remote` 只放宽监听地址检查，默认远程**写操作仍被拒绝**。
+需要远程写入时，嵌入宿主必须通过 `PlatformHostOptions.AccessPolicy` 提供明确的
+`ConsoleAccessPolicy`（按 scope 授权），并放在认证代理之后。CLI 不会凭空构造身份策略。
+
+## 7. 已知边界
+
+- 无打包热更新 / 无打包调试：未实现。代码变更走 build → pack → upgrade，保持论文
+  Revision 语义；`GenericHmr` / `WasmHotSwapper` 只是实验性代际原语，不是产品能力。
+- WinForms / Avalonia 原生窗口宿主：未实现；目前只提供 render-plan profile。
+- 第三方不可信插件安全：Managed 插件是受信任代码；Process 只提供地址空间隔离，不是
+  OS 权限沙箱；当前没有远程市场、撤销列表或自动信任升级。
+- 跨平台证据：Windows 的真实 Process/WASM E2E 需要 Windows CI；本地验证以 Linux 为主。
+- `Gocordis.Extensions` 中多数能力（HMR、Timer、Scheduler、Observe、Watch、Socks 等）
+  目前只有测试消费者，属于实验性/可选原语，不在标准 SDK 中，也不算产品承诺。
+
+## 8. 可运行范例与延伸阅读
+
+```bash
+bash samples/SpatiotemporalShowcase/build-and-run.sh /tmp/gocordis-showcase --run
+```
+
+该脚本真实编译并安装 4 个 managed 插件包，演示共享契约、能力门控、严格 LIFO 撤销与
+依赖重激活。更多细节：`samples/SpatiotemporalShowcase/README.md`、
+`docs/guide/plugin-developer-workflow.md`、`docs/guide/csharp-developer-manual.md`、
+`docs/guide/ui-host-contract.md`、`docs/current-status.md`。

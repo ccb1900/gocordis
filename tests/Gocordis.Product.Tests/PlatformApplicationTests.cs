@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Gocordis.Console.WebUi;
 using Gocordis.Core;
 using Gocordis.Packaging;
 using Gocordis.Platform;
@@ -12,6 +13,51 @@ namespace Gocordis.Product.Tests;
 
 public sealed class PlatformApplicationTests
 {
+    [Theory]
+    [InlineData("winforms")]
+    [InlineData("avalonia")]
+    [InlineData("1")]
+    public async Task PlatformRunnerRejectsNonWebHostOptions(string host)
+    {
+        var code = await PlatformRunner.RunAsync(
+            ["--manifest", "missing.json", "--store", "unused-store", "--host", host]);
+        Assert.Equal(1, code);
+    }
+
+    [Fact]
+    public async Task ProductHostOptionsCarryTrustAndRemoteWritePolicy()
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var trust = PluginTrustPolicy.TrustedOnly("pinned-key");
+        ConsoleAccessPolicy policy = _ => true;
+        var options = new PlatformHostOptions(manifestPath, temp.Path("store"),
+            Trust: trust, AccessPolicy: policy);
+
+        Assert.Same(trust, options.Trust);
+        Assert.Same(policy, options.AccessPolicy);
+    }
+
+    [Fact]
+    public async Task PlatformRunnerParsesTrustedOnlyConfiguration()
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var pem = temp.File("runner-key.pem");
+        await File.WriteAllTextAsync(pem, "pem-public-key");
+
+        string[] Base(string trust) =>
+        [
+            "--manifest", manifestPath, "--store", temp.Path("store"),
+            "--host-version", "1.5.0", "--validate-only", "--trust", trust,
+        ];
+
+        Assert.Equal(1, await PlatformRunner.RunAsync([.. Base("bogus")]));
+        Assert.Equal(1, await PlatformRunner.RunAsync([.. Base("trusted-only")]));
+        Assert.Equal(0, await PlatformRunner.RunAsync(
+            [.. Base("trusted-only"), "--public-key", pem]));
+    }
+
     [Fact]
     public async Task WebHostStartsServesConsoleAndStopsCleanly()
     {
@@ -349,8 +395,9 @@ public sealed class PlatformApplicationTests
     [Fact]
     public void PlatformCliUsageStatesNativeHostBoundary()
     {
-        Assert.Contains("render-plan profiles only", PlatformRunner.UsageText, StringComparison.Ordinal);
-        Assert.Contains("no native UI window", PlatformRunner.UsageText, StringComparison.Ordinal);
+        Assert.Contains("render-plan\nprofiles for future native hosts", PlatformRunner.UsageText, StringComparison.Ordinal);
+        Assert.Contains("Web is the only runnable UI host", PlatformRunner.UsageText, StringComparison.Ordinal);
+        Assert.Contains("--trust development|trusted-only", PlatformRunner.UsageText, StringComparison.Ordinal);
     }
 
     [Fact]

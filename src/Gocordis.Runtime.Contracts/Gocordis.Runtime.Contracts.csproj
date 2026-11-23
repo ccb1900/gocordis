@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Neutral home for the protocol shared by Managed, Process and WASM.
+       No backend implementation may be referenced from here; Core only. -->
+  <ItemGroup>
+    <ProjectReference Include="../Gocordis.Core/Gocordis.Core.csproj" />
+  </ItemGroup>
+</Project>

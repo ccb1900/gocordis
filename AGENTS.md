@@ -10,7 +10,7 @@ Normative words: **MUST** (required), **SHOULD** (expected), **MAY** (permitted)
 
 A **.NET 10 plugin runtime and application platform** implementing the paper *A Programming Paradigm for Spatiotemporal Composability* (`docs/论文.pdf`, C01–C40). Time dimension = reversible effects with LIFO inverses; space dimension = declarative, reactively resolved capabilities. It is no longer a Go project: the Go tree is a frozen baseline, kept only as reference and verification input.
 
-- **Product entry**: `dotnet run --project src/Gocordis.Platform -- --manifest <file> --store <dir> [--address <url>] [--host web|winforms|avalonia] [--validate-only]`. WinForms/Avalonia are render-plan profiles, **not** native window hosts.
+- **Product entry**: `dotnet run --project src/Gocordis.Platform -- --manifest <file> --store <dir> [--address <url>] [--host web] [--validate-only]`. Web is the only runnable UI host; WinForms/Avalonia are render-plan profiles kept for future native hosts and are rejected by the CLI.
 - **Runnable full loop**: `bash samples/SpatiotemporalShowcase/build-and-run.sh <out>` (build → real `.gocordis-plugin` packages → install → manifest → platform), see its README.
 - **Current state / counts / CI caveats**: `docs/current-status.md` (and `README.md` as pointer). Never treat a historical SHA or CI result as proof for the current HEAD.
 
@@ -43,8 +43,9 @@ Actual `ProjectReference` graph (enforced where noted by `BoundaryTests.cs` / PC
 |---|---|---|---|
 | Kernel | `Gocordis.Core` | **none** (NuGet libs OK) | Runtime, Fiber, Context, effects, events, keys, realms. State setters internal. |
 | Semantics | `Gocordis.Plugins` | Core | Component/Manifest/Registry, declaration reconciliation, UI/API contribution contracts. |
-| Platform services | `Gocordis.Extensions` | Core, Plugins | broker, event dispatch modes, timers, fs/http/socks, diagnostics. |
-| Backends | `Runtime.Managed` / `Runtime.Process` / `Runtime.Wasm` | Core, Plugins (+Managed) | Execution backends behind one Core contract. Backend selection belongs to the composition root. |
+| Platform services | `Gocordis.Extensions` | Core, Plugins | broker, event dispatch modes, timers, fs/http/socks, diagnostics. Most capabilities are experimental/test-only; only diagnostics, host ACL/route guard and an opt-in HTTP seam have product consumers. |
+| Backend contracts | `Gocordis.Runtime.Contracts` | Core | Physical home of `IPluginBackend`, `BackendProtocol`, `CoreBackendContext`, `GenerationTracker`. No backend implementation. |
+| Backends | `Runtime.Managed` / `Runtime.Process` / `Runtime.Wasm` | Core, Plugins, Runtime.Contracts | Execution backends behind one Core contract. **Process/WASM MUST NOT reference Managed.** Backend selection belongs to the composition root. |
 | Packaging | `Gocordis.Packaging` | Core, Extensions, Plugins | `.gocordis-plugin` format, store, control plane, `gocordis-ui.json`, `UiPackageBinder`. |
 | Console | `Gocordis.Console.WebUi` | Core, Extensions, Plugins, Packaging | HTTP/SSE hub, SPA hosting, client-module serving, plugin control endpoints. |
 | UI profiles | `Gocordis.UI.Hosts` | Core, Plugins | Web/WinForms/Avalonia render plans only. |
@@ -54,7 +55,7 @@ Actual `ProjectReference` graph (enforced where noted by `BoundaryTests.cs` / PC
 | Tests | `tests/*` | their subject + allowed samples | Conformance/theorem matrix, boundary gates, product E2E. |
 | Samples | `samples/*`, `samples/SpatiotemporalShowcase` | Core (+Plugins) + own contracts | Plugs must not import each other; share typed contracts via `--shared-assembly`. |
 
-Enforced today: `CoreDeclaresNoProjectReferences`, `DeclaredGraphPointsToCore`, `ProductionProjectsDoNotReferenceTests` (`tests/Gocordis.Runtime.Tests/BoundaryTests.cs`); `PC12_PluginRegistryNeverCreatesASecondLifecycle` and PC gates in Conformance/ProductGateTests. The rest are design rules — uphold them in review, do not assume a test catches them.
+Enforced today: `CoreDeclaresNoProjectReferences`, `DeclaredGraphPointsToCore`, `ProductionProjectsDoNotReferenceTests`, `ProcessAndWasmDoNotDependOnTheManagedImplementation` (`tests/Gocordis.Runtime.Tests/BoundaryTests.cs`); `PC12_PluginRegistryNeverCreatesASecondLifecycle` and PC gates in Conformance/ProductGateTests. The rest are design rules — uphold them in review, do not assume a test catches them.
 
 ADRs are binding design records: `docs/adr/0001` per-key realms (no ancestor fallback), `0002` derived metadata interception (right-biased monoid, no cross-root leakage), `0003` effect iterators + inertial divert, `0004` kernel event demotion (dispatch modes in Extensions). `docs/migration/adr-channel-orchestrator.md` freezes the single `Channel<RuntimeCommand>` decision domain + short-lock `Mutate` writes. `docs/plan/phase3-adr.md` is a **superseded** hierarchical-shadowing bias — never reintroduce it.
 

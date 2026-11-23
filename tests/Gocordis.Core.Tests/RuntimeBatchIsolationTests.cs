@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Gocordis.Core;
 using Xunit;
 
@@ -110,28 +111,38 @@ public sealed class ConcurrentBatchSnapshotTests
             await using var runtime = new Runtime();
             var aStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var aGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var aDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var bStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var bGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var bDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            ConcurrentQueue<string> completed = new();
 
             var a = runtime.LoadBatchAsync([
-                new Gated("batch-a", aStarted, aGate), new Plain("batch-a-simple")]);
+                new Gated("batch-a", aStarted, aGate,
+                    () => { completed.Enqueue("batch-a"); aDone.TrySetResult(); }),
+                new Plain("batch-a-simple")]);
             await aStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
             var b = runtime.LoadBatchAsync([
-                new Gated("batch-b", bStarted, bGate), new Plain("batch-b-simple")]);
+                new Gated("batch-b", bStarted, bGate,
+                    () => { completed.Enqueue("batch-b"); bDone.TrySetResult(); }),
+                new Plain("batch-b-simple")]);
             await bStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            if (reverse)
-            {
-                bGate.SetResult();
-                aGate.SetResult();
-            }
-            else
-            {
-                aGate.SetResult();
-                bGate.SetResult();
-            }
+            // Deterministic order: unblock one effect, observe it finish, and only
+            // then unblock the other. Releasing both gates back-to-back merely
+            // schedules continuations and proves no order at all. Awaiting the
+            // batch task here would deadlock: replies are published only when no
+            // other activation is still applying.
+            var (firstGate, firstDone, secondGate, firstName, secondName) = reverse
+                ? (bGate, bDone, aGate, "batch-b", "batch-a")
+                : (aGate, aDone, bGate, "batch-a", "batch-b");
+            firstGate.SetResult();
+            await firstDone.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal([firstName], completed);
 
+            secondGate.SetResult();
             await Task.WhenAll(a, b).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal([firstName, secondName], completed);
             var fibers = runtime.Snapshot().Fibers;
             Assert.Equal(4, fibers.Count);
             Assert.All(fibers, fiber => Assert.Equal(FiberState.Active, fiber.State));
@@ -145,7 +156,7 @@ public sealed class ConcurrentBatchSnapshotTests
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var good = runtime.LoadBatchAsync([
-            new Gated("good", started, gate), new Plain("good-simple")]);
+            new Gated("good", started, gate, static () => { }), new Plain("good-simple")]);
         await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var failing = runtime.LoadBatchAsync([new Failing("bad")]);
 
@@ -159,8 +170,6 @@ public sealed class ConcurrentBatchSnapshotTests
         Assert.Contains(fibers, fiber => fiber.Name == "bad" && fiber.State == FiberState.Failed);
         Assert.All(fibers.Where(fiber => fiber.Name != "bad"),
             fiber => Assert.Equal(FiberState.Active, fiber.State));
-        Assert.DoesNotContain(fibers, fiber =>
-            fiber.State is FiberState.Loading or FiberState.Unloading);
         Assert.DoesNotContain(fibers, fiber =>
             fiber.State is FiberState.Loading or FiberState.Unloading);
     }
@@ -177,11 +186,14 @@ public sealed class ConcurrentBatchSnapshotTests
     {
         private readonly TaskCompletionSource _started;
         private readonly TaskCompletionSource _gate;
-        public Gated(string name, TaskCompletionSource started, TaskCompletionSource gate)
+        private readonly Action _onDone;
+
+        public Gated(string name, TaskCompletionSource started, TaskCompletionSource gate, Action onDone)
         {
             Name = name;
             _started = started;
             _gate = gate;
+            _onDone = onDone;
         }
 
         public override string Name { get; }
@@ -192,6 +204,7 @@ public sealed class ConcurrentBatchSnapshotTests
             {
                 _started.TrySetResult();
                 await _gate.Task;
+                _onDone();
             }, static () => ValueTask.CompletedTask);
             return null;
         }

@@ -23,29 +23,20 @@ public sealed class BackendDispatchProductTests
     private const string HostVersion = "1.0.0";
 
     [PosixOnlyFact]
-    public async Task ProcessPackageIsActivatedByThePlatformFactory()
+    public async Task ProcessDemoPackageWithoutCapabilityDeclarationIsRejectedByTheProductFactory()
     {
         using var temp = new TempDir();
         const string id = "product-proc";
         var store = await InstallAsync(temp, id, "plugin.sh", ProcessPluginScript,
             backend: "process", executable: true);
-        await using var app = await StartAsync(temp, store, id);
 
-        var fiber = app.Registry.Entries[id].Fiber!;
-        Assert.Equal(FiberState.Active, fiber.State);
-        Assert.Equal("process-plugin", Assert.Single(
-            app.Runtime.Snapshot().Fibers, candidate => candidate.Id == fiber.Id).Name);
-        Assert.Equal("ready", app.Runtime.RequireCapability(
-            PlatformBackendKeys.ProcessEcho(id)));
-        Assert.Equal("ok", app.Runtime.RequireCapability(
-            PlatformBackendKeys.ProcessError(id)));
-
-        await app.StopAsync();
-        Assert.Empty(app.Runtime.Snapshot().Fibers);
+        var error = await StartRejectedAsync(temp, store, id);
+        Assert.Contains("declares no capabilities", error);
+        Assert.Contains("legacy echo/error", error);
     }
 
     [Fact]
-    public async Task WasmPackageIsActivatedByThePlatformFactory()
+    public async Task WasmDemoPackageWithoutCapabilityDeclarationIsRejectedByTheProductFactory()
     {
         using var temp = new TempDir();
         const string id = "product-wasm";
@@ -55,42 +46,25 @@ public sealed class BackendDispatchProductTests
               (func (export "runtime_component_destroy") (param i32)))
             """;
         var store = await InstallAsync(temp, id, "plugin.wat", wat, backend: "wasm");
-        await using var app = await StartAsync(temp, store, id);
 
-        var fiber = app.Registry.Entries[id].Fiber!;
-        Assert.Equal(FiberState.Active, fiber.State);
-        Assert.Equal("wasm-plugin", Assert.Single(
-            app.Runtime.Snapshot().Fibers, candidate => candidate.Id == fiber.Id).Name);
-        Assert.Equal(42, app.Runtime.RequireCapability(PlatformBackendKeys.WasmValue(id)));
-
-        await app.StopAsync();
-        Assert.Empty(app.Runtime.Snapshot().Fibers);
+        var error = await StartRejectedAsync(temp, store, id);
+        Assert.Contains("declares no capabilities", error);
+        Assert.Contains("legacy value demo", error);
     }
 
     [Fact]
-    public async Task ExistingWasmBinaryFixtureIsActivatedByThePlatformFactory()
+    public async Task ExistingWasmBinaryFixtureWithoutDeclarationsIsNotActivated()
     {
         using var temp = new TempDir();
         const string id = "product-wasm-bin";
-        // Reuse the repository's real .wasm fixture (Go loader/wasm testdata)
-        // to exercise the binary payload branch, not just WAT compilation.
         var fixture = Path.Combine(FindRepositoryRoot(),
             "extensions", "loader", "wasm", "testdata", "valid.wasm");
         Assert.True(File.Exists(fixture), $"missing WASM fixture '{fixture}'");
         var store = await InstallAsync(temp, id, "plugin.wasm",
             await File.ReadAllBytesAsync(fixture), backend: "wasm");
-        await using var app = await StartAsync(temp, store, id);
 
-        var fiber = app.Registry.Entries[id].Fiber!;
-        Assert.Equal(FiberState.Active, fiber.State);
-        Assert.Equal("wasm-plugin", Assert.Single(
-            app.Runtime.Snapshot().Fibers, candidate => candidate.Id == fiber.Id).Name);
-        // This fixture's create export sets a global and returns void, so the
-        // unified backend reports zero; activation really executed the module.
-        Assert.Equal(0, app.Runtime.RequireCapability(PlatformBackendKeys.WasmValue(id)));
-
-        await app.StopAsync();
-        Assert.Empty(app.Runtime.Snapshot().Fibers);
+        var error = await StartRejectedAsync(temp, store, id);
+        Assert.Contains("declares no capabilities", error);
     }
 
     [Fact]
@@ -200,8 +174,10 @@ public sealed class BackendDispatchProductTests
         await File.WriteAllTextAsync(Path.Combine(store, "plugin.sh"), ProcessPluginScript);
         await File.WriteAllTextAsync(Path.Combine(store, "plugin.wat"), "(module)");
 
-        Assert.Equal("process-plugin", Create("proc", "process", "plugin.sh").Name);
-        Assert.Equal("wasm-plugin", Create("wasm", "wasm", "plugin.wat").Name);
+        // Legacy demo adapters stay available to backend-level tests, but the
+        // product factory no longer exposes a no-declaration execution path.
+        Assert.Throws<TargetInvocationException>(() => Create("proc", "process", "plugin.sh"));
+        Assert.Throws<TargetInvocationException>(() => Create("wasm", "wasm", "plugin.wat"));
         Assert.Equal("product-plugin:legacy-type", Create("legacy", null, null).Name);
         Assert.Equal("product-plugin:builtin-type", Create("builtin", "builtin", null).Name);
         Assert.Equal("disabled-plugin", Create("off", "managed", "ghost.dll", enabled: false).Name);
@@ -293,6 +269,18 @@ public sealed class BackendDispatchProductTests
         await new PluginStore(store, HostVersion).InstallAsync(package);
 
         return store;
+    }
+
+    private static async Task<string> StartRejectedAsync(TempDir temp, string store, string id)
+    {
+        var manifestPath = temp.File($"app-{id}.json");
+        await new ApplicationManifest("backend-app", "1.0.0", HostVersion,
+            [new ApplicationPlugin(id, "[1.0,2.0)", true)]).SaveAsync(manifestPath);
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, store, Host: UiHostKind.Web, HostVersion: HostVersion));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await app.StartAsync());
+        Assert.Empty(app.Runtime.Snapshot().Fibers);
+        return error.InnerException?.Message ?? error.Message;
     }
 
     private static async Task<PlatformApplication> StartAsync(TempDir temp, string store, string id)

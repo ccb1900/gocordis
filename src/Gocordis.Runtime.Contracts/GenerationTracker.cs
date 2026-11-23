@@ -1,8 +1,9 @@
-namespace Gocordis.Runtime.Managed;
+namespace Gocordis.Runtime.Contracts;
 
 /// <summary>
-/// Managed counterpart of the Go Commit/Abandon/Release protocol: a stale
-/// activation can never release resources belonging to a newer generation.
+/// Backend-neutral Commit/Abandon/Release fence: a stale activation can never
+/// release resources belonging to a newer generation. Owned by Runtime.Contracts
+/// so no backend has to depend on another backend's implementation assembly.
 /// </summary>
 public sealed class GenerationTracker
 {

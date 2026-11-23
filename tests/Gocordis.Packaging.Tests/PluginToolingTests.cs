@@ -9,7 +9,7 @@ namespace Gocordis.Packaging.Tests;
 
 /// <summary>
 /// Red tests for the product plugin tooling gap: create / doctor / package
-/// (pack alias) / sandbox. Every test drives the public <see cref="Program.Main"/>
+/// (pack alias) / preflight. Every test drives the public <see cref="Program.Main"/>
 /// entry point, the same way the existing CLI tests do.
 /// </summary>
 [Collection("CLI")]
@@ -155,16 +155,17 @@ public sealed class PluginToolingTests
     }
 
     [Fact]
-    public async Task PluginSandboxLoadsPackageInTemporaryStoreAndReportsSnapshot()
+    public async Task PluginPreflightLoadsPackageInTemporaryStoreAndReportsSnapshot()
     {
         using var temp = new TempDir();
-        var package = await CreatePackageAsync(temp, "sandbox-demo", "[1.0,)");
+        var package = await CreatePackageAsync(temp, "preflight-demo", "[1.0,)");
 
-        var result = await RunAsync("plugin", "sandbox", package, "--host-version", HostVersion);
+        var result = await RunAsync("plugin", "preflight", package, "--host-version", HostVersion);
         Assert.Equal(0, result.Code);
         var root = JsonNode.Parse(result.Out)!;
         Assert.False(root["securityBoundary"]!.GetValue<bool>());
-        Assert.Contains("not a security sandbox", root["note"]!.GetValue<string>());
+        Assert.Contains("security sandbox", root["note"]!.GetValue<string>());
+        Assert.Contains("plugin host", root["note"]!.GetValue<string>());
 
         var diagnostics = root["diagnostics"]!.AsArray();
         Assert.DoesNotContain(diagnostics, IsError);
@@ -179,13 +180,26 @@ public sealed class PluginToolingTests
     }
 
     [Fact]
-    public async Task PluginSandboxRejectsPackageWithMissingDependency()
+    public async Task PluginSandboxAliasRunsTheSamePreflight()
+    {
+        using var temp = new TempDir();
+        var package = await CreatePackageAsync(temp, "alias-demo-preflight", "[1.0,)");
+
+        var result = await RunAsync("plugin", "sandbox", package, "--host-version", HostVersion);
+        Assert.Equal(0, result.Code);
+        var root = JsonNode.Parse(result.Out)!;
+        Assert.Equal("declaration-preflight", root["mode"]!.GetValue<string>());
+        Assert.False(root["securityBoundary"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task PluginPreflightRejectsPackageWithMissingDependency()
     {
         using var temp = new TempDir();
         var package = await CreatePackageAsync(temp, "needs-dependency", "[1.0,)",
             new PluginDependency("absent", "[1.0,2.0)"));
 
-        var result = await RunAsync("plugin", "sandbox", package, "--host-version", HostVersion);
+        var result = await RunAsync("plugin", "preflight", package, "--host-version", HostVersion);
         Assert.Equal(1, result.Code);
         var diagnostics = JsonNode.Parse(result.Out)!["diagnostics"]!.AsArray();
         Assert.True(HasCode(diagnostics, "MISSING_DEPENDENCY"));

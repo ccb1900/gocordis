@@ -264,6 +264,9 @@ public sealed class ManagedPluginProductE2ETests
         start.ArgumentList.Add("--nologo");
         start.ArgumentList.Add("-v");
         start.ArgumentList.Add("q");
+        // Reused MSBuild nodes inherit the redirected stdout/stderr pipes and
+        // keep them open after the build exits, so ReadToEndAsync never finishes.
+        start.ArgumentList.Add("-nodeReuse:false");
         using var process = Process.Start(start)!;
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var stdout = process.StandardOutput.ReadToEndAsync();

@@ -28,4 +28,34 @@ public sealed record PluginTrustPolicy(
 
         return new PluginTrustPolicy(true, publicKeys);
     }
+
+    /// <summary>
+    /// Single trust-configuration decision for the CLI, the product runner and
+    /// any embedding host. PEM files are read here so every entry point parses
+    /// --trust/--public-key identically; no second trust engine is introduced.
+    /// </summary>
+    public static PluginTrustPolicy FromPemFiles(string? mode, IEnumerable<string>? pemFiles)
+    {
+        if (string.IsNullOrWhiteSpace(mode) || mode == "development")
+        {
+            return Development;
+        }
+
+        if (mode != "trusted-only")
+        {
+            throw new ArgumentException(
+                $"unknown trust mode '{mode}'; use development or trusted-only", nameof(mode));
+        }
+
+        var keys = (pemFiles ?? [])
+            .Select(path => File.ReadAllText(path))
+            .ToArray();
+        if (keys.Length == 0)
+        {
+            throw new ArgumentException(
+                "trusted-only requires at least one --public-key <pem> file", nameof(pemFiles));
+        }
+
+        return TrustedOnly(keys);
+    }
 }

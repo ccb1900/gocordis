@@ -12,8 +12,10 @@ dotnet pack src/Gocordis.Plugins/Gocordis.Plugins.csproj -c Release -o <feed> -p
 dotnet pack src/Gocordis.Plugin.Sdk/Gocordis.Plugin.Sdk.csproj -c Release -o <feed> -p:PackageVersion=1.0.0
 
 # 1) create / develop / build
+# Use a fresh --sdk-version for every local pack; NuGet caches by version and
+# would otherwise reuse an older SDK Core from a previous run.
 gocordis plugin create <dir> --id demo.plugin --name "Demo" --type demo.plugin \
-  --feed <feed>
+  --feed <feed> --sdk-version <same-version-used-by-dotnet-pack>
 cd <dir> && dotnet build
 
 # 2) local preflight (no install, no package)
@@ -52,7 +54,9 @@ contracts assembly; cross-backend capabilities use the host catalog.
   bounded (256 runtime / 32 per fiber) to avoid pinning unloaded plugin types.
 - **Native WinForms/Avalonia hosts**: see `ui-host-contract.md`; only Web is a
   real host today.
-- **Trust policy / version lock**: CLI install/upgrade accept `--trust
-  development|trusted-only` and `--public-key`; product host uses
-  `PlatformHostOptions.Trust`. Local development mode is the default; no remote
-  marketplace.
+- **Trust policy / version lock**: CLI install/upgrade, `app run` and the product
+  `PlatformRunner` all parse `--trust development|trusted-only` and `--public-key`
+  through `PluginTrustPolicy.FromPemFiles`; Console installs inherit the host
+  policy. `PlatformHostOptions.Trust` is the programmatic seam. Local development
+  mode is the default; no remote marketplace. `--allow-remote` opens the listener
+  but remote writes still need a host-supplied `ConsoleAccessPolicy`.

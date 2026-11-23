@@ -7,7 +7,8 @@ Managed / Process / WASM 只通过 `IPluginBackend` 接入，不建立自己的�
 
 ## 1. 共同协议
 
-`src/Gocordis.Runtime.Managed/BackendProtocol.cs` 定义：
+`src/Gocordis.Runtime.Managed/BackendProtocol.cs` 定义（当前 HEAD 已迁至
+`src/Gocordis.Runtime.Contracts/BackendProtocol.cs`，此处保留历史路径以说明当时的落点）：
 
 - `Prepare → Activate → Commit(Effect) → Rollback / Release`
 - `BackendDegradationPolicy.FailFiber`：Managed / WASM

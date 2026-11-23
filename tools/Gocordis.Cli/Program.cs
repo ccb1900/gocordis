@@ -179,7 +179,7 @@ public static class Program
             "keygen" => await PluginKeygenAsync(rest),
             "sign" => await PluginSignAsync(rest),
             "doctor" => await PluginDoctorAsync(rest),
-            "sandbox" => await PluginSandboxAsync(rest),
+            "preflight" or "sandbox" => await PluginPreflightAsync(rest),
             "fetch" => await PluginFetchAsync(rest),
             "install" or "upgrade" or "uninstall" or "list" or "resolve" => await PluginStoreAsync(command, rest),
             _ => Fail($"unknown plugin command '{command}'"),
@@ -330,10 +330,14 @@ public static class Program
                     return Fail($"usage: plugin {command} <package> [--store] [--host-version]");
                 }
 
-                var trust = BuildTrustPolicy(rest);
-                if (trust is null)
+                PluginTrustPolicy trust;
+                try
                 {
-                    return Fail("--trusted-only requires at least one --public-key <pem>");
+                    trust = BuildTrustPolicy(rest);
+                }
+                catch (ArgumentException ex)
+                {
+                    return Fail(ex.Message);
                 }
 
                 var result = command == "install"
@@ -763,26 +767,10 @@ public static class Program
     /// Validates a package without installing it. Diagnostics are always a JSON
     /// array of severity/code/message; errors (not warnings) drive exit code 1.
     /// </summary>
-    /// <summary>Product trust configuration. Development keeps the historical
-    /// unsigned-package behavior; --trusted-only additionally pins publishers.</summary>
-    private static PluginTrustPolicy? BuildTrustPolicy(string[] args)
-    {
-        var mode = Option(args, "--trust") ?? "development";
-        if (mode is "development")
-        {
-            return PluginTrustPolicy.Development;
-        }
-
-        if (mode is not "trusted-only")
-        {
-            return null;
-        }
-
-        var keys = OptionValues(args, "--public-key")
-            .Select(path => File.ReadAllText(path))
-            .ToArray();
-        return keys.Length == 0 ? null : PluginTrustPolicy.TrustedOnly(keys);
-    }
+    /// <summary>Delegates to the single product trust parser in Packaging so the
+    /// CLI installer and the product runner cannot drift apart.</summary>
+    private static PluginTrustPolicy BuildTrustPolicy(string[] args) =>
+        PluginTrustPolicy.FromPemFiles(Option(args, "--trust"), OptionValues(args, "--public-key"));
 
     private static async Task<int> PluginDoctorAsync(string[] args)
     {
@@ -819,33 +807,34 @@ public static class Program
     }
 
     /// <summary>
-    /// Declaration-only load check in a throwaway store/runtime. Package payloads
-    /// are never executed and no host factory is involved: this is not a security
-    /// sandbox, just a lifecycle preflight with a clean shutdown.
+    /// Declaration-only preflight in a throwaway store/runtime. Package payloads
+    /// are never executed and no host factory is involved: this is neither a
+    /// security sandbox nor a plugin host, just a lifecycle check with a clean
+    /// shutdown. `sandbox` remains a legacy alias for this command.
     /// </summary>
-    private static async Task<int> PluginSandboxAsync(string[] args)
+    private static async Task<int> PluginPreflightAsync(string[] args)
     {
         var package = Positional(args, 0);
         if (package is null)
         {
-            return Fail("usage: plugin sandbox <packagePath> [--host-version]");
+            return Fail("usage: plugin preflight <packagePath> [--host-version]");
         }
 
         var hostVersion = HostVersion(args);
         var diagnostics = new List<CliDiagnostic>
         {
             Warn("NO_HOST_FACTORY",
-                "declaration-only load check: no host plugin factory is used and the package payload is not executed; this is not a security sandbox"),
+                "declaration-only preflight: no host plugin factory is used and the package payload is not executed; this is not a security sandbox or a plugin host"),
         };
         var (inspection, content) = await InspectPackageAsync(package, hostVersion, storePath: null);
         diagnostics.AddRange(inspection);
         if (content is null || diagnostics.Any(diagnostic => diagnostic.Severity == "error"))
         {
-            WriteSandboxResult(null, null, diagnostics);
+            WritePreflightResult(null, null, diagnostics);
             return 1;
         }
 
-        var tempStore = Path.Combine(Path.GetTempPath(), $"gocordis-sandbox-{Guid.NewGuid():N}");
+        var tempStore = Path.Combine(Path.GetTempPath(), $"gocordis-preflight-{Guid.NewGuid():N}");
         Gocordis.Core.Runtime? runtime = null;
         PluginRegistry? registry = null;
         try
@@ -861,15 +850,15 @@ public static class Program
             runtime = new Gocordis.Core.Runtime();
             registry = new PluginRegistry(runtime);
             var type = content.Manifest.Type;
-            registry.RegisterFactory(type, _ => new SandboxDeclarationComponent(type));
+            registry.RegisterFactory(type, _ => new PreflightDeclarationComponent(type));
             var application = new ApplicationManifest(
-                $"sandbox-{content.Manifest.Id}",
+                $"preflight-{content.Manifest.Id}",
                 "1.0.0",
                 hostVersion,
                 [new ApplicationPlugin(content.Manifest.Id, $"[{content.Manifest.Version}]", true)]);
             await new ApplicationLoader(store, registry).ApplyAsync(application);
 
-            WriteSandboxResult(content.Manifest, runtime.Snapshot(), diagnostics);
+            WritePreflightResult(content.Manifest, runtime.Snapshot(), diagnostics);
             return 0;
         }
         catch (Exception ex)
@@ -879,9 +868,9 @@ public static class Program
                 MissingPluginDependencyException => Error("MISSING_DEPENDENCY", ex.Message),
                 IncompatiblePluginException => Error("VERSION_MISMATCH", ex.Message),
                 InvalidPluginPackageException => Error("INVALID_PACKAGE", ex.Message),
-                _ => Error("SANDBOX_LOAD", ex.Message),
+                _ => Error("PREFLIGHT_LOAD", ex.Message),
             });
-            WriteSandboxResult(content.Manifest, runtime?.Snapshot(), diagnostics);
+            WritePreflightResult(content.Manifest, runtime?.Snapshot(), diagnostics);
             return 1;
         }
         finally
@@ -901,7 +890,7 @@ public static class Program
         }
     }
 
-    /// <summary>Shared preflight for doctor and sandbox; never throws.</summary>
+    /// <summary>Shared declaration inspection for doctor and preflight; never throws.</summary>
     private static async Task<(IReadOnlyList<CliDiagnostic> Diagnostics, PluginPackageContent? Content)> InspectPackageAsync(
         string packagePath, string hostVersion, string? storePath)
     {
@@ -982,13 +971,13 @@ public static class Program
     private static void WriteDiagnostics(IReadOnlyList<CliDiagnostic> diagnostics) =>
         System.Console.WriteLine(JsonSerializer.Serialize(diagnostics, Json));
 
-    private static void WriteSandboxResult(
+    private static void WritePreflightResult(
         PluginPackageManifest? manifest, RuntimeSnapshot? snapshot, IReadOnlyList<CliDiagnostic> diagnostics) =>
         Write(new
         {
-            mode = "declaration-only",
+            mode = "declaration-preflight",
             securityBoundary = false,
-            note = "load check only: package payload is not executed; this is not a security sandbox",
+            note = "declaration preflight only: package payload is not executed; this is neither a security sandbox nor a plugin host",
             package = manifest is null
                 ? null
                 : new { manifest.Id, manifest.Version, manifest.Type, manifest.Checksum },
@@ -1153,20 +1142,31 @@ public static class Program
         var path = Positional(args, 0);
         if (path is null)
         {
-            return Fail("usage: app run <manifest> [--store] [--host-version] [--validate-only] [--address]");
+            return Fail("usage: app run <manifest> [--store] [--host-version] [--validate-only] [--address] [--allow-remote] [--trust development|trusted-only] [--public-key <pem>]");
         }
 
         var validateOnly = args.Contains("--validate-only", StringComparer.Ordinal);
+        PluginTrustPolicy trust;
+        try
+        {
+            trust = BuildTrustPolicy(args);
+        }
+        catch (ArgumentException ex)
+        {
+            return Fail(ex.Message);
+        }
+
         // The CLI is a thin front end: one Runtime, one Registry and the backend
         // factory all live in Platform, exactly as in a generated application.
         var options = new PlatformHostOptions(
             path,
             StorePath(args),
             Option(args, "--address") ?? "http://127.0.0.1:0",
-            AllowRemote: false,
+            AllowRemote: args.Contains("--allow-remote", StringComparer.Ordinal),
             Host: UiHostKind.Web,
             HostVersion: HostVersion(args),
-            ValidateOnly: validateOnly);
+            ValidateOnly: validateOnly,
+            Trust: trust);
 
         return await PlatformRunner.RunAsync(options, new PlatformRunHooks
         {
@@ -1256,18 +1256,18 @@ public static class Program
     private sealed record ResolvedPlugin(string Id, string Version, string Type, bool Enabled);
 
     /// <summary>
-    /// Declaration-only adapter used by `plugin sandbox` (an explicit no-host-
-    /// factory preflight). `app run` no longer uses it: product assembly belongs
+    /// Declaration-only adapter used by `plugin preflight` (an explicit no-host-
+    /// factory check). `app run` no longer uses it: product assembly belongs
     /// to PlatformApplication, which dispatches real backends.
     /// </summary>
-    private sealed class SandboxDeclarationComponent : Component
+    private sealed class PreflightDeclarationComponent : Component
     {
-        private readonly Key<string> _key = new($"sandbox-plugin-{Guid.NewGuid():N}");
+        private readonly Key<string> _key = new($"preflight-plugin-{Guid.NewGuid():N}");
         private readonly string _type;
 
-        public SandboxDeclarationComponent(string type) => _type = type;
+        public PreflightDeclarationComponent(string type) => _type = type;
 
-        public override string Name => $"sandbox-plugin:{_type}";
+        public override string Name => $"preflight-plugin:{_type}";
 
         public override IReadOnlyList<ICapabilityKey> Provide() => [_key];
 
@@ -1369,7 +1369,7 @@ public static class Program
         gocordis plugin sign <package> --key <privatePem> [--output <path>]
         gocordis plugin validate <sourceDir>          # local declaration preflight
         gocordis plugin doctor <packagePath> [--host-version] [--store] [--public-key <pem>]
-        gocordis plugin sandbox <packagePath> [--host-version]
+        gocordis plugin preflight <packagePath> [--host-version]   # alias: sandbox
         gocordis plugin fetch <id> <versionRange> --source <url> [--output <path>] [--host-version]
         gocordis registry serve <directory> [--address] [--allow-remote]
         gocordis plugin install|upgrade <package> [--store] [--host-version] [--trust development|trusted-only] [--public-key <pem> ...]
@@ -1380,5 +1380,6 @@ public static class Program
         gocordis app add <manifest> <pluginId> [--range <version-range>] [--store]
         gocordis app enable|disable <manifest> <pluginId> [--store] [--host-version]
         gocordis app run <manifest> [--store] [--host-version] [--validate-only] [--address]
+                              [--allow-remote] [--trust development|trusted-only] [--public-key <pem> ...]
         """);
 }

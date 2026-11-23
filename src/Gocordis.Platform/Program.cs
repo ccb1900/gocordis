@@ -1,3 +1,4 @@
+using Gocordis.Packaging;
 using Gocordis.Platform;
 using Gocordis.UI.Hosts;
 
@@ -26,11 +27,16 @@ public static class PlatformRunner
 {
     public const string UsageText = """
         gocordis-platform [--manifest <file>] [--store <dir>] [--address <url>]
-                          [--allow-remote] [--host web|winforms|avalonia]
+                          [--allow-remote] [--host web]
                           [--host-version <semver>] [--allowed-host <host> ...]
+                          [--trust development|trusted-only] [--public-key <pem> ...]
                           [--validate-only]
 
-        winforms/avalonia are render-plan profiles only: no native UI window and no web console.
+        Web is the only runnable UI host. WinForms/Avalonia are render-plan
+        profiles for future native hosts; they are not CLI host options.
+        --trust/--public-key configure the same installer policy used by Console uploads.
+        --allow-remote only opens the listener; remote writes still require a
+        host-supplied ConsoleAccessPolicy (programmatic composition root).
         --validate-only reconciles and activates every declaration, then exits without opening a transport.
         """;
 
@@ -42,7 +48,15 @@ public static class PlatformRunner
             return 0;
         }
 
-        return await RunAsync(ParseOptions(args), null);
+        try
+        {
+            return await RunAsync(ParseOptions(args), null);
+        }
+        catch (Exception ex)
+        {
+            System.Console.Error.WriteLine($"gocordis-platform: {ex.Message}");
+            return 1;
+        }
     }
 
     public static async Task<int> RunAsync(PlatformHostOptions options, PlatformRunHooks? hooks = null)
@@ -122,7 +136,9 @@ public static class PlatformRunner
         var host = UiHostKind.Web;
         var hostVersion = "1.0.0";
         var allowedHosts = new List<string>();
+        var publicKeys = new List<string>();
         var validateOnly = false;
+        string? trust = null;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -149,15 +165,22 @@ public static class PlatformRunner
                 case "--allowed-host":
                     allowedHosts.Add(Value(args, ref i));
                     break;
+                case "--trust":
+                    trust = Value(args, ref i);
+                    break;
+                case "--public-key":
+                    publicKeys.Add(Value(args, ref i));
+                    break;
                 case "--host":
                     var value = Value(args, ref i);
-                    if (!Enum.TryParse<UiHostKind>(value, ignoreCase: true, out host))
+                    if (!string.Equals(value, "web", StringComparison.OrdinalIgnoreCase))
                     {
                         throw new ArgumentException(
-                            $"unknown host '{value}'; use web|winforms|avalonia " +
-                            "(winforms/avalonia are render-plan profiles, not native UI hosts)");
+                            $"host '{value}' is not runnable; web is the only product UI host. " +
+                            "WinForms/Avalonia are render-plan profiles for future native hosts.");
                     }
 
+                    host = UiHostKind.Web;
                     break;
                 default:
                     throw new ArgumentException($"unknown option '{args[i]}'");
@@ -165,7 +188,8 @@ public static class PlatformRunner
         }
 
         return new PlatformHostOptions(
-            manifest, store, address, allowRemote, host, hostVersion, allowedHosts, validateOnly);
+            manifest, store, address, allowRemote, host, hostVersion, allowedHosts, validateOnly,
+            PluginTrustPolicy.FromPemFiles(trust, publicKeys));
     }
 
     private static string Value(string[] args, ref int index)

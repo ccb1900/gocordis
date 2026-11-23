@@ -13,6 +13,7 @@ public sealed class BoundaryTests
     private static readonly string[] ProjectsDependingOnCore =
     [
         "src/Gocordis.Plugins/Gocordis.Plugins.csproj",
+        "src/Gocordis.Runtime.Contracts/Gocordis.Runtime.Contracts.csproj",
         "src/Gocordis.Runtime.Managed/Gocordis.Runtime.Managed.csproj",
         "src/Gocordis.Runtime.Wasm/Gocordis.Runtime.Wasm.csproj",
         "src/Gocordis.Runtime.Process/Gocordis.Runtime.Process.csproj",
@@ -34,6 +35,7 @@ public sealed class BoundaryTests
 
     [Theory]
     [InlineData("src/Gocordis.Plugins/Gocordis.Plugins.csproj")]
+    [InlineData("src/Gocordis.Runtime.Contracts/Gocordis.Runtime.Contracts.csproj")]
     [InlineData("src/Gocordis.Runtime.Managed/Gocordis.Runtime.Managed.csproj")]
     [InlineData("src/Gocordis.Runtime.Wasm/Gocordis.Runtime.Wasm.csproj")]
     [InlineData("src/Gocordis.Runtime.Process/Gocordis.Runtime.Process.csproj")]
@@ -47,12 +49,22 @@ public sealed class BoundaryTests
     [Fact]
     public void ProductionProjectsDoNotReferenceTests()
     {
-        var production = ProjectsDependingOnCore.Take(4);
+        var production = ProjectsDependingOnCore.Take(5);
 
         foreach (var path in production)
         {
             Assert.DoesNotContain("tests/", ReadProject(path), StringComparison.Ordinal);
         }
+    }
+
+    [Theory]
+    [InlineData("src/Gocordis.Runtime.Process/Gocordis.Runtime.Process.csproj")]
+    [InlineData("src/Gocordis.Runtime.Wasm/Gocordis.Runtime.Wasm.csproj")]
+    public void ProcessAndWasmDoNotDependOnTheManagedImplementation(string relativePath)
+    {
+        var project = ReadProject(relativePath);
+        Assert.Contains("Gocordis.Runtime.Contracts.csproj", project, StringComparison.Ordinal);
+        Assert.DoesNotContain("Gocordis.Runtime.Managed.csproj", project, StringComparison.Ordinal);
     }
 
     private static string ReadProject(string relativePath)

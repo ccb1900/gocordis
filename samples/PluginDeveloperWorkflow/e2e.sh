@@ -6,18 +6,23 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="${1:-/tmp/gocordis-dev-e2e}"
 rm -rf "$OUT"
 mkdir -p "$OUT/feed" "$OUT/work"
+# Every run packs the SDK anew. Reusing 1.0.0 would let NuGet's global cache
+# keep an older package from a previous run, so the generated plugin compiles
+# against a stale Core and fails at activation with MissingMethodException.
+# A per-run prerelease version makes the local feed authoritative.
+SDK_VERSION="1.0.0-e2e.$(date +%s)"
 CLI=(dotnet run --project "$ROOT/tools/Gocordis.Cli/Gocordis.Cli.csproj" --no-build --)
 
 for project in Core Plugins Plugin.Sdk; do
   env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
     dotnet pack "$ROOT/src/Gocordis.$project/Gocordis.$project.csproj" \
-      -c Release -o "$OUT/feed" -p:PackageVersion=1.0.0 --nologo -v:q
+      -c Release -o "$OUT/feed" -p:PackageVersion="$SDK_VERSION" --nologo -v:q
 done
 
 # 1) create a plugin project in an empty directory
 created=$("${CLI[@]}" plugin create "$OUT/work/demo.plugin" \
   --id demo.plugin --name "Demo Plugin" --type demo.plugin --version 1.0.0 \
-  --feed "$OUT/feed")
+  --feed "$OUT/feed" --sdk-version "$SDK_VERSION")
 echo "$created"
 ENTRY="$(printf '%s' "$created" | python3 -c 'import json,sys; print(json.load(sys.stdin)["entryType"])')"
 

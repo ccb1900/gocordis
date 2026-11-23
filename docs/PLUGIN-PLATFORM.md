@@ -46,7 +46,7 @@ ModuleType、Requires/Provides 描述、Config、Compatibility、Source/Checksum
 ## 5. 阶段 4：Developer Experience
 
 - `extensions/devtools`：`Diagnose`/`DiagnoseAgainst` 纯诊断（身份、版本兼容、重复能力键、checksum、Backend、Source 等），通过 typed key 提供，可逆注册。
-- `cmd/plugin`：`create`（模板脚手架、失败回滚、`--force`）、`doctor`（解析+诊断）、`sandbox`（临时 Runtime + Snapshot 摘要，干净关闭且不写用户文件；仅凭 manifest 无法加载时给出 `REQUIRES_BUILD_TIME_REGISTRATION` 诊断）。
+- `cmd/plugin`：`create`（模板脚手架、失败回滚、`--force`）、`doctor`（解析+诊断）、`preflight`（临时 Runtime + Snapshot 摘要，干净关闭且不写用户文件；仅凭 manifest 无法加载时给出 `REQUIRES_BUILD_TIME_REGISTRATION` 诊断）。这是**声明预检**，不是安全沙箱；`sandbox` 只作为兼容别名保留。
 
 ## 6. 验收约束
 
@@ -54,3 +54,6 @@ ModuleType、Requires/Provides 描述、Config、Compatibility、Source/Checksum
 - 独立审查发现并修复：Manifest API/Runtime 版本混用、SchemaForm 违反 Rules of Hooks、Insight 假测试、Market 误删无关声明/卸载残留/坏目录空白页。
 - 前端 `npm test`、`npx tsc --noEmit`、`npm run build`；Go `gofmt`/`build`/`vet`/`test`/`race` 全绿。
 - 远程插件市场、签名验证、Sandbox 图形化、完整国际化仍属后续产品阶段，不在本轮范围。
+- **热更新边界（当前口径）**：`Gocordis.Extensions.GenericHmr` 与 WASM `WasmHotSwapper`
+  只是实验性代际原语，产品宿主没有调用链。当前代码变更走
+  build → pack → upgrade（声明 Revision），**不能宣称无打包热更新已完成**。

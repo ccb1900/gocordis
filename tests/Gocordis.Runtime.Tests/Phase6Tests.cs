@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 using Gocordis.Console.WebUi;
 using Gocordis.Core;
 using Gocordis.Plugins;
-using Gocordis.Runtime.Managed;
+using Gocordis.Runtime.Contracts;
 using Xunit;
 
 namespace Gocordis.Runtime.Tests;

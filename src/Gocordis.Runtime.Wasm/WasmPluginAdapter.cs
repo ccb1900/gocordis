@@ -1,7 +1,6 @@
 using System.Text;
 using Gocordis.Core;
 using Gocordis.Runtime.Contracts;
-using Gocordis.Runtime.Managed;
 using Wasmtime;
 
 namespace Gocordis.Runtime.Wasm;

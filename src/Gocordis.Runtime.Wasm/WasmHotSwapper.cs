@@ -1,7 +1,10 @@
 using Gocordis.Core;
-using Gocordis.Runtime.Managed;
+using Gocordis.Runtime.Contracts;
 
 namespace Gocordis.Runtime.Wasm;
+
+// Experimental generation-fence primitive, not a product hot-reload path.
+// Product upgrades retire the old declaration/fiber and stage a new one.
 
 /// <summary>
 /// WASM HMR: validate the warm candidate, withdraw the old fiber, then commit

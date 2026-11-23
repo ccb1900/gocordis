@@ -5,7 +5,7 @@
   <ItemGroup>
     <ProjectReference Include="../Gocordis.Core/Gocordis.Core.csproj" />
     <ProjectReference Include="../Gocordis.Plugins/Gocordis.Plugins.csproj" />
-    <!-- Hosts the shared backend protocol + generation fence; Core stays untouched. -->
-    <ProjectReference Include="../Gocordis.Runtime.Managed/Gocordis.Runtime.Managed.csproj" />
+    <!-- Only the neutral protocol assembly; WASM never depends on Managed. -->
+    <ProjectReference Include="../Gocordis.Runtime.Contracts/Gocordis.Runtime.Contracts.csproj" />
   </ItemGroup>
 </Project>

@@ -220,6 +220,9 @@ public sealed class SharedContractPackagingTests
         start.ArgumentList.Add("--nologo");
         start.ArgumentList.Add("-v");
         start.ArgumentList.Add("q");
+        // Reused MSBuild nodes inherit the redirected pipes; disable reuse so
+        // ReadToEndAsync observes EOF when the build exits.
+        start.ArgumentList.Add("-nodeReuse:false");
         using var process = Process.Start(start)!;
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var stdout = process.StandardOutput.ReadToEndAsync();

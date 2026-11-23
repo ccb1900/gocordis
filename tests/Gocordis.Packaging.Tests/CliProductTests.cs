@@ -152,6 +152,30 @@ public sealed class CliProductTests
     }
 
     [Fact]
+    public async Task AppRunForwardsOneTrustPolicyToTheProductHost()
+    {
+        using var temp = new TempDir();
+        var path = await WriteManifestAsync(temp);
+        var pem = temp.File("app-run-key.pem");
+        await File.WriteAllTextAsync(pem, "pem-public-key");
+
+        var missingKey = await RunAsync("app", "run", path,
+            "--store", temp.Path("trust-store"), "--host-version", HostVersion,
+            "--validate-only", "--trust", "trusted-only");
+        Assert.NotEqual(0, missingKey.Code);
+
+        var unknownMode = await RunAsync("app", "run", path,
+            "--store", temp.Path("trust-store"), "--host-version", HostVersion,
+            "--validate-only", "--trust", "unrestricted");
+        Assert.NotEqual(0, unknownMode.Code);
+
+        var accepted = await RunAsync("app", "run", path,
+            "--store", temp.Path("trust-store"), "--host-version", HostVersion,
+            "--validate-only", "--trust", "trusted-only", "--public-key", pem);
+        Assert.Equal(0, accepted.Code);
+    }
+
+    [Fact]
     public async Task AppAddRejectsInvalidRangeAndUninstalledPlugins()
     {
         using var temp = new TempDir();

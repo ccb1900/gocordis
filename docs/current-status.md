@@ -10,10 +10,11 @@ This is the **only** place that records current branch/HEAD, entry commands, ver
 
 ```bash
 dotnet run --project src/Gocordis.Platform -- \
-  --manifest <gocordis.app.json> --store <plugins-dir> [--address http://127.0.0.1:8170] [--host web|winforms|avalonia] [--validate-only]
+  --manifest <gocordis.app.json> --store <plugins-dir> [--address http://127.0.0.1:8170] [--host web]
+  [--allow-remote] [--allowed-host <host>] [--trust development|trusted-only] [--public-key <pem>] [--validate-only]
 ```
 
-Console: `http://127.0.0.1:8170/` by default when an explicit address is given. WinForms/Avalonia are render-plan profiles, **not** native window hosts.
+Console: `http://127.0.0.1:8170/` by default when an explicit address is given. Web is the only runnable host; the CLI rejects `winforms`/`avalonia` because they are render-plan profiles, not native window hosts.
 
 ## Runnable full loop
 
@@ -22,7 +23,9 @@ bash samples/SpatiotemporalShowcase/build-and-run.sh /tmp/gocordis-showcase
 # add --run to start the platform; see samples/SpatiotemporalShowcase/README.md for verification steps
 ```
 
-It builds 5 projects + a real TSX frontend (`@gocordis/plugin-kit`), packs 4 real `.gocordis-plugin` packages (`--shared-assembly`, `--provides`, `--dependency`), installs them, writes the declaration, and starts the host.
+It builds 5 projects + a real TSX frontend (`@gocordis/plugin-kit`), packs 4 real `.gocordis-plugin` packages (`--shared-assembly`, `--provides`, `--dependency`), installs them, writes the declaration, and starts the host. Last run also verified the control-plane loop: all 4 fibers Active, queries/pages/client JS served, disable produced the strict LIFO undo log (`client-module → dashboard → worker → writer → store`), re-enable restored Active and healthy queries.
+
+The empty-directory developer loop (`bash samples/PluginDeveloperWorkflow/e2e.sh <out>`) was re-run green. It now packs a per-run SDK prerelease version: reusing `1.0.0` let NuGet's global cache serve an older Core and caused `MissingMethodException` at plugin activation. E2E test helpers pass `-nodeReuse:false` so reused MSBuild nodes cannot hold redirected stdout pipes open.
 
 ## Verification commands
 
@@ -34,7 +37,7 @@ dotnet test  Gocordis.sln --nologo --no-build -m:1
 bash docs/migration/verify-baseline.sh   # Go baseline drift check
 ```
 
-**Last locally verified** (2026-11-23, branch `dotnet`): C# **533 passed / 1 skipped / 0 failed** across 8 test assemblies (Core 48, Conformance 154, Runtime 155+1 skipped, Extensions 51, Packaging 75, UI 3, Client 2, Product 45; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **102** tests green, plugin-kit tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
+**Last locally verified** (2026-11-24, branch `dotnet`): C# **544 passed / 1 skipped / 0 failed** across 8 test assemblies (Core 48, Conformance 154, Runtime 158+1 skipped, Extensions 51, Packaging 78, UI 3, Client 2, Product 50; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **102** tests green, plugin-kit tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
 
 Task 01 的有限校准基线见 `docs/migration/acceptance-baseline.md`；它区分三个验收域与 E0–E4 证据等级，P0-01…P0-04 均已关闭（真实 Process↔WASM 调用与包闭环由 `CrossBackendCapabilityTests`、`BackendDispatchProductTests` 覆盖）。
 
@@ -70,9 +73,14 @@ One host-owned `CapabilityCatalog` (`Gocordis.Core`) allocates a single `ICapabi
 - **Task 03 trust/version**: `ApplicationPlugin` carries VersionRange,
   LockedVersion, PackageHash, Source; `ApplicationLoader` enforces lock+hash.
   `PluginTrustPolicy` (Development / TrustedOnly with pinned PEM keys) enforced
-  by `PluginStore.InstallAsync`/`UpgradeAsync`, wired into the CLI
-  (`--trust`, `--public-key`) and `PlatformHostOptions.Trust`. Default is local
-  development (unsigned accepted); no remote marketplace.
+  by `PluginStore.InstallAsync`/`UpgradeAsync`, parsed once by
+  `PluginTrustPolicy.FromPemFiles` and wired into `plugin install|upgrade`,
+  `app run`, `PlatformRunner` and Console uploads. `PlatformHostOptions.Trust`
+  is now assigned (the earlier parameter shadowing left it null). Default is
+  local development (unsigned accepted); no remote marketplace.
+  `--allow-remote` only opens the listener; remote writes require a host-supplied
+  `ConsoleAccessPolicy`. The `plugin preflight` command replaced the misleading
+  `plugin sandbox` name (old name kept as alias).
 - **Task 04 stability/scale**: BenchmarkDotNet hot-path benchmarks plus repeated
   enable/disable ledger-stability test. Cold 10k apply after batch snapshots is
   still O(N²)-ish (FindCycle/Reconcile per command) — see benchmark README.
@@ -83,6 +91,9 @@ One host-owned `CapabilityCatalog` (`Gocordis.Core`) allocates a single `ICapabi
 - Package signatures are verifiable provenance, **not** an install-trust chain.
 - WinForms/Avalonia are render-plan profiles, not full native hosts. Native window hosts for these profiles are an explicitly DEFERRED product capability (P2-03): do not count `UiHostKind` values as completed hosts.
 - Koishi plugin market / remote distribution / browser-side reconcile loop are product references, not ported runtime features.
+- Process/WASM packages without capability declarations are rejected at the product factory: the old echo/value demo path is isolated from the product. Only `endpoint` is implemented for cross-backend value kinds.
+- Backend common protocol and generation fence live in `src/Gocordis.Runtime.Contracts`; Process and WASM no longer depend on `Runtime.Managed`.
+- Most `Gocordis.Extensions` capabilities are experimental/test-only and are not part of the SDK or a product promise; see `docs/migration/existence-audit.md` for the per-capability classification.
 - Paper C38 (`VersionedKey<T>` + NuGet ranges instead of nominal `K×P`) remains the single accepted difference; C34 is covered via `Runtime.RehomeAsync`.
 
 ## Doc layers

@@ -1,4 +1,5 @@
 using System.Threading;
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using NuGet.Versioning;
 
@@ -82,6 +83,15 @@ public sealed class Runtime : IAsyncDisposable
     private readonly List<VersionedBinding> _versionedProviders = [];
     private readonly Dictionary<ICapabilityKey, List<Handler>> _handlers =
         new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// Reverse index (provider FiberId, ActivationId) → consumer FiberIds.
+    /// Maintained under the same short Mutate writes as Committed bindings;
+    /// provider withdrawal looks up affected consumers directly instead of
+    /// scanning every fiber in the runtime.
+    /// </summary>
+    private readonly ConcurrentDictionary<
+        (Guid FiberId, long ActivationId), ConcurrentDictionary<Guid, byte>> _consumersByProvider = new();
     private readonly Dictionary<long, Activation> _activations = [];
     private readonly Dictionary<Guid, List<TaskCompletionSource>> _disposeWaiters = [];
     private readonly List<LoadCommand> _awaitingLoads = [];
@@ -778,6 +788,11 @@ public sealed class Runtime : IAsyncDisposable
             providedRealms[key] = EffectiveRealm(fiber, key);
         }
 
+        foreach (var binding in fiber.Committed.Values)
+        {
+            UnindexConsumer(binding.FiberId, binding.ActivationId, fiber.Id);
+        }
+
         fiber.Provided.Clear();
         fiber.Committed.Clear();
         fiber.Metadata.Clear();
@@ -1164,10 +1179,10 @@ public sealed class Runtime : IAsyncDisposable
         // still Require the dependency.
         activation.Cancellation.Cancel();
 
-        var consumers = _fibers.Values.Where(other =>
-            !ReferenceEquals(other, fiber) &&
-            other.Committed.Values.Any(b =>
-                b.FiberId == fiber.Id && b.ActivationId == activation.Id)).ToArray();
+        // O(affected consumers) instead of O(all fibers × all bindings).
+        var consumers = ConsumersOf(fiber.Id, activation.Id)
+            .Where(other => !ReferenceEquals(other, fiber))
+            .ToArray();
 
         // Only a child that still owns an activation can report back through
         // UnwindCompleted and release this waiter count. An Unwinding child is
@@ -1341,6 +1356,39 @@ public sealed class Runtime : IAsyncDisposable
         }
     }
 
+    private void IndexConsumer(Guid providerId, long activationId, Guid consumerId)
+    {
+        var consumers = _consumersByProvider.GetOrAdd(
+            (providerId, activationId), _ => new ConcurrentDictionary<Guid, byte>());
+        consumers[consumerId] = 0;
+    }
+
+    private void UnindexConsumer(Guid providerId, long activationId, Guid consumerId)
+    {
+        if (_consumersByProvider.TryGetValue((providerId, activationId), out var consumers))
+        {
+            consumers.TryRemove(consumerId, out _);
+            if (consumers.IsEmpty)
+            {
+                _consumersByProvider.TryRemove((providerId, activationId), out _);
+            }
+        }
+    }
+
+    private Fiber[] ConsumersOf(Guid providerId, long activationId)
+    {
+        if (!_consumersByProvider.TryGetValue((providerId, activationId), out var consumers))
+        {
+            return [];
+        }
+
+        return consumers.Keys
+            .Select(id => _fibers.GetValueOrDefault(id))
+            .Where(fiber => fiber is not null)
+            .Select(fiber => fiber!)
+            .ToArray();
+    }
+
     internal T RequireValue<T>(CapabilityKey key, Activation consumer)
     {
         T result = default!;
@@ -1359,8 +1407,15 @@ public sealed class Runtime : IAsyncDisposable
                         $"'{consumer.Fiber.Component.Name}' requires '{key.Name}' but no active provider exists");
                 }
 
+                if (consumer.Fiber.Committed.TryGetValue(key, out var prior) &&
+                    (prior.FiberId != provider.Id || prior.ActivationId != provider.ActivationId))
+                {
+                    UnindexConsumer(prior.FiberId, prior.ActivationId, consumer.Fiber.Id);
+                }
+
                 consumer.Fiber.Committed[key] = new ProviderBinding(
                     key, provider.Id, provider.ActivationId, provider, value);
+                IndexConsumer(provider.Id, provider.ActivationId, consumer.Fiber.Id);
                 result = (T)value!;
             }
             catch (Exception ex)
@@ -1427,8 +1482,15 @@ public sealed class Runtime : IAsyncDisposable
                         $"'{key.Constraint ?? (IFormattable)key.Version}' but no active provider exists");
                 }
 
+                if (consumer.Fiber.Committed.TryGetValue(key, out var prior) &&
+                    (prior.FiberId != binding.Provider.Id || prior.ActivationId != binding.ActivationId))
+                {
+                    UnindexConsumer(prior.FiberId, prior.ActivationId, consumer.Fiber.Id);
+                }
+
                 consumer.Fiber.Committed[key] = new ProviderBinding(
                     key, binding.Provider.Id, binding.ActivationId, binding.Provider, binding.Value);
+                IndexConsumer(binding.Provider.Id, binding.ActivationId, consumer.Fiber.Id);
                 result = (T)binding.Value;
             }
             catch (Exception ex)

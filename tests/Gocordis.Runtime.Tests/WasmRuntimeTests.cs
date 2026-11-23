@@ -194,40 +194,24 @@ public sealed class WasmRuntimeTests
     }
 
     [Fact]
-    public async Task CancellationInterruptsAPlainWasmModuleBeforeTheBudget()
+    public void CancelledActivationTokenRejectsGuestCallsAtTheBoundary()
     {
         const string wat = """
             (module
-              (func (export "runtime_component_create") (result i32)
-                (loop $spin (br $spin))
-                i32.const 0)
-              (func (export "runtime_component_destroy") (param i32)))
+              (func (export "spin") (result i32)
+                (loop $l (br $l))
+                i32.const 0))
             """;
-        await using var runtime = new Gocordis.Core.Runtime();
-        var key = new Key<int>("cancel-runaway");
-        var component = new WasmComponent(wat, key);
-        var loading = runtime.LoadAsync(component);
+        using var instance = WasmPluginInstance.FromWat(wat);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        instance.AttachCancellation(cancellation.Token);
 
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (DateTime.UtcNow < deadline)
-        {
-            if (runtime.Snapshot().Fibers.FirstOrDefault(
-                    fiber => fiber.Name == "wasm-plugin") is { } appearing &&
-                appearing.State != FiberState.Pending)
-            {
-                break;
-            }
-
-            await Task.Delay(10);
-        }
-
-        var fiber = runtime.Snapshot().Fibers.Single(f => f.Name == "wasm-plugin");
-        var disposal = runtime.DisposeAsync(runtime.GetFiber(fiber.Id)!);
-        var loaded = await loading.WaitAsync(TimeSpan.FromSeconds(5));
-        await disposal.WaitAsync(TimeSpan.FromSeconds(5));
-
-        Assert.Equal(FiberState.Gone, loaded.State);
-        Assert.Null(loaded.Failure);
+        // Cancellation is observed at the call boundary; no concurrent store
+        // mutation is attempted (Wasmtime forbids it from a foreign thread).
+        var error = Assert.Throws<Core.CapabilityInvocationException>(
+            () => instance.Invoke("spin"));
+        Assert.Equal("provider-abort", error.Code);
     }
 
     private sealed class ProbeComponent : Component

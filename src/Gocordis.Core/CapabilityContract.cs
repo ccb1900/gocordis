@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Text;
 using NuGet.Versioning;
 
@@ -379,76 +380,117 @@ public interface ICapabilityCatalog
     Key<T> KeyFor<T>(CapabilityId id, CapabilityValueKind kind);
 }
 
+/// <summary>
+/// One immutable declaration snapshot. Readers never take a lock; updates
+/// publish a whole new state with an incremented Revision. Key objects are
+/// owned separately and intentionally survive every revision.
+/// </summary>
+public sealed record CatalogState(
+    ImmutableArray<CapabilityDeclaration> All,
+    ImmutableDictionary<CapabilityId, CapabilityValueKind> Kinds,
+    ImmutableDictionary<CapabilityId, ImmutableArray<CapabilityContract>> Contracts,
+    ImmutableDictionary<(CapabilityId Id, CapabilityDirection Direction), ImmutableArray<CapabilityDeclaration>> ByIdDirection,
+    long Revision)
+{
+    public static CatalogState Empty { get; } = new(
+        [],
+        ImmutableDictionary<CapabilityId, CapabilityValueKind>.Empty,
+        ImmutableDictionary<CapabilityId, ImmutableArray<CapabilityContract>>.Empty,
+        ImmutableDictionary<(CapabilityId, CapabilityDirection), ImmutableArray<CapabilityDeclaration>>.Empty,
+        0);
+}
+
 public sealed class CapabilityCatalog : ICapabilityCatalog
 {
     private readonly object _gate = new();
-    private readonly List<CapabilityDeclaration> _declarations = [];
-    private readonly Dictionary<CapabilityId, List<CapabilityContract>> _contracts = [];
-    private readonly Dictionary<CapabilityId, CapabilityValueKind> _kinds = [];
+    private CatalogState _state = CatalogState.Empty;
+    // Stable Key identity: never cleared on replacement (ADR: identity survives revisions).
     private readonly ConcurrentDictionary<(CapabilityId Id, CapabilityValueKind Kind), ICapabilityKey> _keys = new();
 
-    public IReadOnlyList<CapabilityDeclaration> Declarations
-    {
-        get { lock (_gate) { return [.. _declarations]; } }
-    }
+    public long Revision => Volatile.Read(ref _state).Revision;
 
-    public bool IsDeclared(CapabilityId id)
-    {
-        lock (_gate)
-        {
-            return _kinds.ContainsKey(id);
-        }
-    }
+    public IReadOnlyList<CapabilityDeclaration> Declarations => Volatile.Read(ref _state).All;
+
+    public bool IsDeclared(CapabilityId id) => Volatile.Read(ref _state).Kinds.ContainsKey(id);
 
     public bool TryDescribe(CapabilityId id, out CapabilityContract contract)
     {
-        lock (_gate)
+        if (Volatile.Read(ref _state).Contracts.TryGetValue(id, out var contracts) &&
+            contracts.Length > 0)
         {
-            if (_contracts.TryGetValue(id, out var contracts) && contracts.Count > 0)
-            {
-                contract = contracts.OrderByDescending(c => c.Version).First();
-                return true;
-            }
-
-            contract = null!;
-            return false;
+            contract = contracts.OrderByDescending(candidate => candidate.Version).First();
+            return true;
         }
+
+        contract = null!;
+        return false;
     }
 
     /// <summary>
-    /// One declaration plan per application revision. Replaces the whole set
-    /// atomically; Key instances are NOT recreated, so cross-backend identity
-    /// stays stable across installs, upgrades and rollbacks.
+    /// One declaration plan per application revision. A fully validated
+    /// immutable snapshot is published with a single volatile write; a failed
+    /// plan never mutates the live state. Key instances are NOT recreated.
     /// </summary>
     public void Replace(IEnumerable<CapabilityDeclaration> declarations)
     {
         ArgumentNullException.ThrowIfNull(declarations);
-
-        // Build the full candidate state OUTSIDE the gate; a rejected plan must
-        // never leave a half-written catalog behind.
-        var candidateDeclarations = declarations.ToArray();
-        var candidateKinds = new Dictionary<CapabilityId, CapabilityValueKind>();
-        var candidateContracts = new Dictionary<CapabilityId, List<CapabilityContract>>();
-        foreach (var declaration in candidateDeclarations)
+        var candidate = Build(declarations, Volatile.Read(ref _state).Revision + 1, validateProviders: true);
+        lock (_gate)
         {
-            if (candidateKinds.TryGetValue(declaration.Id, out var existing) &&
-                existing != declaration.ValueKind)
+            Volatile.Write(ref _state, candidate);
+        }
+    }
+
+    /// <summary>Additive path used by assembly-time probes; kind conflicts are
+    /// still rejected, provider uniqueness is checked explicitly later.</summary>
+    public void Declare(IEnumerable<CapabilityDeclaration> declarations)
+    {
+        ArgumentNullException.ThrowIfNull(declarations);
+        lock (_gate)
+        {
+            var current = Volatile.Read(ref _state);
+            Volatile.Write(ref _state,
+                Build(current.All.AddRange(declarations), current.Revision + 1, validateProviders: false));
+        }
+    }
+
+    private static CatalogState Build(
+        IEnumerable<CapabilityDeclaration> declarations, long revision, bool validateProviders)
+    {
+        var all = declarations.ToImmutableArray();
+        var kinds = ImmutableDictionary.CreateBuilder<CapabilityId, CapabilityValueKind>();
+        var contractsLocal = new Dictionary<CapabilityId, List<CapabilityContract>>();
+        var byDirectionLocal =
+            new Dictionary<(CapabilityId, CapabilityDirection), List<CapabilityDeclaration>>();
+
+        foreach (var declaration in all)
+        {
+            if (kinds.TryGetValue(declaration.Id, out var existing) && existing != declaration.ValueKind)
             {
                 throw new InvalidOperationException(
                     $"capability '{declaration.Id}' is declared with conflicting kinds " +
                     $"'{existing}' and '{declaration.ValueKind}'");
             }
 
-            candidateKinds[declaration.Id] = declaration.ValueKind;
+            kinds[declaration.Id] = declaration.ValueKind;
+            var indexKey = (declaration.Id, declaration.Direction);
+            if (!byDirectionLocal.TryGetValue(indexKey, out var indexed))
+            {
+                indexed = [];
+                byDirectionLocal[indexKey] = indexed;
+            }
+
+            indexed.Add(declaration);
+
             if (declaration.Direction != CapabilityDirection.Provide)
             {
                 continue;
             }
 
-            if (!candidateContracts.TryGetValue(declaration.Id, out var contracts))
+            if (!contractsLocal.TryGetValue(declaration.Id, out var contracts))
             {
                 contracts = [];
-                candidateContracts[declaration.Id] = contracts;
+                contractsLocal[declaration.Id] = contracts;
             }
 
             contracts.Add(new CapabilityContract(
@@ -457,129 +499,58 @@ public sealed class CapabilityCatalog : ICapabilityCatalog
                 declaration.MediaType, declaration.SchemaRef));
         }
 
-        // One provider per id — even at the SAME version. The runtime's unique
-        // provider rule must be enforced at assembly time, not discovered later
-        // as a fiber failure during activation.
-        foreach (var group in candidateDeclarations
-                     .Where(declaration => declaration.Direction == CapabilityDirection.Provide)
-                     .GroupBy(declaration => declaration.Id))
+        if (validateProviders)
         {
-            if (group.Count() > 1)
-            {
-                throw new CapabilityVersionException(
-                    $"capability '{group.Key}' has {group.Count()} providers; " +
-                    "use distinct ids or Broker<T> for multi-implementation");
-            }
+            ValidateCandidateCompatibility(all);
         }
 
-        ValidateCandidateCompatibility(candidateDeclarations);
-
-        // Single in-lock swap of immutable-by-convention state refs; _keys is
-        // deliberately retained so Key identity outlives every revision.
-        lock (_gate)
+        var contractsResult = ImmutableDictionary.CreateBuilder<CapabilityId, ImmutableArray<CapabilityContract>>();
+        foreach (var (id, list) in contractsLocal)
         {
-            _declarations.Clear();
-            _declarations.AddRange(candidateDeclarations);
-            _contracts.Clear();
-            foreach (var (id, contracts) in candidateContracts)
-            {
-                _contracts[id] = contracts;
-            }
-
-            _kinds.Clear();
-            foreach (var (id, kind) in candidateKinds)
-            {
-                _kinds[id] = kind;
-            }
+            contractsResult[id] = [.. list];
         }
+
+        var indexResult = ImmutableDictionary.CreateBuilder<
+            (CapabilityId Id, CapabilityDirection Direction), ImmutableArray<CapabilityDeclaration>>();
+        foreach (var (key, list) in byDirectionLocal)
+        {
+            indexResult[key] = [.. list];
+        }
+
+        return new CatalogState(all, kinds.ToImmutable(), contractsResult.ToImmutable(), indexResult.ToImmutable(), revision);
     }
 
     /// <summary>
-    /// Backend metadata must not drift from the declared plan. For every
-    /// (Id, Direction) the module carries, the plan must already contain a
-    /// structurally equal declaration; a mismatch is rejected instead of
-    /// silently taking the first one. Missing declarations are also rejected
-    /// so a factory can never widen the plan.
+    /// Backend metadata must not drift from the declared plan. Reads the live
+    /// immutable snapshot once and uses the (Id, Direction) index.
     /// </summary>
     public void EnsureConsistent(IEnumerable<CapabilityDeclaration> moduleDeclarations)
     {
         ArgumentNullException.ThrowIfNull(moduleDeclarations);
-        lock (_gate)
+        var state = Volatile.Read(ref _state);
+        foreach (var module in moduleDeclarations)
         {
-            foreach (var module in moduleDeclarations)
+            if (!state.ByIdDirection.TryGetValue((module.Id, module.Direction), out var planned) ||
+                planned.Length == 0)
             {
-                var planned = _declarations.Where(declaration =>
-                    declaration.Id == module.Id && declaration.Direction == module.Direction).ToArray();
-                if (planned.Length == 0)
-                {
-                    throw new InvalidOperationException(
-                        $"capability '{module.Id}' ({module.Direction}) is not in the declaration plan");
-                }
+                throw new InvalidOperationException(
+                    $"capability '{module.Id}' ({module.Direction}) is not in the declaration plan");
+            }
 
-                if (planned.Any(declaration => !declaration.Equals(module)))
-                {
-                    throw new InvalidOperationException(
-                        $"capability '{module.Id}' ({module.Direction}) conflicts with the declaration plan: " +
-                        $"[{string.Join(" | ", planned.Select(p => p.ToWireString()))}] vs [{module.ToWireString()}]");
-                }
+            if (planned.Any(declaration => !declaration.Equals(module)))
+            {
+                throw new InvalidOperationException(
+                    $"capability '{module.Id}' ({module.Direction}) conflicts with the declaration plan: " +
+                    $"[{string.Join(" | ", planned.Select(p => p.ToWireString()))}] vs [{module.ToWireString()}]");
             }
         }
     }
 
-    /// <summary>Adds declarations during assembly, before any fiber activates.</summary>
-    public void Declare(IEnumerable<CapabilityDeclaration> declarations)
-    {
-        ArgumentNullException.ThrowIfNull(declarations);
-        lock (_gate)
-        {
-            foreach (var declaration in declarations)
-            {
-                _declarations.Add(declaration);
-                if (_kinds.TryGetValue(declaration.Id, out var existing) && existing != declaration.ValueKind)
-                {
-                    throw new InvalidOperationException(
-                        $"capability '{declaration.Id}' is declared with conflicting kinds " +
-                        $"'{existing}' and '{declaration.ValueKind}'");
-                }
+    /// <summary>Assembly-time version gate over the current immutable snapshot.</summary>
+    public void ValidateCompatibility() => ValidateCandidateCompatibility(Volatile.Read(ref _state).All);
 
-                _kinds[declaration.Id] = declaration.ValueKind;
-                if (declaration.Direction == CapabilityDirection.Provide)
-                {
-                    if (!_contracts.TryGetValue(declaration.Id, out var contracts))
-                    {
-                        contracts = [];
-                        _contracts[declaration.Id] = contracts;
-                    }
-
-                    contracts.Add(new CapabilityContract(
-                        declaration.Id, declaration.ValueKind,
-                        declaration.Version is null ? null : NuGetVersion.Parse(declaration.Version),
-                        declaration.MediaType, declaration.SchemaRef));
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// Assembly-time version gate. A missing provider is allowed (the consumer
-    /// stays Pending), but an incompatible provider version or two providers
-    /// for one id is rejected. Version selection therefore happens once, here,
-    /// before Core sees any key; Core keeps its single provider-per-key rule.
-    /// </summary>
-    public void ValidateCompatibility()
-    {
-        IReadOnlyList<CapabilityDeclaration> snapshot;
-        lock (_gate)
-        {
-            snapshot = [.. _declarations];
-        }
-
-        ValidateCandidateCompatibility(snapshot);
-    }
-
-    /// <summary>Pure version gate over a candidate declaration set; no shared
-    /// state is touched, so it can run before the atomic swap.</summary>
-    private static void ValidateCandidateCompatibility(IReadOnlyList<CapabilityDeclaration> declarations)
+    /// <summary>Pure version gate over a candidate declaration set.</summary>
+    private static void ValidateCandidateCompatibility(ImmutableArray<CapabilityDeclaration> declarations)
     {
         foreach (var group in declarations
                      .Where(declaration => declaration.Direction == CapabilityDirection.Provide)
@@ -618,20 +589,12 @@ public sealed class CapabilityCatalog : ICapabilityCatalog
 
     public Key<T> KeyFor<T>(CapabilityId id, CapabilityValueKind kind)
     {
-        if (!IsDeclared(id))
+        // Single immutable snapshot read: no readers' lock, no torn state.
+        var state = Volatile.Read(ref _state);
+        if (!state.Kinds.TryGetValue(id, out var declared))
         {
             throw new UndeclaredCapabilityException(
                 $"capability '{id}' is not declared by any installed package");
-        }
-
-        CapabilityValueKind declared;
-        lock (_gate)
-        {
-            if (!_kinds.TryGetValue(id, out declared))
-            {
-                throw new UndeclaredCapabilityException(
-                    $"capability '{id}' is not declared by any installed package");
-            }
         }
 
         if (declared != kind)

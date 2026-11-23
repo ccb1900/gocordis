@@ -118,6 +118,12 @@ build 0 warning / 0 error。
 5. **真实 Consumer 版本链路**：新增 `VersionedConsumer` fixture，`RealConsumerStaysCompatibleAcrossProviderUpgradesAndRejectsIncompatible` 覆盖 v1→v2 兼容升级保持 Active、v2→v3 越界升级被拒且维持 v2 与 Active。
 6. **平台与事务基线**：剩余裸 `return` 全部改为 `[PosixOnlyFact]`；控制面 `MutationBaseline` 纳入宿主提供的只读声明指纹（Platform 提供，Packaging 不碰 Catalog），补偿后比较——`TransactionBaselineDetectsAnUnrestoredDeclarationFingerprint` 验证检测能力。声明计划改为自包含事务对象（`IDeclarationTransaction`），去掉 PlatformApplication 共享快照字段。
 
+## BCL 快照与反向索引批次
+
+- **BCL 优先**：`CapabilityCatalog` 改用 BCL `ImmutableDictionary`/`ImmutableArray` 快照（`CatalogState`，含 `Revision`）：读路径一次 `Volatile.Read`、零锁；`Replace` 在锁外构建并校验完整候选状态，锁内一次 `Volatile.Write` 发布；Key 实例独立保留，跨 revision 身份稳定。`Declare` 保留装配期增量路径，Revision 单调递增。无新 NuGet 依赖。
+- **反向索引**：Core Runtime 维护 `(Provider FiberId, ActivationId) → Consumer FiberIds` 的 `ConcurrentDictionary` 索引，随 `Committed` 绑定在同一短 Mutate 写路径维护；consumer 撤销/重绑定时摘除旧索引；provider 撤回时按索引只处理受影响消费者，取代 `_fibers.Values.Where(other => other.Committed.Values.Any(...))` 的全表扫描。
+- **回归**：`CatalogPublishesImmutableSnapshotsWithMonotonicRevision`（旧快照不被污染、Revision 单调、Key 身份跨 revision 保持）、`ReverseConsumerIndexTracksWithdrawalAndRebinding`（3 消费者、离场、撤回、恢复全链路）。
+
 ## 冻结规则
 
 1. 本基线只记录**已核实**的证据等级，不把 E0/E1 升级为 E2。

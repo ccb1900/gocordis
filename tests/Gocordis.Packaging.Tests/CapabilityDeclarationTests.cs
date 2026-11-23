@@ -175,6 +175,35 @@ public sealed class CapabilityDeclarationTests
             new CapabilityId("org.example", "dup"), CapabilityValueKind.Endpoint));
     }
 
+    [Fact]
+    public void CatalogPublishesImmutableSnapshotsWithMonotonicRevision()
+    {
+        var catalog = new CapabilityCatalog();
+        Assert.Equal(0, catalog.Revision);
+        var emptySnapshot = catalog.Declarations;
+
+        catalog.Replace([CapabilityDeclaration.Parse("provide|org.example/rev|endpoint|1.0.0||")]);
+        var firstSnapshot = catalog.Declarations;
+        var key = catalog.KeyFor<ICapabilityEndpoint>(
+            new CapabilityId("org.example", "rev"), CapabilityValueKind.Endpoint);
+        Assert.Equal(1, catalog.Revision);
+
+        catalog.Replace([
+            CapabilityDeclaration.Parse("provide|org.example/rev|endpoint|1.0.0||"),
+            CapabilityDeclaration.Parse("provide|org.example/next|endpoint|2.0.0||"),
+        ]);
+        Assert.Equal(2, catalog.Revision);
+
+        // Published snapshots are immutable; an old reader never sees a swap,
+        // while key identity survives the revision.
+        Assert.Empty(emptySnapshot);
+        Assert.Single(firstSnapshot);
+        Assert.Equal("org.example/rev", firstSnapshot[0].Id.ToString());
+        Assert.Same(key, catalog.KeyFor<ICapabilityEndpoint>(
+            new CapabilityId("org.example", "rev"), CapabilityValueKind.Endpoint));
+        Assert.True(catalog.IsDeclared(new CapabilityId("org.example", "next")));
+    }
+
     private sealed class TempDir : IDisposable
     {
         private readonly string _root = Path.Combine(

@@ -305,6 +305,50 @@ public sealed class CoreSemanticsTests
     }
 
     [Fact]
+    public async Task ReverseConsumerIndexTracksWithdrawalAndRebinding()
+    {
+        var key = new Key<int>("indexed");
+        await using var runtime = new Runtime();
+        var provider = new DelegateComponent("provider", async context =>
+        {
+            context.Provide(key, 7);
+            return null;
+        }, provide: [key]);
+        var providerFiber = await runtime.LoadAsync(provider);
+
+        var consumers = new List<Fiber>();
+        for (var i = 0; i < 3; i++)
+        {
+            var index = i;
+            consumers.Add(await runtime.LoadAsync(new DelegateComponent(
+                $"consumer-{index}",
+                async context =>
+                {
+                    _ = context.Require(key);
+                    return null;
+                },
+                inject: [key])));
+        }
+
+        Assert.All(consumers, fiber => Assert.Equal(FiberState.Active, fiber.State));
+
+        // One consumer leaves; the index must drop it without touching others.
+        await runtime.DisposeAsync(consumers[0]);
+        await runtime.DisposeAsync(providerFiber);
+        Assert.All(consumers.Skip(1), fiber => Assert.Equal(FiberState.Pending, fiber.State));
+        Assert.Null(consumers[1].Failure);
+
+        // A fresh provider re-activates only the remaining indexed consumers.
+        var replacement = await runtime.LoadAsync(new DelegateComponent("replacement", async context =>
+        {
+            context.Provide(key, 9);
+            return null;
+        }, provide: [key]));
+        Assert.Equal(FiberState.Active, replacement.State);
+        Assert.All(consumers.Skip(1), fiber => Assert.Equal(FiberState.Active, fiber.State));
+    }
+
+    [Fact]
     public async Task CommandQueueObservationDrainsAfterQuiescence()
     {
         await using var runtime = new Runtime();

@@ -25,6 +25,17 @@ public sealed class Fiber
 
     public Guid Id { get; }
     public Component Component { get; }
+
+    /// <summary>
+    /// Declared key NAMES captured once at load (decision domain). Snapshot must
+    /// never re-invoke component declarations: a component whose declarations
+    /// derive from host state (e.g. the capability catalog) would otherwise
+    /// throw while an already-retiring fiber is still in the snapshot.
+    /// </summary>
+    internal string[] CapturedRequires { get; set; } = [];
+    internal string[] CapturedProvides { get; set; } = [];
+    internal ICapabilityKey[] CapturedInjectKeys { get; set; } = [];
+    internal ICapabilityKey[] CapturedProvideKeys { get; set; } = [];
     public Fiber? Parent { get; }
     public FiberState State { get; internal set; } = FiberState.Pending;
     public LifecycleIntent Intent { get; internal set; } = LifecycleIntent.Load;

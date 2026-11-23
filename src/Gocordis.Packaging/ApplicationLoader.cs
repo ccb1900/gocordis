@@ -43,6 +43,16 @@ public sealed class ApplicationLoader
     private readonly PluginStore _store;
     private readonly PluginRegistry _registry;
 
+    /// <summary>
+    /// The capability declaration plan is part of the SAME transaction as the
+    /// package/registry apply: the plan runs before the registry sees any
+    /// component, and a failed apply restores the previous plan so a rolled
+    /// back install cannot leave declarations behind.
+    /// </summary>
+    public Func<IReadOnlyList<string>, Task>? DeclarationPlan { get; init; }
+
+    public Func<Task>? DeclarationRollback { get; init; }
+
     public ApplicationLoader(PluginStore store, PluginRegistry registry)
     {
         _store = store;
@@ -82,6 +92,27 @@ public sealed class ApplicationLoader
                 installed.Manifest.Capabilities));
         }
 
-        await _registry.ApplyAsync(declarations);
+        var planWire = declarations
+            .SelectMany(manifest => manifest.CapabilitiesOrEmpty)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (DeclarationPlan is { } plan)
+        {
+            await plan(planWire);
+        }
+
+        try
+        {
+            await _registry.ApplyAsync(declarations);
+        }
+        catch
+        {
+            if (DeclarationRollback is { } rollback)
+            {
+                await rollback();
+            }
+
+            throw;
+        }
     }
 }

@@ -15,6 +15,8 @@ public sealed class PluginControlPlaneComponent : Component
     private readonly PluginRegistry _registry;
     private readonly UiContributionRegistry? _ui;
     private readonly Func<IReadOnlyList<string>, bool>? _sharedAssemblyApproval;
+    private readonly Func<IReadOnlyList<string>, Task>? _declarationPlan;
+    private readonly Func<Task>? _declarationRollback;
 
     public PluginControlPlaneComponent(
         string ManifestPath,
@@ -22,7 +24,9 @@ public sealed class PluginControlPlaneComponent : Component
         PluginRegistry Registry,
         UiContributionRegistry? Ui = null,
         Func<PluginManifest, Component>? ComponentFactory = null,
-        Func<IReadOnlyList<string>, bool>? SharedAssemblyApproval = null)
+        Func<IReadOnlyList<string>, bool>? SharedAssemblyApproval = null,
+        Func<IReadOnlyList<string>, Task>? DeclarationPlan = null,
+        Func<Task>? DeclarationRollback = null)
     {
         _manifestPath = ManifestPath ?? throw new ArgumentNullException(nameof(ManifestPath));
         _store = Store ?? throw new ArgumentNullException(nameof(Store));
@@ -30,6 +34,8 @@ public sealed class PluginControlPlaneComponent : Component
         _ui = Ui;
         _componentFactory = ComponentFactory;
         _sharedAssemblyApproval = SharedAssemblyApproval;
+        _declarationPlan = DeclarationPlan;
+        _declarationRollback = DeclarationRollback;
     }
 
     private readonly Func<PluginManifest, Component>? _componentFactory;
@@ -41,7 +47,8 @@ public sealed class PluginControlPlaneComponent : Component
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
         var service = new PluginControlService(
-            _manifestPath, _store, _registry, _ui, _componentFactory, _sharedAssemblyApproval);
+            _manifestPath, _store, _registry, _ui, _componentFactory, _sharedAssemblyApproval,
+            _declarationPlan, _declarationRollback);
         // Context.Provide installs its own LIFO inverse; no cleanup stack here.
         context.Provide(ControlPlaneKeys.Service, service);
 

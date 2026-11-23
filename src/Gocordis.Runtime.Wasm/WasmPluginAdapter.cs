@@ -28,17 +28,29 @@ public sealed class WasmPluginInstance : IDisposable
     /// <summary>Go loader/wasm maximum module size (64 MiB).</summary>
     public const long MaxModuleBytes = 64L * 1024 * 1024;
 
+    /// <summary>Store-level linear memory ceiling; a runaway guest cannot grow past it.</summary>
+    public const long MaxStoreMemoryBytes = 64L * 1024 * 1024;
+
+    /// <summary>Epoch tick period; deadline ticks are budget.TotalMilliseconds / this.</summary>
+    public const int EpochTickMilliseconds = 5;
+
+    /// <summary>Default guest execution budget per export call, mirroring the Go
+    /// backend's CloseOnContextDone guarantee with an epoch deadline.</summary>
+    public static readonly TimeSpan DefaultExecutionBudget = TimeSpan.FromSeconds(10);
+
     private readonly Engine _engine;
     private readonly Module _module;
     private readonly Store _store;
     private readonly Instance _instance;
     private readonly Linker? _linker;
+    private readonly EpochTicker? _ticker;
 
     /// <summary>Exported linear memory, used by the capability bridge when present.</summary>
     internal Memory? Memory { get; }
 
     private WasmPluginInstance(
-        Engine engine, Module module, Store store, Instance instance, Linker? linker, Memory? memory)
+        Engine engine, Module module, Store store, Instance instance,
+        Linker? linker, Memory? memory, EpochTicker? ticker)
     {
         _engine = engine;
         _module = module;
@@ -46,6 +58,7 @@ public sealed class WasmPluginInstance : IDisposable
         _instance = instance;
         _linker = linker;
         Memory = memory;
+        _ticker = ticker;
     }
 
     public static void EnsureModuleSize(long size)
@@ -65,7 +78,10 @@ public sealed class WasmPluginInstance : IDisposable
         ArgumentNullException.ThrowIfNull(wat);
         EnsureModuleSize(Encoding.UTF8.GetByteCount(wat));
 
-        var engine = new Engine();
+        var engine = new Engine(new Config()
+            .WithEpochInterruption(true)
+            .WithMaximumStackSize(8 * 1024 * 1024)
+            .WithStaticMemoryMaximumSize(MaxStoreMemoryBytes));
         try
         {
             var module = Module.FromText(engine, name, wat);
@@ -87,7 +103,10 @@ public sealed class WasmPluginInstance : IDisposable
         ArgumentNullException.ThrowIfNull(wasm);
         EnsureModuleSize(wasm.LongLength);
 
-        var engine = new Engine();
+        var engine = new Engine(new Config()
+            .WithEpochInterruption(true)
+            .WithMaximumStackSize(8 * 1024 * 1024)
+            .WithStaticMemoryMaximumSize(MaxStoreMemoryBytes));
         try
         {
             var module = Module.FromBytes(engine, name, wasm);
@@ -108,11 +127,15 @@ public sealed class WasmPluginInstance : IDisposable
             var store = new Store(engine);
             try
             {
+                // Store-level resource ceiling plus an epoch ticker so a guest
+                // stuck in an infinite loop is interrupted instead of pinning
+                // the activation (the Go backend's CloseOnContextDone analog).
+                store.SetLimits(MaxStoreMemoryBytes, 10_000, 1_000, 1_000, 1_000);
                 if (bridge is null && capabilityBridge is null)
                 {
                     var plain = new Instance(store, module, []);
                     return new WasmPluginInstance(
-                        engine, module, store, plain, null, plain.GetMemory("memory"));
+                        engine, module, store, plain, null, plain.GetMemory("memory"), null);
                 }
 
                 var linker = new Linker(engine);
@@ -133,7 +156,8 @@ public sealed class WasmPluginInstance : IDisposable
 
                 var instance = linker.Instantiate(store, module);
                 var memory = instance.GetMemory("memory");
-                var result = new WasmPluginInstance(engine, module, store, instance, linker, memory);
+                var ticker = new EpochTicker(engine);
+                var result = new WasmPluginInstance(engine, module, store, instance, linker, memory, ticker);
                 capabilityBridge?.Attach(result);
                 return result;
             }
@@ -150,12 +174,32 @@ public sealed class WasmPluginInstance : IDisposable
         }
     }
 
-    public object? Invoke(string export, params object[] arguments)
+    public object? Invoke(string export, params object[] arguments) =>
+        Invoke(export, DefaultExecutionBudget, arguments);
+
+    /// <summary>
+    /// Invokes a guest export under the epoch execution budget. A deadline is
+    /// armed per call so an interrupted guest cannot leave the store reusable:
+    /// the caller must treat the instance as dead after an interruption trap.
+    /// </summary>
+    public object? Invoke(string export, TimeSpan budget, params object[] arguments)
     {
         var function = _instance.GetFunction(export) ??
                        throw new MissingMethodException($"WASM module has no export '{export}'");
+        var ticks = Math.Max(1, (long)(budget.TotalMilliseconds / EpochTickMilliseconds));
+        _store.SetEpochDeadline((ulong)ticks);
         var boxes = arguments.Select(ToBox).ToArray();
-        return function.Invoke(boxes);
+        try
+        {
+            return function.Invoke(boxes);
+        }
+        catch (WasmtimeException ex) when (
+            ex.Message.Contains("epoch", StringComparison.OrdinalIgnoreCase) ||
+            ex.Message.Contains("interrupt", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CapabilityInvocationException(
+                "execution-budget-exceeded", $"WASM export '{export}' exceeded its execution budget: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -185,11 +229,41 @@ public sealed class WasmPluginInstance : IDisposable
 
     public void Dispose()
     {
+        _ticker?.Dispose();
         _linker?.Dispose();
         _store.Dispose();
         _module.Dispose();
         _engine.Dispose();
     }
+}
+
+/// <summary>
+/// Advances the engine epoch on a timer so per-call deadlines can fire. Test
+/// and production hosts get the same interruption semantics without a custom
+/// scheduler; the Go parity target is wazero's CloseOnContextDone.
+/// </summary>
+internal sealed class EpochTicker : IDisposable
+{
+    private readonly System.Threading.Timer _timer;
+
+    public EpochTicker(Engine engine, int intervalMilliseconds = WasmPluginInstance.EpochTickMilliseconds)
+    {
+        _timer = new System.Threading.Timer(
+            _ =>
+            {
+                // A disposed engine races the last timer callback after Dispose;
+                // the tick is harmless then and must not crash the process.
+                try
+                {
+                    engine.IncrementEpoch();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            }, null, intervalMilliseconds, intervalMilliseconds);
+    }
+
+    public void Dispose() => _timer.Dispose();
 }
 
 public sealed class WasmComponent : Component

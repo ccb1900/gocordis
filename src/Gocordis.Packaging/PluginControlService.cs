@@ -139,6 +139,8 @@ public sealed class PluginControlService : IPluginControlPlane
     private readonly UiContributionRegistry? _ui;
     private readonly Func<PluginManifest, Component>? _componentFactory;
     private readonly Func<IReadOnlyList<string>, bool>? _sharedAssemblyApproval;
+    private readonly Func<IReadOnlyList<string>, Task>? _declarationPlan;
+    private readonly Func<Task>? _declarationRollback;
     private readonly ApplicationLoader _loader;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly HashSet<string> _registeredTypes = new(StringComparer.Ordinal);
@@ -151,7 +153,9 @@ public sealed class PluginControlService : IPluginControlPlane
         PluginRegistry Registry,
         UiContributionRegistry? Ui = null,
         Func<PluginManifest, Component>? ComponentFactory = null,
-        Func<IReadOnlyList<string>, bool>? SharedAssemblyApproval = null)
+        Func<IReadOnlyList<string>, bool>? SharedAssemblyApproval = null,
+        Func<IReadOnlyList<string>, Task>? DeclarationPlan = null,
+        Func<Task>? DeclarationRollback = null)
     {
         _manifestPath = ManifestPath ?? throw new ArgumentNullException(nameof(ManifestPath));
         _store = Store ?? throw new ArgumentNullException(nameof(Store));
@@ -160,7 +164,13 @@ public sealed class PluginControlService : IPluginControlPlane
         // The host owns backend selection; Packaging never references a backend.
         _componentFactory = ComponentFactory;
         _sharedAssemblyApproval = SharedAssemblyApproval;
-        _loader = new ApplicationLoader(Store, Registry);
+        _declarationPlan = DeclarationPlan;
+        _declarationRollback = DeclarationRollback;
+        _loader = new ApplicationLoader(Store, Registry)
+        {
+            DeclarationPlan = DeclarationPlan,
+            DeclarationRollback = DeclarationRollback,
+        };
         CleanStaleUploads();
     }
 

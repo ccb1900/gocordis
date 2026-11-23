@@ -251,7 +251,9 @@ public sealed class DelegatingCapabilityEndpoint : ICapabilityEndpoint
 {
     private readonly Func<CapabilityEnvelope, CancellationToken, ValueTask<CapabilityEnvelope>> _invoke;
     private readonly Func<ValueTask>? _dispose;
-    private bool _disposed;
+    private int _disposed;
+    private long _inFlight;
+    private TaskCompletionSource? _drained;
 
     public DelegatingCapabilityEndpoint(
         CapabilityId id,
@@ -268,20 +270,47 @@ public sealed class DelegatingCapabilityEndpoint : ICapabilityEndpoint
     public CapabilityId Id { get; }
     public CapabilityContract Contract { get; }
 
-    public ValueTask<CapabilityEnvelope> InvokeAsync(CapabilityEnvelope request, CancellationToken cancellationToken)
+    public async ValueTask<CapabilityEnvelope> InvokeAsync(
+        CapabilityEnvelope request, CancellationToken cancellationToken)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        return _invoke(request, cancellationToken);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        Interlocked.Increment(ref _inFlight);
+        try
+        {
+            return await _invoke(request, cancellationToken);
+        }
+        finally
+        {
+            if (Interlocked.Decrement(ref _inFlight) == 0 && Volatile.Read(ref _disposed) != 0)
+            {
+                Interlocked.Exchange(ref _drained, null)?.TrySetResult();
+            }
+        }
     }
 
+    /// <summary>
+    /// Linearization point for withdrawal: disposal is rejected once (first
+    /// caller wins), and the underlying resource is released only after every
+    /// in-flight call has finished, so a provider teardown can never abort a
+    /// call that was already linearized.
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
 
-        _disposed = true;
+        if (Interlocked.Read(ref _inFlight) > 0)
+        {
+            var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _drained = drained;
+            if (Interlocked.Read(ref _inFlight) > 0)
+            {
+                await drained.Task;
+            }
+        }
+
         if (_dispose is not null)
         {
             await _dispose();
@@ -339,6 +368,56 @@ public sealed class CapabilityCatalog : ICapabilityCatalog
 
             contract = null!;
             return false;
+        }
+    }
+
+    /// <summary>
+    /// One declaration plan per application revision. Replaces the whole set
+    /// atomically; Key instances are NOT recreated, so cross-backend identity
+    /// stays stable across installs, upgrades and rollbacks.
+    /// </summary>
+    public void Replace(IEnumerable<CapabilityDeclaration> declarations)
+    {
+        ArgumentNullException.ThrowIfNull(declarations);
+        lock (_gate)
+        {
+            _declarations.Clear();
+            _contracts.Clear();
+            _kinds.Clear();
+        }
+
+        Declare(declarations);
+    }
+
+    /// <summary>
+    /// Backend metadata must not drift from the declared plan. For every
+    /// (Id, Direction) the module carries, the plan must already contain a
+    /// structurally equal declaration; a mismatch is rejected instead of
+    /// silently taking the first one. Missing declarations are also rejected
+    /// so a factory can never widen the plan.
+    /// </summary>
+    public void EnsureConsistent(IEnumerable<CapabilityDeclaration> moduleDeclarations)
+    {
+        ArgumentNullException.ThrowIfNull(moduleDeclarations);
+        lock (_gate)
+        {
+            foreach (var module in moduleDeclarations)
+            {
+                var planned = _declarations.Where(declaration =>
+                    declaration.Id == module.Id && declaration.Direction == module.Direction).ToArray();
+                if (planned.Length == 0)
+                {
+                    throw new InvalidOperationException(
+                        $"capability '{module.Id}' ({module.Direction}) is not in the declaration plan");
+                }
+
+                if (planned.Any(declaration => !declaration.Equals(module)))
+                {
+                    throw new InvalidOperationException(
+                        $"capability '{module.Id}' ({module.Direction}) conflicts with the declaration plan: " +
+                        $"[{string.Join(" | ", planned.Select(p => p.ToWireString()))}] vs [{module.ToWireString()}]");
+                }
+            }
         }
     }
 

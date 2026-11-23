@@ -256,6 +256,16 @@ public sealed class PluginStore
                     var target = EnsureUnderRoot(staging, relative);
                     Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                     await File.WriteAllBytesAsync(target, bytes, cancellationToken);
+                    if (content.Manifest.FilesOrEmpty.First(f =>
+                            string.Equals(f.Path, relative, StringComparison.Ordinal)).Executable &&
+                        !OperatingSystem.IsWindows())
+                    {
+                        // Restore the author-declared execute bit, nothing more:
+                        // the installer keeps only this controlled permission.
+                        File.SetUnixFileMode(target,
+                            UnixFileMode.UserRead | UnixFileMode.UserWrite |
+                            UnixFileMode.UserExecute);
+                    }
                 }
 
                 // Derived declaration for the host binder: it lives in the

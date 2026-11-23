@@ -43,7 +43,8 @@ public sealed class ProcessBackend : IPluginBackend
 
     public string BackendId => "process";
 
-    public BackendDegradationPolicy DegradationPolicy => BackendDegradationPolicy.ErrorVocabulary;
+    public BackendDegradationPolicy DegradationPolicy =>
+        _capabilityOnly ? BackendDegradationPolicy.FailFiber : BackendDegradationPolicy.ErrorVocabulary;
 
     public BackendHandle? LastHandle { get; private set; }
 
@@ -94,6 +95,9 @@ public sealed class ProcessBackend : IPluginBackend
 
             // Explicit degradation: declaration stays Active, consumers get a
             // stable error vocabulary and diagnostics carry the raw message.
+            // A capability-only provider has no error vocabulary to degrade to;
+            // publishing a "normal" endpoint would violate Active ⇔ ready, so
+            // the activation raises instead (C33: failure = raise).
             if (_diagnostics is not null)
             {
                 _diagnostics.LastError = ex.Message;
@@ -103,6 +107,10 @@ public sealed class ProcessBackend : IPluginBackend
             {
                 context.Provide(_key, ProcessErrorPolicy.ErrorVocabulary);
                 context.Provide(_errorKey, ProcessErrorPolicy.ErrorVocabulary);
+            }
+            else
+            {
+                throw;
             }
             LastHandle = prepared.WithPhase(BackendPhase.Activated, ProcessErrorPolicy.ErrorVocabulary);
             return LastHandle;

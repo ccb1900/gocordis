@@ -54,10 +54,11 @@ public static class WasmCapabilityDeclarations
                     ReadString(entry, "mediaType") ?? "application/json",
                     ReadString(entry, "schema") ?? string.Empty);
                 var declaration = CapabilityDeclaration.Parse(wire);
-                if (direction == "provide" && declaration.ValueKind != CapabilityValueKind.Endpoint)
+                if (declaration.ValueKind != CapabilityValueKind.Endpoint)
                 {
                     throw new FormatException(
-                        "WASM capability providers must declare kind 'endpoint'");
+                        "WASM capabilities must declare kind 'endpoint'; " +
+                        "value kinds are not supported across backends in this release");
                 }
 
                 result.Add(declaration);

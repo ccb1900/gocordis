@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Gocordis.Core;
 using Gocordis.Plugins;
 using NuGet.Versioning;
 
@@ -10,7 +11,12 @@ namespace Gocordis.Packaging;
 
 public sealed record PluginDependency(string Id, string VersionRange);
 
-public sealed record PackageFile(string Path, string Sha256, long Length);
+/// <summary>
+/// One payload file. <paramref name="Executable"/> preserves the POSIX execute
+/// bit the AUTHOR gave the file, so a process plugin installed from a real
+/// package runs without post-install chmod by the operator.
+/// </summary>
+public sealed record PackageFile(string Path, string Sha256, long Length, bool Executable = false);
 
 /// <summary>
 /// One UI resource entry of a plugin package. <paramref name="Kind"/> is
@@ -138,7 +144,9 @@ public static class PluginPackageWriter
             }
 
             var bytes = await File.ReadAllBytesAsync(file, cancellationToken);
-            files.Add(new PackageFile(relative, Sha256(bytes), bytes.Length));
+            var executable = !OperatingSystem.IsWindows() &&
+                             File.GetUnixFileMode(file).HasFlag(UnixFileMode.UserExecute);
+            files.Add(new PackageFile(relative, Sha256(bytes), bytes.Length, executable));
         }
 
         if (files.Count > PluginPackageLimits.MaxPayloadFiles)
@@ -288,14 +296,28 @@ public static class PluginPackageWriter
             }
         }
 
-        try
+        // Contract scope for this release: cross-backend capabilities are
+        // callable services. Value/bytes/int kinds are Core-local only, so a
+        // package may not promise more than the runtimes implement.
+        foreach (var capability in manifest.CapabilitiesOrEmpty)
         {
-            _ = PluginManifest.ParseCapabilities(manifest.CapabilitiesOrEmpty);
-        }
-        catch (Exception ex) when (ex is FormatException or ArgumentException)
-        {
-            throw new InvalidPluginPackageException(
-                $"invalid capability declaration in package '{manifest.Id}': {ex.Message}", ex);
+            CapabilityDeclaration parsed;
+            try
+            {
+                parsed = CapabilityDeclaration.Parse(capability);
+            }
+            catch (Exception ex) when (ex is FormatException or ArgumentException)
+            {
+                throw new InvalidPluginPackageException(
+                    $"invalid capability declaration in package '{manifest.Id}': {ex.Message}", ex);
+            }
+
+            if (parsed.ValueKind != CapabilityValueKind.Endpoint)
+            {
+                throw new InvalidPluginPackageException(
+                    $"capability '{capability}' must declare kind 'endpoint'; " +
+                    "value kinds are not supported across backends in this release");
+            }
         }
 
         // Backend metadata is optional: an absent backend is the legacy
@@ -455,7 +477,15 @@ public static class PluginPackageWriter
         foreach (var file in manifest.FilesOrEmpty.OrderBy(f => f.Path, StringComparer.Ordinal))
         {
             text.Append("file=").Append(file.Path).Append(':').Append(file.Sha256)
-                .Append(':').Append(file.Length).Append('\n');
+                .Append(':').Append(file.Length);
+            // Version the exec bit only when present so legacy artifacts keep
+            // their exact checksum byte sequence.
+            if (file.Executable)
+            {
+                text.Append(":exec");
+            }
+
+            text.Append('\n');
         }
 
         // UI declarations are versioned into the checksum only when present:

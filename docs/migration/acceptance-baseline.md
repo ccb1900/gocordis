@@ -58,6 +58,16 @@
 - **产品 E2E**：`MixedBackendProductE2ETests` 现覆盖安装→加载→真实跨后端调用→逆序停用→恢复→逆序卸载→停止，并断言子进程 PID 回收与 fiber 清理。
 - **已知测试边界**：Process 互操作 fixture 是 POSIX 脚本，Windows 上直接跳过；这是未关闭的覆盖缺口，不宣称 Windows Process 后端已验收。
 
+## P0 收敛批次（第二轮）
+
+- **P0-01 所有权补齐**：`DelegatingCapabilityEndpoint` 增加在途调用租约——Dispose 只执行一次，且等所有在途调用结束后才释放底层资源；新增跨后端双消费者测试（Process+WASM 共享一个 Managed provider，先退出的不影响共享 Endpoint，provider 撤回→Pending，恢复→Active）。
+- **P0-02 声明事务统一**：`ApplicationLoader.DeclarationPlan/Rollback` 是启动与动态安装的唯一声明入口；`CapabilityCatalog.Replace` 原子替换声明集合（Key 实例保持稳定）；组件工厂不再改 Catalog，WASM 自定义段声明用 `EnsureConsistent` 做结构等价校验。动态安装/卸载 E2E：`DynamicInstallPlansDeclarationsAndUninstallRollsThemBack`。
+- **P0-03 Process 失败语义**：capability-only Process 启动失败改为 raise（fiber Failed），不再发布不可调用 Endpoint；`BackendDegradationPolicy` 按 mode 返回。回归：`FailedProcessStartDoesNotPublishACapabilityEndpoint`。
+- **P0-04 契约收缩**：打包与 WASM 自定义段只接受 `endpoint` kind；冲突声明在装载时拒绝。回归：`NonEndpointValueKindIsRejectedInPackages`。
+- **P0-05 可执行位**：`PackageFile.Executable` 进入包格式与校验和（有值才版本化），安装器恢复受控 execute 位；测试去掉手动 chmod，改为作者标记。回归：三后端包 E2E 仍绿。
+- **P0-06 WASM 中断/限额**：Engine 开启 epoch interruption，每次 guest 导出调用设置 epoch deadline（默认 10s），Store 设内存/表上限；跑飞 guest 被中断并映射为稳定错误码。回归：`RunawayGuestIsInterruptedByTheExecutionBudget`。
+- **附带修复（Core 语义缺陷）**：`PublishSnapshot`/`HandleUnwindCompleted`/withdrawal/cycle 检查曾重复调用 `component.Inject()/Provide()`；声明性组件（从 Catalog 派生声明）在计划替换后会在快照/撤销路径抛异常。现在声明与 Key 在装载时由决策域捕获一次，生命周期与快照不再回询组件。这是动态声明事务能够成立的前提。
+
 ## 冻结规则
 
 1. 本基线只记录**已核实**的证据等级，不把 E0/E1 升级为 E2。

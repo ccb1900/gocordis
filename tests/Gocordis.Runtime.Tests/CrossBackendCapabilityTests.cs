@@ -413,6 +413,81 @@ public sealed class CrossBackendCapabilityTests
     }
 
     [Fact]
+    public async Task RunawayGuestIsInterruptedByTheExecutionBudget()
+    {
+        var catalog = new CapabilityCatalog();
+        var declaration = CapabilityDeclaration.Parse(
+            "provide|org.example.loop/value|endpoint|1.0.0|text/plain|");
+        catalog.Declare([declaration]);
+
+        const string wat = """
+            (module
+              (memory (export "memory") 1)
+              (func (export "runtime_component_destroy") (param i32))
+              (func (export "runtime_component_create") (result i32)
+                (loop $spin (br $spin))
+                i32.const 0)
+              (func (export "capability_invoke") (param i32 i32) (result i32 i32)
+                i32.const 2048
+                i32.const 0))
+            """;
+        await using var runtime = new Gocordis.Core.Runtime();
+        var fiber = await runtime.LoadAsync(
+            new WasmCapabilityComponent(wat, "runaway", catalog, [declaration]));
+
+        Assert.Equal(FiberState.Failed, fiber.State);
+        var failure = fiber.Failure as CapabilityInvocationException;
+        Assert.True(
+            failure is not null,
+            $"unexpected failure {fiber.Failure?.GetType().Name}: {fiber.Failure?.Message}");
+        Assert.Equal("execution-budget-exceeded", failure.Code);
+    }
+
+    [Fact]
+    public async Task FailedProcessStartDoesNotPublishACapabilityEndpoint()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var catalog = new CapabilityCatalog();
+        var declaration = CapabilityDeclaration.Parse(
+            "provide|org.example.dead/value|endpoint|1.0.0|text/plain|");
+        catalog.Declare([declaration]);
+        var key = catalog.KeyFor<ICapabilityEndpoint>(
+            new CapabilityId("org.example.dead", "value"), CapabilityValueKind.Endpoint);
+
+        var script = Path.Combine(Path.GetTempPath(), $"gocordis-dead-{Guid.NewGuid():N}.py");
+        await File.WriteAllTextAsync(script, """
+            #!/usr/bin/env python3
+            import sys
+            sys.exit(1)
+            """);
+        try
+        {
+            File.SetUnixFileMode(script,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            await using var runtime = new Gocordis.Core.Runtime();
+            var consumer = await runtime.LoadAsync(new ConsumerComponent(
+                "consumer", _ => { }, [key]));
+            var fiber = await runtime.LoadAsync(
+                new ProcessCapabilityComponent(script, catalog, [declaration]));
+
+            // Active ⇔ ready: a failed start must raise, not publish a dead endpoint.
+            Assert.Equal(FiberState.Failed, fiber.State);
+            Assert.NotNull(fiber.Failure);
+            Assert.Equal(FiberState.Pending, consumer.State);
+            Assert.Throws<DependencyMissingException>(() => runtime.RequireCapability(key));
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
     public async Task ProviderMediaTypeAndOversizedPayloadHaveOneContractSemantic()
     {
         var catalog = new CapabilityCatalog();
@@ -489,6 +564,105 @@ public sealed class CrossBackendCapabilityTests
         Assert.Equal(FiberState.Active, secondConsumer.State);
         Assert.Equal("ok", (await runtime.RequireCapability(key).InvokeAsync(
             CapabilityEnvelope.Text("x"), CancellationToken.None)).AsText());
+    }
+
+    [Fact]
+    public async Task TwoConsumersOfDifferentBackendsShareOneProviderEndpointSafely()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var catalog = new CapabilityCatalog();
+        var declaration = CapabilityDeclaration.Parse("provide|a/b|endpoint|1.0.0|text/plain|");
+        catalog.Declare([declaration]);
+        var key = catalog.KeyFor<ICapabilityEndpoint>(
+            new CapabilityId("a", "b"), CapabilityValueKind.Endpoint);
+
+        var observed = Path.Combine(Path.GetTempPath(), $"gocordis-shared-{Guid.NewGuid():N}.txt");
+        var script = Path.Combine(Path.GetTempPath(), $"gocordis-shared-{Guid.NewGuid():N}.py");
+        await File.WriteAllTextAsync(script, """
+            #!/usr/bin/env python3
+            import sys, json
+            def send(obj):
+                sys.stdout.write(json.dumps(obj) + "\n")
+                sys.stdout.flush()
+            def reply(request_id):
+                while True:
+                    line = sys.stdin.readline()
+                    if not line:
+                        sys.exit(1)
+                    response = json.loads(line)
+                    if response.get("id") == request_id:
+                        return response
+            sys.stdout.write("GORIDIS-PROC-PLUGIN 1\n")
+            sys.stdout.flush()
+            for line in sys.stdin:
+                try:
+                    req = json.loads(line)
+                except Exception:
+                    continue
+                method, ident = req.get("method"), req.get("id")
+                if method == "echo":
+                    send({"jsonrpc":"2.0","id":9001,"method":"capability/require",
+                          "params":{"id":"a/b"}})
+                    handle = reply(9001)["result"]["handle"]
+                    send({"jsonrpc":"2.0","id":9002,"method":"capability/invoke",
+                          "params":{"handle":handle,"request":"x"}})
+                    response = reply(9002)["result"]["response"]
+                    open("__OBSERVED__", "w").write(response)
+                    send({"jsonrpc":"2.0","id":ident,"result":{"text":"ready"}})
+                elif method == "shutdown":
+                    send({"jsonrpc":"2.0","id":ident,"result":{}})
+                    break
+                else:
+                    send({"jsonrpc":"2.0","id":ident,
+                          "error":{"code":-32601,"message":"unknown"}})
+            """.Replace("__OBSERVED__", observed.Replace("\\", "\\\\").Replace("\"", "\\\"")));
+        try
+        {
+            File.SetUnixFileMode(script,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            await using var runtime = new Gocordis.Core.Runtime();
+            var provider = await runtime.LoadAsync(new EndpointProviderComponent(
+                key, (_, _) => ValueTask.FromResult(CapabilityEnvelope.Text("ok"))));
+
+            var processConsumer = await runtime.LoadAsync(
+                new ProcessCapabilityComponent(script, catalog, [
+                    CapabilityDeclaration.Parse("require|a/b|endpoint||text/plain|")]));
+            Assert.Equal(FiberState.Active, processConsumer.State);
+            Assert.Equal("ok", await File.ReadAllTextAsync(observed));
+
+            var wat = ConsumerWatFor("a/b");
+            var wasmDeclarations = WasmCapabilityDeclarations.ReadFromWat(wat);
+            var wasmConsumer = await runtime.LoadAsync(
+                new WasmCapabilityComponent(wat, "wasm-consumer", catalog, wasmDeclarations));
+            Assert.Equal(FiberState.Active, wasmConsumer.State);
+
+            // The process consumer leaves; the shared endpoint must survive.
+            await runtime.DisposeAsync(processConsumer);
+            Assert.Equal("ok", (await runtime.RequireCapability(key).InvokeAsync(
+                CapabilityEnvelope.Text("x"), CancellationToken.None)).AsText());
+            Assert.Equal(FiberState.Active, wasmConsumer.State);
+
+            await runtime.DisposeAsync(provider);
+            Assert.Equal(FiberState.Pending, wasmConsumer.State);
+
+            var recovered = await runtime.LoadAsync(new EndpointProviderComponent(
+                key, (_, _) => ValueTask.FromResult(CapabilityEnvelope.Text("ok"))));
+            Assert.Equal(FiberState.Active, recovered.State);
+            Assert.Equal(FiberState.Active, wasmConsumer.State);
+        }
+        finally
+        {
+            File.Delete(script);
+            if (File.Exists(observed))
+            {
+                File.Delete(observed);
+            }
+        }
     }
 
     [Fact]

@@ -187,6 +187,7 @@ public class PlatformApplication : IAsyncDisposable
             // identity before any plugin fiber activates — no plugin can decide
             // which contract version lands in the Default ALC.
             var contractCandidates = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            var capabilityWire = new HashSet<string>(StringComparer.Ordinal);
             foreach (var plugin in manifest.Plugins)
             {
                 var installed = await Store.ResolveAsync(plugin.Id, plugin.VersionRange, cancellationToken);
@@ -196,11 +197,7 @@ public class PlatformApplication : IAsyncDisposable
                 }
 
                 _resolved.Add(new PlatformResolvedPlugin(plugin.Id, installed.Version, plugin.Enabled));
-
-                // Seed the one host-owned capability identity table from every
-                // installed declaration before any component is constructed.
-                Capabilities.Declare(
-                    PluginManifest.ParseCapabilities(installed.Manifest.CapabilitiesOrEmpty));
+                capabilityWire.UnionWith(installed.Manifest.CapabilitiesOrEmpty);
 
                 // A package-declared config schema belongs to the plugin, not
                 // to console code. Register it with the registry so the
@@ -225,15 +222,14 @@ public class PlatformApplication : IAsyncDisposable
             SharedAssemblyRegistry.Seal(contractCandidates.ToDictionary(
                 pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value, StringComparer.Ordinal));
 
-            // One version gate for all backends, before any component is created.
-            Capabilities.ValidateCompatibility();
-
             // The control plane is a plugin contribution: load its fiber first,
             // then read its capability. Runtime.Close ends this fiber with all
             // the others, including on a partially failed start.
             await Runtime.LoadAsync(new PluginControlPlaneComponent(
                 _options.ManifestPath, Store, Registry, Console.Ui, componentFactory,
-                names => names.All(SharedAssemblyRegistry.IsApproved)));
+                names => names.All(SharedAssemblyRegistry.IsApproved),
+                ApplyDeclarationPlanAsync,
+                RestoreDeclarationPlanAsync));
             var control = Runtime.RequireCapability(ControlPlaneKeys.Service);
             Control = control;
 
@@ -351,8 +347,7 @@ public class PlatformApplication : IAsyncDisposable
             var declarations = Merge(fromManifest, fromModule);
             if (declarations.Count > 0)
             {
-                Capabilities.Declare(declarations);
-                Capabilities.ValidateCompatibility();
+                Capabilities.EnsureConsistent(declarations);
                 return isWat
                     ? new WasmCapabilityComponent(
                         File.ReadAllText(modulePath), manifest.Id, Capabilities, declarations)
@@ -379,6 +374,29 @@ public class PlatformApplication : IAsyncDisposable
 
         throw new InvalidOperationException(
             $"unsupported backend '{backend}' declared by plugin '{manifest.Id}'");
+    }
+
+    private IReadOnlyList<CapabilityDeclaration> _declarationPlanSnapshot = [];
+
+    /// <summary>
+    /// The one declaration-plan entry point for startup AND dynamic install.
+    /// The plan is replaced wholesale (Key instances are kept for stable
+    /// identity) and validated before any component is constructed; a failed
+    /// apply restores the previous plan, so a rolled-back transaction cannot
+    /// leave capability declarations behind.
+    /// </summary>
+    private Task ApplyDeclarationPlanAsync(IReadOnlyList<string> capabilityWire)
+    {
+        _declarationPlanSnapshot = Capabilities.Declarations;
+        Capabilities.Replace(capabilityWire.Select(CapabilityDeclaration.Parse));
+        Capabilities.ValidateCompatibility();
+        return Task.CompletedTask;
+    }
+
+    private Task RestoreDeclarationPlanAsync()
+    {
+        Capabilities.Replace(_declarationPlanSnapshot);
+        return Task.CompletedTask;
     }
 
     /// <summary>Deduplicates declarations from manifest and module metadata.</summary>

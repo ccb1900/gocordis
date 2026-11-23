@@ -371,6 +371,10 @@ public sealed class Runtime : IAsyncDisposable
         var fiber = new Fiber(Guid.NewGuid(), command.Component, command.Parent, generation: 0)
         {
             Realm = realm,
+            CapturedInjectKeys = [.. command.Component.Inject()],
+            CapturedProvideKeys = [.. command.Component.Provide()],
+            CapturedRequires = [.. command.Component.Inject().Select(k => k.Name)],
+            CapturedProvides = [.. command.Component.Provide().Select(k => k.Name)],
         };
         if (command.Parent is not null)
         {
@@ -545,6 +549,10 @@ public sealed class Runtime : IAsyncDisposable
         {
             Realm = command.Realm,
             Revision = old.Revision + 1,
+            CapturedInjectKeys = [.. component.Inject()],
+            CapturedProvideKeys = [.. component.Provide()],
+            CapturedRequires = [.. component.Inject().Select(k => k.Name)],
+            CapturedProvides = [.. component.Provide().Select(k => k.Name)],
         };
 
         var declared = new HashSet<ICapabilityKey>(
@@ -682,7 +690,7 @@ public sealed class Runtime : IAsyncDisposable
             return;
         }
 
-        foreach (var key in activation.Fiber.Component.Provide())
+        foreach (var key in activation.Fiber.CapturedProvideKeys)
         {
             if (!activation.Fiber.Provided.TryGetValue(key, out var value))
             {
@@ -736,7 +744,7 @@ public sealed class Runtime : IAsyncDisposable
         }
         var providerActivations = fiber.Committed.Values.Select(b => b.ActivationId).Distinct().ToArray();
         var providedRealms = new Dictionary<ICapabilityKey, Realm>(ReferenceEqualityComparer.Instance);
-        foreach (var key in fiber.Component.Provide())
+        foreach (var key in fiber.CapturedProvideKeys)
         {
             providedRealms[key] = EffectiveRealm(fiber, key);
         }
@@ -745,7 +753,7 @@ public sealed class Runtime : IAsyncDisposable
         fiber.Committed.Clear();
         fiber.Metadata.Clear();
         _versionedProviders.RemoveAll(b => b.ActivationId == activation.Id && ReferenceEquals(b.Provider, fiber));
-        foreach (var key in fiber.Component.Provide())
+        foreach (var key in fiber.CapturedProvideKeys)
         {
             var realm = providedRealms[key];
             if (ReferenceEquals(FindProvider(realm, key), fiber))
@@ -958,7 +966,7 @@ public sealed class Runtime : IAsyncDisposable
 
     private bool Satisfied(Activation activation)
     {
-        foreach (var key in activation.Fiber.Component.Inject().Where(k => k is not IMetaKey))
+        foreach (var key in activation.Fiber.CapturedInjectKeys.Where(k => k is not IMetaKey))
         {
             if (!SatisfiedKey(activation.Fiber, key, activation))
             {
@@ -971,7 +979,7 @@ public sealed class Runtime : IAsyncDisposable
 
     private bool Satisfied(PendingProbe probe)
     {
-        foreach (var key in probe.Fiber.Component.Inject().Where(k => k is not IMetaKey))
+        foreach (var key in probe.Fiber.CapturedInjectKeys.Where(k => k is not IMetaKey))
         {
             if (!SatisfiedKey(probe.Fiber, key, null))
             {
@@ -1460,7 +1468,7 @@ public sealed class Runtime : IAsyncDisposable
         {
             foreach (var fiber in _fibers.Values.Where(f => f.State != FiberState.Gone))
             {
-                if (fiber.Component.Provide().Any(k =>
+                if (fiber.CapturedProvideKeys.Any(k =>
                         ReferenceEquals(k, key) && ReferenceEquals(EffectiveRealm(fiber, k), realm)))
                 {
                     throw new DuplicateProviderException($"key '{key.Name}' is already provided by '{fiber.Component.Name}'");
@@ -1489,12 +1497,12 @@ public sealed class Runtime : IAsyncDisposable
         var visited = new HashSet<Guid>();
         var chain = new List<string>();
         var versioned = _fibers.Values
-            .SelectMany(f => f.Component.Provide().OfType<IVersionedKey>()
+            .SelectMany(f => f.CapturedProvideKeys.OfType<IVersionedKey>()
                 .Select(k => (Fiber: f, Key: k))).ToArray();
         var declared = new Dictionary<(Realm, ICapabilityKey), Fiber>();
         foreach (var fiber in _fibers.Values)
         {
-            foreach (var k in fiber.Component.Provide())
+            foreach (var k in fiber.CapturedProvideKeys)
             {
                 declared.TryAdd((EffectiveRealm(fiber, k), k), fiber);
             }
@@ -1514,7 +1522,7 @@ public sealed class Runtime : IAsyncDisposable
                 return false;
             }
 
-            foreach (var key in fiber.Component.Inject().Where(k => k is not IMetaKey))
+            foreach (var key in fiber.CapturedInjectKeys.Where(k => k is not IMetaKey))
             {
                 Fiber? provider = null;
                 if (key is IVersionedKey required)
@@ -1558,8 +1566,8 @@ public sealed class Runtime : IAsyncDisposable
     {
         _snapshot = new RuntimeSnapshot(_fibers.Values.Select(f => new FiberSnapshot(
             f.Id, f.Component.Name, f.State, (int)f.ActivationId, f.Parent?.Id,
-            f.Component.Inject().Select(k => k.Name).ToArray(),
-            f.Component.Provide().Select(k => k.Name).ToArray(),
+            f.CapturedRequires,
+            f.CapturedProvides,
             f.Committed.Values.Select(b => $"{b.Key.Name}->{b.FiberId}").ToArray(),
             f.Failure?.Message)
         {

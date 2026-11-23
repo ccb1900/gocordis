@@ -33,7 +33,7 @@ public sealed class BackendDispatchProductTests
         using var temp = new TempDir();
         const string id = "product-proc";
         var store = await InstallAsync(temp, id, "plugin.sh", ProcessPluginScript,
-            backend: "process", makeExecutable: true);
+            backend: "process", executable: true);
         await using var app = await StartAsync(temp, store, id);
 
         var fiber = app.Registry.Entries[id].Fiber!;
@@ -170,7 +170,7 @@ public sealed class BackendDispatchProductTests
         using var temp = new TempDir();
         const string id = "product-proc-cap";
         var store = await InstallAsync(temp, id, "plugin.sh", ProcessPluginScript,
-            backend: "process", makeExecutable: true,
+            backend: "process", executable: true,
             capabilities: ["provide|org.example.product/echo|endpoint|1.0.0|text/plain|"]);
         await using var app = await StartAsync(temp, store, id);
 
@@ -236,17 +236,26 @@ public sealed class BackendDispatchProductTests
 
     private static Task<string> InstallAsync(
         TempDir temp, string id, string payloadName, string payload, string backend,
-        bool makeExecutable = false, IReadOnlyList<string>? capabilities = null) =>
+        bool executable = false, IReadOnlyList<string>? capabilities = null) =>
         InstallAsync(temp, id, payloadName, Encoding.UTF8.GetBytes(payload), backend,
-            makeExecutable, capabilities);
+            executable, capabilities);
 
     private static async Task<string> InstallAsync(
         TempDir temp, string id, string payloadName, byte[] payload, string backend,
-        bool makeExecutable = false, IReadOnlyList<string>? capabilities = null)
+        bool executable = false, IReadOnlyList<string>? capabilities = null)
     {
         var source = temp.Path($"source-{id}");
         Directory.CreateDirectory(source);
-        await File.WriteAllBytesAsync(Path.Combine(source, payloadName), payload);
+        var payloadPath = Path.Combine(source, payloadName);
+        await File.WriteAllBytesAsync(payloadPath, payload);
+        // The AUTHOR marks the entry executable; the package preserves the bit
+        // and the installer restores it. No post-install chmod in tests.
+        if (executable && !OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(payloadPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
         var package = temp.File($"{id}-1.0.0.gocordis-plugin");
         await PluginPackageWriter.CreateAsync(source,
             new PluginPackageManifest(
@@ -257,20 +266,6 @@ public sealed class BackendDispatchProductTests
 
         var store = temp.Path("store-" + id);
         await new PluginStore(store, HostVersion).InstallAsync(package);
-
-        var installedPayload = Path.Combine(store, id, "1.0.0", payloadName);
-        if (makeExecutable)
-        {
-            var chmod = Process.Start(new ProcessStartInfo("/bin/chmod", $"+x \"{installedPayload}\"")
-            {
-                UseShellExecute = false,
-            })!;
-            using (chmod)
-            {
-                await chmod.WaitForExitAsync();
-                Assert.Equal(0, chmod.ExitCode);
-            }
-        }
 
         return store;
     }

@@ -137,6 +137,22 @@ public sealed class CapabilityDeclarationTests
         Assert.Throws<CapabilityVersionException>(() => catalog.ValidateCompatibility());
     }
 
+    [Fact]
+    public async Task NonEndpointValueKindIsRejectedInPackages()
+    {
+        using var temp = new TempDir();
+        var source = temp.At("source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "plugin.dll"), "payload");
+        var manifest = new PluginPackageManifest(
+            "kind-gate", "1.0.0", "kind", "[1.0,)",
+            Capabilities: ["provide|org.example/a|int64|1.0.0||"]);
+
+        var error = await Assert.ThrowsAsync<InvalidPluginPackageException>(() =>
+            PluginPackageWriter.CreateAsync(source, manifest, temp.At("bad.gocordis-plugin")));
+        Assert.Contains("endpoint", error.Message);
+    }
+
     private sealed class TempDir : IDisposable
     {
         private readonly string _root = Path.Combine(

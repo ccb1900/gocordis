@@ -285,6 +285,68 @@ public sealed class PlatformApplicationTests
     }
 
     [Fact]
+    public async Task PackageDependencyInstalledButNotDeclaredIsReportedWithoutAutoAssembly()
+    {
+        using var temp = new TempDir();
+        var store = temp.Path("store");
+        Directory.CreateDirectory(store);
+        // A is installed; B's package depends on A. The application declares
+        // ONLY B. Store-level dependency is satisfied, but assembly is
+        // declaration-led — A must not be auto-declared or auto-activated.
+        var state = new
+        {
+            Plugins = new object[]
+            {
+                new
+                {
+                    Manifest = new
+                    {
+                        Id = "provider", Version = "1.0.0", Type = "provider",
+                        HostVersionRange = "[1.0,2.0)", DisplayName = "provider",
+                        Dependencies = Array.Empty<object>(), Provides = new[] { "provider.capability" },
+                        Checksum = (string?)null, Files = Array.Empty<object>(),
+                    },
+                    InstallPath = Path.Combine(store, "provider", "1.0.0"),
+                },
+                new
+                {
+                    Manifest = new
+                    {
+                        Id = "consumer", Version = "1.0.0", Type = "consumer",
+                        HostVersionRange = "[1.0,2.0)", DisplayName = "consumer",
+                        Dependencies = new[] { new { Id = "provider", VersionRange = "[1.0,2.0)" } },
+                        Provides = Array.Empty<string>(),
+                        Checksum = (string?)null, Files = Array.Empty<object>(),
+                    },
+                    InstallPath = Path.Combine(store, "consumer", "1.0.0"),
+                },
+            },
+        };
+        await File.WriteAllTextAsync(Path.Combine(store, "installed.json"), JsonSerializer.Serialize(state));
+
+        var manifestPath = temp.File("gocordis.app.json");
+        await new ApplicationManifest("decl-app", "1.0.0", "1.5.0",
+            [new ApplicationPlugin("consumer", "[1.0,2.0)", true)]).SaveAsync(manifestPath);
+
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, store, Host: UiHostKind.WinForms, HostVersion: "1.5.0"));
+        await app.StartAsync();
+
+        // No auto-assembly: only the declared consumer has an entry/fiber.
+        Assert.Single(app.Registry.Entries);
+        Assert.True(app.Registry.Entries.ContainsKey("consumer"));
+        Assert.False(app.Registry.Entries.ContainsKey("provider"));
+
+        // Explicit diagnostic closes the "package satisfied but no runtime
+        // provider" ambiguity — read-only, activation semantics unchanged.
+        var diagnostics = app.Console.Api.Query("devtools/diagnostics")!["diagnostics"]!.AsArray();
+        Assert.Contains(diagnostics, finding =>
+            finding?["code"]?.GetValue<string>() == "PACKAGE_DEPENDENCY_NOT_DECLARED" &&
+            finding?["severity"]?.GetValue<string>() == "warn" &&
+            finding?["message"]?.GetValue<string>()?.Contains("provider") == true);
+    }
+
+    [Fact]
     public void PlatformCliUsageStatesNativeHostBoundary()
     {
         Assert.Contains("render-plan profiles only", PlatformRunner.UsageText, StringComparison.Ordinal);

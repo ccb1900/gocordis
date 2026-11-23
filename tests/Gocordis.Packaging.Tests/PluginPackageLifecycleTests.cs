@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using Gocordis.Core;
 using Gocordis.Packaging;
 using Gocordis.Plugins;
+using NuGet.Versioning;
 using Xunit;
 
 namespace Gocordis.Packaging.Tests;
@@ -108,6 +109,53 @@ public sealed class PluginPackageLifecycleTests
         Assert.Contains("consumer", failure.Message, StringComparison.Ordinal);
         Assert.NotNull(await store.ResolveAsync("provider", "1.0.0"));
         Assert.Null(await store.ResolveAsync("provider", "[1.5,2.0)"));
+    }
+
+    [Fact]
+    public async Task UninstallAndUpgradeUseOneReverseDependencyJudgment()
+    {
+        using var temp = new TempDir();
+        var source = temp.Path("source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "entry.txt"), "x");
+        var store = new PluginStore(temp.Path("store"), HostVersion);
+
+        // Same installed snapshot and the same narrow dependent range. Both
+        // paths must agree: removing the only satisfying version is blocked.
+        var provider = temp.File("provider-1.0.0.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source,
+            new PluginPackageManifest("provider", "1.0.0", "provider", "[1.0,3.0)"), provider);
+        await store.InstallAsync(provider);
+
+        var consumer = temp.File("consumer-1.0.0.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source,
+            new PluginPackageManifest("consumer", "1.0.0", "consumer", "[1.0,3.0)",
+                Dependencies: [new PluginDependency("provider", "[1.0,1.5)")]), consumer);
+        await store.InstallAsync(consumer);
+
+        var installed = await store.ListAsync();
+        var versions = installed
+            .Where(item => item.Id == "provider")
+            .Select(item => NuGetVersion.Parse(item.Version)).ToArray();
+        var dependents = PluginDependencyPlanner.FindUnsatisfiedDependents(
+            installed, "provider", versions, Array.Empty<NuGetVersion>());
+        Assert.Equal(["consumer"], dependents);
+
+        // Uninstall (store guard, now via Planner) must report the same dependent.
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.UninstallAsync("provider"));
+        Assert.Contains("consumer", failure.Message, StringComparison.Ordinal);
+
+        // Upgrade to a version OUTSIDE the dependent's range must be blocked too.
+        var provider15 = temp.File("provider-1.5.0.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source,
+            new PluginPackageManifest("provider", "1.5.0", "provider", "[1.0,3.0)"), provider15);
+        var upgradeFailure = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.UpgradeAsync(provider15));
+        Assert.Contains("consumer", upgradeFailure.Message, StringComparison.Ordinal);
+
+        // The package is still installed after both rejected mutations.
+        Assert.NotNull(await store.ResolveAsync("provider", "1.0.0"));
     }
 
     [Fact]

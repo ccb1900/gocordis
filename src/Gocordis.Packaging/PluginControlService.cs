@@ -502,9 +502,11 @@ public sealed class PluginControlService : IPluginControlPlane
                     .Append(parsedNewVersion)
                     .Distinct()
                     .ToArray();
-                var dependents = await FindInstalledDependentsAsync(
-                    id, removedVersions, token, survivingVersions);
-                if (dependents.Length > 0)
+                // ONE reverse-dependency algorithm across upgrade / uninstall /
+                // the store guard — use the already-loaded snapshot, no re-read.
+                var dependents = PluginDependencyPlanner.FindUnsatisfiedDependents(
+                    installedBefore, id, removedVersions, survivingVersions);
+                if (dependents.Count > 0)
                 {
                     return Rejected(id, "conflict",
                         $"installed plugins depend on '{id}' and would be unsatisfied: {string.Join(", ", dependents)}");
@@ -610,9 +612,9 @@ public sealed class PluginControlService : IPluginControlPlane
                                   !targets.Any(target => string.Equals(
                                       target.Version, package.Version, StringComparison.Ordinal)))
                 .Select(package => NuGetVersion.Parse(package.Version)).ToArray();
-            var dependents = await FindInstalledDependentsAsync(
-                id, targetVersions, token, survivingVersions);
-            if (dependents.Length > 0)
+            var dependents = PluginDependencyPlanner.FindUnsatisfiedDependents(
+                allInstalled, id, targetVersions, survivingVersions);
+            if (dependents.Count > 0)
             {
                 return Rejected(id, "conflict",
                     $"installed plugins depend on '{id}': {string.Join(", ", dependents)}");
@@ -964,44 +966,6 @@ public sealed class PluginControlService : IPluginControlPlane
 
         return candidates.Where(package =>
             NuGetVersion.TryParse(package.Version, out var parsed) && range.Satisfies(parsed)).ToArray();
-    }
-
-    private async Task<string[]> FindInstalledDependentsAsync(
-        string id,
-        IReadOnlyCollection<NuGetVersion> targetVersions,
-        CancellationToken ct,
-        IReadOnlyCollection<NuGetVersion>? survivingVersions = null)
-    {
-        if (targetVersions.Count == 0)
-        {
-            return [];
-        }
-
-        var installed = await _store.ListAsync(ct);
-        var dependents = new List<string>();
-        foreach (var package in installed)
-        {
-            if (string.Equals(package.Id, id, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            foreach (var dependency in package.Manifest.DependenciesOrEmpty)
-            {
-                if (!string.Equals(dependency.Id, id, StringComparison.Ordinal) ||
-                    !VersionRange.TryParse(dependency.VersionRange, out var range) ||
-                    !targetVersions.Any(version => range.Satisfies(version)) ||
-                    (survivingVersions is not null && survivingVersions.Any(version => range.Satisfies(version))))
-                {
-                    continue;
-                }
-
-                dependents.Add(package.Id);
-                break;
-            }
-        }
-
-        return dependents.Distinct(StringComparer.Ordinal).ToArray();
     }
 
     private async Task TryUninstallPackageAsync(string id, string version)

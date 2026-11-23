@@ -34,9 +34,13 @@ dotnet test  Gocordis.sln --nologo --no-build -m:1
 bash docs/migration/verify-baseline.sh   # Go baseline drift check
 ```
 
-**Last locally verified** (2026-11-23, branch `dotnet`): C# **457** tests green, frontend **102** tests green, plugin-kit tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
+**Last locally verified** (2026-11-23, branch `dotnet`): C# **459** tests green, frontend **102** tests green, plugin-kit tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
 
 **CI**: no confirmed public CI result for the current HEAD; do not reuse historical 443/443 or other round results as proof for this commit. The Go baseline verification is handled by `verify-baseline.sh`, with drift reported rather than silently accepted.
+
+## Dependency semantics (current, settled)
+
+Three layers stay distinct: **package dependency** (PluginDependency + version range; store install/upgrade/uninstall via `PluginDependencyPlanner`), **contract dependency** (host-sealed shared assembly in Default ALC; only `SharedAssemblyRegistry.Seal` is the public host entry), **capability dependency** (typed `Inject()/Provide()`; Core reconciliation). Assembly is declaration-led: a package dependency never auto-declares/activates its provider — the application manifest is the sole assembly set. An installed-but-undeclared dependency yields a read-only `PACKAGE_DEPENDENCY_NOT_DECLARED` warning, never a silent "satisfied". `Allow()` is private; plugins cannot widen the shared-assembly whitelist.
 
 ## Known boundaries (not "done" claims)
 

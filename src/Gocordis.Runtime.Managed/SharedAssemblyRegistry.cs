@@ -22,7 +22,7 @@ public sealed record SharedAssemblyIdentity(
     string Sha256)
 {
     /// <summary>Reads identity without loading the assembly into any ALC.</summary>
-    public static SharedAssemblyIdentity FromFile(string path)
+    internal static SharedAssemblyIdentity FromFile(string path)
     {
         var full = Path.GetFullPath(path);
         var name = AssemblyName.GetAssemblyName(full);
@@ -44,7 +44,7 @@ public sealed record SharedAssemblyIdentity(
     }
 
     /// <summary>Identity of an already-loaded assembly (from its file location).</summary>
-    public static SharedAssemblyIdentity FromLoaded(Assembly assembly)
+    internal static SharedAssemblyIdentity FromLoaded(Assembly assembly)
     {
         if (string.IsNullOrWhiteSpace(assembly.Location) || !File.Exists(assembly.Location))
         {
@@ -65,7 +65,7 @@ public sealed record SharedAssemblyIdentity(
     /// Strict equality on every verifiable field. An empty hash (unverifiable
     /// in-memory assembly) is skipped; all other fields must match exactly.
     /// </summary>
-    public bool Matches(SharedAssemblyIdentity other) =>
+    internal bool Matches(SharedAssemblyIdentity other) =>
         string.Equals(Name, other.Name, StringComparison.Ordinal) &&
         Equals(Version, other.Version) &&
         string.Equals(Culture, other.Culture, StringComparison.OrdinalIgnoreCase) &&
@@ -74,7 +74,7 @@ public sealed record SharedAssemblyIdentity(
         (Sha256.Length == 0 || other.Sha256.Length == 0 ||
          string.Equals(Sha256, other.Sha256, StringComparison.OrdinalIgnoreCase));
 
-    public string Describe() =>
+    internal string Describe() =>
         $"{Name} v{(Version is null ? "?" : Version.ToString())} culture={Culture ?? "neutral"} pkt={PublicKeyToken} mvid={Mvid} sha256={Sha256}";
 }
 
@@ -91,7 +91,7 @@ public sealed record SharedAssemblyIdentity(
 /// collectible plugin ALC is not an isolation boundary; use Process/WASM for
 /// untrusted code. This registry is defense against *accidental* identity
 /// collisions, not a security boundary: only host-approved names may be
-/// promoted (<see cref="Allow(string)"/>), and every payload must match the
+/// promoted (<see cref="Seal(IReadOnlyDictionary{string, IReadOnlyList{string}})"/>), and every payload must match the
 /// already-loaded identity on all fields.
 ///
 /// LIFETIME: a shared assembly promoted here lives in
@@ -117,7 +117,7 @@ public static class SharedAssemblyRegistry
     /// <summary>Approve a simple assembly name for process-level sharing. The
     /// host calls this for names declared by installed (and thus verified)
     /// packages; arbitrary plugin code cannot approve itself.</summary>
-    public static void Allow(string simpleName)
+    private static void Allow(string simpleName)
     {
         if (!string.IsNullOrWhiteSpace(simpleName))
         {
@@ -128,13 +128,7 @@ public static class SharedAssemblyRegistry
         }
     }
 
-    public static void Allow(IEnumerable<string>? simpleNames)
-    {
-        if (simpleNames is null) return;
-        foreach (var name in simpleNames) Allow(name);
-    }
-
-    public static bool IsAllowed(string simpleName)
+    internal static bool IsAllowed(string simpleName)
     {
         lock (Sync) return Allowed.Contains(simpleName);
     }
@@ -237,7 +231,7 @@ public static class SharedAssemblyRegistry
     }
 
     /// <summary>The identity the host sealed for a contract, or null if unsealed.</summary>
-    public static SharedAssemblyIdentity? SealedIdentity(string name)
+    internal static SharedAssemblyIdentity? SealedIdentity(string name)
     {
         lock (Sync) return Sealed.TryGetValue(name, out var identity) ? identity : null;
     }
@@ -257,7 +251,7 @@ public static class SharedAssemblyRegistry
     /// <exception cref="FileNotFoundException">
     /// A declared shared assembly is missing from the plugin payload.
     /// </exception>
-    public static IReadOnlyList<string> EnsureLoaded(
+    internal static IReadOnlyList<string> EnsureLoaded(
         IEnumerable<string>? names, string pluginDirectory)
     {
         if (names is null) return [];

@@ -90,6 +90,8 @@ Never collapse these into one mechanism — an assembly resolving says nothing a
 | Layer | Expresses | Mechanism | Failure mode |
 |---|---|---|---|
 | **Package dependency** | plugin B needs plugin A's package/version installed | `PluginDependency` + version range; install/upgrade/uninstall reverse checks (`PluginDependencyPlanner`, `PluginStore`) | install rejected / upgrade blocked |
+
+**Assembly is declaration-led.** A package dependency only constrains the STORE; it never auto-declares or auto-activates the dependency. The application manifest is the sole assembly set; activation is decided solely by typed `Inject()/Provide()`. If a declared plugin's package requires an id that is installed but NOT in the manifest, the runtime reports `PACKAGE_DEPENDENCY_NOT_DECLARED` (a read-only warning) — never silently "satisfied". Use `PluginDependencyPlanner` as the single reverse-dependency algorithm for install/upgrade/uninstall. Do not convert package dependencies into typed `Inject()` automatically — the two are not equivalent.
 | **Contract (assembly) dependency** | B compiles against A's interfaces, types, DTOs, keys | shared contracts assembly (`--shared-assembly`) loaded once into Default ALC | type-identity mismatch / load conflict |
 | **Capability dependency** | B needs A's runtime capability before it may activate | `Component.Inject()/Provide()` over strong `Key<T>`; Core reconciliation | B stays `Pending` until a provider is Active; withdraws on loss |
 
@@ -100,7 +102,7 @@ Never collapse these into one mechanism — an assembly resolving says nothing a
 
 Do **not** promote every plugin assembly to Default ALC, and do **not** assume plugins can share no types at all.
 
-**Contract ownership**: the HOST seals one stable ABI identity during assembly (`SharedAssemblyRegistry.Seal`), verifying *all* candidate copies across installed packages are byte-identical, then loads one canonical copy. Plugins may only reuse the sealed identity; a differing copy is rejected, a contract upgrade needs a host restart. Ordinary plugins cannot decide the process-wide contract version by loading first.
+**Contract ownership**: `SharedAssemblyRegistry.Seal` is the ONLY public host entry for approving and sealing contracts. It verifies *all* candidate copies across installed packages are byte-identical, then loads one canonical copy into the Default ALC. Approval helpers are private/internal; a plugin cannot widen the shared-assembly whitelist through a normal API. Plugins may only reuse the sealed identity; a differing copy is rejected, a contract upgrade needs a host restart. Ordinary plugins cannot decide the process-wide contract version by loading first.
 
 - Implement `Component`: `Name`, `Inject()`, `Provide()`, `ApplyAsync` (single-step) or `IIterativeComponent.IterateAsync` (per-step divert). Declare exactly what you use; keys/`EventKey`s live in a shared contracts assembly (`static readonly`, reference identity).
 - In-process composition: app/plugin projects reference Core (+Plugins) and the contracts project; never plugin→plugin or plugin→app.

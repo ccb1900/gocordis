@@ -72,13 +72,13 @@ var consumer = await runtime.LoadAsync(new EchoFeature());
 正确做法是把契约程序集声明为共享：打包时 `plugin pack ... --backend managed
 --entry-assembly <dll> --entry-type <type> --shared-assembly <ContractsName>`（对应
 `PluginPackageManifest.SharedAssemblies`）。宿主在声明解析阶段对**已安装（校验过摘要）的包**调用
-`SharedAssemblyRegistry.Allow(name)` 批准名称；加载时 `SharedAssemblyRegistry` 把该 DLL 提升进
-default ALC 一次，`PluginLoadContext` 对共享名返回 `null`，回落到 default 的唯一实例。于是不同包的
+宿主在装配阶段调用 `SharedAssemblyRegistry.Seal(candidates)`，收集所有已安装包携带的候选副本，
+校验完整身份一致后把唯一规范副本提升进 default ALC 一次，`PluginLoadContext` 对共享名返回 `null`，回落到 default 的唯一实例。于是不同包的
 `Provide(K.X)` 与 `Inject(K.X)` 解析到同一 Key，空间维组合在真实部署形态下成立。
 
 **信任边界与生命周期（MUST 遵守）**：
 
-- 共享程序集**只允许宿主批准的名称**（`Allow`），插件不能在加载时把自己提升进 Default ALC。
+- 共享程序集**只能通过宿主 `Seal()` 封存**（`Allow` 已是私有实现细节），插件不能在加载时把自己提升进 Default ALC。
   `SharedAssemblyRegistry` 校验**完整身份**：简单名、版本、culture、公钥令牌、模块 MVID 与 payload
   SHA-256；同名同版本但字节不同会被 `SharedAssemblyConflictException` 拒绝，不会静默换身份。
 - **Managed 插件是受信任代码，不是安全沙箱**；ALC 可收集但不是隔离边界。需要隔离不可信代码用
@@ -99,6 +99,8 @@ default ALC 一次，`PluginLoadContext` 对共享名返回 `null`，回落到 d
 | 能力依赖 | B 需要 A 的运行时能力才允许激活 | `Inject()/Provide()` + 强 `Key<T>`，Core 调和 | B 保持 `Pending`，依赖恢复自动重激活 |
 
 程序集能加载 ≠ 能力已提供；包依赖满足 ≠ 能力实现已 Active。B 可以只引用契约、声明所需能力，由 Runtime 决定实际提供者——这才是可替换的低耦合组合。
+
+**装配由声明决定**：包依赖只约束 Store，不会自动把 A 纳入应用 manifest。应用声明是唯一装配集合；是否 Active 只由 `Inject()/Provide()` 的强类型 Key 决定。若声明的插件其包依赖 id 已安装但未出现在 manifest 中，运行时给出只读告警 `PACKAGE_DEPENDENCY_NOT_DECLARED`，不会假装"已满足"。升级/卸载的反向依赖判断统一走 `PluginDependencyPlanner`，不再各路径内联重复实现。
 
 ALC 归属是产品规则：Core / Plugins / 共享契约在 **Default ALC**（单一类型身份、宿主所有）；每个插件实现程序集与私有依赖在**各自的独立可回收 ALC**（独立卸载、允许不同私有版本）。不把所有插件塞进 Default ALC，也不假设插件之间完全不能共享类型。共享契约由宿主在装配阶段校验所有副本的完整身份后封存一份；插件加载只能复用，不能抢先决定版本；契约升级需重启宿主。
 

@@ -453,6 +453,35 @@ public class PlatformApplication : IAsyncDisposable
             });
         }
 
+        // Package dependency vs application assembly: the store checks that a
+        // dependency is INSTALLED, but only the application declaration decides
+        // what is ASSEMBLED. A declared plugin whose package requires a provider
+        // that is installed yet not declared would otherwise look "satisfied"
+        // to the package manager while having no runtime provider. Report it
+        // explicitly (read-only diagnostic — activation stays declaration-led).
+        var declaredIds = _manifest?.Plugins
+            .Select(item => item.Id).ToHashSet(StringComparer.Ordinal)
+            ?? new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in Registry.Entries.Values)
+        {
+            foreach (var requirement in entry.Manifest.Requires.Distinct(StringComparer.Ordinal))
+            {
+                if (declaredIds.Contains(requirement))
+                {
+                    continue;
+                }
+
+                findings.Add(new JsonObject
+                {
+                    ["severity"] = "warn",
+                    ["code"] = "PACKAGE_DEPENDENCY_NOT_DECLARED",
+                    ["message"] = $"plugin '{entry.Manifest.Id}' declares package dependency '{requirement}', " +
+                                  $"but '{requirement}' is not in the application manifest; it will not be " +
+                                  "assembled or activated (declare it explicitly if it provides a runtime capability)",
+                });
+            }
+        }
+
         return new JsonObject
         {
             ["hostVersion"] = _options.HostVersion,

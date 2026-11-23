@@ -138,13 +138,13 @@ public sealed class PluginStore
             {
                 var survivors = state.Plugins.Where(p =>
                     !targets.Contains(p) && string.Equals(p.Id, id, StringComparison.Ordinal)).ToArray();
-                var dependents = state.Plugins.Where(p => !targets.Contains(p))
-                    .Where(p => p.Manifest.DependenciesOrEmpty.Any(d =>
-                        string.Equals(d.Id, id, StringComparison.Ordinal) &&
-                        targets.Any(t => VersionRange.Parse(d.VersionRange).Satisfies(NuGetVersion.Parse(t.Version))) &&
-                        !survivors.Any(s => VersionRange.Parse(d.VersionRange).Satisfies(NuGetVersion.Parse(s.Version)))))
-                    .Select(p => p.Id).Distinct(StringComparer.Ordinal).ToArray();
-                if (dependents.Length > 0)
+                // ONE reverse-dependency algorithm for upgrade and uninstall.
+                var dependents = PluginDependencyPlanner.FindUnsatisfiedDependents(
+                    state.Plugins,
+                    id,
+                    targets.Select(p => NuGetVersion.Parse(p.Version)).ToArray(),
+                    survivors.Select(p => NuGetVersion.Parse(p.Version)).ToArray());
+                if (dependents.Count > 0)
                 {
                     throw new InvalidOperationException(
                         $"cannot uninstall '{id}': required by {string.Join(", ", dependents)}");

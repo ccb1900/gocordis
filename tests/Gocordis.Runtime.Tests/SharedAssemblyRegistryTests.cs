@@ -62,10 +62,14 @@ public sealed class SharedAssemblyRegistryTests
         Directory.CreateDirectory(dir);
         File.Copy(typeof(Gocordis.Core.Component).Assembly.Location, Path.Combine(dir, name + ".dll"));
 
-        SharedAssemblyRegistry.Allow(name);
-        var ex = Assert.Throws<SharedAssemblyConflictException>(
-            () => SharedAssemblyRegistry.EnsureLoaded([name], dir));
-        Assert.Contains("does not match payload identity", ex.Message);
+        // Seal is the only approval entry; the declared name must match the
+        // payload's assembly identity there.
+        var ex = Assert.Throws<SharedAssemblyConflictException>(() =>
+            SharedAssemblyRegistry.Seal(new Dictionary<string, IReadOnlyList<string>>
+            {
+                [name] = new[] { Path.Combine(dir, name + ".dll") },
+            }));
+        Assert.Contains("declares assembly name", ex.Message);
     }
 
     [Fact]

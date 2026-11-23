@@ -260,9 +260,29 @@ public static class PluginRegistrySchemaExtensions
         {
             lock (_sync)
             {
+                if (_documents.TryGetValue(type, out var existing) &&
+                    !string.Equals(Canonical(existing), Canonical(document), StringComparison.Ordinal))
+                {
+                    throw new ConfigSchemaException(
+                        $"plugin type '{type}' declares a conflicting config schema; " +
+                        "schema upgrades require distinct plugin types");
+                }
+
                 _documents[type] = document;
             }
         }
+
+        /// <summary>Order-independent projection so declaration order cannot
+        /// turn an identical schema into a conflict.</summary>
+        private static string Canonical(JsonNode? node) => node switch
+        {
+            null => "null",
+            JsonObject obj => "{" + string.Join(",", obj
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => JsonSerializer.Serialize(pair.Key) + ":" + Canonical(pair.Value))) + "}",
+            JsonArray array => "[" + string.Join(",", array.Select(Canonical)) + "]",
+            _ => node.ToJsonString(),
+        };
 
         public bool TryGet(string type, out ConfigSchema? schema)
         {

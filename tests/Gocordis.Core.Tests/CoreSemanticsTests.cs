@@ -38,6 +38,59 @@ public sealed class CoreSemanticsTests
     }
 
     [Fact]
+    public async Task CoreEmitDispatchesInRegistrationOrderAndThrowsTheFirstHandlerFailure()
+    {
+        var key = new EventKey<string>("order");
+        var seen = new List<string>();
+        Exception? observedFailure = null;
+
+        await using var runtime = new Runtime();
+        var channel = new DelegateComponent(
+            "channel",
+            async context =>
+            {
+                context.Provide(key, "channel");
+                return null;
+            },
+            provide: [key]);
+        await runtime.LoadAsync(channel);
+
+        var component = new DelegateComponent(
+            "emitter",
+            async context =>
+            {
+                await context.OnAsync(key, value =>
+                {
+                    seen.Add("first:" + value);
+                    return ValueTask.CompletedTask;
+                });
+                await context.OnAsync(key, _ => throw new InvalidOperationException("boom"));
+                await context.OnAsync(key, value =>
+                {
+                    seen.Add("third:" + value);
+                    return ValueTask.CompletedTask;
+                });
+                try
+                {
+                    await context.EmitAsync(key, "x");
+                }
+                catch (Exception ex)
+                {
+                    observedFailure = ex;
+                }
+
+                return null;
+            },
+            inject: [key]);
+
+        var fiber = await runtime.LoadAsync(component);
+
+        Assert.True(fiber.State == FiberState.Active, $"state={fiber.State} failure={fiber.Failure}");
+        Assert.Equal(new[] { "first:x", "third:x" }, seen);
+        Assert.Equal("boom", observedFailure?.Message);
+    }
+
+    [Fact]
     public async Task UndeclaredRequireFailsTheFiber()
     {
         var key = new Key<int>("hidden");

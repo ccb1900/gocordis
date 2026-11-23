@@ -851,6 +851,8 @@ public sealed class WebUiServer : IAsyncDisposable
         ["capabilities"] = StringArray(entry.Capabilities),
         ["requires"] = StringArray(entry.Requires),
         ["provides"] = StringArray(entry.Provides),
+        ["declaredCapabilityRequires"] = StringArray(entry.DeclaredCapabilityRequires),
+        ["declaredCapabilityProvides"] = StringArray(entry.DeclaredCapabilityProvides),
     };
 
     private static JsonObject ToJson(StorePluginEntry entry) => new()
@@ -882,6 +884,8 @@ public sealed class WebUiServer : IAsyncDisposable
         ["dependents"] = StringArray(view.Dependents),
         ["capabilityRequires"] = StringArray(view.CapabilityRequires),
         ["capabilityProvides"] = StringArray(view.CapabilityProvides),
+        ["declaredCapabilityRequires"] = StringArray(view.DeclaredCapabilityRequires),
+        ["declaredCapabilityProvides"] = StringArray(view.DeclaredCapabilityProvides),
         ["diagnostics"] = StringArray(view.Diagnostics),
     };
 

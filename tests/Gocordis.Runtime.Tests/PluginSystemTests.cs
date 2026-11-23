@@ -117,6 +117,32 @@ public sealed class PluginSystemTests
     }
 
     [Fact]
+    public async Task CapabilityDeclarationChangeReplacesTheFiber()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        registry.RegisterFactory("echo", config => new EchoComponent((string)config["value"]!));
+
+        var first = Manifest("p", "echo", true, "A") with
+        {
+            Capabilities = ["provide|org.example/one|endpoint|1.0.0||"],
+        };
+        await registry.ApplyAsync([first]);
+        var oldFiber = registry.Entries["p"].Fiber!;
+
+        var second = first with
+        {
+            Capabilities = ["provide|org.example/two|endpoint|1.0.0||"],
+        };
+        await registry.ApplyAsync([second]);
+        var newFiber = registry.Entries["p"].Fiber!;
+
+        Assert.NotSame(oldFiber, newFiber);
+        Assert.Equal(FiberState.Gone, oldFiber.State);
+        Assert.Equal(FiberState.Active, newFiber.State);
+    }
+
+    [Fact]
     public async Task UnresolvedTypedCapabilityIsRejectedEvenWhenManifestClaimsItExists()
     {
         await using var runtime = new Gocordis.Core.Runtime();

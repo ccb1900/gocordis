@@ -86,7 +86,7 @@
 | 原参照项 | C# 实现 | 决定 | C# 证据 |
 | --- | --- | --- | --- |
 | loader / include / hmr / group（模块模型差异） | `PluginRegistry` + `Gocordis.Runtime.Managed` + `WasmHotSwapper` | 能力等价；模块身份按论文 Revision。 | `PluginSystemTests.TomlManifestInheritsTheGoDeclarationShape`；`WasmRuntimeTests.WarmHotSwapReplacesTheModuleAndKeepsTheOldFiberGone`。 |
-| Event emit/serial/parallel/bail/waterfall | `Gocordis.Extensions.EventDispatcher` | 五模式齐备、注册可逆；parallel 传播 handler 异常。 | `ExtensionTests.EventModesCoverSerialBailParallelAndWaterfall`；`EventDispatchGapTests.ParallelAggregatesErrorsInRegistrationOrder`。 |
+| Event emit/serial/parallel/bail/waterfall | `Gocordis.Core.Context.OnAsync/EmitAsync` | 只保留论文可锚定的可逆注册与串行 emit；五模式扩展派发无产品消费者，第二套注册权威已删除（ADR-0004）。 | `CoreSemanticsTests.CoreEmitDispatchesInRegistrationOrderAndThrowsTheFirstHandlerFailure`。 |
 | timer / scheduler / watch | `TimerService`、`Scheduler`、`WatchService` | JS 风格 API + 确定性 pump + revision 文件监听。 | `ExtensionTests.TimerSemanticsIncludeDebounceAndThrottle`、`SchedulerAdvancesJobsDeterministically`、`WatchServiceIncrementsRevisions`。 |
 | fs / http / server | `FileSystemService`、`HttpService`、`WebUiServer` | .NET 成熟库实现，能力覆盖不标缺失。 | `ExtensionTests.FileSystemMountRoutesAndRejectsEscapes`、`HttpInterceptorsAndServerHostWorkTogether`；`Phase6Tests.WebUiServesQueriesOverHttp`。 |
 | env / cli / broker / registry / observe | `EnvService`、`CliDispatcher`、`Broker<T>`、`StableRegistry<T>`、`ObserveStream<T>` | 对应 JS 官方扩展能力。 | `ExtensionTests.EnvParsePrecedenceAndRollback`、`CliTokenizerAndAliasesWork`、`BrokerAndRegistryManageMembers`、`ObserveStreamDeliversSequencedItems`。 |

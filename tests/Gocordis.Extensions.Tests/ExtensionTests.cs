@@ -9,48 +9,6 @@ namespace Gocordis.Extensions.Tests;
 public sealed class ExtensionTests
 {
     [Fact]
-    public async Task EventModesCoverSerialBailParallelAndWaterfall()
-    {
-        var events = new EventDispatcher();
-        var key = new EventKey<string>("notice");
-        var seen = new List<string>();
-        using var first = events.On(key, value =>
-        {
-            seen.Add("first:" + value);
-            return ValueTask.CompletedTask;
-        });
-        using var second = events.On(key, value =>
-        {
-            seen.Add("second:" + value);
-            return ValueTask.CompletedTask;
-        });
-
-        Assert.Empty(await events.EmitSerialAsync(key, "x"));
-        Assert.Equal(new[] { "first:x", "second:x" }, seen);
-
-        var failing = events.On(key, _ => throw new InvalidOperationException());
-        Assert.Single(await events.EmitSerialAsync(key, "x"));
-        Assert.False(await events.EmitBailAsync(key, "x"));
-        try
-        {
-            await events.EmitParallelAsync(key, "x");
-        }
-        catch (InvalidOperationException)
-        {
-            // parallel mode propagates handler failures
-        }
-
-        var chain = new EventKey<int>("chain");
-        using var a = events.OnWaterfall(chain, value => ValueTask.FromResult(value + 1));
-        using var b = events.OnWaterfall(chain, value => ValueTask.FromResult(value * 3));
-        Assert.Equal(9, await events.EmitWaterfallAsync(chain, 2));
-
-        first.Dispose();
-        failing.Dispose();
-        Assert.True(await events.EmitBailAsync(key, "x"));
-    }
-
-    [Fact]
     public async Task TimerSemanticsIncludeDebounceAndThrottle()
     {
         await using var timers = new TimerService();

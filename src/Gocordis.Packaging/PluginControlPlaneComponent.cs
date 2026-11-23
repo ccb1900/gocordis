@@ -14,19 +14,22 @@ public sealed class PluginControlPlaneComponent : Component
     private readonly PluginStore _store;
     private readonly PluginRegistry _registry;
     private readonly UiContributionRegistry? _ui;
+    private readonly Func<IReadOnlyList<string>, bool>? _sharedAssemblyApproval;
 
     public PluginControlPlaneComponent(
         string ManifestPath,
         PluginStore Store,
         PluginRegistry Registry,
         UiContributionRegistry? Ui = null,
-        Func<PluginManifest, Component>? ComponentFactory = null)
+        Func<PluginManifest, Component>? ComponentFactory = null,
+        Func<IReadOnlyList<string>, bool>? SharedAssemblyApproval = null)
     {
         _manifestPath = ManifestPath ?? throw new ArgumentNullException(nameof(ManifestPath));
         _store = Store ?? throw new ArgumentNullException(nameof(Store));
         _registry = Registry ?? throw new ArgumentNullException(nameof(Registry));
         _ui = Ui;
         _componentFactory = ComponentFactory;
+        _sharedAssemblyApproval = SharedAssemblyApproval;
     }
 
     private readonly Func<PluginManifest, Component>? _componentFactory;
@@ -38,7 +41,7 @@ public sealed class PluginControlPlaneComponent : Component
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
         var service = new PluginControlService(
-            _manifestPath, _store, _registry, _ui, _componentFactory);
+            _manifestPath, _store, _registry, _ui, _componentFactory, _sharedAssemblyApproval);
         // Context.Provide installs its own LIFO inverse; no cleanup stack here.
         context.Provide(ControlPlaneKeys.Service, service);
 

@@ -38,6 +38,16 @@
 | P0-03 Backend Withdrawal | 已关闭 | 三后端组合撤回 → Pending；`WasmTrapFailsTheProviderWhileWithdrawalOnlyPendsTheConsumer` 区分 Trap(Failed) 与撤回(Pending) |
 | P0-04 Package Backend Closure | 已关闭 | `PluginPackageWriter` 接受 wasm/process 入口校验；`BackendPackageValidationTests` + `BackendDispatchProductTests.Declared*CapabilityPackage*` 覆盖 pack→install→load→invoke→stop |
 
+## Task 04 / Task 05 收敛结果
+
+- **事件事实来源**：`Gocordis.Extensions.EventDispatcher`（测试续命的第二套注册字典）已删除；Core 的 `Context.OnAsync/EmitAsync` 是唯一注册与派发权威；Core 新增注册顺序与首个 handler 失败的行为测试。
+- **Registry 指纹**：`Capabilities` 与 `SharedAssemblies` 纳入 `PluginRegistry.Fingerprint`，声明变化会替换 fiber 而不是复用旧 ALC。
+- **动态契约授权**：运行时安装声明未封印的共享程序集被明确拒绝为 `host_restart_required`，不再在 loader 里变成泛化冲突。
+- **版本展示**：`InstalledVersion` 改为按应用声明范围解析到的最高版本，与实际装载一致。
+- **Config Schema**：同类型不同文档冲突即拒绝；动态安装也走 `RegisterSchema`。
+- **DTO 分离**：`declaredCapabilityRequires/Provides` 与 `packageDependencies` 分开，包依赖 ID 不再冒充能力契约。
+- **Task 05**：新增 `MixedBackendProductE2ETests`，一个 manifest 中 Managed → Process → WASM 真实调用、按依赖逆序停用/恢复、子进程 PID 与 fiber 回收均有断言。
+
 ## 冻结规则
 
 1. 本基线只记录**已核实**的证据等级，不把 E0/E1 升级为 E2。

@@ -134,6 +134,13 @@ public static class SharedAssemblyRegistry
     }
 
     /// <summary>
+    /// Host-facing query: whether a simple contract name was approved by
+    /// <see cref="Seal"/>. The control plane uses this to reject runtime installs
+    /// that would otherwise fail with a generic loader conflict.
+    /// </summary>
+    public static bool IsApproved(string simpleName) => IsAllowed(simpleName);
+
+    /// <summary>
     /// HOST-ONLY contract sealing. Called once during application assembly,
     /// BEFORE any plugin fiber is activated. For every shared contract name the
     /// host supplies ALL candidate copies (one per declaring package). The

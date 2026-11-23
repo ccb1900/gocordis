@@ -80,7 +80,7 @@ open flags/mode）同样冻结为接受差异，不计入等价范围。
 | 原参照项 | C# 实现 | 对照结论 |
 | --- | --- | --- |
 | loader / include / hmr / group（模块模型差异） | `Gocordis.Plugins.PluginRegistry`（Tomlyn Manifest、组合/补丁、ConfigWatcher）、`Gocordis.Runtime.Managed`（ALC + 私有依赖）、`Gocordis.Runtime.Wasm.WasmHotSwapper` | 能力等价；模块身份按论文 Revision（退役→重插），不追求 JS 原位替换 |
-| Event `emit/serial/parallel/bail/waterfall` | `Gocordis.Extensions.EventDispatcher` | 五模式齐备；注册/注销可逆；parallel 传播 handler 异常 |
+| Event `emit/serial/parallel/bail/waterfall` | `Gocordis.Core.Context.OnAsync/EmitAsync` | 论文只要求可逆注册；五模式派发无产品消费者，已移除第二套注册权威（ADR-0004） |
 | timer / scheduler / watch | `TimerService`、`Scheduler`、`WatchService` | JS 风格 Timeout/Interval/Debounce/Throttle + 确定性 pump + revision 文件监听 |
 | fs / http / server | `FileSystemService`（挂载路由与防逃逸）、`HttpService`（拦截器）、`ServerHost`（ASP.NET Core） | 用 .NET 成熟库实现，能力覆盖不再标"缺失" |
 | env / cli / broker / registry / observe | `EnvService`、`CliDispatcher`、`Broker<T>`、`StableRegistry<T>`、`ObserveStream<T>` | 对应 JS 官方扩展能力 |

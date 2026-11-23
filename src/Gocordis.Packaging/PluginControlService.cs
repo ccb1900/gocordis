@@ -25,7 +25,9 @@ public sealed record PluginControlEntry(
     IReadOnlyList<string> Components,
     IReadOnlyList<string> Capabilities,
     IReadOnlyList<string> Requires,
-    IReadOnlyList<string> Provides);
+    IReadOnlyList<string> Provides,
+    IReadOnlyList<string> DeclaredCapabilityRequires,
+    IReadOnlyList<string> DeclaredCapabilityProvides);
 
 public sealed record StorePluginEntry(
     string Id,
@@ -52,6 +54,8 @@ public sealed record PluginDependencyView(
     IReadOnlyList<string> Dependents,
     IReadOnlyList<string> CapabilityRequires,
     IReadOnlyList<string> CapabilityProvides,
+    IReadOnlyList<string> DeclaredCapabilityRequires,
+    IReadOnlyList<string> DeclaredCapabilityProvides,
     IReadOnlyList<string> Diagnostics);
 
 public sealed record PluginUploadResult(
@@ -134,6 +138,7 @@ public sealed class PluginControlService : IPluginControlPlane
     private readonly PluginRegistry _registry;
     private readonly UiContributionRegistry? _ui;
     private readonly Func<PluginManifest, Component>? _componentFactory;
+    private readonly Func<IReadOnlyList<string>, bool>? _sharedAssemblyApproval;
     private readonly ApplicationLoader _loader;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly HashSet<string> _registeredTypes = new(StringComparer.Ordinal);
@@ -145,7 +150,8 @@ public sealed class PluginControlService : IPluginControlPlane
         PluginStore Store,
         PluginRegistry Registry,
         UiContributionRegistry? Ui = null,
-        Func<PluginManifest, Component>? ComponentFactory = null)
+        Func<PluginManifest, Component>? ComponentFactory = null,
+        Func<IReadOnlyList<string>, bool>? SharedAssemblyApproval = null)
     {
         _manifestPath = ManifestPath ?? throw new ArgumentNullException(nameof(ManifestPath));
         _store = Store ?? throw new ArgumentNullException(nameof(Store));
@@ -153,6 +159,7 @@ public sealed class PluginControlService : IPluginControlPlane
         _ui = Ui;
         // The host owns backend selection; Packaging never references a backend.
         _componentFactory = ComponentFactory;
+        _sharedAssemblyApproval = SharedAssemblyApproval;
         _loader = new ApplicationLoader(Store, Registry);
         CleanStaleUploads();
     }
@@ -183,6 +190,7 @@ public sealed class PluginControlService : IPluginControlPlane
             foreach (var declaration in application.Plugins)
             {
                 var package = installed.FirstOrDefault(p => p.Id == declaration.Id);
+                var resolved = await _store.ResolveAsync(declaration.Id, declaration.VersionRange, ct);
                 _registry.Entries.TryGetValue(declaration.Id, out var entry);
                 var fiber = entry?.Fiber;
                 var component = fiber?.Component;
@@ -196,7 +204,7 @@ public sealed class PluginControlService : IPluginControlPlane
                     state,
                     fiber?.Failure?.Message,
                     declaration.VersionRange,
-                    package?.Version,
+                    resolved?.Version ?? package?.Version,
                     isProtected,
                     !isProtected,
                     true,
@@ -210,7 +218,13 @@ public sealed class PluginControlService : IPluginControlPlane
                     ?? Array.Empty<string>(),
                     entry?.Manifest.Provides
                     ?? package?.Manifest.ProvidesOrEmpty
-                    ?? Array.Empty<string>()));
+                    ?? Array.Empty<string>(),
+                    DeclaredCapabilities(
+                        entry?.Manifest.CapabilitiesOrEmpty ?? package?.Manifest.CapabilitiesOrEmpty,
+                        CapabilityDirection.Require),
+                    DeclaredCapabilities(
+                        entry?.Manifest.CapabilitiesOrEmpty ?? package?.Manifest.CapabilitiesOrEmpty,
+                        CapabilityDirection.Provide)));
             }
 
             return entries;
@@ -269,15 +283,25 @@ public sealed class PluginControlService : IPluginControlPlane
                 return null;
             }
 
+            var application = await LoadApplicationAsync(ct);
+            var declaration = application.Plugins.FirstOrDefault(plugin => plugin.Id == id);
+            var resolved = declaration is null
+                ? target
+                : await _store.ResolveAsync(id, declaration.VersionRange, ct) ?? target;
+
             var dependencies = new List<PackageDependencyView>();
             var diagnostics = new List<string>();
             foreach (var dependency in target.Manifest.DependenciesOrEmpty)
             {
-                var match = installed.FirstOrDefault(package =>
-                    package.Id == dependency.Id &&
-                    VersionRange.TryParse(dependency.VersionRange, out var range) &&
-                    NuGetVersion.TryParse(package.Version, out var version) &&
-                    range.Satisfies(version));
+                // Resolve the highest satisfying version, matching Store.ResolveAsync;
+                // the first match in ListAsync order would display an older version.
+                var match = installed
+                    .Where(package => package.Id == dependency.Id &&
+                                      VersionRange.TryParse(dependency.VersionRange, out var range) &&
+                                      NuGetVersion.TryParse(package.Version, out var version) &&
+                                      range.Satisfies(version))
+                    .OrderByDescending(package => NuGetVersion.Parse(package.Version))
+                    .FirstOrDefault();
                 dependencies.Add(new PackageDependencyView(
                     dependency.Id,
                     dependency.VersionRange,
@@ -309,11 +333,17 @@ public sealed class PluginControlService : IPluginControlPlane
 
             return new PluginDependencyView(
                 target.Id,
-                target.Version,
+                resolved.Version,
                 dependencies,
                 dependents,
                 entry?.Manifest.Requires ?? Array.Empty<string>(),
                 entry?.Manifest.Provides ?? target.Manifest.ProvidesOrEmpty,
+                DeclaredCapabilities(
+                    entry?.Manifest.CapabilitiesOrEmpty ?? target.Manifest.CapabilitiesOrEmpty,
+                    CapabilityDirection.Require),
+                DeclaredCapabilities(
+                    entry?.Manifest.CapabilitiesOrEmpty ?? target.Manifest.CapabilitiesOrEmpty,
+                    CapabilityDirection.Provide),
                 diagnostics);
         }
         finally
@@ -402,6 +432,14 @@ public sealed class PluginControlService : IPluginControlPlane
                 var content = await PluginPackageReader.ReadAsync(path, _store.HostVersion, token);
                 var id = content.Manifest.Id;
                 var version = content.Manifest.Version;
+                if (!SharedAssembliesApproved(content.Manifest.SharedAssembliesOrEmpty))
+                {
+                    return Rejected(id, "host_restart_required",
+                        $"plugin '{id}' declares shared contract(s) " +
+                        $"[{string.Join(", ", content.Manifest.SharedAssembliesOrEmpty)}] " +
+                        "that the host has not sealed; restart the host to approve a new contract");
+                }
+
                 var application = await LoadApplicationAsync(token);
                 if (application.Plugins.Any(declaration => declaration.Id == id))
                 {
@@ -456,6 +494,14 @@ public sealed class PluginControlService : IPluginControlPlane
                 {
                     return Rejected(id, "invalid_request",
                         $"uploaded package '{content.Manifest.Id}' does not match '{id}'");
+                }
+
+                if (!SharedAssembliesApproved(content.Manifest.SharedAssembliesOrEmpty))
+                {
+                    return Rejected(id, "host_restart_required",
+                        $"plugin '{id}' declares shared contract(s) " +
+                        $"[{string.Join(", ", content.Manifest.SharedAssembliesOrEmpty)}] " +
+                        "that the host has not sealed; restart the host to approve a new contract");
                 }
 
                 var application = await LoadApplicationAsync(token);
@@ -913,6 +959,15 @@ public sealed class PluginControlService : IPluginControlPlane
             }
         }
 
+        // A schema belongs to the package, so runtime installs/upgrades must
+        // register it on every apply, not only during host startup. A conflicting
+        // document for the same type is rejected by RegisterSchema.
+        foreach (var package in installed.Where(package =>
+                     declaredIds.Contains(package.Id) && package.Manifest.ConfigSchema is not null))
+        {
+            _registry.RegisterSchema(package.Manifest.Type, package.Manifest.ConfigSchema!);
+        }
+
         await _loader.ApplyAsync(application, ct);
     }
 
@@ -1068,6 +1123,22 @@ public sealed class PluginControlService : IPluginControlPlane
 
     private PluginMutationResult Accepted(string id, IEnumerable<PluginChange> changes) =>
         new(true, "ok", null, id, StateOf(id), true, changes.ToArray());
+
+    /// <summary>
+    /// Shared CLR contracts are sealed once by the host and have process
+    /// lifetime. A runtime install may only reuse an approved name; otherwise
+    /// it is rejected with an explicit restart requirement instead of failing
+    /// later inside the loader with a generic conflict.
+    /// </summary>
+    private static IReadOnlyList<string> DeclaredCapabilities(
+        IReadOnlyList<string>? wire, CapabilityDirection direction) =>
+        PluginManifest.ParseCapabilities(wire)
+            .Where(declaration => declaration.Direction == direction)
+            .Select(declaration => declaration.ToWireString())
+            .ToArray();
+
+    private bool SharedAssembliesApproved(IReadOnlyList<string> names) =>
+        _sharedAssemblyApproval is null || names.Count == 0 || _sharedAssemblyApproval(names);
 
     private static PluginMutationResult Rejected(
         string id, string code, string error, bool persisted = false) =>

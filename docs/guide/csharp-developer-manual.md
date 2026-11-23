@@ -173,7 +173,7 @@ gocordis plugin pack ./Provider out.gocordis-plugin \
 - **元数据拦截**：`MetaKey<T,M>` 带 monoid 的 `Identity`/`Combine`；`DeclareMeta` + `OverrideMeta`
   右偏组合，且每 Context 派生快照，不跨 root 泄漏（C11/C37）。
   证据：`CoreSemanticsTests.MetaInterceptionIsRightBiasedAndDoesNotReload`。
-- **事件**：`EventKey<T>` + `Context.OnAsync/EmitAsync`；派发五模式在 `Gocordis.Extensions.EventDispatcher`
+- **事件**：`EventKey<T>` + `Context.OnAsync/EmitAsync` 是唯一注册与派发权威；JS 五模式扩展派发无产品消费者，不保留第二套注册字典
   （serial/bail/parallel/waterfall/BailValue），属平台能力（R4-C），不冒充论文语义。
   证据：`ExtensionTests.EventModesCoverSerialBailParallelAndWaterfall`、
   `EventDispatchGapTests.BailValueStopsAtFirstPresentResult`。

@@ -229,7 +229,8 @@ public class PlatformApplication : IAsyncDisposable
             // then read its capability. Runtime.Close ends this fiber with all
             // the others, including on a partially failed start.
             await Runtime.LoadAsync(new PluginControlPlaneComponent(
-                _options.ManifestPath, Store, Registry, Console.Ui, componentFactory));
+                _options.ManifestPath, Store, Registry, Console.Ui, componentFactory,
+                names => names.All(SharedAssemblyRegistry.IsApproved)));
             var control = Runtime.RequireCapability(ControlPlaneKeys.Service);
             Control = control;
 
@@ -381,7 +382,8 @@ public class PlatformApplication : IAsyncDisposable
         IReadOnlyList<CapabilityDeclaration> first,
         IReadOnlyList<CapabilityDeclaration> second) =>
         first.Concat(second)
-            .GroupBy(declaration => declaration.ToWireString(), StringComparer.Ordinal)
+            .GroupBy(declaration =>
+                (declaration.Id, declaration.Direction, declaration.ValueKind))
             .Select(group => group.First())
             .ToArray();
 

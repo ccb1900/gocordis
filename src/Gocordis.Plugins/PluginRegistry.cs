@@ -535,6 +535,13 @@ public sealed class PluginRegistry : IAsyncDisposable
             manifest.Provides,
             Config = manifest.Config.OrderBy(pair => pair.Key, StringComparer.Ordinal)
                 .ToDictionary(pair => pair.Key, pair => pair.Value),
+            // Both fields change how a component is staged and which capabilities
+            // it declares. Without them, a declaration-only change reuses the
+            // previous ALC/component and silently keeps the old capability set.
+            Capabilities = manifest.CapabilitiesOrEmpty
+                .OrderBy(value => value, StringComparer.Ordinal).ToArray(),
+            SharedAssemblies = (manifest.SharedAssemblies ?? [])
+                .OrderBy(value => value, StringComparer.Ordinal).ToArray(),
         });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
     }

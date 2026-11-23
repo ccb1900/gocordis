@@ -176,14 +176,9 @@ public sealed class CrossBackendCapabilityTests
         Assert.Equal("pong", observed);
     }
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task ProcessProviderServesAManagedConsumerThroughDeclaredRpc()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
         var script = Path.Combine(Path.GetTempPath(), $"gocordis-cap-{Guid.NewGuid():N}.py");
         await File.WriteAllTextAsync(script, """
             #!/usr/bin/env python3
@@ -247,14 +242,9 @@ public sealed class CrossBackendCapabilityTests
         }
     }
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task ProcessProviderServesAWasmConsumerThroughRealRpcAndImports()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
         var id = "org.example.proc/value";
         var declaration = CapabilityDeclaration.Parse(
             "provide|org.example.proc/value|endpoint|1.0.0|text/plain|");
@@ -315,14 +305,9 @@ public sealed class CrossBackendCapabilityTests
         }
     }
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task WasmProviderServesAProcessConsumerThroughRealImportsAndRpc()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
         const string id = "org.example.wasm/value";
         const string providerWat = """
             (module
@@ -443,14 +428,9 @@ public sealed class CrossBackendCapabilityTests
         Assert.Equal("execution-budget-exceeded", failure.Code);
     }
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task FailedProcessStartDoesNotPublishACapabilityEndpoint()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
         var catalog = new CapabilityCatalog();
         var declaration = CapabilityDeclaration.Parse(
             "provide|org.example.dead/value|endpoint|1.0.0|text/plain|");
@@ -566,14 +546,9 @@ public sealed class CrossBackendCapabilityTests
             CapabilityEnvelope.Text("x"), CancellationToken.None)).AsText());
     }
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task TwoConsumersOfDifferentBackendsShareOneProviderEndpointSafely()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
         var catalog = new CapabilityCatalog();
         var declaration = CapabilityDeclaration.Parse("provide|a/b|endpoint|1.0.0|text/plain|");
         catalog.Declare([declaration]);

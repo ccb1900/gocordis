@@ -22,14 +22,9 @@ public sealed class BackendDispatchProductTests
 {
     private const string HostVersion = "1.0.0";
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task ProcessPackageIsActivatedByThePlatformFactory()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return; // POSIX shell fixture; Windows uses a different process backend fixture.
-        }
-
         using var temp = new TempDir();
         const string id = "product-proc";
         var store = await InstallAsync(temp, id, "plugin.sh", ProcessPluginScript,
@@ -159,14 +154,9 @@ public sealed class BackendDispatchProductTests
         Assert.Empty(app.Runtime.Snapshot().Fibers);
     }
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task DeclaredProcessCapabilityPackageIsLoadedAndInvokable()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
-
         using var temp = new TempDir();
         const string id = "product-proc-cap";
         var store = await InstallAsync(temp, id, "plugin.sh", ProcessPluginScript,

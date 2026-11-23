@@ -58,7 +58,7 @@ public sealed class Runtime : IAsyncDisposable
         Realm Realm, string Name, Type ValueType, NuGetVersion Version,
         Fiber Provider, long ActivationId, object Value);
 
-    private sealed record Handler(Fiber Owner, long ActivationId, Func<object?, ValueTask> Invoke);
+    private sealed record Handler(Fiber Owner, long ActivationId, Realm Realm, Func<object?, ValueTask> Invoke);
 
     // ---- state (decision domain; short lock shared with user-side writes) ---
 
@@ -613,6 +613,21 @@ public sealed class Runtime : IAsyncDisposable
         {
             _cleanupFailures.Add(new CleanupFailureRecord(fiber.Id, fiber.Component.Name, failure.Message));
         }
+    }
+
+    /// <summary>
+    /// A compensation inverse that failed while the install error propagates.
+    /// The fiber surface keeps the install error (never masked), but the
+    /// cleanup-failure record makes the un-compensated effect observable.
+    /// </summary>
+    internal void RecordCompensationFailure(Activation activation, Exception inverseFailure)
+    {
+        Mutate(() =>
+        {
+            activation.Fiber.CleanupFailures = [inverseFailure];
+            _cleanupFailures.Add(new CleanupFailureRecord(
+                activation.Fiber.Id, activation.Fiber.Component.Name, inverseFailure.Message));
+        });
     }
 
     private void HandleStepRequest(StepRequestCommand command)
@@ -1425,7 +1440,8 @@ public sealed class Runtime : IAsyncDisposable
                 _handlers[key] = list;
             }
 
-            list.Add(new Handler(owner.Fiber, owner.Id, p => handler((T)p!)));
+            list.Add(new Handler(
+                owner.Fiber, owner.Id, EffectiveRealm(owner.Fiber, key), p => handler((T)p!)));
             owner.Effects.Add(new EffectSlot(() =>
             {
                 list.RemoveAll(h => h.ActivationId == owner.Id);
@@ -1437,16 +1453,29 @@ public sealed class Runtime : IAsyncDisposable
 
     internal async ValueTask EmitAsync<T>(EventKey<T> key, T payload, Activation emitter)
     {
+        // Go parity: dispatch is scoped to the registration realm, skipped when
+        // the owner is no longer Active (live check, JS events.ts parity), and
+        // stops cooperative when the EMITTER's activation token is cancelled.
+        var emitterRealm = EffectiveRealm(emitter.Fiber, key);
         Handler[] handlers = [];
         Mutate(() => handlers = _handlers.TryGetValue(key, out var list) ? list.ToArray() : []);
         Exception? failure = null;
         foreach (var handler in handlers)
         {
+            // Loading counts as "live" because self-registration during one's
+            // own activation must still dispatch; a withdrawing owner does not.
+            if (handler.Realm != emitterRealm ||
+                handler.Owner.State is FiberState.Unloading or FiberState.Failed or FiberState.Gone)
+            {
+                continue;
+            }
+
+            emitter.Cancellation.Token.ThrowIfCancellationRequested();
             try
             {
                 await handler.Invoke(payload);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 failure ??= ex;
             }
@@ -1527,9 +1556,15 @@ public sealed class Runtime : IAsyncDisposable
                 Fiber? provider = null;
                 if (key is IVersionedKey required)
                 {
+                    // Versioned resolution is realm-scoped exactly like the
+                    // runtime bind (TargetVersioned); the cycle graph must use
+                    // the same rule or cross-realm providers become phantom edges.
+                    var realm = EffectiveRealm(fiber, required);
                     provider = versioned
-                        .Where(c => c.Key.Name == required.Name && c.Key.ValueType == required.ValueType &&
-                                    required.Accepts(c.Key.Version))
+                        .Where(c => c.Key.Name == required.Name &&
+                                    c.Key.ValueType == required.ValueType &&
+                                    required.Accepts(c.Key.Version) &&
+                                    EffectiveRealm(c.Fiber, c.Key) == realm)
                         .OrderByDescending(c => c.Key.Version)
                         .Select(c => c.Fiber).FirstOrDefault();
                 }

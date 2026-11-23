@@ -252,14 +252,9 @@ public sealed class BackendLifecycleTests
 
     // ---- process-specific wiring --------------------------------------------
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task ProcessHandshakeTimeoutNormalizesAndReapsTheChild()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return; // POSIX shell fixture
-        }
-
         var directory = SilentPluginDirectory();
         try
         {
@@ -276,14 +271,9 @@ public sealed class BackendLifecycleTests
         }
     }
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task ProcessCallTimeoutNormalizesWithoutKillingTheChild()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return; // POSIX shell fixture
-        }
-
         var directory = SilentPluginDirectory();
         try
         {

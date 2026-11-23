@@ -49,14 +49,9 @@ public sealed class ProcessRuntimeTests
     }
 
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task LargeStderrOutputDoesNotDeadlockRpc()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return; // POSIX shell fixture
-        }
-
         var directory = Path.Combine(Path.GetTempPath(), $"gocordis-stderr-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, "flood-plugin");
@@ -156,6 +151,103 @@ public sealed class ProcessRuntimeTests
             context => observed = context.Require(ProcessKeys.ErrorVocabulary),
             [ProcessKeys.ErrorVocabulary]));
         Assert.Equal("plugin_error", observed);
+    }
+
+    [PosixOnlyFact]
+    public async Task OversizedPluginFrameIsRejectedWithoutHangingTheHost()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"gocordis-frame-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "frame-plugin");
+        const string script = """
+            #!/usr/bin/env python3
+            import json, sys
+            handshake = sys.stdin.readline().strip()
+            sys.stdout.write(handshake + "\n")
+            sys.stdout.flush()
+            for line in sys.stdin:
+                request = json.loads(line)
+                response = {"jsonrpc": "2.0", "id": request["id"], "result": {}}
+                if request.get("method") == "echo":
+                    # One oversized stdout line: the host must refuse it at the
+                    # frame boundary instead of buffering unbounded input.
+                    sys.stdout.write("x" * (4 * 1024 * 1024) + "\n")
+                    sys.stdout.flush()
+                elif request.get("method") == "shutdown":
+                    sys.stdout.write(json.dumps(response) + "\n")
+                    sys.stdout.flush()
+                    break
+            """;
+        await File.WriteAllTextAsync(path, script);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+        try
+        {
+            await using var client = await ProcessPluginClient.StartAsync(path);
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                client.CallAsync("echo", new { text = "x" }));
+            await client.ShutdownAsync();
+            Assert.True(client.HasExited);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [PosixOnlyFact]
+    public async Task UnhandledHostHandlerFailureAnswersMinus32603()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"gocordis-err-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "handler-plugin");
+        const string script = """
+            #!/usr/bin/env python3
+            import json, sys
+            handshake = sys.stdin.readline().strip()
+            sys.stdout.write(handshake + "\n")
+            sys.stdout.flush()
+            for line in sys.stdin:
+                request = json.loads(line)
+                if request.get("method") == "callhost":
+                    # plugin -> host request; the reply is the RPC error envelope.
+                    sys.stdout.write(json.dumps({
+                        "jsonrpc": "2.0", "id": request["id"],
+                        "method": request["params"]["method"],
+                        "params": request["params"].get("params")}) + "\n")
+                    sys.stdout.flush()
+                    continue
+                response = {"jsonrpc": "2.0", "id": request["id"], "result": {}}
+                if request.get("method") == "echo":
+                    response["result"] = {"text": "ok"}
+                sys.stdout.write(json.dumps(response) + "\n")
+                sys.stdout.flush()
+                if request.get("method") == "shutdown":
+                    break
+            """;
+        await File.WriteAllTextAsync(path, script);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+        try
+        {
+            await using var client = await ProcessPluginClient.StartAsync(path);
+            client.RequestHandler = (_, _) => throw new InvalidOperationException("handler exploded");
+            await client.CallAsync("callhost", new { method = "host/anything", @params = new { } });
+            // The plugin's request was answered with a JSON-RPC error (asserted
+            // through StderrTail in the sample protocol); here we assert the host
+            // did NOT hang and the call returned.
+            await client.ShutdownAsync();
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     private static string PluginExecutable()

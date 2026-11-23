@@ -68,6 +68,15 @@
 - **P0-06 WASM 中断/限额**：Engine 开启 epoch interruption，每次 guest 导出调用设置 epoch deadline（默认 10s），Store 设内存/表上限；跑飞 guest 被中断并映射为稳定错误码。回归：`RunawayGuestIsInterruptedByTheExecutionBudget`。
 - **附带修复（Core 语义缺陷）**：`PublishSnapshot`/`HandleUnwindCompleted`/withdrawal/cycle 检查曾重复调用 `component.Inject()/Provide()`；声明性组件（从 Catalog 派生声明）在计划替换后会在快照/撤销路径抛异常。现在声明与 Key 在装载时由决策域捕获一次，生命周期与快照不再回询组件。这是动态声明事务能够成立的前提。
 
+## P1 收敛批次（语义与协议边界）
+
+- **P1-01 Effect 补偿可观察**：install 失败后的补偿逆，成功→`Undone`，失败→`Failed` 槽位（后续 unwind 不再重跑）+ `CleanupFailureRecord`；fiber 表面仍保留原始安装异常，不掩盖。回归：`FailedCompensationInverseIsObservableAndNotReRun`、`FailedCompensationInverseThatSucceedsIsMarkedUndone`。
+- **P1-02 Override 严格逆**：`OverrideMeta` 的逆恢复**前一个 override**（LIFO 语义），不再整块置空。回归：`OverrideMetaUnwindsInStrictLifoOrderToTheDeclaredView`。
+- **P1-03 Versioned 环检测 Realm 一致**：`FindCycle` 的 versioned 候选按 consumer 的 EffectiveRealm 过滤，与 `TargetVersioned` 同一规则；正反测试：同 realm 环仍拒绝、跨 realm 不产生幻影环（consumer 无祖先回退，保持 Pending）。
+- **P1-04 Event 边界**：`EmitAsync` 补齐 registration-realm scoping、owner 撤退实时检查（Loading 视为在途有效）、emitter token 协作检查；ADR-0004 增加 2026-11-23 C# 裁决（Core 保留最小串行 emit，多模式不复活，删除第二注册权威）。
+- **P1-05 Process RPC 防护**：所有插件→主机请求必有 Result/Error（未处理异常→`-32603`，消息截断）；帧大小上限（1 MiB char cap），超限立刻杀死子进程而不是留下阻塞写者；`HasExited` 读取硬化。回归：`OversizedPluginFrameIsRejectedWithoutHangingTheHost`、`UnhandledHostHandlerFailureAnswersMinus32603`。
+- **P1-06 平台证据诚实化**：新增 `PosixOnlyFact`/`WindowsOnlyFact`，被排除平台的测试显式 Skipped（可在 CI 计数中区分），不再用裸 `return` 冒充通过。Windows 真实 Process fixture 仍未实现——这是登记在案的覆盖缺口。
+
 ## 冻结规则
 
 1. 本基线只记录**已核实**的证据等级，不把 E0/E1 升级为 E2。

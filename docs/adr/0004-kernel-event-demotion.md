@@ -74,6 +74,24 @@ Kernel 公开面含非论文语义,违反 ROADMAP P6 的"kernel 公开 API 逐�
   测试——全部改为非导出(detStep/runtimeMode/...),kernel 公开面进一步收缩,
   定理驱动器(定理基础设施)功能不变。
 
+### 2026-11-23 C# 修订（Emit 留在 Core，多模式不复活）
+
+C# 侧的裁决与 Go 略有不同，理由如下：
+1. Core 保留**最小串行 Emit**（`Context.EmitAsync`）：它是"可逆注册 + 派生通知"的
+   论文最小语义（§2.1/§4.4 notify），不属于派发"模式"；serial 之外的
+   parallel/bail/bailValue/waterfall 仍不进 Core。
+2. 曾经的 `Gocordis.Extensions.EventDispatcher`（自带四张注册表）被删除：它是一个
+   仅由测试续命的第二注册权威，违反本 ADR；删除它的同时**没有**删除 Go 已有的
+   多模式能力——这些模式在 C# 产品面上无消费者，恢复它们必须走"消费 Core
+   注册读模型"的路径（本 ADR 第 3 条），不得自带第二份 handler 字典。
+3. 2026-11-23 起 `EmitAsync` 补齐三条派发边界语义：**registration-realm scoping**
+   （handler 只对本 realm 的 emitter 可见，Go `dispatch.go` 的 realm 可见性）、
+   **owner 有效性实时检查**（owner 进入 Unloading/Failed/Gone 后跳过，对齐
+   JS events.ts 的 live 检查；Loading 视为在途有效，允许自身激活期自派发）、
+   **emitter 取消协作**（每个 handler 执行前检查 emitter 的 Activation token）。
+4. 可执行证据：`CoreSemanticsTests.CoreEmitDispatchesInRegistrationOrderAndThrowsTheFirstHandlerFailure`、
+   `EmitSkipsHandlersWhoseOwnerIsWithdrawing`、`EmitIsScopedToTheRegistrationRealm`。
+
 ### 2026-11-21 修订（JS 5e2e6c1 对照，不改变派发边界）
 
 原 P1 套件的快照断言是「派发中注销的处理器仍在当前批次执行」。按 JS Core

@@ -170,10 +170,13 @@ public sealed class Context
         _activation.Runtime.Mutate(() =>
         {
             var state = GetOrCreateMeta(key);
+            var previous = state.Override;
             state.Override = value;
+            // Strict inverse: LIFO undo restores the PREVIOUS override, not a
+            // blanket null. Two overrides unwind back to the declared view.
             _activation.Effects.Add(new EffectSlot(() =>
             {
-                state.Override = null;
+                state.Override = previous;
                 return ValueTask.CompletedTask;
             }) { State = EffectState.Committed });
         });
@@ -194,14 +197,18 @@ public sealed class Context
         }
         catch
         {
-            _activation.Runtime.Mutate(() => slot.State = EffectState.Undone);
             try
             {
                 await inverse();
+                _activation.Runtime.Mutate(() => slot.State = EffectState.Undone);
             }
-            catch
+            catch (Exception inverseFailure)
             {
-                // never mask install failure
+                // Never mask the install failure, but a failed compensation must
+                // be OBSERVABLE: the slot is Failed (skipped by the later unwind,
+                // never re-run) and the failure lands in the cleanup record.
+                _activation.Runtime.Mutate(() => slot.State = EffectState.Failed);
+                _activation.Runtime.RecordCompensationFailure(_activation, inverseFailure);
             }
 
             throw;

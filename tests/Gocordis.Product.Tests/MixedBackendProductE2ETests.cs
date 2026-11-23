@@ -19,14 +19,9 @@ public sealed class MixedBackendProductE2ETests
     private const string Ping = "org.example.catalog/ping";
     private const string Echo = "org.example.mixed/echo";
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task MixedBackendsComposeRecoverAndReleaseThroughOneHost()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
-
         using var temp = new TempDir();
         var store = temp.At("store");
         Directory.CreateDirectory(store);
@@ -130,14 +125,9 @@ public sealed class MixedBackendProductE2ETests
         Assert.False(IsAlive(int.Parse(await File.ReadAllTextAsync(pidFile))));
     }
 
-    [Fact]
+    [PosixOnlyFact]
     public async Task DynamicInstallPlansDeclarationsAndUninstallRollsThemBack()
     {
-        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
-        {
-            return;
-        }
-
         using var temp = new TempDir();
         var store = temp.At("store");
         Directory.CreateDirectory(store);

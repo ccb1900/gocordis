@@ -245,6 +245,177 @@ public sealed class CoreSemanticsTests
     }
 
     [Fact]
+    public async Task FailedCompensationInverseIsObservableAndNotReRun()
+    {
+        var inverseRuns = 0;
+        await using var runtime = new Runtime();
+        var component = new DelegateComponent("boom", async context =>
+        {
+            await context.EffectAsync(
+                () => throw new InvalidOperationException("install failed"),
+                () =>
+                {
+                    inverseRuns++;
+                    throw new InvalidOperationException("inverse blew up");
+                });
+            return null;
+        });
+
+        var fiber = await runtime.LoadAsync(component);
+
+        // Install failure is the fiber surface; the compensation failure is a
+        // retained cleanup record, never silently swallowed.
+        Assert.Equal(FiberState.Failed, fiber.State);
+        Assert.IsType<InvalidOperationException>(fiber.Failure);
+        Assert.Equal("install failed", fiber.Failure?.Message);
+        Assert.Equal(1, inverseRuns);
+        var snapshot = runtime.Snapshot();
+        Assert.Contains(snapshot.CleanupFailures, record =>
+            record.FiberId == fiber.Id && record.Message == "inverse blew up");
+        Assert.Contains(fiber.CleanupFailures, error => error.Message == "inverse blew up");
+    }
+
+    [Fact]
+    public async Task FailedCompensationInverseThatSucceedsIsMarkedUndone()
+    {
+        var inverseRuns = 0;
+        await using var runtime = new Runtime();
+        var component = new DelegateComponent("boom", async context =>
+        {
+            await context.EffectAsync(
+                () => throw new InvalidOperationException("install failed"),
+                () =>
+                {
+                    inverseRuns++;
+                    return ValueTask.CompletedTask;
+                });
+            return null;
+        });
+
+        var fiber = await runtime.LoadAsync(component);
+
+        Assert.Equal(FiberState.Failed, fiber.State);
+        Assert.Equal(1, inverseRuns);
+        Assert.Empty(fiber.CleanupFailures);
+        Assert.Empty(runtime.Snapshot().CleanupFailures);
+    }
+
+    [Fact]
+    public async Task EmitSkipsHandlersWhoseOwnerIsWithdrawing()
+    {
+        var key = new EventKey<string>("withdraw");
+        var received = new List<string>();
+        await using var runtime = new Runtime();
+        var channel = new DelegateComponent("channel", async context =>
+        {
+            context.Provide(key, "channel");
+            return null;
+        }, provide: [key]);
+        await runtime.LoadAsync(channel);
+
+        var listener = new DelegateComponent("listener", async context =>
+        {
+            await context.OnAsync(key, value =>
+            {
+                received.Add(value);
+                return ValueTask.CompletedTask;
+            });
+            return null;
+        }, inject: [key]);
+        var listenerFiber = await runtime.LoadAsync(listener);
+
+        var emitter = new DelegateComponent("emitter", async context =>
+        {
+            await runtime.DisposeAsync(listenerFiber);
+            await context.EmitAsync(key, "after-withdrawal");
+            return null;
+        }, inject: [key]);
+        await runtime.LoadAsync(emitter);
+
+        Assert.Empty(received);
+    }
+
+    [Fact]
+    public async Task EmitIsScopedToTheRegistrationRealm()
+    {
+        var key = new EventKey<string>("scoped");
+        var received = new List<string>();
+        // Realm identity is reference identity (one namespace = one object).
+        var realmX = new Realm("realm-x");
+        await using var runtime = new Runtime();
+        var channel = new DelegateComponent("channel", async context =>
+        {
+            context.Provide(key, "channel");
+            return null;
+        }, provide: [key]);
+        await runtime.LoadAsync(channel);
+
+        var listener = new DelegateComponent("listener", async context =>
+        {
+            await context.OnAsync(key, value =>
+            {
+                received.Add("realm-listener");
+                return ValueTask.CompletedTask;
+            });
+            return null;
+        }, inject: [key]);
+        // Per ADR-0001 there is no ancestor fallback: realm-x needs its own
+        // channel for the listener to bind and register.
+        var realmChannel = new DelegateComponent("realm-channel", async context =>
+        {
+            context.Provide(key, "channel");
+            return null;
+        }, provide: [key]);
+        await runtime.LoadAsync(realmChannel, realm: realmX);
+        await runtime.LoadAsync(listener, realm: realmX);
+
+        // A Default-realm emitter cannot see handlers registered in realm-x.
+        var outside = new DelegateComponent("outside", async context =>
+        {
+            await context.EmitAsync(key, "x");
+            return null;
+        }, inject: [key]);
+        await runtime.LoadAsync(outside);
+        Assert.Empty(received);
+
+        // A realm-x emitter sees them.
+        var inside = new DelegateComponent("inside", async context =>
+        {
+            await context.EmitAsync(key, "x");
+            return null;
+        }, inject: [key]);
+        await runtime.LoadAsync(inside, realm: realmX);
+        Assert.Equal(["realm-listener"], received);
+    }
+
+    [Fact]
+    public async Task OverrideMetaUnwindsInStrictLifoOrderToTheDeclaredView()
+    {
+        var key = new MetaKey<string, string>("route", "base", (declared, overridden) => overridden);
+        var observed = new List<string>();
+        await using var runtime = new Runtime();
+        var component = new DelegateComponent("overrider", async context =>
+        {
+            context.DeclareMeta(key, "declared");
+            observed.Add(context.Meta(key));
+            context.OverrideMeta(key, "A");
+            observed.Add(context.Meta(key));
+            context.OverrideMeta(key, "B");
+            observed.Add(context.Meta(key));
+            return null;
+        },
+        inject: [key]);
+
+        var fiber = await runtime.LoadAsync(component);
+        Assert.Equal(FiberState.Active, fiber.State);
+        Assert.Equal(new[] { "base", "A", "B" }, observed);
+
+        await runtime.DisposeAsync(fiber);
+        var snapshot = runtime.Snapshot();
+        Assert.DoesNotContain(snapshot.Fibers, candidate => candidate.Name == "overrider");
+    }
+
+    [Fact]
     public async Task ParentFailureCascadesToOwnedChildren()
     {
         await using var runtime = new Runtime();

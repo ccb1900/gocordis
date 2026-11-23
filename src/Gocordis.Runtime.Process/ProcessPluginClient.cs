@@ -16,6 +16,11 @@ namespace Gocordis.Runtime.Process;
 public sealed class ProcessPluginClient : IAsyncDisposable
 {
     private const string Handshake = "GORIDIS-PROC-PLUGIN 1";
+
+    /// <summary>Protocol guard: one JSON-RPC frame (request or response) may
+    /// not exceed this size, so a plugin cannot exhaust host memory with a
+    /// single stdout line.</summary>
+    internal const int MaxFrameBytes = 1024 * 1024;
     private static readonly TimeSpan DefaultHandshakeTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DefaultCallTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(2);
@@ -50,7 +55,20 @@ public sealed class ProcessPluginClient : IAsyncDisposable
 
     public int ProcessId => _process.Id;
 
-    public bool HasExited => _process.HasExited;
+    public bool HasExited => SafeHasExited(_process);
+
+    private static bool SafeHasExited(SystemProcess process)
+    {
+        try
+        {
+            return process.HasExited;
+        }
+        catch (InvalidOperationException)
+        {
+            // Covers "no process is associated" and a disposed handle: gone.
+            return true;
+        }
+    }
 
     public static async Task<ProcessPluginClient> StartAsync(
         string executable,
@@ -98,7 +116,7 @@ public sealed class ProcessPluginClient : IAsyncDisposable
         try
         {
             await writer.WriteLineAsync(Handshake);
-            var answer = await reader.ReadLineAsync(timeout.Token);
+            var answer = await ReadLineBoundedAsync(reader, timeout.Token);
             timeout.Token.ThrowIfCancellationRequested();
             if (answer is null)
             {
@@ -136,7 +154,7 @@ public sealed class ProcessPluginClient : IAsyncDisposable
         CancellationToken cancellationToken = default,
         TimeSpan? timeout = null)
     {
-        ObjectDisposedException.ThrowIf(_process.HasExited, this);
+        ObjectDisposedException.ThrowIf(SafeHasExited(_process), this);
         var limit = timeout ?? DefaultCallTimeout;
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         bounded.CancelAfter(limit);
@@ -154,6 +172,13 @@ public sealed class ProcessPluginClient : IAsyncDisposable
             // A call timeout is not a protocol error and does not kill the
             // child; the process stays available for the next call.
             throw ProcessErrorPolicy.CallTimeout(method, limit, ex);
+        }
+        catch (InvalidDataException)
+        {
+            // A protocol frame violation ends the session deterministically:
+            // kill the child instead of leaving a blocked writer behind.
+            await TerminateAsync(_process);
+            throw;
         }
         finally
         {
@@ -181,10 +206,16 @@ public sealed class ProcessPluginClient : IAsyncDisposable
             request["params"] = JsonSerializer.SerializeToNode(parameters);
         }
 
-        await WriteAsync(request.ToJsonString(), cancellationToken);
+        var requestText = request.ToJsonString();
+        if (Encoding.UTF8.GetByteCount(requestText) > MaxFrameBytes)
+        {
+            throw new InvalidDataException($"request frame exceeds {MaxFrameBytes} bytes");
+        }
+
+        await WriteAsync(requestText, cancellationToken);
         while (true)
         {
-            var line = await _reader.ReadLineAsync(cancellationToken);
+            var line = await ReadLineBoundedAsync(_reader, cancellationToken);
 
             // ReadLineAsync can surface cancellation as an empty/short read on
             // some platforms. Never parse that as JSON: turn it back into a
@@ -252,6 +283,22 @@ public sealed class ProcessPluginClient : IAsyncDisposable
                         },
                     };
                 }
+                catch (Exception ex)
+                {
+                    // Every plugin→host request gets an answer: an unhandled
+                    // handler failure becomes -32603 instead of leaving the
+                    // child waiting for a reply the host never sends.
+                    reply = new JsonObject
+                    {
+                        ["jsonrpc"] = "2.0",
+                        ["id"] = requestId,
+                        ["error"] = new JsonObject
+                        {
+                            ["code"] = -32603,
+                            ["message"] = Truncate(ex.Message),
+                        },
+                    };
+                }
 
                 await WriteAsync(reply.ToJsonString(), cancellationToken);
                 continue;
@@ -273,7 +320,7 @@ public sealed class ProcessPluginClient : IAsyncDisposable
 
     public async Task ShutdownAsync()
     {
-        if (_process.HasExited)
+        if (SafeHasExited(_process))
         {
             return;
         }
@@ -310,6 +357,50 @@ public sealed class ProcessPluginClient : IAsyncDisposable
         {
             await TerminateAsync(_process);
         }
+    }
+
+    internal static string Truncate(string message, int maxLength = 2000) =>
+        message.Length <= maxLength ? message : message[..maxLength];
+
+    /// <summary>
+    /// Reads one UTF-8 line with a hard byte ceiling. StreamReader has no line
+    /// length limit, so a hostile plugin could otherwise stream one unbounded
+    /// line and exhaust host memory.
+    /// </summary>
+    private static async Task<string?> ReadLineBoundedAsync(
+        StreamReader reader, CancellationToken cancellationToken)
+    {
+        var builder = new StringBuilder();
+        var buffer = new char[1];
+        while (true)
+        {
+            var read = await reader.ReadAsync(buffer, cancellationToken);
+            if (read == 0)
+            {
+                break;
+            }
+
+            var character = buffer[0];
+            if (character == '\n')
+            {
+                return builder.ToString();
+            }
+
+            if (character != '\r')
+            {
+                builder.Append(character);
+                // Character count is the cheap upper-bound proxy: UTF-8 JSON-RPC
+                // frames are overwhelmingly ASCII, and a multibyte payload is
+                // capped 4x stricter (bytes >= chars).
+                if (builder.Length > MaxFrameBytes)
+                {
+                    throw new InvalidDataException(
+                        $"plugin frame exceeds {MaxFrameBytes} characters");
+                }
+            }
+        }
+
+        return builder.Length == 0 ? null : builder.ToString();
     }
 
     private async Task WriteAsync(string line, CancellationToken cancellationToken)

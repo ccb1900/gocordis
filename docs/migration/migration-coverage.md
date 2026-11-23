@@ -70,8 +70,10 @@ dotnet test Gocordis.sln --nologo
 批次 B/C 历史最终：396 = Core 26 / Conformance 113 / Extensions 52 / Runtime 113 / Packaging 7（连续 39 次全绿）
 R8 历史：412 = Core 27 / Conformance 145 / Runtime 119 / Extensions 59 /
 Packaging 40 / UI 3 / Client 2 / Product 17（连续 3 次本地全绿）
-R9 当前最终：418 = Core 27 / Conformance 145 / Runtime 123 / Extensions 59 /
-Packaging 41 / UI 3 / Client 2 / Product 18（连续 3 次本地全绿；Go 基线漂移见 review-round-8.md）
+R9 历史：418 = Core 27 / Conformance 145 / Runtime 123 / Extensions 59 /
+Packaging 41 / UI 3 / Client 2 / Product 18（连续 3 次本地全绿）
+R10 当前最终：442 = Core 33 / Conformance 148 / Runtime 126 / Extensions 60 /
+Packaging 46 / UI 3 / Client 2 / Product 24（连续 3 次本地全绿；Go 基线裁决见 review-round-10.md）
 ```
 
 上述 119 / 123 / 396 均为阶段历史记录，不得与 R8 当前计数混用；阶段状态仍以各节证据为准。

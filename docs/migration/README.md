@@ -40,6 +40,7 @@
 | [`product-execution-chain.md`](product-execution-chain.md) | 产品主链路 | 包 → Managed 后端 → 真实 Component → Core Fiber 的执行闭环 | 与 `ManagedPluginProductE2ETests` 对齐 |
 | [`review-round-9.md`](review-round-9.md) | 产品闭环 | Round 9 真实插件执行、CLI 脚手架、读取安全与共享依赖计划 | 红测 + 本地验证 |
 | [`pc-gate-disposition.md`](pc-gate-disposition.md) | Go 收敛 | PC01–PC30 逐项去向，消除“24 项未移植”无状态描述 | 与 C# 场景测试对齐 |
+| [`review-round-10.md`](review-round-10.md) | 四维冻结 | 论文 C34/迭代器/失败语义、JS 增量、Koishi E2E、Go 基线裁决 | 红测 + 本地验证 |
 | [`../guide/csharp-developer-manual.md`](../guide/csharp-developer-manual.md) | 批次 C | C# 开发者手册：十二铁律 → C# API 与反模式 | 与 `AGENTS.md` 十二铁律逐条锚定 |
 | [`migration-coverage.md`](migration-coverage.md) | 全周期 | 每个 Go 模块迁移到哪个 C# 项目；用什么机制替代；什么不迁移 | 清单逐项推进；状态只能由验收证据推进 |
 | [`execution-log.md`](execution-log.md) | 全周期 | 每一步做了什么、为什么、证据是什么 | 持续追加，不回改历史条目 |
@@ -75,8 +76,8 @@
 - **批次 C（论文矩阵 / 定理矩阵 / JS 差异统一 / 最终验收）已完成**：C01–C40 矩阵
   38 已覆盖 / 0 待补 / 2 接受差异；Thm64/68/70/73/80 每定理 3 场景；
   Koishi 真实消息链、provider 启停与 HTTP E2E 已覆盖。历史基线 **396/396**，连续 39 次全绿；
-  控制面插件化、Round 7/8 与 R9 产品主链路后当前 **418/418**，见
+  控制面插件化、R7/R9 产品主链路与 R10 四维修正后当前 **442/442**，见
   [`product-execution-chain.md`](product-execution-chain.md) 与
-  [`review-round-9.md`](review-round-9.md)。
+  [`review-round-10.md`](review-round-10.md)。
   Go 基线当前存在漂移，尚未通过验证，见 `review-round-8.md`。
 - 后续阶段状态以 [`migration-coverage.md`](migration-coverage.md) 的逐项状态为准，不在本文件重复维护。

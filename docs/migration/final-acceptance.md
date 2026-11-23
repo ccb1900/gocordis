@@ -3,7 +3,7 @@
 Branch: `migration/dotnet-complete`
 Go baseline target: `ed2ef724a24331ecc3fa21974539315fd90212bf`
 Go baseline target: `ed2ef724a24331ecc3fa21974539315fd90212bf` (pinned). Later `main` commits (`44c1f271...`) are upstream evolution; `verify-baseline.sh` reports them as a NOTE while verifying the pinned overlay.
-C# calibrated target: R9 product execution commit `migration/dotnet-complete` `61f15ae1`（历史基线 `488e959d` 已 superseded）
+C# calibrated target: R10 four-dimensional closure commit `migration/dotnet-complete` `ab9a3300`（历史基线 `488e959d` 已 superseded）
 
 本文件是完整迁移的事实验收报告。所有状态以源码与测试为准。本轮未核验 CI；
 Go 基线漂移未被静默接受，按 `review-round-8.md` 登记为阻塞项。
@@ -34,8 +34,8 @@ bash docs/migration/verify-baseline.sh  # Go baseline
 本地 .NET 验证结果：
 
 - Build：0 warning / 0 error
-- Test：418/418，R9 产品主链路后连续 3 次零失败、零挂起
-- 构成：Core 27 / Conformance 145 / Runtime 123 / Extensions 59 / Packaging 41 / UI 3 / Client 2 / Product 18
+- Test：442/442，R10 四维修正后连续 3 次零失败、零挂起
+- 构成：Core 33 / Conformance 148 / Runtime 126 / Extensions 60 / Packaging 46 / UI 3 / Client 2 / Product 24
 
 CI 状态不在本轮工作流中核验。最终验收以本地构建/测试为准；历史 `6ff30f1c` 曾记录 Go baseline Race
 flake，CI workflow 对该已知 flake 采用最多 3 次有界重试，真实失败不会被掩盖。当前 HEAD 的 CI 结果需由外部流程确认，不在本文件中声称。

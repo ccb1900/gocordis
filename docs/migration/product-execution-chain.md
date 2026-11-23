@@ -83,13 +83,19 @@ plugin create (真实 Component 源码)
   插件配置按字段名脱敏；store DTO 不再下发完整安装路径。
 - MarketCatalog 使用 `id + version` 组合 rowKey。
 
-## 5. 仍未关闭
+## 5. R10 后续关闭与剩余边界
 
-- CLI `app run` 仍是 declaration-only 占位路径；真实执行以 Platform 宿主为准。
-- WASM / Process 后端尚未接入 Platform 的 `Backend` 分发；现有后端代码与测试保留。
-- 插件前端包 `ui.js` 到 Console client module 的安装链路尚未接通。
+已由 `review-round-10.md` 关闭：
+
+- CLI `app run` 统一委托 `PlatformRunner`，不再自建第二套宿主。
+- Process / WASM 后端接入 `PlatformApplication.CreateComponent` 统一分发。
+- 插件包 UI 资源从安装目录自动注册，禁用/升级/卸载随 Fiber effect 撤销。
+- Go 基线裁决为冻结 `ed2ef724...`，后续 main 提交记为上游演进 NOTE。
+
+仍未关闭的产品边界：
+
 - 按指定版本卸载时保留仍满足声明的其他版本、Dependencies 查询按版本解析等
-  多版本语义尚未在本批统一。
+  多版本语义尚未统一。
 - 签名仍是 opt-in provenance 检查，不是安装信任策略。
 - WinForms / Avalonia 仍是 RenderPlan profile，不是原生 UI Host。
-- Go 基线漂移（`ed2ef724` → `44c1f271`）仍未裁决；CI 按用户约束未核验。
+- CI 按用户约束未核验；不等同于 CI 绿灯。

@@ -61,7 +61,7 @@ Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52)
 
 | 原冲突 | 修正后 |
 | --- | --- |
-| feature-matrix 仍以 `488e959d` 为 C# 基线 | 改为历史基线 + 当前 R9 产品主链路校准目标 `61f15ae1` |
+| feature-matrix 仍以 `488e959d` 为 C# 基线 | 改为历史基线 + 当前 R10 四维修正校准目标 `ab9a3300` |
 | feature-matrix 曾把 plugin CLI 标 Missing/Adapted | 改为 Equivalent，指向 PluginToolingTests |
 | 状态集合含 Partial | 改为 Equivalent / Adapted / Divergent / Missing |
 | extension-parity 说 create-cordis/client SDK Missing | 改为已完成，指向 CLI create 与 Gocordis.Client |
@@ -78,7 +78,7 @@ Equivalent 44 / Adapted 3 / Divergent 5 / Missing 0   (total 52)
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 418/418（R9 产品主链路后）
+dotnet test  Gocordis.sln → 442/442（R10 四维修正后）
 verify-baseline.sh       → FAIL（main 漂移到 44c1f271，见 review-round-8.md）
 ```
 

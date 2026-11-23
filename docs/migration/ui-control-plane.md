@@ -86,7 +86,7 @@ SetEnabled / SetConfig / ApplyAll。
 前端本地验证：
 
 ```text
-npm test  → 86 passed
+npm test  → 88 passed
 npm run build → success
 ```
 
@@ -94,7 +94,7 @@ npm run build → success
 
 ```text
 dotnet build Gocordis.sln → 0 warning / 0 error
-dotnet test  Gocordis.sln → 418/418
+dotnet test  Gocordis.sln → 442/442
 ```
 
 ## 5. 明确边界

@@ -1,8 +1,8 @@
 # C# 开发者手册（Gocordis / .NET 10）
 
-本手册面向基于 `migration/dotnet` 的 C# 应用开发者。它不是 Go API 的逐行翻译：
+本手册面向当前 `dotnet` 分支的 .NET 10 应用开发者（当前状态见 `../current-status.md`）。它不是 Go API 的逐行翻译：
 语义裁决顺序为 `docs/论文.pdf` → [`../migration/semantic-mapping.md`](../migration/semantic-mapping.md)
-→ Go 实现经验。仓库根的 `AGENTS.md` 十二条铁律在此逐条对应到 C# API；
+→ Go 实现经验。仓库根的 仓库根 `AGENTS.md` 是强制工程宪章，十二条铁律在此逐条对应到 C# API；
 论文 §5.3（Koishi 案例）的完整复现见 [`../migration/koishi-case-study.md`](../migration/koishi-case-study.md)。
 
 ## 1. 三级权威与不可逆边界
@@ -71,9 +71,24 @@ var consumer = await runtime.LoadAsync(new EchoFeature());
 
 正确做法是把契约程序集声明为共享：打包时 `plugin pack ... --backend managed
 --entry-assembly <dll> --entry-type <type> --shared-assembly <ContractsName>`（对应
-`PluginPackageManifest.SharedAssemblies`）。加载时 `SharedAssemblyRegistry` 把该 DLL 提升进
-default ALC 一次，并校验各插件版本一致；`PluginLoadContext` 对共享名返回 `null`，回落到 default
-的唯一实例。于是不同包的 `Provide(K.X)` 与 `Inject(K.X)` 解析到同一 Key，空间维组合在真实部署形态下成立。
+`PluginPackageManifest.SharedAssemblies`）。宿主在声明解析阶段对**已安装（校验过摘要）的包**调用
+`SharedAssemblyRegistry.Allow(name)` 批准名称；加载时 `SharedAssemblyRegistry` 把该 DLL 提升进
+default ALC 一次，`PluginLoadContext` 对共享名返回 `null`，回落到 default 的唯一实例。于是不同包的
+`Provide(K.X)` 与 `Inject(K.X)` 解析到同一 Key，空间维组合在真实部署形态下成立。
+
+**信任边界与生命周期（MUST 遵守）**：
+
+- 共享程序集**只允许宿主批准的名称**（`Allow`），插件不能在加载时把自己提升进 Default ALC。
+  `SharedAssemblyRegistry` 校验**完整身份**：简单名、版本、culture、公钥令牌、模块 MVID 与 payload
+  SHA-256；同名同版本但字节不同会被 `SharedAssemblyConflictException` 拒绝，不会静默换身份。
+- **Managed 插件是受信任代码，不是安全沙箱**；ALC 可收集但不是隔离边界。需要隔离不可信代码用
+  Process / WASM 后端。本机制防的是"意外的身份冲突"，不是安全边界。
+- 共享程序集进入 `AssemblyLoadContext.Default` 后是**进程级生命周期**，不随插件 ALC 卸载。
+  升级共享契约（新字节/MVID）需要**受控重启宿主**，没有进程内热替换；浏览器端前端模块的 `?v=`
+  修订/HMR 是另一套机制，不适用于 CLR 契约程序集。
+
+回归证据：`SharedAssemblyRegistryTests`（批准门、完整身份冲突、名称不符、进程级不换身份）、
+`SharedContractPackagingTests.SharedContractAcrossTwoPackagesGatesTheConsumer`。
 
 ### 2.2 打包插件的 UI 与依赖声明
 
@@ -163,12 +178,11 @@ await registry.ApplyAsync(declarations.Select(d => d with { Enabled = false }));
 
 本手册关联的批次 C 覆盖账本：
 
-- 论文条目：`../migration/paper-coverage-matrix.md`（C01–C40；38 已覆盖 / 0 待补 / 2 接受差异），
+- 论文条目：`../migration/paper-coverage-matrix.md`（C01–C40；当前 39 已覆盖 / 0 待补 / 1 接受差异 C38），
   由 `PaperItemMatrixTests` 逐行校验。
 - 定理：`../migration/theorem-matrix.md`（Thm64/68/70/73/80 各 3 场景）。
 - JS / 接受差异：`../migration/js-cordis-csharp-differences.md`。
-- 并发用例必须跑 `go test -race`（Go 基线）与主线程统一 `dotnet test`；本子任务未运行构建/测试，
-  最终计数见 `../migration/execution-log.md`「批次 B/C 最终验证」：396/396。
+- 验证以实际命令结果为准（见 `../current-status.md`）；Go 基线用 `docs/migration/verify-baseline.sh` 核验漂移，历史 396/396 等计数只属归档，不代表当前 HEAD。
 
 ```bash
 dotnet build Gocordis.sln --nologo -m:1
@@ -183,4 +197,4 @@ dotnet test  Gocordis.sln --nologo -m:1
 - [ ] Cleanup 内不 Load 新组件、不忽略 `CancellationToken`；
 - [ ] 新 key / 事件 key 定义在契约层，插件包之间无互相引用；
 - [ ] 接受差异写进 `js-cordis-csharp-differences.md`，未覆盖项写进 `paper-coverage-matrix.md` 的 `待补`；
-- [ ] 主线程 `dotnet build` / `dotnet test` 与 Go `go test -race` 结果回填 `execution-log.md`。
+- [ ] `dotnet build` / `dotnet test` 与前端 `npm test && npm run build` 全绿；当前状态写入 `docs/current-status.md`（不是历史 execution-log）。

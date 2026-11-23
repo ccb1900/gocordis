@@ -187,6 +187,11 @@ public class PlatformApplication : IAsyncDisposable
                 }
 
                 _resolved.Add(new PlatformResolvedPlugin(plugin.Id, installed.Version, plugin.Enabled));
+
+                // Only the HOST may approve shared contract assemblies. Names
+                // come from installed (and therefore checksum-verified) packages,
+                // never from arbitrary plugin code at load time.
+                SharedAssemblyRegistry.Allow(installed.Manifest.SharedAssembliesOrEmpty);
             }
 
             // The control plane is a plugin contribution: load its fiber first,

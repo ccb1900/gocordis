@@ -136,7 +136,9 @@ gocordis plugin pack ./Provider out.gocordis-plugin \
   --capability 'provide|org.example.calc/add|endpoint|1.2.0|application/json|calc'
 ```
 
-回归证据：`CrossBackendCapabilityTests`（含独立 ALC 的 Managed 插件不靠共享 DLL 拿到同一 Key、WASM↔Managed 双向调用、Process→Managed 声明化调用）、`CapabilityDeclarationTests`（声明随包往返与校验和覆盖）。
+`PluginPackageWriter` 对三种执行后端一视同仁：managed 要求 `.dll` + entry type，wasm 要求 `.wat`/`.wasm`，process 要求安全相对路径的可执行文件；三者都要求声明的入口真实存在于包内，能力声明纳入校验和。安装后的 manifest 由 `PlatformApplication.CreateComponent` 分派，不需要写 `installed.json` 打补丁。
+
+回归证据：`CrossBackendCapabilityTests`（独立 ALC 的 Managed 插件不靠共享 DLL 拿到同一 Key、Managed↔WASM↔Process 双向真实调用、Trap 失败与撤回 Pending 的区分）、`CapabilityDeclarationTests`/`BackendPackageValidationTests`（声明随包往返、后端入口校验）、`BackendDispatchProductTests.Declared*CapabilityPackage*`（真实包 pack→install→load→invoke→stop）。
 
 ## 3. 十二铁律 → C# 落地表
 

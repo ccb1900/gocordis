@@ -14,9 +14,9 @@ namespace Gocordis.Product.Tests;
 /// <summary>
 /// Product-level proof that the one Platform composition root dispatches
 /// installed declarations to the process and WASM backends. Packages are real
-/// zip artifacts installed through PluginStore; Backend/EntryAssembly are set in
-/// the persistent declaration table because Packaging manifest validation is a
-/// separate workstream (P3). No runtime state is persisted or faked here.
+/// zip artifacts: Backend/EntryAssembly/Capabilities are declared in the package
+/// manifest, validated by the writer, and installed through PluginStore.
+/// No runtime state is persisted or faked here.
 /// </summary>
 public sealed class BackendDispatchProductTests
 {
@@ -99,6 +99,94 @@ public sealed class BackendDispatchProductTests
     }
 
     [Fact]
+    public async Task CapabilityDeclarationChangesTheManagedLoaderKey()
+    {
+        using var temp = new TempDir();
+        var manifestPath = temp.File("fingerprint-app.json");
+        await new ApplicationManifest("fingerprint-app", "1.0.0", HostVersion, []).SaveAsync(manifestPath);
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, temp.Path("store"), Host: UiHostKind.WinForms, HostVersion: HostVersion));
+
+        var assembly = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../../samples/SamplePlugin/bin/Debug/net10.0/SamplePlugin.dll"));
+        Assert.True(File.Exists(assembly), $"missing sample plugin '{assembly}'");
+        var source = Path.GetDirectoryName(assembly)!;
+
+        Component Create(string capability) => app.CreateComponent(new PluginManifest(
+                "fingerprint-plugin", "fingerprint-type", true,
+                new Dictionary<string, object?>(), [], [], "1.0.0", source, null,
+                "managed", "SamplePlugin.dll", "SamplePlugin.SampleComponent",
+                Capabilities: [$"provide|{capability}|endpoint|1.0.0||"]));
+
+        var first = Create("org.example/one");
+        var second = Create("org.example/two");
+        Assert.NotSame(first, second);
+        ((IDisposable)first).Dispose();
+        ((IDisposable)second).Dispose();
+    }
+
+    [Fact]
+    public async Task DeclaredWasmCapabilityPackageIsLoadedAndInvokable()
+    {
+        using var temp = new TempDir();
+        const string id = "product-wasm-cap";
+        const string wat = """
+            (module
+              (@custom "gocordis.capabilities" "{\"provides\":[{\"id\":\"org.example.product/ping\",\"kind\":\"endpoint\",\"version\":\"1.0.0\"}]}")
+              (memory (export "memory") 1)
+              (func (export "runtime_component_destroy") (param i32))
+              (func (export "runtime_component_create") (result i32) i32.const 1)
+              (func (export "capability_invoke") (param i32 i32) (result i32 i32)
+                i32.const 2048
+                i32.const 55
+                i32.store8
+                i32.const 2048
+                i32.const 1))
+            """;
+        var store = await InstallAsync(temp, id, "plugin.wat", wat, "wasm",
+            capabilities: ["provide|org.example.product/ping|endpoint|1.0.0|application/json|"]);
+        await using var app = await StartAsync(temp, store, id);
+
+        var key = app.Capabilities.KeyFor<ICapabilityEndpoint>(
+            new CapabilityId("org.example.product", "ping"), CapabilityValueKind.Endpoint);
+        var endpoint = app.Runtime.RequireCapability(key);
+        var response = await endpoint.InvokeAsync(
+            CapabilityEnvelope.Json("{}"), CancellationToken.None);
+
+        Assert.Equal("7", response.AsText());
+        await app.StopAsync();
+        Assert.Empty(app.Runtime.Snapshot().Fibers);
+    }
+
+    [Fact]
+    public async Task DeclaredProcessCapabilityPackageIsLoadedAndInvokable()
+    {
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        using var temp = new TempDir();
+        const string id = "product-proc-cap";
+        var store = await InstallAsync(temp, id, "plugin.sh", ProcessPluginScript,
+            backend: "process", makeExecutable: true,
+            capabilities: ["provide|org.example.product/echo|endpoint|1.0.0|text/plain|"]);
+        await using var app = await StartAsync(temp, store, id);
+
+        var key = app.Capabilities.KeyFor<ICapabilityEndpoint>(
+            new CapabilityId("org.example.product", "echo"), CapabilityValueKind.Endpoint);
+        var endpoint = app.Runtime.RequireCapability(key);
+        // The shell fixture answers capability/invoke with the same vocabulary
+        // as echo; this proves the declared RPC path is live through the package.
+        var response = await endpoint.InvokeAsync(
+            CapabilityEnvelope.Text("ping"), CancellationToken.None);
+
+        Assert.Equal("pong", response.AsText());
+        await app.StopAsync();
+    }
+
+    [Fact]
     public async Task CreateComponentDispatchesEveryDeclaredBackend()
     {
         using var temp = new TempDir();
@@ -141,39 +229,34 @@ public sealed class BackendDispatchProductTests
           case "$line" in
             *'"method":"shutdown"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"; exit 0 ;;
             *'"method":"echo"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"text":"ready"}}\n' "$id" ;;
+            *'"capability/invoke"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"response":"pong"}}\n' "$id" ;;
           esac
         done
         """;
 
     private static Task<string> InstallAsync(
         TempDir temp, string id, string payloadName, string payload, string backend,
-        bool makeExecutable = false) =>
-        InstallAsync(temp, id, payloadName, Encoding.UTF8.GetBytes(payload), backend, makeExecutable);
+        bool makeExecutable = false, IReadOnlyList<string>? capabilities = null) =>
+        InstallAsync(temp, id, payloadName, Encoding.UTF8.GetBytes(payload), backend,
+            makeExecutable, capabilities);
 
     private static async Task<string> InstallAsync(
         TempDir temp, string id, string payloadName, byte[] payload, string backend,
-        bool makeExecutable = false)
+        bool makeExecutable = false, IReadOnlyList<string>? capabilities = null)
     {
         var source = temp.Path($"source-{id}");
         Directory.CreateDirectory(source);
         await File.WriteAllBytesAsync(Path.Combine(source, payloadName), payload);
         var package = temp.File($"{id}-1.0.0.gocordis-plugin");
         await PluginPackageWriter.CreateAsync(source,
-            new PluginPackageManifest(id, "1.0.0", id + "-type", "[1.0,)"), package);
+            new PluginPackageManifest(
+                id, "1.0.0", id + "-type", "[1.0,)",
+                Backend: backend,
+                EntryAssembly: payloadName,
+                Capabilities: capabilities), package);
 
         var store = temp.Path("store-" + id);
         await new PluginStore(store, HostVersion).InstallAsync(package);
-
-        // Declaration data only: Backend/entry fields live in installed.json,
-        // never in fiber snapshots. This models the package declaration that
-        // Packaging validation will accept once P3 lands.
-        var statePath = Path.Combine(store, "installed.json");
-        var state = JsonNode.Parse(await File.ReadAllTextAsync(statePath))!;
-        var entry = state["Plugins"]!.AsArray()
-            .Single(item => item!["Manifest"]!["Id"]!.GetValue<string>() == id)!;
-        entry["Manifest"]!["Backend"] = backend;
-        entry["Manifest"]!["EntryAssembly"] = payloadName;
-        await File.WriteAllTextAsync(statePath, state.ToJsonString());
 
         var installedPayload = Path.Combine(store, id, "1.0.0", payloadName);
         if (makeExecutable)

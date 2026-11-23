@@ -305,6 +305,14 @@ public class PlatformApplication : IAsyncDisposable
             var loaderKey = manifest.Config.Count == 0
                 ? $"{manifest.Id}@{manifest.Version}"
                 : $"{manifest.Id}@{manifest.Version}:{ConfigFingerprint(manifest.Config)}";
+            // Capabilities and shared assemblies also change what a staged
+            // component means. Keep the historical key when both are absent.
+            var sharedAssemblies = manifest.SharedAssemblies ?? [];
+            if (manifest.CapabilitiesOrEmpty.Count > 0 || sharedAssemblies.Count > 0)
+            {
+                loaderKey += ":" + DeclarationFingerprint(
+                    manifest.CapabilitiesOrEmpty, sharedAssemblies);
+            }
             return Managed.CreateComponent(
                 loaderKey, assemblyPath, manifest.EntryType, manifest.SharedAssemblies, Capabilities);
         }
@@ -385,6 +393,23 @@ public class PlatformApplication : IAsyncDisposable
         var ordered = config.OrderBy(pair => pair.Key, StringComparer.Ordinal)
             .ToDictionary(pair => pair.Key, pair => pair.Value);
         var bytes = System.Text.Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(ordered));
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..12].ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Stable, order-independent fingerprint of the declaration fields that
+    /// change how a managed component is staged. Derived state, never persisted.
+    /// </summary>
+    private static string DeclarationFingerprint(
+        IReadOnlyList<string> capabilities, IReadOnlyList<string> sharedAssemblies)
+    {
+        var canonical = new
+        {
+            Capabilities = capabilities.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
+            Shared = sharedAssemblies.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
+        };
+        var bytes = System.Text.Encoding.UTF8.GetBytes(
+            System.Text.Json.JsonSerializer.Serialize(canonical));
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..12].ToLowerInvariant();
     }
 

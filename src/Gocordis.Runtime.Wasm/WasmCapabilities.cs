@@ -161,6 +161,19 @@ public sealed class WasmCapabilityBridge
         return bytes.Length;
     }
 
+    /// <summary>Observability seam: reads the last host-written response buffer.</summary>
+    public string ResponseText(int length)
+    {
+        var memory = _instance?.Memory
+                     ?? throw new InvalidOperationException("WASM memory is not attached");
+        if (length is < 0 or > MaxPayloadBytes || ResponseBufferOffset + length > memory.GetLength())
+        {
+            throw new ArgumentOutOfRangeException(nameof(length));
+        }
+
+        return memory.ReadString(ResponseBufferOffset, length, Encoding.UTF8);
+    }
+
     /// <summary>Host → guest call for a capability provided by this module.</summary>
     public async ValueTask<CapabilityEnvelope> InvokeProviderAsync(
         CapabilityId id, CapabilityEnvelope request, CancellationToken cancellationToken)
@@ -240,6 +253,7 @@ public sealed class WasmCapabilityBridge
 public sealed class WasmCapabilityComponent : Component
 {
     private readonly Func<WasmCapabilityBridge, WasmPluginInstance> _createInstance;
+    private readonly WasmCapabilityBridge _bridge;
     private readonly CapabilityCatalog _catalog;
     private readonly IReadOnlyList<CapabilityDeclaration> _provides;
     private readonly IReadOnlyList<CapabilityDeclaration> _requires;
@@ -251,10 +265,11 @@ public sealed class WasmCapabilityComponent : Component
         string name,
         CapabilityCatalog catalog,
         IReadOnlyList<CapabilityDeclaration> declarations,
-        GenerationTracker? tracker = null)
+        GenerationTracker? tracker = null,
+        WasmCapabilityBridge? capabilityBridge = null)
         : this(
             bridge => WasmPluginInstance.FromWat(wat, name, capabilityBridge: bridge),
-            name, catalog, declarations, tracker)
+            name, catalog, declarations, tracker, capabilityBridge)
     {
     }
 
@@ -263,10 +278,11 @@ public sealed class WasmCapabilityComponent : Component
         string name,
         CapabilityCatalog catalog,
         IReadOnlyList<CapabilityDeclaration> declarations,
-        GenerationTracker? tracker = null)
+        GenerationTracker? tracker = null,
+        WasmCapabilityBridge? capabilityBridge = null)
         : this(
             bridge => WasmPluginInstance.FromBytes(wasm, name, capabilityBridge: bridge),
-            name, catalog, declarations, tracker)
+            name, catalog, declarations, tracker, capabilityBridge)
     {
     }
 
@@ -275,8 +291,10 @@ public sealed class WasmCapabilityComponent : Component
         string name,
         CapabilityCatalog catalog,
         IReadOnlyList<CapabilityDeclaration> declarations,
-        GenerationTracker? tracker)
+        GenerationTracker? tracker,
+        WasmCapabilityBridge? capabilityBridge)
     {
+        _bridge = capabilityBridge ?? new WasmCapabilityBridge();
         _createInstance = createInstance;
         _name = name;
         _catalog = catalog;
@@ -297,7 +315,7 @@ public sealed class WasmCapabilityComponent : Component
 
     public async override ValueTask<Cleanup?> ApplyAsync(Context context)
     {
-        var bridge = new WasmCapabilityBridge();
+        var bridge = _bridge;
         bridge.SetRequire(id =>
         {
             var key = _catalog.KeyFor<ICapabilityEndpoint>(id, CapabilityValueKind.Endpoint);

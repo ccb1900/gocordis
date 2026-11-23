@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Gocordis.Core;
 using Gocordis.Runtime.Process;
 using Gocordis.Runtime.Wasm;
@@ -244,6 +245,242 @@ public sealed class CrossBackendCapabilityTests
         {
             File.Delete(script);
         }
+    }
+
+    [Fact]
+    public async Task ProcessProviderServesAWasmConsumerThroughRealRpcAndImports()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var id = "org.example.proc/value";
+        var declaration = CapabilityDeclaration.Parse(
+            "provide|org.example.proc/value|endpoint|1.0.0|text/plain|");
+        var catalog = new CapabilityCatalog();
+        catalog.Declare([declaration]);
+
+        var script = Path.Combine(Path.GetTempPath(), $"gocordis-proc-provider-{Guid.NewGuid():N}.py");
+        await File.WriteAllTextAsync(script, """
+            #!/usr/bin/env python3
+            import sys, json
+            def send(obj):
+                sys.stdout.write(json.dumps(obj) + "\n")
+                sys.stdout.flush()
+            sys.stdout.write("GORIDIS-PROC-PLUGIN 1\n")
+            sys.stdout.flush()
+            for line in sys.stdin:
+                try:
+                    req = json.loads(line)
+                except Exception:
+                    continue
+                method, ident = req.get("method"), req.get("id")
+                if method == "echo":
+                    send({"jsonrpc":"2.0","id":ident,"result":{"text":"ready"}})
+                elif method == "capability/invoke":
+                    send({"jsonrpc":"2.0","id":ident,"result":{"response":"9"}})
+                elif method == "shutdown":
+                    send({"jsonrpc":"2.0","id":ident,"result":{}})
+                    break
+                else:
+                    send({"jsonrpc":"2.0","id":ident,
+                          "error":{"code":-32601,"message":"unknown"}})
+            """);
+        try
+        {
+            File.SetUnixFileMode(script,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            await using var runtime = new Gocordis.Core.Runtime();
+            var provider = await runtime.LoadAsync(
+                new ProcessCapabilityComponent(script, catalog, [declaration]));
+            Assert.Equal(FiberState.Active, provider.State);
+
+            var bridge = new WasmCapabilityBridge();
+            var consumerWat = ConsumerWatFor(id);
+            var declarations = WasmCapabilityDeclarations.ReadFromWat(consumerWat);
+            var consumer = await runtime.LoadAsync(new WasmCapabilityComponent(
+                consumerWat, "wasm-consumer", catalog, declarations, capabilityBridge: bridge));
+
+            Assert.Equal(FiberState.Active, consumer.State);
+            Assert.Equal("9", bridge.ResponseText(1));
+
+            await runtime.DisposeAsync(provider);
+            Assert.Equal(FiberState.Pending, consumer.State);
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    [Fact]
+    public async Task WasmProviderServesAProcessConsumerThroughRealImportsAndRpc()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        const string id = "org.example.wasm/value";
+        const string providerWat = """
+            (module
+              (@custom "gocordis.capabilities" "{\"provides\":[{\"id\":\"org.example.wasm/value\",\"kind\":\"endpoint\",\"version\":\"1.0.0\",\"mediaType\":\"text/plain\"}]}")
+              (memory (export "memory") 1)
+              (func (export "runtime_component_destroy") (param i32))
+              (func (export "runtime_component_create") (result i32) i32.const 1)
+              (func (export "capability_invoke") (param i32 i32) (result i32 i32)
+                i32.const 2048
+                i32.const 55
+                i32.store8
+                i32.const 2048
+                i32.const 1))
+            """;
+        var provide = CapabilityDeclaration.Parse(
+            "provide|org.example.wasm/value|endpoint|1.0.0|text/plain|");
+        var require = CapabilityDeclaration.Parse(
+            "require|org.example.wasm/value|endpoint||text/plain|");
+        var catalog = new CapabilityCatalog();
+        catalog.Declare([provide, require]);
+
+        var observed = Path.Combine(Path.GetTempPath(), $"gocordis-proc-consumer-{Guid.NewGuid():N}.txt");
+        var script = Path.Combine(Path.GetTempPath(), $"gocordis-proc-consumer-{Guid.NewGuid():N}.py");
+        await File.WriteAllTextAsync(script, """
+            #!/usr/bin/env python3
+            import sys, json
+            def send(obj):
+                sys.stdout.write(json.dumps(obj) + "\n")
+                sys.stdout.flush()
+            def reply(request_id):
+                while True:
+                    line = sys.stdin.readline()
+                    if not line:
+                        sys.exit(1)
+                    response = json.loads(line)
+                    if response.get("id") == request_id:
+                        return response
+            sys.stdout.write("GORIDIS-PROC-PLUGIN 1\n")
+            sys.stdout.flush()
+            for line in sys.stdin:
+                try:
+                    req = json.loads(line)
+                except Exception:
+                    continue
+                method, ident = req.get("method"), req.get("id")
+                if method == "echo":
+                    send({"jsonrpc":"2.0","id":9001,"method":"capability/require",
+                          "params":{"id":"__ID__"}})
+                    handle = reply(9001)["result"]["handle"]
+                    send({"jsonrpc":"2.0","id":9002,"method":"capability/invoke",
+                          "params":{"handle":handle,"request":"x"}})
+                    response = reply(9002)["result"]["response"]
+                    open("__OBSERVED__", "w").write(response)
+                    send({"jsonrpc":"2.0","id":ident,"result":{"text":"ready"}})
+                elif method == "shutdown":
+                    send({"jsonrpc":"2.0","id":ident,"result":{}})
+                    break
+                else:
+                    send({"jsonrpc":"2.0","id":ident,
+                          "error":{"code":-32601,"message":"unknown"}})
+            """.Replace("__ID__", id).Replace("__OBSERVED__", observed.Replace("\\", "\\\\").Replace("\"", "\\\"")));
+        try
+        {
+            File.SetUnixFileMode(script,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            await using var runtime = new Gocordis.Core.Runtime();
+            var provider = await runtime.LoadAsync(new WasmCapabilityComponent(
+                providerWat, "wasm-provider", catalog, [provide]));
+            Assert.Equal(FiberState.Active, provider.State);
+
+            var consumer = await runtime.LoadAsync(
+                new ProcessCapabilityComponent(script, catalog, [require]));
+            Assert.Equal(FiberState.Active, consumer.State);
+            Assert.Equal("7", await File.ReadAllTextAsync(observed));
+
+            await runtime.DisposeAsync(provider);
+            Assert.Equal(FiberState.Pending, consumer.State);
+        }
+        finally
+        {
+            File.Delete(script);
+            if (File.Exists(observed))
+            {
+                File.Delete(observed);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task WasmTrapFailsTheProviderWhileWithdrawalOnlyPendsTheConsumer()
+    {
+        var catalog = new CapabilityCatalog();
+        var declaration = CapabilityDeclaration.Parse(
+            "provide|org.example.trap/value|endpoint|1.0.0|text/plain|");
+        catalog.Declare([declaration]);
+        var key = catalog.KeyFor<ICapabilityEndpoint>(
+            new CapabilityId("org.example.trap", "value"), CapabilityValueKind.Endpoint);
+
+        await using var runtime = new Gocordis.Core.Runtime();
+        await runtime.LoadAsync(new ConsumerComponent("consumer", _ => { }, [key]));
+        Assert.Equal(FiberState.Pending, runtime.Snapshot().Fibers
+            .Single(fiber => fiber.Name == "consumer").State);
+
+        const string trappingWat = """
+            (module
+              (memory (export "memory") 1)
+              (func (export "runtime_component_destroy") (param i32))
+              (func (export "runtime_component_create") (result i32) unreachable))
+            """;
+        var failed = await runtime.LoadAsync(new WasmCapabilityComponent(
+            trappingWat, "trap-provider", catalog, [declaration]));
+        Assert.Equal(FiberState.Failed, failed.State);
+        Assert.NotNull(failed.Failure);
+        await runtime.DisposeAsync(failed);
+        Assert.Equal(FiberState.Pending, runtime.Snapshot().Fibers
+            .Single(fiber => fiber.Name == "consumer").State);
+
+        const string healthyWat = """
+            (module
+              (memory (export "memory") 1)
+              (func (export "runtime_component_destroy") (param i32))
+              (func (export "runtime_component_create") (result i32) i32.const 1))
+            """;
+        var provider = await runtime.LoadAsync(new WasmCapabilityComponent(
+            healthyWat, "healthy-provider", catalog, [declaration]));
+        Assert.Equal(FiberState.Active, provider.State);
+        Assert.Equal(FiberState.Active, runtime.Snapshot().Fibers
+            .Single(fiber => fiber.Name == "consumer").State);
+
+        await runtime.DisposeAsync(provider);
+        var consumerAfterWithdrawal = runtime.Snapshot().Fibers
+            .Single(fiber => fiber.Name == "consumer");
+        Assert.Equal(FiberState.Pending, consumerAfterWithdrawal.State);
+        Assert.Null(consumerAfterWithdrawal.Failure);
+    }
+
+    private static string ConsumerWatFor(string capabilityId)
+    {
+        var stores = string.Join("\n            ", capabilityId.Select((c, index) =>
+            $"(i32.store8 (i32.add (local.get $buf) (i32.const {index})) (i32.const {(int)c}))"));
+        return $$"""
+            (module
+              (@custom "gocordis.capabilities" "{\"requires\":[{\"id\":\"{{capabilityId}}\",\"kind\":\"endpoint\"}]}")
+              (import "gocordis" "capability_buffer" (func $buffer (result i32)))
+              (import "gocordis" "capability_require" (func $require (param i32 i32) (result i32)))
+              (import "gocordis" "capability_invoke" (func $invoke (param i32 i32 i32) (result i32)))
+              (memory (export "memory") 1)
+              (func (export "runtime_component_destroy") (param i32))
+              (func (export "runtime_component_create") (result i32)
+                (local $buf i32)
+                (local $handle i32)
+                (local.set $buf (call $buffer))
+                {{stores}}
+                (local.set $handle (call $require (local.get $buf) (i32.const {{capabilityId.Length}})))
+                (i32.store8 (local.get $buf) (i32.const 120))
+                (call $invoke (local.get $handle) (local.get $buf) (i32.const 1))))
+            """;
     }
 
     private sealed class ConsumerComponent : Component

@@ -152,11 +152,13 @@ public static class PluginPackageWriter
         PluginPackageUi.Validate(manifest, files.Select(file => file.Path).ToArray(),
             path => File.ReadAllBytes(Path.Combine(sourceDirectory, path)));
 
-        if (string.Equals(manifest.Backend, "managed", StringComparison.OrdinalIgnoreCase) &&
+        if (!string.IsNullOrWhiteSpace(manifest.Backend) &&
+            !string.Equals(manifest.Backend, "builtin", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(manifest.EntryAssembly) &&
             !files.Any(file => string.Equals(file.Path, manifest.EntryAssembly, StringComparison.Ordinal)))
         {
             throw new InvalidPluginPackageException(
-                $"managed entry assembly '{manifest.EntryAssembly}' is not in the package payload");
+                $"{manifest.Backend} entry '{manifest.EntryAssembly}' is not in the package payload");
         }
 
         // A shared contract assembly must ship in the payload: the managed
@@ -302,7 +304,9 @@ public static class PluginPackageWriter
         if (!string.IsNullOrWhiteSpace(backend))
         {
             if (!string.Equals(backend, "builtin", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(backend, "managed", StringComparison.OrdinalIgnoreCase))
+                !string.Equals(backend, "managed", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(backend, "wasm", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(backend, "process", StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidPluginPackageException($"unsupported backend '{backend}'");
             }
@@ -322,6 +326,32 @@ public static class PluginPackageWriter
                     throw new InvalidPluginPackageException(
                         $"managed entry assembly '{manifest.EntryAssembly}' is not a .dll");
                 }
+            }
+            else if (string.Equals(backend, "wasm", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(manifest.EntryAssembly))
+                {
+                    throw new InvalidPluginPackageException(
+                        "wasm package requires an entry module");
+                }
+
+                EnsureSafeRelativePath(manifest.EntryAssembly);
+                if (!manifest.EntryAssembly.EndsWith(".wat", StringComparison.OrdinalIgnoreCase) &&
+                    !manifest.EntryAssembly.EndsWith(".wasm", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidPluginPackageException(
+                        $"wasm entry module '{manifest.EntryAssembly}' is not .wat or .wasm");
+                }
+            }
+            else if (string.Equals(backend, "process", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(manifest.EntryAssembly))
+                {
+                    throw new InvalidPluginPackageException(
+                        "process package requires an entry executable");
+                }
+
+                EnsureSafeRelativePath(manifest.EntryAssembly);
             }
         }
     }

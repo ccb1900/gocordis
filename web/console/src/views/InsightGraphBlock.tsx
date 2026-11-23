@@ -1,34 +1,22 @@
-// insight-graph: declared vs runtime dependency graph. Both views come from
-// one named query; the toggle is local UI state only. Antd Tree (already a
-// dependency) is the renderer — no graph library is introduced. All DTO →
-// tree mapping lives in lib/insight-graph.ts so it stays node-testable.
-import { Alert, Segmented, Space, Tree, Typography } from "antd";
-import type { TreeDataNode } from "antd";
-import { useEffect, useState } from "react";
+// insight-graph: declared vs runtime dependency graph, rendered with AntV G6.
+// Both views come from one named query; the toggle is local UI state only.
+// Pure DTO → G6 data mapping lives in lib/insight-graph-g6.ts (node-testable);
+// this component only owns the G6 instance lifecycle against the DOM.
+import { Alert, Segmented, Space, Typography } from "antd";
+import type { Graph } from "@antv/g6";
+import { useEffect, useRef, useState } from "react";
 import { ALL, useDomainVersion } from "../lib/projections";
-import {
-  buildTree, type GraphTreeNode, type GraphView, type InsightGraphDTO,
-} from "../lib/insight-graph";
+import { buildGraph, type G6GraphData } from "../lib/insight-graph-g6";
+import type { GraphView, InsightGraphDTO } from "../lib/insight-graph";
 import type { BlockRenderer } from "./registry";
-
-function toTreeData(nodes: GraphTreeNode[]): TreeDataNode[] {
-  return nodes.map((n) => ({
-    key: n.key,
-    title: (
-      <span style={{ display: "inline-flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
-        <span style={{ fontWeight: 600 }}>{n.label}</span>
-        {n.detail && <span style={{ color: "#8a93a6", fontSize: 12 }}>{n.detail}</span>}
-      </span>
-    ),
-    children: n.children ? toTreeData(n.children) : undefined,
-  }));
-}
 
 export const InsightGraphBlock: BlockRenderer = ({ block, ctx }) => {
   const [data, setData] = useState<InsightGraphDTO | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<GraphView>("declared");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const graphRef = useRef<Graph | null>(null);
   const query = block.query || "insight/graph";
   const version = useDomainVersion(block.domain ?? ALL);
 
@@ -50,7 +38,60 @@ export const InsightGraphBlock: BlockRenderer = ({ block, ctx }) => {
     };
   }, [query, version, ctx.hubQuery]);
 
-  const nodes = buildTree(data, view);
+  const graphData: G6GraphData = buildGraph(data, view);
+  const hasData = graphData.nodes.length > 0;
+
+  // One G6 Graph per data/view generation; destroy on change or unmount so no
+  // stale edges or canvas handlers survive a query refresh / toggle.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !hasData) return;
+    let disposed = false;
+    let graph: Graph | null = null;
+
+    // Load G6 lazily so the ~2 MB graph library is a separate chunk, fetched
+    // only when the dependency-graph page is actually opened.
+    void import("@antv/g6").then(({ Graph: G6Graph }) => {
+      if (disposed || !containerRef.current) return;
+      graph = new G6Graph({
+        container,
+        autoFit: "view",
+        data: graphData,
+        layout: { type: "dagre", rankdir: "LR", nodesep: 24, ranksep: 60 },
+        node: {
+          style: {
+            labelText: (d: { data?: { label?: string } }) => d?.data?.label ?? "",
+            labelPlacement: "bottom",
+            size: [116, 36],
+            radius: 8,
+            fill: "#e6f0ff",
+            stroke: "#4d6bfe",
+            lineWidth: 1.5,
+            labelFill: "#1f1f1f",
+            labelFontSize: 11,
+          },
+        },
+        edge: {
+          style: {
+            labelText: (d: { data?: { label?: string } }) => d?.data?.label ?? "",
+            labelFontSize: 10,
+            stroke: "#8a93a6",
+            endArrow: true,
+          },
+        },
+        behaviors: ["drag-canvas", "zoom-canvas", "drag-element"],
+      });
+      graphRef.current = graph;
+      void graph.render();
+    });
+
+    return () => {
+      disposed = true;
+      graphRef.current = null;
+      graph?.destroy();
+    };
+  }, [graphData, hasData]);
+
   const sequence = data?.sequence ?? data?.eventSequence;
   return (
     <div className="card" style={{ padding: 12 }}>
@@ -72,14 +113,15 @@ export const InsightGraphBlock: BlockRenderer = ({ block, ctx }) => {
       </div>
       {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 8 }} />}
       {loading && !data && <Typography.Text type="secondary">加载中…</Typography.Text>}
-      {!loading && !error && nodes.length === 0 && (
+      {!loading && !error && !hasData && (
         <Typography.Text type="secondary">
           暂无{view === "declared" ? "声明" : "运行时"}图数据。
         </Typography.Text>
       )}
-      {nodes.length > 0 && (
-        <Tree treeData={toTreeData(nodes)} blockNode defaultExpandAll selectable={false} />
-      )}
+      <div
+        ref={containerRef}
+        style={{ width: "100%", height: 420, display: hasData ? "block" : "none" }}
+      />
     </div>
   );
 };

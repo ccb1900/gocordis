@@ -26,9 +26,7 @@
 package proc
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -36,11 +34,11 @@ import (
 	"os/exec"
 	stdruntime "runtime"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"dynamic-runtime/extensions/config"
 	"dynamic-runtime/extensions/loader"
+	"dynamic-runtime/extensions/loader/proc/transport"
 	"dynamic-runtime/runtime"
 )
 
@@ -49,15 +47,11 @@ const BackendType = loader.BackendProc
 
 // Protocol constants (full wire format in README.md).
 const (
-	// HandshakeHeader is the first line a plugin process writes on stdout.
-	HandshakeHeader = "GORIDIS-PROC-PLUGIN 1"
-	// MethodShutdown is the host->plugin graceful-stop request. The plugin
-	// should exit after receiving it; the host force-kills after its
-	// shutdown timeout regardless.
-	MethodShutdown = "shutdown"
-	// DefaultHandshakeWait bounds the handshake wait.
-	DefaultHandshakeWait = 5 * time.Second
-	// DefaultShutdownTimeout bounds the graceful-stop wait.
+	// Protocol constants live in the shared transport; re-exported here so
+	// existing applications keep their proc.* API.
+	HandshakeHeader        = transport.HandshakeHeader
+	MethodShutdown         = transport.MethodShutdown
+	DefaultHandshakeWait   = transport.DefaultHandshakeWait
 	DefaultShutdownTimeout = 2 * time.Second
 )
 
@@ -146,7 +140,6 @@ type Backend struct {
 	stderrFn func() io.Writer
 	hsWait   time.Duration
 	stopWait time.Duration
-	nextPID  atomic.Uint64
 }
 
 var _ loader.Backend = (*Backend)(nil)
@@ -290,16 +283,15 @@ func (c *pluginComponent) Provide() []runtime.Capability {
 func (c *pluginComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 	var client *pluginClient
 	if err := ctx.Effect(func() (func() error, error) {
+		// spawn performs the handshake before returning: Active <=> the
+		// process answered it. A failed handshake kills the half-started
+		// process inside transport.Start, so no orphan survives.
 		p, err := c.backend.spawn(c.exe, c.id, ctx.Context())
 		if err != nil {
 			return nil, err
 		}
-		if err := p.handshake(c.backend.hsWait); err != nil {
-			_ = p.stop(c.backend.stopWait) // partial cleanup: no orphan process
-			return nil, err
-		}
 		client = p
-		return func() error { return p.stop(c.backend.stopWait) }, nil
+		return func() error { return p.Stop(c.backend.stopWait) }, nil
 	}); err != nil {
 		return nil, err
 	}
@@ -313,307 +305,68 @@ func (c *pluginComponent) Apply(ctx *runtime.Context) (runtime.Cleanup, error) {
 }
 
 // ---------------------------------------------------------------------------
-// process instance + stdio JSON-RPC client
+// process instance adapter: shared transport -> Go Capability
 // ---------------------------------------------------------------------------
 
-type pluginClient struct {
-	id       uint64
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	exited   chan struct{} // closed when the process has been waited on
-	hsLine   chan string   // handshake header line (buffered 1)
-	stopOnce sync.Once
+// pluginClient is the loader-facing view of one shared transport connection.
+// The low-level protocol (spawn, handshake, stdio, JSON-RPC, pending map,
+// exit detection, graceful stop, write serialization) lives in transport;
+// this adapter only translates neutral transport failures into the proc
+// backend's public error vocabulary and satisfies the Caller interface.
+type pluginClient struct{ *transport.Conn }
 
-	writeMu sync.Mutex // serializes stdin writes ONLY (never held by readLoop)
-	mu      sync.Mutex // guards pending map + dead
-	pending map[int]chan callResult
-	nextID  int
-	dead    error // sticky failure (process exit / protocol death); mu-guarded
+// mapCallErr keeps the proc backend's contract: callers can errors.Is against
+// ErrPluginUnavailable / ErrPluginProtocol without importing the transport.
+func mapCallErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, transport.ErrProtocol):
+		return fmt.Errorf("%w: %v", ErrPluginProtocol, err)
+	case errors.Is(err, transport.ErrExited), errors.Is(err, transport.ErrClosed):
+		return fmt.Errorf("%w: %v", ErrPluginUnavailable, err)
+	}
+	// Typed RPC failures and caller cancellation keep their own identity;
+	// everything else came from the process pipe (e.g. a raw stdin write
+	// error) and must still satisfy errors.Is(err, ErrPluginUnavailable) as
+	// it did before the transport extraction.
+	var rpcErr *transport.RPCError
+	if errors.As(err, &rpcErr) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrPluginUnavailable, err)
 }
-
-// callResult is one completed RPC: either a decoded response or a transport
-// failure (err carries the WRAPPED cause so errors.Is chains survive).
-type callResult struct {
-	resp rpcResponse
-	err  error
-}
-
-type rpcResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      *int            `json:"id"`
-	Result  json.RawMessage `json:"result"`
-	Error   *rpcError       `json:"error"`
-}
-
-type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-func (e *rpcError) err() error { return fmt.Errorf("plugin rpc %d: %s", e.Code, e.Message) }
 
 func (b *Backend) spawn(exe, id string, actCtx context.Context) (*pluginClient, error) {
-	// The activation context is the backstop: cancellation kills the process
-	// even if something wedges (exec.CommandContext + Cancel).
+	// The activation context is the backstop: cancellation triggers Conn's
+	// bounded graceful shutdown; exec's WaitDelay remains the kill backstop.
 	cmd := exec.CommandContext(actCtx, exe, b.args...)
 	cmd.Env = append(os.Environ(), b.env...)
 	var stderr io.Writer = io.Discard
 	if b.stderrFn != nil {
 		stderr = b.stderrFn()
 	}
-	cmd.Stderr = stderr
-	stdin, err := cmd.StdinPipe()
+	conn, err := transport.Start(actCtx, cmd,
+		transport.WithStderr(stderr),
+		transport.WithHandshakeWait(b.hsWait),
+		transport.WithShutdownWait(b.stopWait),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("%w: stdin: %v", ErrProcStart, err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		// P3-6: without Start(), exec's failure cleanup never runs — close the
-		// stdin write-end we already own or the fd leaks.
-		_ = stdin.Close()
-		return nil, fmt.Errorf("%w: stdout: %v", ErrProcStart, err)
-	}
-	// The client struct is built BEFORE Start so the context-cancel hook can
-	// reference it (exec fires Cancel as soon as the context is done).
-	p := &pluginClient{
-		id:      b.nextPID.Add(1),
-		cmd:     cmd,
-		stdin:   stdin,
-		exited:  make(chan struct{}),
-		hsLine:  make(chan string, 1),
-		pending: make(map[int]chan callResult),
-	}
-	cmd.Cancel = func() error {
-		// P2-1 graceful-then-kill: the old bare-Kill fired on context
-		// cancellation BEFORE the unwind's stop() could speak, so the shutdown
-		// request landed on a dead process — graceful teardown was dead code
-		// on every runtime-driven unload. Cancel now issues the BOUNDED
-		// shutdown request (the plugin flushes); WaitDelay below remains the
-		// kill backstop. stop() stays idempotent for the normal path.
-		p.cancelShutdown()
-		return nil
-	}
-	// WaitDelay bounds the Wait hang when the plugin spawns children that
-	// inherit stdout/stderr: without it, cmd.Wait blocks forever even after
-	// the plugin itself exits (Windows GUI/detached children make this the
-	// common case). 5s covers graceful handoff; kill was already requested
-	// via Cancel on the stop path.
-	cmd.WaitDelay = 5 * time.Second
-
-	if err := cmd.Start(); err != nil {
+		if errors.Is(err, transport.ErrHandshake) {
+			return nil, fmt.Errorf("%w: %v", ErrProcHandshake, err)
+		}
 		return nil, fmt.Errorf("%w: %v", ErrProcStart, err)
 	}
-	go func() {
-		_ = cmd.Wait() // exit error surfaced via dead/pending failures
-		close(p.exited)
-	}()
-	go p.readLoop(bufio.NewReader(stdout))
-	return p, nil
-}
-
-func (p *pluginClient) handshake(wait time.Duration) error {
-	line, err := p.readLine(wait)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrProcHandshake, err)
-	}
-	if line != HandshakeHeader {
-		return fmt.Errorf("%w: got %q, want %q", ErrProcHandshake, line, HandshakeHeader)
-	}
-	return nil
-}
-
-// readLine reads one protocol line from the reader goroutine's channel with a
-// deadline; the goroutine pushes lines until the handshake is consumed, after
-// which it switches to JSON dispatch.
-func (p *pluginClient) readLine(wait time.Duration) (string, error) {
-	// The reader goroutine is the sole owner of stdout; the handshake is the
-	// first line it reads, delivered through hsLine.
-	select {
-	case line := <-p.hsLine:
-		return line, nil
-	case <-p.exited:
-		return "", fmt.Errorf("%w: process exited during handshake", ErrProcHandshake)
-	case <-time.After(wait):
-		return "", errors.New("handshake timeout")
-	}
-}
-
-type rpcMsg struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      *int            `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params"`
-	Result  json.RawMessage `json:"result"`
-	Error   *rpcError       `json:"error"`
-}
-
-// readLoop is the sole reader of plugin stdout: handshake first, then
-// line-delimited JSON-RPC dispatch.
-func (p *pluginClient) readLoop(r *bufio.Reader) {
-	header, err := p.readLineSync(r)
-	if err != nil {
-		p.markDead(fmt.Errorf("%w: %v", ErrProcHandshake, err))
-		return
-	}
-	p.hsLine <- header
-	for {
-		line, err := p.readLineSync(r)
-		if err != nil {
-			p.markDead(fmt.Errorf("%w: %v", ErrPluginUnavailable, err))
-			return
-		}
-		var msg rpcMsg
-		if err := json.Unmarshal([]byte(line), &msg); err != nil {
-			p.markDead(fmt.Errorf("%w: %v", ErrPluginProtocol, err))
-			return
-		}
-		if msg.Method != "" {
-			// Plugin->host requests are not part of protocol v1: answer with
-			// a method-not-found error so the plugin never hangs.
-			if msg.ID != nil {
-				_ = p.write(map[string]any{
-					"jsonrpc": "2.0", "id": *msg.ID,
-					"error": map[string]any{"code": -32601, "message": "host does not serve methods"},
-				})
-			}
-			continue
-		}
-		if msg.ID == nil {
-			continue // stray response without id: ignore
-		}
-		p.mu.Lock()
-		ch := p.pending[*msg.ID]
-		delete(p.pending, *msg.ID)
-		p.mu.Unlock()
-		if ch != nil {
-			ch <- callResult{resp: rpcResponse{JSONRPC: msg.JSONRPC, ID: msg.ID, Result: msg.Result, Error: msg.Error}}
-			close(ch)
-		}
-	}
-}
-
-func (p *pluginClient) markDead(err error) {
-	p.mu.Lock()
-	if p.dead == nil {
-		p.dead = err
-	}
-	for id, ch := range p.pending {
-		ch <- callResult{err: fmt.Errorf("%w: %v", ErrPluginUnavailable, err)}
-		close(ch)
-		delete(p.pending, id)
-	}
-	p.mu.Unlock()
-}
-
-func (p *pluginClient) readLineSync(r *bufio.Reader) (string, error) {
-	line, err := r.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	// trim trailing \n (and \r for windows-authored plugins)
-	for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {
-		line = line[:len(line)-1]
-	}
-	return line, nil
-}
-
-func (p *pluginClient) write(v any) error {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	// writeMu serializes only the stdin write: it must NOT be held while
-	// blocked on a full pipe, otherwise markDead (read loop, crash handling)
-	// would deadlock behind us (R12 P1-2).
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
-	p.mu.Lock()
-	if p.dead != nil {
-		dead := p.dead
-		p.mu.Unlock()
-		return dead
-	}
-	p.mu.Unlock()
-	_, err = p.stdin.Write(append(data, '\n'))
-	return err
+	return &pluginClient{Conn: conn}, nil
 }
 
 // Call implements Caller.
 func (p *pluginClient) Call(ctx context.Context, method string, params any, result any) error {
-	p.mu.Lock()
-	if p.dead != nil {
-		err := p.dead
-		p.mu.Unlock()
-		return err
-	}
-	p.nextID++
-	id := p.nextID
-	ch := make(chan callResult, 1)
-	p.pending[id] = ch
-	p.mu.Unlock()
-
-	if err := p.write(map[string]any{
-		"jsonrpc": "2.0", "id": id, "method": method, "params": params,
-	}); err != nil {
-		p.mu.Lock()
-		delete(p.pending, id)
-		p.mu.Unlock()
-		return fmt.Errorf("%w: write: %v", ErrPluginUnavailable, err)
-	}
-
-	select {
-	case res := <-ch:
-		if res.err != nil {
-			return res.err
-		}
-		if result != nil && len(res.resp.Result) > 0 {
-			if err := json.Unmarshal(res.resp.Result, result); err != nil {
-				return fmt.Errorf("%w: result decode: %v", ErrPluginProtocol, err)
-			}
-		}
-		return nil
-	case <-ctx.Done():
-		p.mu.Lock()
-		delete(p.pending, id)
-		p.mu.Unlock()
-		return ctx.Err()
-	}
+	return mapCallErr(p.Conn.Call(ctx, method, params, result))
 }
 
-// Notify implements Caller (fire-and-forget JSON-RPC notification).
+// Notify implements Caller.
 func (p *pluginClient) Notify(method string, params any) error {
-	return p.write(map[string]any{
-		"jsonrpc": "2.0", "method": method, "params": params,
-	})
-}
-
-// cancelShutdown issues the bounded shutdown request. It runs on exec's
-// context watcher — must return quickly; WaitDelay applies the kill backstop
-// if the plugin does not exit (P2-1).
-func (p *pluginClient) cancelShutdown() {
-	done := make(chan struct{})
-	go func() {
-		_ = p.Notify(MethodShutdown, struct{}{})
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-	}
-}
-
-// stop gracefully stops the plugin exactly once: shutdown request (best
-// effort), bounded wait, force kill, wait for exit. Safe to call multiple
-// times.
-func (p *pluginClient) stop(timeout time.Duration) error {
-	p.stopOnce.Do(func() {
-		_ = p.Notify(MethodShutdown, struct{}{})
-		select {
-		case <-p.exited:
-		case <-time.After(timeout):
-			_ = p.cmd.Process.Kill()
-			<-p.exited
-		}
-	})
-	return nil
+	return mapCallErr(p.Conn.Notify(method, params))
 }

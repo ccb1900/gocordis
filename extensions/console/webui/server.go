@@ -414,14 +414,19 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		s.writeResult(w, map[string]any{"modules": modules}, nil)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/plugins":
-		if s.currentExplorer() == nil {
+		// The provider is dynamic (Explorer can be disabled/re-enabled): resolve
+		// ONCE per request and reuse it, so the liveness check and the call can
+		// never land on two different activations.
+		exp := s.currentExplorer()
+		if exp == nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin explorer is not active")
 			return
 		}
-		data, ue := s.currentExplorer().ListPlugins()
+		data, ue := exp.ListPlugins()
 		s.writeResult(w, data, explorerErr(ue))
 	case r.Method == http.MethodPost && r.URL.Path == "/api/plugins/control":
-		if s.currentExplorer() == nil {
+		exp := s.currentExplorer()
+		if exp == nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "unavailable", "plugin explorer is not active")
 			return
 		}
@@ -433,7 +438,7 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		if !s.allowed(w, r, AccessLifecycle, req.PluginID) {
 			return
 		}
-		data, ue := s.currentExplorer().ControlPluginContext(r.Context(), req)
+		data, ue := exp.ControlPluginContext(r.Context(), req)
 		s.writeResult(w, data, explorerErr(ue))
 	case r.Method == http.MethodPost && r.URL.Path == "/api/plugins/uninstall":
 		if s.currentLifecycle() == nil {

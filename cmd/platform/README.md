@@ -12,14 +12,23 @@ From the repository root:
 go run ./cmd/platform                       # http://127.0.0.1:8170
 GOCORDIS_ADDR=127.0.0.1:9000 go run ./cmd/platform
 GOCORDIS_CATALOG_DIR=/path/to/catalog go run ./cmd/platform
+# remote bind requires an explicit opt-in (see security note below)
+GOCORDIS_ALLOW_REMOTE=1 GOCORDIS_ADDR=0.0.0.0:8170 go run ./cmd/platform
 ```
+
+**Security:** the Web UI has NO built-in authentication. Binding a non-loopback
+address (including `:8170` / empty host) is refused by
+`webui.ValidateListenAddr` unless `GOCORDIS_ALLOW_REMOTE=1` (also accepts
+`true`/`yes`). The deployer MUST supply authentication and network isolation
+(firewall / VPN / reverse proxy); binding remote emits a loud warning.
 
 `Ctrl-C` / `SIGTERM` triggers graceful shutdown: the HTTP server drains, then
 the Config Controller withdraws every owned declaration, then the Runtime
 closes. No fixed sleeps — lifecycle progress is awaited through fiber signals.
 
-Environment: `GOCORDIS_ADDR` (listen address), `GOCORDIS_MANIFEST` (manifest
-path), `GOCORDIS_CATALOG_DIR` (market catalog path), `GOCORDIS_WEB_DIST`
+Environment: `GOCORDIS_ADDR` (listen address, default `127.0.0.1:8170`),
+`GOCORDIS_ALLOW_REMOTE` (remote-listen opt-in, default off), `GOCORDIS_MANIFEST`
+(manifest path), `GOCORDIS_CATALOG_DIR` (market catalog path), `GOCORDIS_WEB_DIST`
 (built console SPA directory; API works without it).
 
 ## Manifest shape

@@ -11,3 +11,10 @@ web/plugin-kit/node_modules/
 
 # ZCode harness session state — local tool metadata, never source
 .zcode/
+
+# .NET build artifacts (migration/dotnet)
+TestResults/
+bin/
+obj/
+.vs/
+*.user

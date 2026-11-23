@@ -379,8 +379,15 @@ _ = b.Call(func(c Codec) error { ... })          // 消费者依赖稳定的 bro
 ```go
 _, _ = rt.Load(&host.UIComponent{})   // 宿主:注册表 + hub 能力
 srv := webui.New(hostAdapter, assets) // HTTP+SSE 传输(go:embed 前端)
-http.ListenAndServe(":8080", srv)
+// 监听地址默认必须是 loopback;非 loopback 需显式 opt-in。
+if err := webui.ValidateListenAddr("127.0.0.1:8080", false); err != nil { panic(err) }
+http.ListenAndServe("127.0.0.1:8080", srv)
 ```
+
+> **远程监听**:Web UI **没有内置认证**。默认只绑定 loopback;
+> 绑定 `0.0.0.0` / `:8170` 等非 loopback 地址必须显式 opt-in
+> (`cmd/platform` 用 `GOCORDIS_ALLOW_REMOTE=1`),且由部署者自行提供
+> 认证与网络隔离(防火墙 / VPN / 反向代理);框架只负责拦截误配置并告警。
 
 ### 13.1 开箱即用:内嵌 bootstrap 与完整 SPA
 
@@ -390,6 +397,8 @@ http.ListenAndServe(":8080", srv)
 go run ./cmd/platform                       # http://127.0.0.1:8170/
 GOCORDIS_ADDR=127.0.0.1:9000 go run ./cmd/platform       # 改监听地址
 GOCORDIS_WEB_DIST=/path/to/dist go run ./cmd/platform   # 指定构建产物目录
+# 远程监听(需自行提供认证 + 网络隔离,Web UI 无内置认证):
+GOCORDIS_ALLOW_REMOTE=1 GOCORDIS_ADDR=0.0.0.0:8170 go run ./cmd/platform
 ```
 
 `web/console/dist` 被 gitignore,新克隆不存在;当传入的 assets 为 nil、目录

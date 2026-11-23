@@ -53,6 +53,9 @@ const (
 	demoSettingsType = "demo.settings"
 
 	defaultAddress = "127.0.0.1:8170"
+	// allowRemoteEnv is the explicit opt-in for binding a non-loopback address.
+	// The Web UI has no built-in auth: the deployer supplies auth + isolation.
+	allowRemoteEnv = "GOCORDIS_ALLOW_REMOTE"
 )
 
 // app owns the composition root: the Runtime and the Config Controller that
@@ -295,6 +298,12 @@ func (s observationSink) NotifyObservation(ev host.UIObservation) { s.srv.Publis
 
 // serve runs the Web UI until ctx is cancelled, then drains it gracefully.
 func (a *app) serve(ctx context.Context, address string, assets fs.FS) error {
+	// Safety gate at the actual listener boundary too (defense in depth for
+	// callers other than run): never bind a remote interface by accident.
+	// Silent here — startup's listenAddress() already warned once.
+	if err := webui.ValidateListenAddrSilent(address, allowRemoteListen()); err != nil {
+		return fmt.Errorf("webui listen: %w", err)
+	}
 	srv := a.webUI(assets)
 	if srv == nil {
 		return errors.New("console host is not active; cannot serve Web UI")
@@ -523,6 +532,21 @@ func address() string {
 	return defaultAddress
 }
 
+func allowRemoteListen() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(allowRemoteEnv)))
+	return v == "1" || v == "true" || v == "yes"
+}
+
+// listenAddress applies the framework remote-listen safety gate: loopback is
+// the default; a non-loopback bind needs GOCORDIS_ALLOW_REMOTE explicitly set.
+func listenAddress() (string, error) {
+	addr := address()
+	if err := webui.ValidateListenAddr(addr, allowRemoteListen()); err != nil {
+		return "", fmt.Errorf("%w; set %s=1 only when authentication and network isolation are supplied by the deployer", err, allowRemoteEnv)
+	}
+	return addr, nil
+}
+
 func run() error {
 	manifestPath := defaultManifestPath()
 	a, err := newApp(manifestPath)
@@ -544,8 +568,12 @@ func run() error {
 	if err := a.reconcileManifest(readyCtx); err != nil {
 		return err
 	}
-	log.Printf("[platform] manifest reconciled; Web UI on http://%s", address())
-	return a.serve(ctx, address(), defaultAssets(manifestPath))
+	addr, err := listenAddress()
+	if err != nil {
+		return err
+	}
+	log.Printf("[platform] manifest reconciled; Web UI on http://%s", addr)
+	return a.serve(ctx, addr, defaultAssets(manifestPath))
 }
 
 func main() {

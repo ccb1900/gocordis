@@ -1,0 +1,9 @@
+{
+  "id": "showcase-custom-panel",
+  "title": "自定义面板（TSX Client Module）",
+  "position": "bottom",
+  "renderer": "showcase-custom-panel",
+  "pages": [
+    "/showcase/custom"
+  ]
+}

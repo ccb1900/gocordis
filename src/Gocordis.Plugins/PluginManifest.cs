@@ -87,12 +87,13 @@ public sealed record PluginManifest(
     string? Checksum = null,
     string? Backend = null,
     string? EntryAssembly = null,
-    string? EntryType = null)
+    string? EntryType = null,
+    IReadOnlyList<string>? SharedAssemblies = null)
 {
     private static readonly HashSet<string> KnownFields = new(StringComparer.Ordinal)
     {
         "id", "type", "enabled", "config", "requires", "provides", "version", "source", "checksum",
-        "backend", "entry_assembly", "entry_type",
+        "backend", "entry_assembly", "entry_type", "shared_assemblies",
     };
 
     public static IReadOnlyList<PluginManifest> ParseToml(string text)
@@ -183,10 +184,12 @@ public sealed record PluginManifest(
         var backend = ReadString(component, "backend", id);
         var entryAssembly = ReadString(component, "entry_assembly", id);
         var entryType = ReadString(component, "entry_type", id);
+        var sharedAssemblies = ReadStringArray(component, "shared_assemblies", id);
 
         return new PluginManifest(
             id, type, enabled, config, requires, provides,
-            version, source, checksum, backend, entryAssembly, entryType);
+            version, source, checksum, backend, entryAssembly, entryType,
+            sharedAssemblies.Count > 0 ? sharedAssemblies : null);
     }
 
     internal static PluginManifest FromJsonElement(JsonElement component)
@@ -218,10 +221,12 @@ public sealed record PluginManifest(
         var backend = ReadJsonString(component, "backend", id);
         var entryAssembly = ReadJsonString(component, "entry_assembly", id);
         var entryType = ReadJsonString(component, "entry_type", id);
+        var sharedAssemblies = ReadJsonStringArray(component, "shared_assemblies", id);
 
         return new PluginManifest(
             id, type, enabled, config, requires, provides,
-            version, source, checksum, backend, entryAssembly, entryType);
+            version, source, checksum, backend, entryAssembly, entryType,
+            sharedAssemblies.Count > 0 ? sharedAssemblies : null);
     }
 
     private static void RejectUnknownFields(TomlTable component, string id)

@@ -1,0 +1,61 @@
+{
+  "id": "showcase-overview",
+  "title": "时空组合 Showcase",
+  "route": "/showcase",
+  "renderer": "generic",
+  "icon": "block",
+  "order": -10,
+  "description": "跨插件共享契约 · 依赖门控 · 可逆 effect · 事件订阅 · 声明式 UI（本页由包的 gocordis-ui.json 声明）",
+  "actions": [
+    { "label": "刷新报告", "command": "showcase/report" }
+  ],
+  "views": [
+    {
+      "kind": "kv",
+      "title": "存储提供者（空间维 / 契约共享）",
+      "query": "showcase/store",
+      "fields": [
+        { "key": "provider", "label": "提供者" },
+        { "key": "revision", "label": "版本" },
+        { "key": "writes", "label": "写入次数" }
+      ]
+    },
+    {
+      "kind": "kv",
+      "title": "工作者（时间维 / 事件与 effect）",
+      "query": "showcase/worker",
+      "fields": [
+        { "key": "subscribed", "label": "已订阅" },
+        { "key": "observed", "label": "观察到事件" },
+        { "key": "lastEvent", "label": "最近事件" },
+        { "key": "derived", "label": "派生值" }
+      ]
+    },
+    {
+      "kind": "stats",
+      "title": "统计块（stats：对查询行做 count / sum）",
+      "query": "showcase/events",
+      "items": [
+        { "label": "事件总数", "op": "count" },
+        { "label": "当前 revision", "op": "sum", "field": "revision" }
+      ]
+    },
+    {
+      "kind": "form",
+      "title": "表单块（form → API command）",
+      "command": "showcase/config.set",
+      "submitLabel": "保存配置",
+      "fields": [
+        { "key": "label", "label": "标签" },
+        { "key": "threshold", "label": "阈值" }
+      ]
+    },
+    {
+      "kind": "json",
+      "title": "JSON 编辑块（json：query ↔ command）",
+      "query": "showcase/config",
+      "command": "showcase/config.set",
+      "jsonKey": "doc"
+    }
+  ]
+}

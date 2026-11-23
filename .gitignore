@@ -5,6 +5,7 @@ web/console/dist/
 # Dependencies are reproducible from their lockfiles — never tracked.
 client/node_modules/
 web/plugin-kit/node_modules/
+samples/SpatiotemporalShowcase/UiClientModule/frontend/node_modules/
 
 # Build artifacts: `go build ./cmd/backfill` writes ./backfill by default.
 /backfill

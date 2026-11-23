@@ -362,6 +362,7 @@ public sealed class ConsoleHost
         Runtime = runtime;
         var owner = ContributionOwner.For("framework", "console");
         Api.RegisterQuery("runtime/snapshot", RuntimeSnapshot, owner);
+        Api.RegisterQuery("runtime/events", RuntimeEvents, owner);
         Api.RegisterQuery("framework/dashboard", Dashboard, owner);
         Api.RegisterQuery("insight/graph", InsightGraph, owner);
     }
@@ -372,33 +373,149 @@ public sealed class ConsoleHost
 
     public ApiGateway Api { get; } = new();
 
+    /// <summary>
+    /// Canonical runtime/events wire shape: {events:[{sequence,timestamp,type,
+    /// fiberID,activationID,data}], sequence}. Migrated from Go runtime/dto.go.
+    /// The frontend's framework-dashboard timeline consumes this query.
+    /// </summary>
+    private JsonObject RuntimeEvents()
+    {
+        var events = new JsonArray();
+        var snapshot = Runtime.Events.Snapshot();
+        foreach (var item in snapshot.Events)
+        {
+            events.Add(new JsonObject
+            {
+                ["sequence"] = item.Sequence,
+                ["timestamp"] = item.Timestamp.UtcDateTime.ToString("O"),
+                ["type"] = item.Type,
+                ["fiberID"] = item.FiberId.ToString(),
+                ["activationID"] = item.ActivationId,
+                ["data"] = item.Data is null ? null : JsonValue.Create(item.Data.ToString()),
+            });
+        }
+
+        return new JsonObject { ["events"] = events, ["sequence"] = snapshot.Sequence };
+    }
+
+    /// <summary>
+    /// Canonical framework/dashboard wire shape (Go runtime/dto.go DashboardDTO):
+    /// counts are nested (fibers/active/providers/dependencies/effects/failed/
+    /// pending) alongside sequence, state, recentEvents and diagnostics. The
+    /// console's parseDashboard reads counts + recentEvents, so the old flat
+    /// {total,active,...} shape rendered zeros.
+    /// </summary>
     private JsonObject Dashboard()
     {
-        var fibers = Runtime.Snapshot().Fibers;
+        var snapshot = Runtime.Snapshot();
+        var fibers = snapshot.Fibers;
+        var counts = new JsonObject
+        {
+            ["fibers"] = fibers.Count,
+            ["active"] = fibers.Count(f => f.State == FiberState.Active),
+            ["pending"] = fibers.Count(f => f.State == FiberState.Pending),
+            ["failed"] = fibers.Count(f => f.State == FiberState.Failed),
+            ["providers"] = fibers.Sum(f => f.Provides.Count),
+            ["dependencies"] = fibers.Sum(f => f.Requires.Count),
+            ["effects"] = fibers.Sum(f => f.BoundProviders.Count),
+        };
+
+        var events = new JsonArray();
+        foreach (var item in Runtime.Events.Snapshot().Events.TakeLast(8))
+        {
+            events.Add(new JsonObject
+            {
+                ["sequence"] = item.Sequence,
+                ["timestamp"] = item.Timestamp.UtcDateTime.ToString("O"),
+                ["type"] = item.Type,
+                ["fiberID"] = item.FiberId.ToString(),
+                ["activationID"] = item.ActivationId,
+            });
+        }
+
         return new JsonObject
         {
-            ["total"] = fibers.Count,
-            ["active"] = fibers.Count(fiber => fiber.State == FiberState.Active),
-            ["pending"] = fibers.Count(fiber => fiber.State == FiberState.Pending),
-            ["failed"] = fibers.Count(fiber => fiber.State == FiberState.Failed),
+            ["sequence"] = Runtime.Events.Sequence,
+            ["state"] = "active",
+            ["counts"] = counts,
+            ["recentEvents"] = events,
+            ["diagnostics"] = new JsonArray(),
         };
     }
 
+    /// <summary>
+    /// Canonical insight/graph wire shape (Go insight/dto.go Graph): a DECLARED
+    /// view (from registry entries) and a RUNTIME view (from one coherent
+    /// Snapshot). The console's InsightGraphBlock reads declared/runtime, so the
+    /// old flat {nodes,edges} shape rendered "no graph data".
+    /// </summary>
     private JsonObject InsightGraph()
     {
-        var nodes = new JsonArray();
-        var edges = new JsonArray();
-        foreach (var fiber in Runtime.Snapshot().Fibers)
+        var declaredNodes = new JsonArray();
+        var declaredEdges = new JsonArray();
+        foreach (var (id, entry) in RegistryForInsight().Entries)
         {
-            nodes.Add(new JsonObject { ["id"] = fiber.Id.ToString(), ["name"] = fiber.Name });
-            foreach (var binding in fiber.BoundProviders)
+            declaredNodes.Add(new JsonObject
             {
-                edges.Add(new JsonObject { ["from"] = fiber.Id.ToString(), ["binding"] = binding });
+                ["id"] = id,
+                ["name"] = id,
+                ["type"] = entry.Manifest.Type,
+                ["requires"] = new JsonArray(entry.Manifest.Requires.Select(d => (JsonNode?)d).ToArray()),
+                ["provides"] = new JsonArray(entry.Manifest.Provides.Select(p => (JsonNode?)p).ToArray()),
+            });
+            foreach (var dependency in entry.Manifest.Requires)
+            {
+                declaredEdges.Add(new JsonObject
+                {
+                    ["from"] = id,
+                    ["to"] = dependency,
+                    ["key"] = dependency,
+                });
             }
         }
 
-        return new JsonObject { ["nodes"] = nodes, ["edges"] = edges };
+        var runtimeNodes = new JsonArray();
+        var runtimeEdges = new JsonArray();
+        foreach (var fiber in Runtime.Snapshot().Fibers)
+        {
+            runtimeNodes.Add(new JsonObject
+            {
+                ["fiberId"] = fiber.Id.ToString(),
+                ["name"] = fiber.Name,
+                ["state"] = fiber.State.ToString(),
+                ["activationId"] = fiber.Generation,
+                ["provides"] = new JsonArray(fiber.Provides.Select(p => (JsonNode?)p).ToArray()),
+                ["requires"] = new JsonArray(fiber.Requires.Select(r => (JsonNode?)r).ToArray()),
+            });
+            foreach (var binding in fiber.BoundProviders)
+            {
+                var separator = binding.IndexOf("->", StringComparison.Ordinal);
+                var key = separator > 0 ? binding[..separator] : binding;
+                var provider = separator > 0 ? binding[(separator + 2)..] : string.Empty;
+                runtimeEdges.Add(new JsonObject
+                {
+                    ["consumerFiberId"] = fiber.Id.ToString(),
+                    ["providerFiberId"] = provider,
+                    ["key"] = key,
+                    ["status"] = "Satisfied",
+                });
+            }
+        }
+
+        return new JsonObject
+        {
+            ["eventSequence"] = Runtime.Events.Sequence,
+            ["declared"] = new JsonObject { ["nodes"] = declaredNodes, ["edges"] = declaredEdges },
+            ["runtime"] = new JsonObject { ["nodes"] = runtimeNodes, ["edges"] = runtimeEdges },
+        };
     }
+
+    /// <summary>The registry is supplied by the host after construction; when
+    /// absent the declared view is empty (runtime view still works).</summary>
+    private Plugins.PluginRegistry? _registry;
+    public void AttachRegistry(Plugins.PluginRegistry registry) => _registry = registry;
+    private Plugins.PluginRegistry RegistryForInsight() =>
+        _registry ?? new Plugins.PluginRegistry(Runtime);
 
     public JsonObject RuntimeSnapshot()
     {

@@ -71,36 +71,53 @@ public sealed class ProductGateTests
         AssertPlugin(plugins, "orphan", "orphan", true, "Pending");
         AssertPlugin(plugins, "disabled-plugin", "noop", false, "disabled");
 
-        // /api/query/framework/dashboard: counts are derived from live fibers.
+        // /api/query/framework/dashboard: canonical DashboardDTO shape — the
+        // console's parseDashboard reads nested `counts`, not flat totals. The
+        // old flat shape made the page render all zeros despite API data.
         var dashboard = JsonNode.Parse(
             await client.GetStringAsync("/api/query/framework/dashboard"))!["data"]!;
-        Assert.Equal(fibers.Count, dashboard["total"]!.GetValue<int>());
-        Assert.Equal(fibers.Count(f => f.State == FiberState.Active), dashboard["active"]!.GetValue<int>());
-        Assert.Equal(fibers.Count(f => f.State == FiberState.Pending), dashboard["pending"]!.GetValue<int>());
-        Assert.Equal(fibers.Count(f => f.State == FiberState.Failed), dashboard["failed"]!.GetValue<int>());
-        Assert.Equal(3, dashboard["total"]!.GetValue<int>());
-        Assert.Equal(2, dashboard["active"]!.GetValue<int>());
-        Assert.Equal(1, dashboard["pending"]!.GetValue<int>());
-        Assert.Equal(0, dashboard["failed"]!.GetValue<int>());
+        var counts = dashboard["counts"]!;
+        Assert.Equal(fibers.Count, counts["fibers"]!.GetValue<int>());
+        Assert.Equal(fibers.Count(f => f.State == FiberState.Active), counts["active"]!.GetValue<int>());
+        Assert.Equal(fibers.Count(f => f.State == FiberState.Pending), counts["pending"]!.GetValue<int>());
+        Assert.Equal(fibers.Count(f => f.State == FiberState.Failed), counts["failed"]!.GetValue<int>());
+        Assert.NotNull(dashboard["sequence"]);
+        Assert.NotNull(dashboard["state"]);
+        Assert.NotNull(dashboard["recentEvents"]);
+        Assert.NotNull(dashboard["diagnostics"]);
+        Assert.Equal(3, counts["fibers"]!.GetValue<int>());
+        Assert.Equal(2, counts["active"]!.GetValue<int>());
+        Assert.Equal(1, counts["pending"]!.GetValue<int>());
+        Assert.Equal(0, counts["failed"]!.GetValue<int>());
 
-        // /api/query/insight/graph: one node per fiber, real provider bindings as edges.
+        // /api/query/runtime/events: the canonical event ring query the
+        // framework-dashboard timeline consumes. Must not 404.
+        var events = JsonNode.Parse(
+            await client.GetStringAsync("/api/query/runtime/events"))!["data"]!;
+        Assert.NotNull(events["events"]);
+        Assert.True(events["sequence"]!.GetValue<long>() > 0);
+
+        // /api/query/insight/graph: canonical Graph shape with declared/runtime
+        // views — the console's InsightGraphBlock reads those, not flat nodes.
         var graph = JsonNode.Parse(
             await client.GetStringAsync("/api/query/insight/graph"))!["data"]!;
-        var nodes = graph["nodes"]!.AsArray();
-        var edges = graph["edges"]!.AsArray();
-        Assert.Equal(fibers.Count, nodes.Count);
+        var runtimeNodes = graph["runtime"]!["nodes"]!.AsArray();
+        var runtimeEdges = graph["runtime"]!["edges"]!.AsArray();
+        Assert.NotNull(graph["declared"]!["nodes"]);
+        Assert.NotNull(graph["declared"]!["edges"]);
+        Assert.Equal(fibers.Count, runtimeNodes.Count);
         foreach (var fiber in fibers)
         {
-            Assert.Contains(nodes, node =>
-                node?["id"]?.GetValue<string>() == fiber.Id.ToString() &&
+            Assert.Contains(runtimeNodes, node =>
+                node?["fiberId"]?.GetValue<string>() == fiber.Id.ToString() &&
                 node["name"]?.GetValue<string>() == fiber.Name);
         }
 
-        Assert.NotEmpty(edges);
+        Assert.NotEmpty(runtimeEdges);
         var expectedBinding = $"{ExplorerSharedKey.Name}->{providerFiber.Id}";
-        Assert.Contains(edges, edge =>
-            edge?["from"]?.GetValue<string>() == consumerFiber.Id.ToString() &&
-            edge["binding"]?.GetValue<string>() == expectedBinding);
+        Assert.Contains(runtimeEdges, edge =>
+            edge?["consumerFiberId"]?.GetValue<string>() == consumerFiber.Id.ToString() &&
+            edge["key"]?.GetValue<string>() == ExplorerSharedKey.Name);
 
         // The productized console (not the embedded bootstrap) is what is served.
         Assert.Contains("/assets/", await client.GetStringAsync("/"));
@@ -112,14 +129,13 @@ public sealed class ProductGateTests
         var dist = FindConsoleDist();
 
         // Delivery evidence from the real build output; not the sole assertion.
-        var explorerAssets = Directory.GetFiles(
-            Path.Combine(dist, "assets"), "*Explorer*.js", SearchOption.TopDirectoryOnly);
-        var explorerAssetPath = Assert.Single(explorerAssets, path =>
-            File.ReadAllText(path).Contains("plugin-explorer", StringComparison.Ordinal));
-        var dashboardAsset = Directory.GetFiles(
-            Path.Combine(dist, "assets"), "index-*.js", SearchOption.TopDirectoryOnly)
-            .Single(path => File.ReadAllText(path)
-                .Contains("dashboard", StringComparison.OrdinalIgnoreCase));
+        // Renderer registration lives in whichever chunk Vite emits it to (the
+        // main bundle today, a dedicated Explorer chunk before), so locate the
+        // built asset by content rather than by a hard-coded file name.
+        var allJsAssets = Directory.GetFiles(
+            Path.Combine(dist, "assets"), "*.js", SearchOption.TopDirectoryOnly);
+        var dashboardAsset = allJsAssets.Single(path => File.ReadAllText(path)
+            .Contains("dashboard", StringComparison.OrdinalIgnoreCase));
 
         await using var runtime = new Gocordis.Core.Runtime();
         var host = new ConsoleHost(runtime);
@@ -134,17 +150,13 @@ public sealed class ProductGateTests
         var bundle = await client.GetStringAsync(script.Groups[1].Value);
         Assert.True(bundle.Contains("dashboard", StringComparison.OrdinalIgnoreCase),
             "served main bundle must contain the dashboard view");
-
-        var explorerPath = "/assets/" + Path.GetFileName(explorerAssetPath);
-        var explorerAsset = await client.GetStringAsync(explorerPath);
-        Assert.True(explorerAsset.Contains("plugin-explorer", StringComparison.Ordinal),
-            "served Explorer chunk must contain the plugin explorer page");
-        Assert.Equal(File.ReadAllText(explorerAssetPath), explorerAsset);
+        Assert.True(bundle.Contains("plugin-explorer", StringComparison.Ordinal),
+            "served built console must register the plugin explorer renderer");
 
         // The Inspector/dashboard query remains live behind the shipped asset.
         var dashboard = JsonNode.Parse(
             await client.GetStringAsync("/api/query/framework/dashboard"))!["data"]!;
-        Assert.Equal(0, dashboard["total"]!.GetValue<int>());
+        Assert.Equal(0, dashboard["counts"]!["fibers"]!.GetValue<int>());
     }
 
     // ---------------------------------------------------------------------

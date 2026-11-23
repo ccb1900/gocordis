@@ -113,6 +113,9 @@ public class PlatformApplication : IAsyncDisposable
         Runtime = new Gocordis.Core.Runtime();
         Console = new ConsoleHost(Runtime);
         Registry = new PluginRegistry(Runtime);
+        // Give the console's insight/graph query access to the declaration set
+        // so its "declared" view is populated (runtime view uses Snapshot).
+        Console.AttachRegistry(Registry);
         Managed = new ManagedPluginHost(Runtime);
         Store = new PluginStore(options.StorePath, options.HostVersion);
         _diagnostics = new DiagnosticsService(options.HostVersion);
@@ -169,8 +172,11 @@ public class PlatformApplication : IAsyncDisposable
             await Runtime.LoadAsync(new ConsoleCapabilitiesComponent(Console));
 
             // Backend selection belongs to the composition root. The control
-            // plane receives the same factory so packages installed later use
-            // the same dispatch path as declarations known at startup.
+            // plane receives the same factory and registers it for every declared
+            // type, decorating the result with UiPackageBinder so a package's
+            // gocordis-ui.json is installed/undone with the plugin. Registering
+            // factories HERE would bypass that wrapper, so we only resolve the
+            // declaration report; ApplyAllAsync owns factory registration.
             Func<PluginManifest, Component> componentFactory = CreateComponent;
             foreach (var plugin in manifest.Plugins)
             {
@@ -181,15 +187,6 @@ public class PlatformApplication : IAsyncDisposable
                 }
 
                 _resolved.Add(new PlatformResolvedPlugin(plugin.Id, installed.Version, plugin.Enabled));
-                try
-                {
-                    Registry.RegisterComponentFactory(installed.Manifest.Type, componentFactory);
-                }
-                catch (InvalidOperationException ex) when (ex.Message.Contains("already registered", StringComparison.Ordinal))
-                {
-                    // A type can be shared by several declarations; one factory
-                    // serves all of them, so a duplicate registration is benign.
-                }
             }
 
             // The control plane is a plugin contribution: load its fiber first,
@@ -266,7 +263,8 @@ public class PlatformApplication : IAsyncDisposable
             // fiber, so the loader key must include the version: otherwise an
             // upgrade would fail with "already loaded" on the same id.
             var loaderKey = $"{manifest.Id}@{manifest.Version}";
-            return Managed.CreateComponent(loaderKey, assemblyPath, manifest.EntryType);
+            return Managed.CreateComponent(
+                loaderKey, assemblyPath, manifest.EntryType, manifest.SharedAssemblies);
         }
 
         if (string.Equals(backend, "process", StringComparison.OrdinalIgnoreCase))

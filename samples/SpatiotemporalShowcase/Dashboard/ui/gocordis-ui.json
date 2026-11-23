@@ -1,0 +1,39 @@
+{
+  "resources": [
+    {
+      "kind": "page",
+      "id": "showcase-overview",
+      "path": "ui/overview.page.json"
+    },
+    {
+      "kind": "page",
+      "id": "showcase-blocks",
+      "path": "ui/blocks.page.json"
+    },
+    {
+      "kind": "page",
+      "id": "showcase-graph",
+      "path": "ui/graph.page.json"
+    },
+    {
+      "kind": "page",
+      "id": "showcase-inspector",
+      "path": "ui/inspector.page.json"
+    },
+    {
+      "kind": "page",
+      "id": "showcase-framework",
+      "path": "ui/framework.page.json"
+    },
+    {
+      "kind": "panel",
+      "id": "showcase-status-panel",
+      "path": "ui/status.panel.json"
+    },
+    {
+      "kind": "panel",
+      "id": "showcase-feed-panel",
+      "path": "ui/feed.panel.json"
+    }
+  ]
+}

@@ -83,9 +83,12 @@ public sealed class Phase6Tests
         var host = new ConsoleHost(runtime);
 
         var dashboard = host.Api.Query("framework/dashboard")!;
-        Assert.Equal(0, dashboard["total"]!.GetValue<int>());
+        Assert.Equal(0, dashboard["counts"]!["fibers"]!.GetValue<int>());
         Assert.NotNull(host.Api.Query("runtime/snapshot"));
-        Assert.NotNull(host.Api.Query("insight/graph"));
+        Assert.NotNull(host.Api.Query("runtime/events"));
+        var graph = host.Api.Query("insight/graph")!;
+        Assert.NotNull(graph["declared"]);
+        Assert.NotNull(graph["runtime"]);
     }
 
     [Fact]

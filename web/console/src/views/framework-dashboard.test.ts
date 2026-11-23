@@ -99,3 +99,41 @@ describe("dashboard + diagnostics mapping", () => {
     expect(parseDashboard({ data: dashboard() }).counts.failed).toBe(2);
   });
 });
+
+// ---- C# wire contract regression ------------------------------------------
+// The .NET ConsoleHost initially returned a FLAT {total,active,...} dashboard
+// and no runtime/events query at all. The API looked healthy but every page
+// rendered zeros / "no events" because parseDashboard/parseEvents expect the
+// canonical Go DTO shapes. Feed the exact C# payload through the real parsers:
+// this is the missing end-to-end link between backend and rendered page.
+describe("dotnet console wire contract", () => {
+  it("parses the actual C# framework/dashboard payload into non-zero counts", () => {
+    const wire = {
+      sequence: 18,
+      state: "active",
+      counts: { fibers: 6, active: 6, pending: 0, failed: 0, providers: 10, dependencies: 9, effects: 8 },
+      recentEvents: [
+        { sequence: 11, timestamp: "2026-11-23T03:52:58Z", type: "ActivationLoading", fiberID: "f-1", activationID: 4 },
+      ],
+      diagnostics: [],
+    };
+    const parsed = parseDashboard(wire);
+    expect(parsed.counts.active).toBe(6);
+    expect(parsed.counts.total).toBe(6);
+    expect(parsed.recentEvents).toHaveLength(1);
+  });
+
+  it("parses the actual C# runtime/events payload (GUID fiber ids, null data)", () => {
+    const wire = {
+      events: [
+        { sequence: 1, timestamp: "2026-11-23T03:52:58Z", type: "FiberCreated", fiberID: "cd4ac0d2", activationID: 0, data: null },
+        { sequence: 2, timestamp: "2026-11-23T03:52:58Z", type: "ActivationLoading", fiberID: "cd4ac0d2", activationID: 1, data: null },
+      ],
+      sequence: 18,
+    };
+    const parsed = parseEvents(wire);
+    expect(parsed.sequence).toBe(18);
+    expect(parsed.events).toHaveLength(2);
+    expect(parsed.events[0].fiberID).toBe("cd4ac0d2");
+  });
+});

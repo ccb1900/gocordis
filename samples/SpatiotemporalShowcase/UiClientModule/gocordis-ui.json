@@ -1,0 +1,19 @@
+{
+  "resources": [
+    {
+      "kind": "client-module",
+      "id": "showcase-client-module",
+      "path": "ui.js"
+    },
+    {
+      "kind": "page",
+      "id": "showcase-custom-page",
+      "path": "ui/pages/showcase-custom-page.json"
+    },
+    {
+      "kind": "panel",
+      "id": "showcase-custom-panel",
+      "path": "ui/panels/showcase-custom-panel.json"
+    }
+  ]
+}

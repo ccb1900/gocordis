@@ -27,8 +27,10 @@ public sealed class ManagedPluginHost : IAsyncDisposable
     /// the fiber releases the ALC through the unified protocol; callers no
     /// longer need to remember a matching Loader.Unload.
     /// </summary>
-    public Component CreateComponent(string id, string assemblyPath, string typeName) =>
-        new ManagedPluginComponent(Loader, id, assemblyPath, typeName);
+    public Component CreateComponent(
+        string id, string assemblyPath, string typeName,
+        IReadOnlyList<string>? sharedAssemblies = null) =>
+        new ManagedPluginComponent(Loader, id, assemblyPath, typeName, sharedAssemblies);
 
     public async Task<Fiber> LoadAsync(string id, string assemblyPath, string typeName)
     {

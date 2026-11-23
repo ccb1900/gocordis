@@ -191,9 +191,25 @@ public static class Program
         if (source is null || output is null)
         {
             return Fail("usage: plugin pack|package <sourceDir> <output.gocordis-plugin> " +
-                        "[--id] [--version] [--type] [--host-range] [--backend] [--entry-assembly] [--entry-type]");
+                        "[--id] [--version] [--type] [--host-range] [--backend] [--entry-assembly] [--entry-type] " +
+                        "[--shared-assembly <name> ...] [--provides <name> ...] [--dependency <id>@<range> ...]");
         }
 
+        var shared = OptionValues(args, "--shared-assembly");
+        var provides = OptionValues(args, "--provides");
+        var dependencies = OptionValues(args, "--dependency")
+            .Select(value =>
+            {
+                var separator = value.IndexOf('@');
+                if (separator <= 0 || separator == value.Length - 1)
+                {
+                    throw new ArgumentException(
+                        $"invalid dependency '{value}'; expected <id>@<version-range>");
+                }
+
+                return new PluginDependency(value[..separator], value[(separator + 1)..]);
+            })
+            .ToArray();
         var manifest = new PluginPackageManifest(
             Id: Option(args, "--id") ?? new DirectoryInfo(source).Name,
             Version: Option(args, "--version") ?? "1.0.0",
@@ -201,7 +217,10 @@ public static class Program
             HostVersionRange: Option(args, "--host-range") ?? "[1.0,)",
             Backend: Option(args, "--backend"),
             EntryAssembly: Option(args, "--entry-assembly"),
-            EntryType: Option(args, "--entry-type"));
+            EntryType: Option(args, "--entry-type"),
+            SharedAssemblies: shared.Count > 0 ? shared : null,
+            Provides: provides.Count > 0 ? provides : null!,
+            Dependencies: dependencies.Length > 0 ? dependencies : null!);
         var written = await PluginPackageWriter.CreateAsync(source, manifest, output);
         Write(new { packed = output, written.Id, written.Version, written.Checksum });
         return 0;
@@ -1084,12 +1103,30 @@ public static class Program
         return args.FirstOrDefault(a => a.StartsWith(name + "=", StringComparison.Ordinal))?[(name.Length + 1)..];
     }
 
+    private static List<string> OptionValues(string[] args, string name)
+    {
+        var values = new List<string>();
+        for (var i = 0; i < args.Length - 1; i++)
+        {
+            if (string.Equals(args[i], name, StringComparison.Ordinal))
+            {
+                values.Add(args[i + 1]);
+            }
+        }
+
+        values.AddRange(args
+            .Where(a => a.StartsWith(name + "=", StringComparison.Ordinal))
+            .Select(a => a[(name.Length + 1)..]));
+        return values;
+    }
+
     private static string? Positional(string[] args, int index)
     {
         var options = new HashSet<string>(StringComparer.Ordinal)
         {
             "--store", "--host-version", "--address", "--id", "--name", "--version", "--type", "--host-range", "--source",
-            "--output", "--out", "--key", "--public-key",
+            "--output", "--out", "--key", "--public-key", "--backend", "--entry-assembly", "--entry-type",
+            "--shared-assembly", "--allowed-host", "--host-version-range", "--provides", "--dependency",
         };
         var flags = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -1133,6 +1170,8 @@ public static class Program
         gocordis create <outputDir> [--id] [--version] [--host-version]
         gocordis plugin create <outputDir> --id <id> --name <name> --type <type> [--version]
         gocordis plugin pack|package <sourceDir> <output> [--id] [--version] [--type] [--host-range]
+                            [--backend managed|builtin] [--entry-assembly <dll>] [--entry-type <type>]
+                            [--shared-assembly <name> ...]
         gocordis plugin keygen [--out <dir>] [--name <key>] [--force]
         gocordis plugin sign <package> --key <privatePem> [--output <path>]
         gocordis plugin doctor <packagePath> [--host-version] [--store] [--public-key <pem>]

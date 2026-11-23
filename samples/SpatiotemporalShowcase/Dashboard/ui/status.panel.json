@@ -1,0 +1,14 @@
+{
+  "id": "showcase-status-panel",
+  "title": "Showcase 状态（right panel）",
+  "position": "right",
+  "renderer": "generic",
+  "pages": ["/showcase", "/showcase/blocks"],
+  "views": [
+    { "kind": "kv", "query": "showcase/dashboard", "fields": [
+      { "key": "healthy", "label": "健康" },
+      { "key": "storeWrites", "label": "写入" },
+      { "key": "workerObserved", "label": "事件" }
+    ] }
+  ]
+}

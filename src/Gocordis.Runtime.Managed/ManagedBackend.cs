@@ -165,13 +165,14 @@ public sealed class ManagedPluginComponent : Component, IIterativeComponent, IDi
     private bool _stagingReleased;
 
     public ManagedPluginComponent(
-        ManagedPluginLoader loader, string id, string assemblyPath, string typeName)
+        ManagedPluginLoader loader, string id, string assemblyPath, string typeName,
+        IReadOnlyList<string>? sharedAssemblies = null)
     {
         _loader = loader;
         _id = id;
         _assemblyPath = assemblyPath;
         _typeName = typeName;
-        _plugin = loader.Load(id, assemblyPath, typeName);
+        _plugin = loader.Load(id, assemblyPath, typeName, sharedAssemblies);
         _instanceKey = ManagedKeys.ForInstance(id);
     }
 

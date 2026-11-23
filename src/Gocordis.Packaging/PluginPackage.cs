@@ -43,12 +43,14 @@ public sealed record PluginPackageManifest(
     string? Backend = null,
     string? EntryAssembly = null,
     string? EntryType = null,
-    IReadOnlyList<PackageUiResource>? Ui = null)
+    IReadOnlyList<PackageUiResource>? Ui = null,
+    IReadOnlyList<string>? SharedAssemblies = null)
 {
     public IReadOnlyList<PluginDependency> DependenciesOrEmpty => Dependencies ?? [];
     public IReadOnlyList<string> ProvidesOrEmpty => Provides ?? [];
     public IReadOnlyList<PackageFile> FilesOrEmpty => Files ?? [];
     public IReadOnlyList<PackageUiResource> UiOrEmpty => Ui ?? [];
+    public IReadOnlyList<string> SharedAssembliesOrEmpty => SharedAssemblies ?? [];
 }
 
 public sealed record PluginPackageContent(
@@ -153,6 +155,19 @@ public static class PluginPackageWriter
                 $"managed entry assembly '{manifest.EntryAssembly}' is not in the package payload");
         }
 
+        // A shared contract assembly must ship in the payload: the managed
+        // loader promotes it into the default ALC so every plugin that declares
+        // the same name resolves one Key<T> identity across separate ALCs.
+        foreach (var shared in manifest.SharedAssembliesOrEmpty)
+        {
+            var payloadName = shared + ".dll";
+            if (!files.Any(file => string.Equals(file.Path, payloadName, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidPluginPackageException(
+                    $"shared assembly '{shared}' requires '{payloadName}' in the package payload");
+            }
+        }
+
         var completed = manifest with { Checksum = ComputeIntegrityChecksum(manifest with { Files = files }), Files = files };
         var manifestJson = JsonSerializer.Serialize(completed, JsonOptions);
         if (Encoding.UTF8.GetByteCount(manifestJson) > PluginPackageLimits.MaxManifestBytes)
@@ -254,6 +269,19 @@ public static class PluginPackageWriter
             }
         }
 
+        foreach (var shared in manifest.SharedAssembliesOrEmpty)
+        {
+            // Simple assembly name only: no path separators, directory segments
+            // or '.dll' suffix. The loader appends '.dll' inside the payload.
+            if (string.IsNullOrWhiteSpace(shared) ||
+                shared.IndexOfAny(['/', '\\']) >= 0 ||
+                Path.IsPathRooted(shared) ||
+                shared.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidPluginPackageException($"invalid shared assembly name '{shared}'");
+            }
+        }
+
         // Backend metadata is optional: an absent backend is the legacy
         // declaration-only package, resolved by a host-provided factory.
         var backend = manifest.Backend;
@@ -335,6 +363,18 @@ public static class PluginPackageWriter
             text.Append("backend=").Append(manifest.Backend ?? string.Empty).Append('\n');
             text.Append("entry-assembly=").Append(manifest.EntryAssembly ?? string.Empty).Append('\n');
             text.Append("entry-type=").Append(manifest.EntryType ?? string.Empty).Append('\n');
+        }
+
+        // Shared contract assemblies are versioned into the checksum only when
+        // present, so legacy packages keep their exact byte sequence. Names are
+        // canonicalized (sorted) so declaration order cannot change the value.
+        if (manifest.SharedAssembliesOrEmpty.Count > 0)
+        {
+            foreach (var shared in manifest.SharedAssembliesOrEmpty
+                         .OrderBy(s => s, StringComparer.Ordinal))
+            {
+                text.Append("shared=").Append(shared).Append('\n');
+            }
         }
 
         foreach (var dependency in manifest.DependenciesOrEmpty

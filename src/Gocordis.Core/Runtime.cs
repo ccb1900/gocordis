@@ -105,6 +105,14 @@ public sealed class Runtime : IAsyncDisposable
     private readonly List<TaskCompletionSource> _closeWaiters = [];
     private volatile RuntimeSnapshot _snapshot = new([]);
 
+    /// <summary>
+    /// Bounded observation ring of canonical lifecycle transitions. The kernel
+    /// assigns the monotonic Sequence; consumers read <see cref="RuntimeEventRing.Snapshot"/>
+    /// through the console's <c>runtime/events</c> query. Retention lives here,
+    /// not in the decision loop's hot path beyond one append.
+    /// </summary>
+    public RuntimeEventRing Events { get; } = new();
+
     public Runtime() { }
 
     private void EnsureLoop()
@@ -383,6 +391,7 @@ public sealed class Runtime : IAsyncDisposable
 
         _fibers[fiber.Id] = fiber;
         command.Parent?.AddChild(fiber);
+        Events.Append(nameof(RuntimeEventType.FiberCreated), fiber.Id, 0);
 
         var cycle = FindCycle();
         if (cycle is not null)
@@ -698,6 +707,7 @@ public sealed class Runtime : IAsyncDisposable
         activation.Phase = ActivationPhase.Committed;
         activation.Fiber.State = FiberState.Active;
         _bindingsChanged = true;
+        Events.Append(nameof(RuntimeEventType.ActivationActive), activation.Fiber.Id, activation.Id);
     }
 
     private void HandleUnwindCompleted(UnwindCompletedCommand command)
@@ -750,6 +760,8 @@ public sealed class Runtime : IAsyncDisposable
         }
 
         activation.Phase = ActivationPhase.Unwound;
+        Events.Append(nameof(RuntimeEventType.ActivationEnded), fiber.Id, activation.Id,
+            new { State = fiber.State.ToString() });
         if (fiber.Intent == LifecycleIntent.Retired || _closing)
         {
             fiber.State = FiberState.Gone;
@@ -1011,6 +1023,7 @@ public sealed class Runtime : IAsyncDisposable
         _activations[id] = activation;
         _applying.Add(id);
         _bindingsChanged = true;
+        Events.Append(nameof(RuntimeEventType.ActivationLoading), fiber.Id, id);
         _ = Task.Run(() => RunApplyAsync(activation));
     }
 
@@ -1195,6 +1208,7 @@ public sealed class Runtime : IAsyncDisposable
         activation.Phase = ActivationPhase.Unwinding;
         activation.Fiber.State = FiberState.Unloading;
         _unwinding.Add(activation.Id);
+        Events.Append(nameof(RuntimeEventType.ActivationUnloading), activation.Fiber.Id, activation.Id);
         _ = Task.Run(() => RunUnwindAsync(activation));
     }
 

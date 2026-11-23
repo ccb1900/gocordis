@@ -73,6 +73,64 @@ public sealed class CliAndSourceTests
     }
 
     [Fact]
+    public async Task CliPackDeclaresSharedContractAssemblies()
+    {
+        using var temp = new TempDir();
+        var source = System.IO.Path.Combine(temp.Root, "source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(System.IO.Path.Combine(source, "demo.dll"), "binary");
+        await File.WriteAllTextAsync(System.IO.Path.Combine(source, "Demo.Contracts.dll"), "binary");
+        var package = System.IO.Path.Combine(temp.Root, "demo.gocordis-plugin");
+
+        // Two names: one space-separated value form, one '=' form. Both must be
+        // captured as repeated option values, not treated as positional args.
+        var result = await RunAsync("plugin", "pack", source, package,
+            "--id", "demo", "--version", "1.0.0", "--type", "demo", "--host-range", "[1.0,)",
+            "--backend", "managed", "--entry-assembly", "demo.dll", "--entry-type", "Demo.Plugin",
+            "--shared-assembly", "Demo.Contracts");
+        Assert.Equal(0, result.Code);
+
+        var content = await PluginPackageReader.ReadAsync(package, "1.5.0");
+        Assert.Equal(["Demo.Contracts"], content.Manifest.SharedAssembliesOrEmpty);
+
+        // A declared shared assembly MUST ship in the payload.
+        var missingSource = System.IO.Path.Combine(temp.Root, "missing");
+        Directory.CreateDirectory(missingSource);
+        await File.WriteAllTextAsync(System.IO.Path.Combine(missingSource, "demo.dll"), "binary");
+        var bad = await RunAsync("plugin", "pack", missingSource, System.IO.Path.Combine(temp.Root, "bad.gocordis-plugin"),
+            "--id", "bad", "--backend", "managed", "--entry-assembly", "demo.dll", "--entry-type", "Demo.Plugin",
+            "--shared-assembly", "Demo.Contracts");
+        Assert.NotEqual(0, bad.Code);
+    }
+
+    [Fact]
+    public async Task CliPackDeclaresProvidesAndDependencies()
+    {
+        using var temp = new TempDir();
+        var source = System.IO.Path.Combine(temp.Root, "source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(System.IO.Path.Combine(source, "entry.txt"), "fixture");
+        var package = System.IO.Path.Combine(temp.Root, "demo.gocordis-plugin");
+
+        var result = await RunAsync("plugin", "pack", source, package,
+            "--id", "demo", "--version", "1.0.0", "--type", "demo", "--host-range", "[1.0,)",
+            "--backend", "builtin", "--entry-assembly", "entry.txt",
+            "--provides", "demo.a", "--provides", "demo.b",
+            "--dependency", "dep-one@[1.0,2.0)", "--dependency", "dep-two@[2.0,)");
+        Assert.Equal(0, result.Code);
+
+        var content = await PluginPackageReader.ReadAsync(package, "1.5.0");
+        Assert.Equal(["demo.a", "demo.b"], content.Manifest.ProvidesOrEmpty);
+        Assert.Equal(
+            [("dep-one", "[1.0,2.0)"), ("dep-two", "[2.0,)")],
+            content.Manifest.DependenciesOrEmpty.Select(d => (d.Id, d.VersionRange)));
+
+        var bad = await RunAsync("plugin", "pack", source, System.IO.Path.Combine(temp.Root, "bad.gocordis-plugin"),
+            "--id", "bad", "--dependency", "no-range");
+        Assert.NotEqual(0, bad.Code);
+    }
+
+    [Fact]
     public async Task CliCreateGeneratesBuildableAppScaffold()
     {
         using var temp = new TempDir();

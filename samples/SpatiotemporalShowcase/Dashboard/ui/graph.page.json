@@ -1,0 +1,1 @@
+{ "id": "showcase-graph", "title": "依赖图（insight-graph）", "route": "/showcase/graph", "renderer": "insight-graph", "description": "内置渲染器别名：绑定 insight/graph 查询" }

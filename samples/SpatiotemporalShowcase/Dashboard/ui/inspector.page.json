@@ -1,0 +1,1 @@
+{ "id": "showcase-inspector", "title": "运行时检视（runtime-inspector）", "route": "/showcase/inspector", "renderer": "runtime-inspector", "description": "内置渲染器别名：绑定 runtime/snapshot 查询" }

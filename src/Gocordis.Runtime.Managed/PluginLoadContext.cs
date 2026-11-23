@@ -22,13 +22,22 @@ public sealed class PluginLoadContext : AssemblyLoadContext
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pluginAssemblyPath);
         _resolver = new AssemblyDependencyResolver(Path.GetFullPath(pluginAssemblyPath));
-        _sharedAssemblies = new HashSet<string>(
-            sharedAssemblies ??
-            [
-                typeof(Core.Component).Assembly.GetName().Name!,
-                typeof(Plugins.PluginManifest).Assembly.GetName().Name!,
-            ],
-            StringComparer.Ordinal);
+        // The two framework contract assemblies are ALWAYS shared: custom
+        // shared names extend this set, never replace it. Replacing would make
+        // Key<T>/Component identities diverge from the host and break every
+        // plugin that did not explicitly re-declare them.
+        _sharedAssemblies = new HashSet<string>(StringComparer.Ordinal)
+        {
+            typeof(Core.Component).Assembly.GetName().Name!,
+            typeof(Plugins.PluginManifest).Assembly.GetName().Name!,
+        };
+        if (sharedAssemblies is not null)
+        {
+            foreach (var name in sharedAssemblies)
+            {
+                _sharedAssemblies.Add(name);
+            }
+        }
     }
 
     protected override Assembly? Load(AssemblyName assemblyName)
@@ -70,7 +79,9 @@ public sealed class ManagedPluginLoader
     public GenerationTracker GenerationsFor(string id) =>
         _generations.GetOrAdd(id, _ => new GenerationTracker());
 
-    public LoadedManagedPlugin Load(string id, string assemblyPath, string typeName)
+    public LoadedManagedPlugin Load(
+        string id, string assemblyPath, string typeName,
+        IReadOnlyList<string>? sharedAssemblies = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         if (_plugins.ContainsKey(id))
@@ -82,8 +93,13 @@ public sealed class ManagedPluginLoader
         PluginLoadContext? context = null;
         try
         {
+            // Promote declared contracts into the default ALC before creating
+            // the plugin ALC. PluginLoadContext returns null for shared names,
+            // so the single default-context copy becomes the shared identity.
+            var shared = SharedAssemblyRegistry.EnsureLoaded(
+                sharedAssemblies, Path.GetDirectoryName(Path.GetFullPath(assemblyPath))!);
             generation = GenerationsFor(id).Begin();
-            context = new PluginLoadContext(assemblyPath);
+            context = new PluginLoadContext(assemblyPath, shared);
             var assembly = context.LoadFromAssemblyPath(Path.GetFullPath(assemblyPath));
             var type = assembly.GetType(typeName, throwOnError: true)!;
             if (!typeof(Core.Component).IsAssignableFrom(type))

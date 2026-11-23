@@ -63,6 +63,32 @@ var consumer = await runtime.LoadAsync(new EchoFeature());
 // provider 到达前 consumer 保持 Pending；依赖满足后 Runtime 自动激活（不写启动顺序）。
 ```
 
+### 2.1 打包插件的跨插件依赖：共享契约程序集
+
+同进程内插件共享 `static readonly Key<T>` 即可（Key 是引用标识）。但两个独立
+`.gocordis-plugin` 包各带一份 `Contracts.dll` 时，若各自加载进独立 ALC，Key 会变成两个对象，
+`Inject` 永远等不到 `Provide` —— **打包形态下的跨插件依赖会静默失效**。
+
+正确做法是把契约程序集声明为共享：打包时 `plugin pack ... --backend managed
+--entry-assembly <dll> --entry-type <type> --shared-assembly <ContractsName>`（对应
+`PluginPackageManifest.SharedAssemblies`）。加载时 `SharedAssemblyRegistry` 把该 DLL 提升进
+default ALC 一次，并校验各插件版本一致；`PluginLoadContext` 对共享名返回 `null`，回落到 default
+的唯一实例。于是不同包的 `Provide(K.X)` 与 `Inject(K.X)` 解析到同一 Key，空间维组合在真实部署形态下成立。
+
+### 2.2 打包插件的 UI 与依赖声明
+
+插件的 UI **属于插件包**，不写进控制面或框架代码：页面/面板/客户端模块声明在包根的
+`gocordis-ui.json`（资源定义放在 `ui/`），控制面用 `UiPackageBinder` 把它作为插件 fiber 的
+effect 注册——安装插件即安装 UI，禁用/卸载逆撤销。C# 组件只贡献运行时数据能力
+（API 查询/命令）。打包时用 `--provides <name>` / `--dependency <id>@<range>` 声明能力图，
+控制面的"依赖关系"视图据此显示包依赖、被依赖、能力依赖与提供能力。
+
+`PlatformApplication` 不再预先注册原始组件工厂——否则会绕过 `UiPackageBinder` 导致包 UI 静默丢失；
+工厂注册统一由控制面完成。回归证据：`PackageUiProductHostTests.ProductHostBindsPackageUiThroughThePluginFiber`。
+
+可运行范例：`samples/SpatiotemporalShowcase/`（含 `build-and-run.sh` 与打包成真实包的四个插件）。
+回归证据：`SharedContractPackagingTests.SharedContractAcrossTwoPackagesGatesTheConsumer`。
+
 ## 3. 十二铁律 → C# 落地表
 
 | # | 铁律（AGENTS.md §1） | 论文锚点 / C 条目 | C# 落地 | 反模式（禁止） | 可执行证据 |

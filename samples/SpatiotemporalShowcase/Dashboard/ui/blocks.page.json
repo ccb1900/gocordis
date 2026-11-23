@@ -1,0 +1,94 @@
+{
+  "id": "showcase-blocks",
+  "title": "视图块全谱",
+  "route": "/showcase/blocks",
+  "renderer": "generic",
+  "icon": "database",
+  "order": -9,
+  "description": "table / list / trend / query-table / form / json / widget / master-detail / calendar / 自定义块",
+  "views": [
+    {
+      "kind": "table",
+      "title": "table：最近事件",
+      "query": "showcase/events",
+      "pageSize": 8,
+      "columns": [
+        { "key": "sourceId", "title": "键" },
+        { "key": "value", "title": "值" },
+        { "key": "revision", "title": "版本" }
+      ]
+    },
+    {
+      "kind": "list",
+      "title": "list：按标题展示行",
+      "query": "showcase/events",
+      "titleKey": "value"
+    },
+    {
+      "kind": "trend",
+      "title": "trend：按日期聚合的写入趋势",
+      "query": "showcase/trend",
+      "dateKey": "date",
+      "series": [
+        { "key": "writes", "label": "写入" },
+        { "key": "revisions", "label": "版本" }
+      ]
+    },
+    {
+      "kind": "query-table",
+      "title": "query-table：带过滤与分页",
+      "query": "showcase/events",
+      "pageSize": 6,
+      "columns": [
+        { "key": "date", "title": "日期" },
+        { "key": "sourceId", "title": "键" },
+        { "key": "status", "title": "状态" }
+      ],
+      "filters": [
+        {
+          "key": "sourceId",
+          "label": "键",
+          "optionsQuery": "showcase/keys",
+          "optionKey": "id",
+          "optionLabel": "id"
+        }
+      ]
+    },
+    {
+      "kind": "widget",
+      "title": "widget：由客户端模块注册的组件",
+      "params": { "name": "showcase-badge", "text": "client-module" }
+    },
+    {
+      "kind": "showcase-callout",
+      "title": "自定义块：由客户端模块注册的渲染器",
+      "text": "block renderer from plugin frontend module"
+    },
+    {
+      "kind": "master-detail",
+      "title": "master-detail：选中键查看详情",
+      "query": "showcase/events",
+      "focusKey": "sourceId",
+      "columns": [
+        { "key": "sourceId", "title": "键" },
+        { "key": "value", "title": "值" }
+      ],
+      "detailViews": [
+        {
+          "kind": "kv",
+          "title": "详情",
+          "query": "showcase/store",
+          "fields": [
+            { "key": "provider", "label": "提供者" },
+            { "key": "writes", "label": "写入" }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "calendar",
+      "title": "calendar：按日期状态",
+      "query": "showcase/events"
+    }
+  ]
+}

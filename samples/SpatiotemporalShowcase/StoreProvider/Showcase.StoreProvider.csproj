@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Showcase.StoreProvider</AssemblyName>
+    <RootNamespace>Showcase.StoreProvider</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../src/Gocordis.Core/Gocordis.Core.csproj" />
+    <ProjectReference Include="../../../src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
+    <ProjectReference Include="../Contracts/Showcase.Contracts.csproj" />
+  </ItemGroup>
+</Project>

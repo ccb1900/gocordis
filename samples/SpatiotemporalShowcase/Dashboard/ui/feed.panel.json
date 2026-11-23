@@ -1,0 +1,8 @@
+{
+  "id": "showcase-feed-panel",
+  "title": "Showcase 事件（bottom panel）",
+  "position": "bottom",
+  "renderer": "list",
+  "pages": ["/showcase"],
+  "views": [ { "kind": "list", "query": "showcase/events", "titleKey": "value" } ]
+}

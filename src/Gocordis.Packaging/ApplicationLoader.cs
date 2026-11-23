@@ -77,7 +77,8 @@ public sealed class ApplicationLoader
                 installed.Manifest.Checksum,
                 installed.Manifest.Backend,
                 installed.Manifest.EntryAssembly,
-                installed.Manifest.EntryType));
+                installed.Manifest.EntryType,
+                installed.Manifest.SharedAssemblies));
         }
 
         await _registry.ApplyAsync(declarations);

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- Shared by every showcase plugin package. The managed loader promotes
+         this assembly into the default ALC (declared as a shared assembly), so
+         all plugins resolve the same static Key<T> instances. -->
+    <AssemblyName>Showcase.Contracts</AssemblyName>
+    <RootNamespace>Showcase.Contracts</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../src/Gocordis.Core/Gocordis.Core.csproj" />
+  </ItemGroup>
+</Project>

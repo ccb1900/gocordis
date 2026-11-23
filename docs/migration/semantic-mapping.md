@@ -86,7 +86,7 @@ C# 实现不追求与 Go 类型/函数签名一致，只追求逐条满足这里
 | Fiber / 运行实例 | C16 | registry 中的 fiber | `runtime/fiber.go:19`、`state.go:8` | `Gocordis.Core` Fiber + 状态机 | 迁移语义 |
 | Effect 与 LIFO 恢复 | C02–C06、C26 | effect context（逆按 LIFO） | `runtime/context.go`、`effect_phase_test.go` | `IAsyncDisposable` effect 栈；**严格 LIFO，不并发撤销** | 迁移语义 |
 | Effect 迭代器 / divert | C06、C21、C28、C32 | 无直接对应 | `runtime/component.go:99`、`iterator_test.go:184` | 迭代器为主形态；`IIterativeComponent` + `CancellationToken`；每次 yield 由 Core 命令域做 Install/Divert 决策（含惯性异步步） | 迁移语义（已实现） |
-| 依赖声明与解析 | C07、C08、C17 | `ctx.inject/provide`、typed key | `runtime/providers.go`、`dependency_graph.go` | typed `Key<T>` + provider 解析；一个 key 一个提供者 | 迁移语义 |
+| 依赖声明与解析 | C07、C08、C17 | `ctx.inject/provide`、typed key | `runtime/providers.go`、`dependency_graph.go` | typed `Key<T>` + provider 解析；一个 key 一个提供者；打包插件经 `SharedAssemblies` 把契约 DLL 提升进 default ALC，跨包共享同一 Key 身份（`SharedAssemblyRegistry`） | 迁移语义（打包形态已补齐） |
 | 依赖消失 → Pending → 自动恢复 | C20–C22 | registry 响应依赖变化 | `runtime/reconcile.go:59`、`phase5_contract_test.go:62` | 同一语义；**不得变成 Failed** | 迁移语义 |
 | Realm 逐 key 隔离 | C10、C34 | 无等同机制 | `runtime/providers.go`、`rehome.go:70` | `Gocordis.Core` Realm；`Runtime.RehomeAsync` = retire→deactivate→O-Remove→同名重插（新 fiber id/generation/Revision），children 先于 parent | 迁移语义（已实现） |
 | 元数据拦截（monoid、右偏） | C11、C37 | peer dependencies / 配置 | `runtime/context.go` `metaView`、`meta_intercept_test.go` | 派生式、每 Context 快照、不跨 root 泄漏 | 迁移语义 |

@@ -81,7 +81,8 @@ public sealed class ManagedPluginLoader
 
     public LoadedManagedPlugin Load(
         string id, string assemblyPath, string typeName,
-        IReadOnlyList<string>? sharedAssemblies = null)
+        IReadOnlyList<string>? sharedAssemblies = null,
+        Core.ICapabilityCatalog? catalog = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         if (_plugins.ContainsKey(id))
@@ -107,7 +108,7 @@ public sealed class ManagedPluginLoader
                 throw new InvalidOperationException($"'{typeName}' is not a {nameof(Core.Component)}");
             }
 
-            var component = (Core.Component)Activator.CreateInstance(type)!;
+            var component = Instantiate(type, catalog);
             var plugin = new LoadedManagedPlugin(id, context, component, generation);
             context = null; // ownership transferred to the plugin record
             _plugins[id] = plugin;
@@ -119,6 +120,25 @@ public sealed class ManagedPluginLoader
             context?.Unload();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Creates a plugin that opts into cross-backend capabilities by declaring a
+    /// constructor taking <see cref="Core.ICapabilityCatalog"/>. Plugins that do
+    /// not opt in keep the parameterless path and their own static Key<T> values.
+    /// </summary>
+    private static Core.Component Instantiate(Type type, Core.ICapabilityCatalog? catalog)
+    {
+        if (catalog is not null)
+        {
+            var constructor = type.GetConstructor([typeof(Core.ICapabilityCatalog)]);
+            if (constructor is not null)
+            {
+                return (Core.Component)constructor.Invoke([catalog]);
+            }
+        }
+
+        return (Core.Component)Activator.CreateInstance(type)!;
     }
 
     /// <summary>Unfenced unload retained for explicit host-driven teardown.</summary>

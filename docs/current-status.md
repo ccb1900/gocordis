@@ -34,13 +34,25 @@ dotnet test  Gocordis.sln --nologo --no-build -m:1
 bash docs/migration/verify-baseline.sh   # Go baseline drift check
 ```
 
-**Last locally verified** (2026-11-23, branch `dotnet`): C# **459** tests green, frontend **102** tests green, plugin-kit tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
+**Last locally verified** (2026-11-23, branch `dotnet`): C# **469** tests green, frontend **102** tests green, plugin-kit tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
+
+Local caveat: host-header ACL tests (`WebUiPolicyTests`, `PlatformApplicationTests`) fail with `502 BadGateway` when `HTTP_PROXY`/`HTTPS_PROXY` are set in the environment; run the suite with those variables unset to test the actual server.
 
 **CI**: no confirmed public CI result for the current HEAD; do not reuse historical 443/443 or other round results as proof for this commit. The Go baseline verification is handled by `verify-baseline.sh`, with drift reported rather than silently accepted.
 
 ## Dependency semantics (current, settled)
 
 Three layers stay distinct: **package dependency** (PluginDependency + version range; store install/upgrade/uninstall via `PluginDependencyPlanner`), **contract dependency** (host-sealed shared assembly in Default ALC; only `SharedAssemblyRegistry.Seal` is the public host entry), **capability dependency** (typed `Inject()/Provide()`; Core reconciliation). Assembly is declaration-led: a package dependency never auto-declares/activates its provider — the application manifest is the sole assembly set. An installed-but-undeclared dependency yields a read-only `PACKAGE_DEPENDENCY_NOT_DECLARED` warning, never a silent "satisfied". `Allow()` is private; plugins cannot widen the shared-assembly whitelist.
+
+## Cross-backend capability contract (current)
+
+One host-owned `CapabilityCatalog` (`Gocordis.Core`) allocates a single `ICapabilityKey` instance per `CapabilityId = (Namespace, Name)`. All three backends translate declarations into those same keys **before** Core loads the component; Core's matching/binding/withdrawal/reactivation is unchanged.
+
+- **Managed**: a plugin that needs a cross-backend capability accepts `ICapabilityCatalog` in its constructor. It shares only `Gocordis.Core` with the host — **no shared contracts DLL and no `SharedAssemblyRegistry`** are needed for cross-backend identity. Plugins that keep using static `Key<T>` are unaffected.
+- **WASM**: declarations live in the `gocordis.capabilities` custom section (JSON). A provider exports `capability_invoke(ptr,len)→(ptr,len)`; a consumer imports `gocordis.capability_buffer/require/invoke`. The host bridges both directions through the catalog keys and the Core `Context`.
+- **Process**: declarations come from the package manifest; the v1 handshake is kept and only `capability/require` and `capability/invoke` are allowlisted. Undeclared plugin→host calls still return `-32601`.
+- **Wire contract**: `CapabilityId`, `CapabilityContract` (value kind, SemVer version, media type, schema), `CapabilityDeclaration` (canonical `|`-separated wire form), `CapabilityEnvelope`, `ICapabilityEndpoint`, `DelegatingCapabilityEndpoint`. Version is compatibility metadata, never part of identity; ranges use the existing `NuGet.Versioning` dependency (C38).
+- **Lifecycle**: endpoint registration and handle release are installed as Core effects, so unwind stays strict serial LIFO. Only bindings are reversible; calls to external systems remain subject to C35.
 
 ## Known boundaries (not "done" claims)
 

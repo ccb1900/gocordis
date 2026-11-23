@@ -194,10 +194,12 @@ public static class Program
             return Fail("usage: plugin pack|package <sourceDir> <output.gocordis-plugin> " +
                         "[--id] [--version] [--type] [--host-range] [--backend] [--entry-assembly] [--entry-type] " +
                         "[--shared-assembly <name> ...] [--provides <name> ...] [--dependency <id>@<range> ...] " +
-                        "[--config-schema <json-file>]");
+                        "[--config-schema <json-file>] " +
+                        "[--capability <direction>|<ns>/<name>|<kind>|<version-or-range>|<media-type>|<schema> ...]");
         }
 
         var shared = OptionValues(args, "--shared-assembly");
+        var capabilities = OptionValues(args, "--capability");
         var provides = OptionValues(args, "--provides");
         var dependencies = OptionValues(args, "--dependency")
             .Select(value =>
@@ -222,7 +224,8 @@ public static class Program
             EntryType: Option(args, "--entry-type"),
             SharedAssemblies: shared.Count > 0 ? shared : null,
             Provides: provides.Count > 0 ? provides : null!,
-            Dependencies: dependencies.Length > 0 ? dependencies : null!);
+            Dependencies: dependencies.Length > 0 ? dependencies : null!,
+            Capabilities: capabilities.Count > 0 ? capabilities : null);
         var schemaPath = Option(args, "--config-schema");
         if (schemaPath is not null)
         {
@@ -1138,7 +1141,7 @@ public static class Program
             "--store", "--host-version", "--address", "--id", "--name", "--version", "--type", "--host-range", "--source",
             "--output", "--out", "--key", "--public-key", "--backend", "--entry-assembly", "--entry-type",
             "--shared-assembly", "--allowed-host", "--host-version-range", "--provides", "--dependency",
-            "--config-schema",
+            "--config-schema", "--capability",
         };
         var flags = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -1184,6 +1187,7 @@ public static class Program
         gocordis plugin pack|package <sourceDir> <output> [--id] [--version] [--type] [--host-range]
                             [--backend managed|builtin] [--entry-assembly <dll>] [--entry-type <type>]
                             [--shared-assembly <name> ...]
+                            [--capability <direction>|<ns>/<name>|<kind>|<version-or-range>|<media-type>|<schema> ...]
         gocordis plugin keygen [--out <dir>] [--name <key>] [--force]
         gocordis plugin sign <package> --key <privatePem> [--output <path>]
         gocordis plugin doctor <packagePath> [--host-version] [--store] [--public-key <pem>]

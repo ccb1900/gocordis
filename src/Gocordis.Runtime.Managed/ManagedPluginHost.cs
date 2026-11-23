@@ -29,8 +29,9 @@ public sealed class ManagedPluginHost : IAsyncDisposable
     /// </summary>
     public Component CreateComponent(
         string id, string assemblyPath, string typeName,
-        IReadOnlyList<string>? sharedAssemblies = null) =>
-        new ManagedPluginComponent(Loader, id, assemblyPath, typeName, sharedAssemblies);
+        IReadOnlyList<string>? sharedAssemblies = null,
+        ICapabilityCatalog? catalog = null) =>
+        new ManagedPluginComponent(Loader, id, assemblyPath, typeName, sharedAssemblies, catalog);
 
     public async Task<Fiber> LoadAsync(string id, string assemblyPath, string typeName)
     {

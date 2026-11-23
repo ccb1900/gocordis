@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Gocordis.Plugins;
 using NuGet.Versioning;
 
 namespace Gocordis.Packaging;
@@ -45,13 +46,15 @@ public sealed record PluginPackageManifest(
     string? EntryType = null,
     IReadOnlyList<PackageUiResource>? Ui = null,
     IReadOnlyList<string>? SharedAssemblies = null,
-    JsonNode? ConfigSchema = null)
+    JsonNode? ConfigSchema = null,
+    IReadOnlyList<string>? Capabilities = null)
 {
     public IReadOnlyList<PluginDependency> DependenciesOrEmpty => Dependencies ?? [];
     public IReadOnlyList<string> ProvidesOrEmpty => Provides ?? [];
     public IReadOnlyList<PackageFile> FilesOrEmpty => Files ?? [];
     public IReadOnlyList<PackageUiResource> UiOrEmpty => Ui ?? [];
     public IReadOnlyList<string> SharedAssembliesOrEmpty => SharedAssemblies ?? [];
+    public IReadOnlyList<string> CapabilitiesOrEmpty => Capabilities ?? [];
 }
 
 public sealed record PluginPackageContent(
@@ -283,6 +286,16 @@ public static class PluginPackageWriter
             }
         }
 
+        try
+        {
+            _ = PluginManifest.ParseCapabilities(manifest.CapabilitiesOrEmpty);
+        }
+        catch (Exception ex) when (ex is FormatException or ArgumentException)
+        {
+            throw new InvalidPluginPackageException(
+                $"invalid capability declaration in package '{manifest.Id}': {ex.Message}", ex);
+        }
+
         // Backend metadata is optional: an absent backend is the legacy
         // declaration-only package, resolved by a host-provided factory.
         var backend = manifest.Backend;
@@ -384,6 +397,17 @@ public static class PluginPackageWriter
         {
             text.Append("config-schema=")
                 .Append(PluginPackageUi.CanonicalJson(manifest.ConfigSchema)).Append('\n');
+        }
+
+        // Capability declarations are part of the contract; canonicalize the
+        // order so packing order cannot change the integrity checksum.
+        if (manifest.CapabilitiesOrEmpty.Count > 0)
+        {
+            foreach (var capability in manifest.CapabilitiesOrEmpty
+                         .OrderBy(c => c, StringComparer.Ordinal))
+            {
+                text.Append("capability=").Append(capability).Append('\n');
+            }
         }
 
         foreach (var dependency in manifest.DependenciesOrEmpty

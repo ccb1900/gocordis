@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Gocordis.Core;
 using NuGet.Versioning;
 using Tomlyn;
 using Tomlyn.Model;
@@ -88,13 +89,21 @@ public sealed record PluginManifest(
     string? Backend = null,
     string? EntryAssembly = null,
     string? EntryType = null,
-    IReadOnlyList<string>? SharedAssemblies = null)
+    IReadOnlyList<string>? SharedAssemblies = null,
+    IReadOnlyList<string>? Capabilities = null)
 {
     private static readonly HashSet<string> KnownFields = new(StringComparer.Ordinal)
     {
         "id", "type", "enabled", "config", "requires", "provides", "version", "source", "checksum",
-        "backend", "entry_assembly", "entry_type", "shared_assemblies",
+        "backend", "entry_assembly", "entry_type", "shared_assemblies", "capabilities",
     };
+
+    /// <summary>Capability declarations in canonical wire form; never null.</summary>
+    public IReadOnlyList<string> CapabilitiesOrEmpty => Capabilities ?? [];
+
+    /// <summary>Parses and validates the capability declarations of one plugin.</summary>
+    public static IReadOnlyList<CapabilityDeclaration> ParseCapabilities(IReadOnlyList<string>? wire) =>
+        (wire ?? []).Select(CapabilityDeclaration.Parse).ToArray();
 
     public static IReadOnlyList<PluginManifest> ParseToml(string text)
     {
@@ -185,11 +194,13 @@ public sealed record PluginManifest(
         var entryAssembly = ReadString(component, "entry_assembly", id);
         var entryType = ReadString(component, "entry_type", id);
         var sharedAssemblies = ReadStringArray(component, "shared_assemblies", id);
+        var capabilities = ReadCapabilities(ReadStringArray(component, "capabilities", id));
 
         return new PluginManifest(
             id, type, enabled, config, requires, provides,
             version, source, checksum, backend, entryAssembly, entryType,
-            sharedAssemblies.Count > 0 ? sharedAssemblies : null);
+            sharedAssemblies.Count > 0 ? sharedAssemblies : null,
+            capabilities.Count > 0 ? capabilities : null);
     }
 
     internal static PluginManifest FromJsonElement(JsonElement component)
@@ -222,11 +233,30 @@ public sealed record PluginManifest(
         var entryAssembly = ReadJsonString(component, "entry_assembly", id);
         var entryType = ReadJsonString(component, "entry_type", id);
         var sharedAssemblies = ReadJsonStringArray(component, "shared_assemblies", id);
+        var capabilities = ReadCapabilities(ReadJsonStringArray(component, "capabilities", id));
 
         return new PluginManifest(
             id, type, enabled, config, requires, provides,
             version, source, checksum, backend, entryAssembly, entryType,
-            sharedAssemblies.Count > 0 ? sharedAssemblies : null);
+            sharedAssemblies.Count > 0 ? sharedAssemblies : null,
+            capabilities.Count > 0 ? capabilities : null);
+    }
+
+    private static IReadOnlyList<string> ReadCapabilities(IReadOnlyList<string> wire)
+    {
+        try
+        {
+            _ = ParseCapabilities(wire);
+            return wire;
+        }
+        catch (FormatException ex)
+        {
+            throw new ManifestParseException($"invalid capability declaration: {ex.Message}", ex);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new ManifestParseException($"invalid capability declaration: {ex.Message}", ex);
+        }
     }
 
     private static void RejectUnknownFields(TomlTable component, string id)

@@ -166,13 +166,14 @@ public sealed class ManagedPluginComponent : Component, IIterativeComponent, IDi
 
     public ManagedPluginComponent(
         ManagedPluginLoader loader, string id, string assemblyPath, string typeName,
-        IReadOnlyList<string>? sharedAssemblies = null)
+        IReadOnlyList<string>? sharedAssemblies = null,
+        ICapabilityCatalog? catalog = null)
     {
         _loader = loader;
         _id = id;
         _assemblyPath = assemblyPath;
         _typeName = typeName;
-        _plugin = loader.Load(id, assemblyPath, typeName, sharedAssemblies);
+        _plugin = loader.Load(id, assemblyPath, typeName, sharedAssemblies, catalog);
         _instanceKey = ManagedKeys.ForInstance(id);
     }
 

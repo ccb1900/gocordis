@@ -33,6 +33,13 @@ public sealed class ProcessPluginClient : IAsyncDisposable
     /// <summary>Bounded tail of plugin stderr, useful for degraded diagnostics.</summary>
     public IReadOnlyList<string> StderrTail => _stderr.ToArray();
 
+    /// <summary>
+    /// Declared plugin→host capability calls. Anything not handled here keeps the
+    /// v1 policy: rejected with -32601. The handler never writes lifecycle state;
+    /// it only marshals a capability call and is owned by the activation adapter.
+    /// </summary>
+    public Func<string, JsonNode?, JsonNode?>? RequestHandler { get; set; }
+
     private ProcessPluginClient(SystemProcess process, StreamWriter writer, StreamReader reader, ConcurrentQueue<string> stderr)
     {
         _process = process;
@@ -210,20 +217,43 @@ public sealed class ProcessPluginClient : IAsyncDisposable
                 throw new InvalidDataException($"invalid RPC response: '{line}'");
             }
 
-            // Plugin -> host method calls are not supported by the v1 protocol.
+            // Plugin -> host method: only explicitly declared capability calls
+            // are routed; everything else keeps the -32601 policy.
             if (response["method"] is not null && response["result"] is null && response["error"] is null)
             {
-                var rejection = new JsonObject
+                var requestId = response["id"]?.DeepClone() ?? 0;
+                JsonObject reply;
+                try
                 {
-                    ["jsonrpc"] = "2.0",
-                    ["id"] = response["id"]?.DeepClone() ?? 0,
-                    ["error"] = new JsonObject
+                    if (RequestHandler is null)
                     {
-                        ["code"] = -32601,
-                        ["message"] = "plugin-to-host calls are not supported",
-                    },
-                };
-                await WriteAsync(rejection.ToJsonString(), cancellationToken);
+                        throw new NotSupportedException("plugin-to-host calls are not supported");
+                    }
+
+                    var requestMethod = response["method"]!.GetValue<string>();
+                    var result = RequestHandler(requestMethod, response["params"]);
+                    reply = new JsonObject
+                    {
+                        ["jsonrpc"] = "2.0",
+                        ["id"] = requestId,
+                        ["result"] = result?.DeepClone() ?? (JsonNode?)null,
+                    };
+                }
+                catch (NotSupportedException ex)
+                {
+                    reply = new JsonObject
+                    {
+                        ["jsonrpc"] = "2.0",
+                        ["id"] = requestId,
+                        ["error"] = new JsonObject
+                        {
+                            ["code"] = -32601,
+                            ["message"] = ex.Message,
+                        },
+                    };
+                }
+
+                await WriteAsync(reply.ToJsonString(), cancellationToken);
                 continue;
             }
 

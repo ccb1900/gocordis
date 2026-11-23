@@ -118,6 +118,26 @@ effect 注册——安装插件即安装 UI，禁用/卸载逆撤销。C# 组件
 可运行范例：`samples/SpatiotemporalShowcase/`（含 `build-and-run.sh` 与打包成真实包的四个插件）。
 回归证据：`SharedContractPackagingTests.SharedContractAcrossTwoPackagesGatesTheConsumer`。
 
+### 2.3 跨后端能力契约（Managed / WASM / Process）
+
+共享契约程序集解决的是 **Managed ↔ Managed** 的编译期类型身份；跨执行后端没有 CLR 类型身份可共享，因此不能靠 `SharedAssemblyRegistry` 打通。统一做法是：宿主持有唯一的 `CapabilityCatalog`，为每一个 `CapabilityId = (Namespace, Name)` 分配**一个权威 `ICapabilityKey` 实例**，三个后端在 Core 装载组件之前都把声明翻译成这些 Key；之后匹配、绑定、撤回、重激活全部仍由 Core 完成。
+
+- **Managed**：需要跨后端能力的插件在构造函数接收 `ICapabilityCatalog`，用 `catalog.KeyFor<ICapabilityEndpoint>(id, kind)` 取 Key 并在 `Inject()/Provide()` 中声明。它只与宿主共享 `Gocordis.Core`，不需要任何共享契约 DLL。未改造的静态 `Key<T>` 插件完全不受影响。
+- **WASM**：在 `gocordis.capabilities` 自定义段写 JSON 声明；提供方导出 `capability_invoke(ptr,len)→(ptr,len)`，消费方导入 `gocordis.capability_buffer/require/invoke`。宿主桥接双向调用，句柄只代表能力，不代表 Fiber。
+- **Process**：在包清单用 `--capability` 声明；v1 握手不变，只额外放行 `capability/require` 与 `capability/invoke`，未声明的插件→主机调用仍是 `-32601`。
+- **版本**：`CapabilityContract` 携带 SemVer 版本与媒体类型/Schema；版本是兼容性元数据，不进身份；范围匹配复用 Core 已有的 NuGet.Versioning（C38）。破坏性变更请换 `CapabilityId`。
+- **边界**：跨后端值统一为 `CapabilityEnvelope`（wire 字节 + 媒体类型），插件 ALC 内部再由自有类型做序列化；CLR 类型身份从不跨后端边界。端点注册/释放是 Core effect，严格 LIFO；**调用本身的外部副作用不受可逆性保证**（C35）。
+
+打包示例：
+
+```bash
+gocordis plugin pack ./Provider out.gocordis-plugin \
+  --backend managed --entry-assembly Provider.dll --entry-type Provider.Component \
+  --capability 'provide|org.example.calc/add|endpoint|1.2.0|application/json|calc'
+```
+
+回归证据：`CrossBackendCapabilityTests`（含独立 ALC 的 Managed 插件不靠共享 DLL 拿到同一 Key、WASM↔Managed 双向调用、Process→Managed 声明化调用）、`CapabilityDeclarationTests`（声明随包往返与校验和覆盖）。
+
 ## 3. 十二铁律 → C# 落地表
 
 | # | 铁律（AGENTS.md §1） | 论文锚点 / C 条目 | C# 落地 | 反模式（禁止） | 可执行证据 |

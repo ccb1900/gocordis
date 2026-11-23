@@ -13,7 +13,7 @@ namespace Gocordis.Runtime.Wasm;
 public sealed class WasmBackend : IPluginBackend
 {
     private readonly Func<WasmPluginInstance> _createInstance;
-    private readonly Key<int> _key;
+    private readonly Key<int>? _key;
     private readonly GenerationTracker _tracker;
     private GenerationHandle? _generation;
     private WasmPluginInstance? _instance;
@@ -43,7 +43,7 @@ public sealed class WasmBackend : IPluginBackend
 
     internal WasmBackend(
         Func<WasmPluginInstance> createInstance,
-        Key<int> key,
+        Key<int>? key,
         GenerationTracker? tracker)
     {
         _createInstance = createInstance;
@@ -84,7 +84,11 @@ public sealed class WasmBackend : IPluginBackend
         context.ThrowIfDiverted();
         var instance = _instance ?? throw new InvalidOperationException("WASM backend is not prepared");
         _value = Convert.ToInt32(instance.Invoke("runtime_component_create"));
-        context.Provide(_key, _value);
+        if (_key is not null)
+        {
+            context.Provide(_key, _value);
+        }
+
         LastHandle = prepared.WithPhase(BackendPhase.Activated, _value.ToString());
         return ValueTask.FromResult(LastHandle);
     }

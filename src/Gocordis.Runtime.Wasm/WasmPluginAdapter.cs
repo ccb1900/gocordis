@@ -34,13 +34,18 @@ public sealed class WasmPluginInstance : IDisposable
     private readonly Instance _instance;
     private readonly Linker? _linker;
 
-    private WasmPluginInstance(Engine engine, Module module, Store store, Instance instance, Linker? linker)
+    /// <summary>Exported linear memory, used by the capability bridge when present.</summary>
+    internal Memory? Memory { get; }
+
+    private WasmPluginInstance(
+        Engine engine, Module module, Store store, Instance instance, Linker? linker, Memory? memory)
     {
         _engine = engine;
         _module = module;
         _store = store;
         _instance = instance;
         _linker = linker;
+        Memory = memory;
     }
 
     public static void EnsureModuleSize(long size)
@@ -51,7 +56,11 @@ public sealed class WasmPluginInstance : IDisposable
         }
     }
 
-    public static WasmPluginInstance FromWat(string wat, string name = "plugin", WasmHostBridge? bridge = null)
+    public static WasmPluginInstance FromWat(
+        string wat,
+        string name = "plugin",
+        WasmHostBridge? bridge = null,
+        WasmCapabilityBridge? capabilityBridge = null)
     {
         ArgumentNullException.ThrowIfNull(wat);
         EnsureModuleSize(Encoding.UTF8.GetByteCount(wat));
@@ -60,7 +69,7 @@ public sealed class WasmPluginInstance : IDisposable
         try
         {
             var module = Module.FromText(engine, name, wat);
-            return Create(engine, module, bridge);
+            return Create(engine, module, bridge, capabilityBridge);
         }
         catch
         {
@@ -69,7 +78,11 @@ public sealed class WasmPluginInstance : IDisposable
         }
     }
 
-    public static WasmPluginInstance FromBytes(byte[] wasm, string name = "plugin", WasmHostBridge? bridge = null)
+    public static WasmPluginInstance FromBytes(
+        byte[] wasm,
+        string name = "plugin",
+        WasmHostBridge? bridge = null,
+        WasmCapabilityBridge? capabilityBridge = null)
     {
         ArgumentNullException.ThrowIfNull(wasm);
         EnsureModuleSize(wasm.LongLength);
@@ -78,7 +91,7 @@ public sealed class WasmPluginInstance : IDisposable
         try
         {
             var module = Module.FromBytes(engine, name, wasm);
-            return Create(engine, module, bridge);
+            return Create(engine, module, bridge, capabilityBridge);
         }
         catch
         {
@@ -87,21 +100,42 @@ public sealed class WasmPluginInstance : IDisposable
         }
     }
 
-    private static WasmPluginInstance Create(Engine engine, Module module, WasmHostBridge? bridge)
+    private static WasmPluginInstance Create(
+        Engine engine, Module module, WasmHostBridge? bridge, WasmCapabilityBridge? capabilityBridge)
     {
         try
         {
             var store = new Store(engine);
             try
             {
-                if (bridge is null)
+                if (bridge is null && capabilityBridge is null)
                 {
-                    return new WasmPluginInstance(engine, module, store, new Instance(store, module, []), null);
+                    var plain = new Instance(store, module, []);
+                    return new WasmPluginInstance(
+                        engine, module, store, plain, null, plain.GetMemory("memory"));
                 }
 
                 var linker = new Linker(engine);
-                linker.DefineFunction("gocordis", "report", new Action<int>(bridge.Report));
-                return new WasmPluginInstance(engine, module, store, linker.Instantiate(store, module), linker);
+                if (bridge is not null)
+                {
+                    linker.DefineFunction("gocordis", "report", new Action<int>(bridge.Report));
+                }
+
+                if (capabilityBridge is not null)
+                {
+                    linker.DefineFunction("gocordis", "capability_buffer",
+                        new Func<int>(capabilityBridge.Buffer));
+                    linker.DefineFunction("gocordis", "capability_require",
+                        new Func<int, int, int>(capabilityBridge.Require));
+                    linker.DefineFunction("gocordis", "capability_invoke",
+                        new Func<int, int, int, int>(capabilityBridge.Invoke));
+                }
+
+                var instance = linker.Instantiate(store, module);
+                var memory = instance.GetMemory("memory");
+                var result = new WasmPluginInstance(engine, module, store, instance, linker, memory);
+                capabilityBridge?.Attach(result);
+                return result;
             }
             catch
             {

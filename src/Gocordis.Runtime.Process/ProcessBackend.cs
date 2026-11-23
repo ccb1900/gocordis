@@ -13,9 +13,11 @@ namespace Gocordis.Runtime.Process;
 public sealed class ProcessBackend : IPluginBackend
 {
     private readonly string _executable;
-    private readonly Key<string> _key;
+    private readonly Key<string>? _key;
     private readonly Key<ProcessDiagnostics> _diagnosticsKey;
     private readonly Key<string> _errorKey;
+    private readonly ProcessCapabilityBridge? _capabilityBridge;
+    private readonly bool _capabilityOnly;
     private ProcessPluginClient? _client;
     private ProcessDiagnostics? _diagnostics;
     private bool _released;
@@ -23,12 +25,15 @@ public sealed class ProcessBackend : IPluginBackend
 
     public ProcessBackend(
         string executable,
-        Key<string> key,
+        Key<string>? key,
         Key<ProcessDiagnostics>? diagnosticsKey = null,
-        Key<string>? errorKey = null)
+        Key<string>? errorKey = null,
+        ProcessCapabilityBridge? capabilityBridge = null)
     {
         _executable = executable;
         _key = key;
+        _capabilityOnly = key is null;
+        _capabilityBridge = capabilityBridge;
         // Per-plugin keys keep several process plugins from colliding on the
         // one-provider-per-key rule; defaults preserve the original single
         // plugin vocabulary used by existing runtime tests.
@@ -46,7 +51,11 @@ public sealed class ProcessBackend : IPluginBackend
     {
         context.ThrowIfDiverted();
         _diagnostics = new ProcessDiagnostics();
-        context.Provide(_diagnosticsKey, _diagnostics);
+        if (!_capabilityOnly)
+        {
+            context.Provide(_diagnosticsKey, _diagnostics);
+        }
+
         LastHandle = new BackendHandle(BackendId, 0, BackendPhase.Prepared, _executable);
         return ValueTask.FromResult(LastHandle);
     }
@@ -57,11 +66,21 @@ public sealed class ProcessBackend : IPluginBackend
         try
         {
             _client = await ProcessPluginClient.StartAsync(_executable);
+            if (_capabilityBridge is not null)
+            {
+                _capabilityBridge.Attach(_client);
+                _client.RequestHandler = (method, parameters) =>
+                    _capabilityBridge.HandleRequest(method, parameters);
+            }
+
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
             var result = await _client.CallAsync("echo", new { text = "ready" }, timeout.Token);
-            context.Provide(_key, result?["text"]?.GetValue<string>() ?? "unavailable");
-            context.Provide(_errorKey, "ok");
+            if (_key is not null)
+            {
+                context.Provide(_key, result?["text"]?.GetValue<string>() ?? "unavailable");
+                context.Provide(_errorKey, "ok");
+            }
             LastHandle = prepared.WithPhase(BackendPhase.Activated, resourceId: _client.ProcessId.ToString());
             return LastHandle;
         }
@@ -80,8 +99,11 @@ public sealed class ProcessBackend : IPluginBackend
                 _diagnostics.LastError = ex.Message;
             }
 
-            context.Provide(_key, ProcessErrorPolicy.ErrorVocabulary);
-            context.Provide(_errorKey, ProcessErrorPolicy.ErrorVocabulary);
+            if (_key is not null)
+            {
+                context.Provide(_key, ProcessErrorPolicy.ErrorVocabulary);
+                context.Provide(_errorKey, ProcessErrorPolicy.ErrorVocabulary);
+            }
             LastHandle = prepared.WithPhase(BackendPhase.Activated, ProcessErrorPolicy.ErrorVocabulary);
             return LastHandle;
         }

@@ -118,6 +118,9 @@ public class PlatformApplication : IAsyncDisposable
         Console.AttachRegistry(Registry);
         Managed = new ManagedPluginHost(Runtime);
         Store = new PluginStore(options.StorePath, options.HostVersion);
+        // One host-owned Id → Key allocator for every backend. It is assembled
+        // from declarations before any fiber activates and holds no lifecycle state.
+        Capabilities = new CapabilityCatalog();
         _diagnostics = new DiagnosticsService(options.HostVersion);
         if (options.AllowedHosts is { Count: > 0 } allowedHosts)
         {
@@ -134,6 +137,7 @@ public class PlatformApplication : IAsyncDisposable
     public ConsoleHost Console { get; }
     public PluginRegistry Registry { get; }
     public ManagedPluginHost Managed { get; }
+    public CapabilityCatalog Capabilities { get; }
     public PluginStore Store { get; }
     public IPluginControlPlane? Control { get; private set; }
     public WebUiServer? WebUi { get; private set; }
@@ -192,6 +196,11 @@ public class PlatformApplication : IAsyncDisposable
                 }
 
                 _resolved.Add(new PlatformResolvedPlugin(plugin.Id, installed.Version, plugin.Enabled));
+
+                // Seed the one host-owned capability identity table from every
+                // installed declaration before any component is constructed.
+                Capabilities.Declare(
+                    PluginManifest.ParseCapabilities(installed.Manifest.CapabilitiesOrEmpty));
 
                 // A package-declared config schema belongs to the plugin, not
                 // to console code. Register it with the registry so the
@@ -297,12 +306,20 @@ public class PlatformApplication : IAsyncDisposable
                 ? $"{manifest.Id}@{manifest.Version}"
                 : $"{manifest.Id}@{manifest.Version}:{ConfigFingerprint(manifest.Config)}";
             return Managed.CreateComponent(
-                loaderKey, assemblyPath, manifest.EntryType, manifest.SharedAssemblies);
+                loaderKey, assemblyPath, manifest.EntryType, manifest.SharedAssemblies, Capabilities);
         }
 
         if (string.Equals(backend, "process", StringComparison.OrdinalIgnoreCase))
         {
             var executable = ResolvePayload(manifest);
+            var declarations = PluginManifest.ParseCapabilities(manifest.Capabilities);
+            if (declarations.Count > 0)
+            {
+                // Declared capabilities replace the host-invented echo/error keys:
+                // the child only gets handles for capabilities it declared.
+                return new ProcessCapabilityComponent(executable, Capabilities, declarations);
+            }
+
             return new ProcessPluginComponent(
                 executable,
                 PlatformBackendKeys.ProcessEcho(manifest.Id),
@@ -313,8 +330,25 @@ public class PlatformApplication : IAsyncDisposable
         if (string.Equals(backend, "wasm", StringComparison.OrdinalIgnoreCase))
         {
             var modulePath = ResolvePayload(manifest);
+            var isWat = string.Equals(
+                Path.GetExtension(modulePath), ".wat", StringComparison.OrdinalIgnoreCase);
+            var fromManifest = PluginManifest.ParseCapabilities(manifest.Capabilities);
+            var fromModule = isWat
+                ? WasmCapabilityDeclarations.ReadFromWat(File.ReadAllText(modulePath))
+                : WasmCapabilityDeclarations.Read(File.ReadAllBytes(modulePath));
+            var declarations = Merge(fromManifest, fromModule);
+            if (declarations.Count > 0)
+            {
+                Capabilities.Declare(declarations);
+                return isWat
+                    ? new WasmCapabilityComponent(
+                        File.ReadAllText(modulePath), manifest.Id, Capabilities, declarations)
+                    : new WasmCapabilityComponent(
+                        File.ReadAllBytes(modulePath), manifest.Id, Capabilities, declarations);
+            }
+
             var key = PlatformBackendKeys.WasmValue(manifest.Id);
-            if (string.Equals(Path.GetExtension(modulePath), ".wat", StringComparison.OrdinalIgnoreCase))
+            if (isWat)
             {
                 // WAT is a real WASM module compiled by Wasmtime at activation.
                 return new WasmComponent(File.ReadAllText(modulePath), key);
@@ -333,6 +367,15 @@ public class PlatformApplication : IAsyncDisposable
         throw new InvalidOperationException(
             $"unsupported backend '{backend}' declared by plugin '{manifest.Id}'");
     }
+
+    /// <summary>Deduplicates declarations from manifest and module metadata.</summary>
+    private static IReadOnlyList<CapabilityDeclaration> Merge(
+        IReadOnlyList<CapabilityDeclaration> first,
+        IReadOnlyList<CapabilityDeclaration> second) =>
+        first.Concat(second)
+            .GroupBy(declaration => declaration.ToWireString(), StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToArray();
 
     /// <summary>Stable, order-independent fingerprint of a declaration's config.
     /// Used only to give each staged managed component a distinct loader key; it

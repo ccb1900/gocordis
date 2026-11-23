@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Deliberately references ONLY Gocordis.Core: no shared contracts assembly,
+       no plugins assembly. Cross-backend identity comes from the host catalog. -->
+  <ItemGroup>
+    <ProjectReference Include="../../../src/Gocordis.Core/Gocordis.Core.csproj" />
+  </ItemGroup>
+</Project>

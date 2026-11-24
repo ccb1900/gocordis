@@ -73,7 +73,8 @@ public sealed class ProcessPluginClient : IAsyncDisposable
     public static async Task<ProcessPluginClient> StartAsync(
         string executable,
         IEnumerable<string>? arguments = null,
-        TimeSpan? handshakeTimeout = null)
+        TimeSpan? handshakeTimeout = null,
+        ProcessPermissionPolicy? permissionPolicy = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
         var start = new ProcessStartInfo
@@ -90,6 +91,7 @@ public sealed class ProcessPluginClient : IAsyncDisposable
             start.ArgumentList.Add(argument);
         }
 
+        (permissionPolicy ?? ProcessPermissionPolicy.Default).ApplyTo(start, executable);
         var process = SystemProcess.Start(start) ??
                       throw new InvalidOperationException($"failed to start '{executable}'");
         var writer = new StreamWriter(process.StandardInput.BaseStream, new UTF8Encoding(false))

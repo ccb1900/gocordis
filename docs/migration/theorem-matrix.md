@@ -67,7 +67,12 @@
 ## 边界与前提
 
 - 论文 Thm73 **没有"合作式"前提**（`semantic-mapping.md` §4.1）；C# 的有限步/可取消是无环工程约束，
-  不写入定理前提。Go 的 `TestTheoremPreconditionsGate` 对应 C# `DeterministicDriver` 的固定种子重放，
+  不写入定理前提。Thm73 的真实前提是三项：**有限名称**、**有限 Effect iterator**、**无环 Provider precedence**。
+  对应可执行检查：`TheoremPremiseTests.Thm73_PremisesAreEnforced_FiniteNamesAcyclicPrecedenceCancellableSteps`、
+  `TheoremPremiseTests.Thm73_FiniteIteratorCommitsEveryStepBeforeActivation`、`CoreSemanticsTests.DuplicateProviderIsRejectedAtLoad`
+  与 `CoreSemanticsTests.DependencyCycleIsRejectedAtMount`（外加 `TheoremPremiseTests` 的无环场景）。
+  这些测试只验证前提与固定场景，**upper bound not proved**：复杂度界 S(n) ≤ (K+3)(V(n)+1) 没有形式化或穷举证明。
+  Go 的 `TestTheoremPreconditionsGate` 对应 C# `DeterministicDriver` 的固定种子重放，
   状态为平台能力替代，不冒充定理证明。
 - Thm43（独立逆任意排列）：C# 单 fiber 内保持严格 LIFO（`C06_StrictLifoRecoveryLeavesNoResidue`），
   跨独立 fiber 的可交换性已有可执行断言：`TheoremMatrixTests.cs` 的
@@ -77,4 +82,8 @@
 - Thm68/Thm73 之外新增诚实性边界：逆失败仍走完整 LIFO 栈，但失败槽位转 `EffectState.Failed`
   并由 `Fiber.CleanupFailures` / `RuntimeSnapshot.CleanupFailures` 暴露"清理不完整"
   （`Core.Tests/InverseFailureTests.cs`），不把失败逆伪装成 Undone 成功。
+- P3 补强证据：`SmallStateExplorationTests` 枚举深度 4 的合法命令序列（含 provider withdrawal、consumer teardown、child fiber、Rehome、异步 install、failure），
+  每条序列在全新 Runtime 上重放并核对 well-formedness；`SmallTrace.Minimize` 对反例做贪心缩减并保留可重放 trace。
+  `Thm73RulesFireAndBoundedStepCountsAreRecorded` 用 Runtime 事件环记录当前实际发出的五类生命周期事件（FiberCreated、ActivationLoading、ActivationActive、ActivationUnloading、ActivationEnded）的触发次数与每场景事件总量上界观察，
+  `ObservationEquivalenceTests` 验证 Def 31–37 投影的全理性、失败快照与健康正规形不相等、清理失败不等价（失败 Fiber 按观察投影排除，不存在独立“排除例程”）。仍**不是**数学归纳或复杂度上界证明。
 - `TheoremTests.cs` 的 4 个单点用例保留为历史基线；新增矩阵是独立用例集，两者不互相计数。

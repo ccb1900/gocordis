@@ -42,6 +42,10 @@ public sealed record FiberSnapshot(
     /// <summary>Revision counter: a realm reassignment creates a new fiber at a higher revision.</summary>
     public long Revision { get; init; }
 
+    /// <summary>Type of the fiber failure, kept beside its message so observers
+    /// can distinguish two failures with identical text.</summary>
+    public string? FailureType { get; init; }
+
     /// <summary>True when at least one inverse failed during this fiber's unwind.</summary>
     public bool CleanupIncomplete { get; init; }
 

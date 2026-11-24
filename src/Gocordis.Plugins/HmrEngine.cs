@@ -16,7 +16,10 @@ public sealed record HmrPlan(
     IReadOnlySet<string> Accepted,
     IReadOnlySet<string> Declined,
     IReadOnlyList<string> StaleEntryIds,
-    IReadOnlyList<PluginManifest> Desired);
+    IReadOnlyList<PluginManifest> Desired,
+    // Changed externals (shared contracts, Gocordis.Core, the host) cannot be
+    // hot-swapped. They are reported as a user-visible restart-required boundary.
+    IReadOnlyList<string>? RestartRequired = null);
 
 /// <summary>
 /// Three-phase HMR that submits ONE declaration batch to PluginRegistry.
@@ -140,7 +143,11 @@ public static class HmrEngine
                 : entry)
             .ToArray();
 
-        return new HmrPlan(accepted, declined, stale, desired);
+        var restartRequired = request.Stashed
+            .Where(url => request.Externals.Contains(url))
+            .OrderBy(url => url, StringComparer.Ordinal)
+            .ToArray();
+        return new HmrPlan(accepted, declined, stale, desired, restartRequired);
     }
 
     /// <summary>Phase 3: commit the planned declarations in one registry

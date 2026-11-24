@@ -39,7 +39,7 @@ dotnet test  Gocordis.sln --nologo --no-build -m:1
 bash docs/migration/verify-baseline.sh   # Go baseline drift check
 ```
 
-**Last locally verified** (2026-11-24, branch `dotnet`): C# **581 passed / 1 skipped / 0 failed** across 8 test assemblies (Core 48, Conformance 154, Runtime 171+1 skipped, Extensions 64, Packaging 79, UI 3, Client 2, Product 60; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **103** tests green plus production build, plugin-kit 2 tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
+**Last locally verified** (2026-11-24, branch `dotnet`, working tree after chapter-matrix work): C# **609 passed / 1 skipped / 0 failed** across 8 test assemblies (Core 49, Conformance 166, Runtime 183+1 skipped, Extensions 67, Packaging 79, UI 3, Client 2, Product 60; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **103** tests green plus production build, plugin-kit 2 tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
 
 Task 01 的有限校准基线见 `docs/migration/acceptance-baseline.md`；它区分三个验收域与 E0–E4 证据等级，P0-01…P0-04 均已关闭（真实 Process↔WASM 调用与包闭环由 `CrossBackendCapabilityTests`、`BackendDispatchProductTests` 覆盖）。
 
@@ -96,17 +96,21 @@ One host-owned `CapabilityCatalog` (`Gocordis.Core`) allocates a single `ICapabi
 ## Known boundaries (not "done" claims)
 
 - Managed ALC is **not** a security sandbox; Process/WASM are the isolation boundaries; managed plugins are trusted code. Shared contract assemblies are host-approved, full-identity checked, and process-lifetime (contract upgrades require a controlled host restart).
+- §6.3 threat model (explicit): **Managed** = trusted in-process code, ALC is collectible not isolating. **Process** = OS address-space isolation plus a JSON-RPC method allowlist and `ProcessPermissionPolicy` applied at launch (absolute/PATH-resolved executable, no shell, denied environment variables, explicit working directory); there is NO credential drop, so it must not be called a secured sandbox. **WASM** = Wasmtime engine limits (memory ceiling, stack ceiling, epoch interruption) plus a declared-capability import allowlist (`WasmCapabilityBridge.TryAuthorize` wired from the custom section); guest modules still trust the host bridge. These are different boundaries, not interchangeable "sandbox" labels.
 - Package signatures are verifiable provenance, **not** an install-trust chain.
 - WinForms/Avalonia are render-plan profiles, not full native hosts. Native window hosts for these profiles are an explicitly DEFERRED product capability (P2-03): do not count `UiHostKind` values as completed hosts.
 - Koishi plugin market / remote distribution / browser-side reconcile loop are product references, not ported runtime features.
 - Process/WASM packages without capability declarations are rejected at the product factory: the old echo/value demo path is isolated from the product. Only `endpoint` is implemented for cross-backend value kinds.
 - Backend common protocol and generation fence live in `src/Gocordis.Runtime.Contracts`; Process and WASM no longer depend on `Runtime.Managed`.
 - Official extension capabilities bind `Key<I…>` from their own `Gocordis.Extensions.Contracts.<Name>` assembly, are published by Runtime provider fibers; `plugin create --contract <Name>` adds only the contract package the consumer needs (no ASP.NET Core pulled into plugins). Env is opt-in (`EnvExtensionComponent`): it mutates process environment, is not host-supplied, and must be explicitly loaded by an embedding host. Pattern libraries without a Go `ServiceKey` (Broker, registry, event, observe, scheduler, HMR, package-manager, CliDispatcher, ServerHost) stay library-only; see `docs/migration/existence-audit.md` for the per-capability arbitration.
+- A fiber whose unwind had a failed inverse is **not** clean recovery: it stays `CleanupIncomplete`, its records survive on `RuntimeSnapshot`, and `ObservationEquivalence` never treats it as equivalent to a clean unwind. `DisposeAsync` still completes the fiber to `Gone` (terminal lifecycle) and reports failures through diagnostics rather than throwing from teardown.
+- Theorem 64/68/70/73/80 have executable scenario evidence, not mathematical proofs; Thm73's S(n) ≤ (K+3)(V(n)+1) upper bound is explicitly **not proved**. See `docs/migration/theorem-matrix.md`.
 - Paper C38 (`VersionedKey<T>` + NuGet ranges instead of nominal `K×P`) remains the single accepted difference; C34 is covered via `Runtime.RehomeAsync`.
 
 ## Doc layers
 
 1. **Current engineering spec**: root `AGENTS.md`, `docs/guide/csharp-developer-manual.md`.
 2. **Current status**: this file (and `README.md` pointer).
-3. **Current classification**: `docs/migration/existence-audit.md` and `docs/migration/completeness-ledger.md` (explicit carve-outs from the archive, maintained with current state).
-4. **Historical migration record**: the rest of `docs/migration/` — archive only, including `README.md`, round/review documents and their old branch names, SHAs and counts.
+3. **Main paper chapter matrix**: `docs/paper/chapter-coverage-matrix.md` (chapter-by-chapter state and P0–P4 closure); detailed evidence in `docs/paper/chapter-5-coverage.md` and `docs/paper/chapter-6-boundaries.md`. C01–C40 remain the separate semantic-item/test ledger.
+4. **Current classification**: `docs/migration/existence-audit.md` and `docs/migration/completeness-ledger.md` (explicit carve-outs from the archive, maintained with current state).
+5. **Historical migration record**: the rest of `docs/migration/` — archive only, including `README.md`, round/review documents and their old branch names, SHAs and counts.

@@ -106,6 +106,41 @@ public sealed class EntryReconciliationTests
     }
 
     [Fact]
+    public async Task InterceptIsolateAndUrlChangesLeaveUnrelatedEntriesAlone()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        var applies = new Dictionary<string, int>(StringComparer.Ordinal);
+        registry.RegisterComponentFactory("probe", manifest =>
+            new CountingComponent(manifest.Id, () => applies[manifest.Id] = applies.GetValueOrDefault(manifest.Id) + 1));
+
+        var a = Manifest("a", "probe", intercept: "before");
+        var b = Manifest("b", "probe");
+        await registry.ApplyAsync([a, b]);
+        var aFiber = registry.Entries["a"].Fiber!;
+        var bFiber = registry.Entries["b"].Fiber!;
+
+        // intercept → in-place Meta update; neither entry is reloaded.
+        await registry.ApplyAsync([a with { Intercept = "after" }, b]);
+        Assert.Same(aFiber, registry.Entries["a"].Fiber);
+        Assert.Same(bFiber, registry.Entries["b"].Fiber);
+
+        // isolate → Rehome only the annotated entry.
+        var rehomed = a with { Isolate = "shared-a" };
+        await registry.ApplyAsync([rehomed, b]);
+        var rehomedFiber = registry.Entries["a"].Fiber!;
+        Assert.NotSame(aFiber, rehomedFiber);
+        Assert.Same(bFiber, registry.Entries["b"].Fiber);
+        Assert.Equal(2, applies["a"]);
+
+        // url/source → rebuild only the annotated entry.
+        await registry.ApplyAsync([rehomed with { Source = "payload-v2" }, b]);
+        Assert.NotSame(rehomedFiber, registry.Entries["a"].Fiber);
+        Assert.Same(bFiber, registry.Entries["b"].Fiber);
+        Assert.Equal(3, applies["a"]);
+    }
+
+    [Fact]
     public async Task IncrementalReconciliationReachesTheSameEndpointAsAFreshLoad()
     {
         await using var incrementalRuntime = new Gocordis.Core.Runtime();

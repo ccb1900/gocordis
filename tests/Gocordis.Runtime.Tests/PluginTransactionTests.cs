@@ -42,6 +42,35 @@ public sealed class PluginTransactionTests
     }
 
     [Fact]
+    public async Task FailedApplyRestoresOriginalCapabilityValueAndEffectJournal()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        var key = new Key<string>("rollback-capability");
+        var journal = new List<string>();
+        registry.RegisterComponentFactory("provider", manifest =>
+            new JournalProvider((string)manifest.Config["value"]!, key, journal));
+        registry.RegisterFactory("boom", _ => new Boom());
+
+        await registry.ApplyAsync([Manifest("p", "provider", true, "A")]);
+        Assert.Equal("A", runtime.RequireCapability(key));
+        Assert.Equal(["install:A"], journal);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => registry.ApplyAsync([
+            Manifest("p", "provider", true, "C"),
+            Manifest("boom", "boom", true, "ignored"),
+        ]));
+
+        // Fiber identity is deliberately NOT preserved: retire→reinsert is the
+        // only accepted revision semantics. The observable state IS restored.
+        Assert.Equal("A", runtime.RequireCapability(key));
+        Assert.Equal(FiberState.Active, registry.Entries["p"].Fiber!.State);
+        Assert.Contains("undo:C", journal);
+        Assert.Equal("install:A", journal[^1]);
+        Assert.DoesNotContain(runtime.Snapshot().Fibers, fiber => fiber.Name == "boom");
+    }
+
+    [Fact]
     public async Task ApplyAsync_ActivationFailureIsNotRecordedAsAnEntry()
     {
         await using var runtime = new Gocordis.Core.Runtime();
@@ -116,6 +145,33 @@ public sealed class PluginTransactionTests
         public override async ValueTask<Cleanup?> ApplyAsync(Context context)
         {
             context.Provide(_key, _value);
+            return null;
+        }
+    }
+
+    private sealed class JournalProvider : Component
+    {
+        private readonly string _value;
+        private readonly Key<string> _key;
+        private readonly List<string> _journal;
+
+        public JournalProvider(string value, Key<string> key, List<string> journal)
+        {
+            _value = value;
+            _key = key;
+            _journal = journal;
+        }
+
+        public override string Name => "provider";
+        public override IReadOnlyList<ICapabilityKey> Provide() => [_key];
+
+        public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            context.Provide(_key, _value);
+            _journal.Add($"install:{_value}");
+            await context.EffectAsync(
+                () => ValueTask.CompletedTask,
+                () => { _journal.Add($"undo:{_value}"); return ValueTask.CompletedTask; });
             return null;
         }
     }

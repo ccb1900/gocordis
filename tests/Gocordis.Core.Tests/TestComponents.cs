@@ -31,6 +31,39 @@ public sealed class DelegateComponent : Component
     public override ValueTask<Cleanup?> ApplyAsync(Context context) => _apply(context);
 }
 
+/// <summary>A component whose declaration methods change after load. Core must
+/// keep gating Context access on the snapshot captured at Fiber creation.</summary>
+public sealed class MutatingDeclarationComponent : Component
+{
+    private readonly Func<Context, ValueTask<Cleanup?>> _apply;
+    private IReadOnlyList<ICapabilityKey> _inject;
+    private IReadOnlyList<ICapabilityKey> _provide;
+
+    public MutatingDeclarationComponent(
+        string name,
+        Func<Context, ValueTask<Cleanup?>> apply,
+        IReadOnlyList<ICapabilityKey> inject,
+        IReadOnlyList<ICapabilityKey> provide)
+    {
+        Name = name;
+        _apply = apply;
+        _inject = inject;
+        _provide = provide;
+    }
+
+    public override string Name { get; }
+    public override IReadOnlyList<ICapabilityKey> Inject() => _inject;
+    public override IReadOnlyList<ICapabilityKey> Provide() => _provide;
+
+    public void ClearDeclarations()
+    {
+        _inject = [];
+        _provide = [];
+    }
+
+    public override ValueTask<Cleanup?> ApplyAsync(Context context) => _apply(context);
+}
+
 public sealed class IterativeComponent : Component, IIterativeComponent
 {
     private readonly Func<Context, IAsyncEnumerable<EffectRegistration>> _iterate;

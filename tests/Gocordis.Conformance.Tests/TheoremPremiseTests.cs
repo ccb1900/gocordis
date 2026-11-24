@@ -8,6 +8,12 @@ namespace Gocordis.Conformance.Tests;
 /// These tests go beyond the three-scenario matrices: they exercise bounded
 /// premise enforcement, an in-flight installing effect, and an exhaustive
 /// enumeration of load orders over a small finite declaration set.
+///
+/// Thm73 premises recorded explicitly: (1) finite names — duplicate providers
+/// and undeclared keys are rejected; (2) finite Effect iterator —
+/// Thm73_FiniteIteratorCommitsEveryStepBeforeActivation; (3) acyclic provider
+/// precedence — Thm73_PremisesAreEnforced_FiniteNamesAcyclicPrecedenceCancellableSteps
+/// plus runtime cycle rejection. These check premises only; upper bound not proved.
 /// </summary>
 public sealed class TheoremPremiseTests
 {

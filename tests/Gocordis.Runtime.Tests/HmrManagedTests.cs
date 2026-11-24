@@ -49,12 +49,14 @@ public sealed class HmrManagedTests
         Assert.False(oldContext.IsAlive, "HMR left the previous plugin ALC alive");
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        static async Task<(HmrPlan, WeakReference)> ReloadAndObserve(
+        async Task<(HmrPlan, WeakReference)> ReloadAndObserve(
             PluginRegistry registry, PluginManifest manifest, string v1Path, string v2Path)
         {
             await registry.ApplyAsync([manifest]);
             var oldFiber = registry.Entries["hmr"].Fiber!;
-            var oldContext = new WeakReference(oldFiber.Component);
+            // The claim is about the COLLECTIBLE LOAD CONTEXT, not merely the
+            // component wrapper. The factory records each ALC weak reference.
+            var oldContext = contexts[v1Path];
             var request = new HmrRequest(
                 new HashSet<string> { "sample-module" },
                 new HashSet<string> { "Gocordis.Core", "Gocordis.Plugins" },
@@ -65,6 +67,49 @@ public sealed class HmrManagedTests
             Assert.NotSame(oldFiber, registry.Entries["hmr"].Fiber);
             return (plan, oldContext);
         }
+    }
+
+    [Fact]
+    public async Task FailedManagedReloadKeepsTheOldFiberAndItsCollectibleContextAlive()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        await using var loader = new ManagedPluginLoader();
+        var contexts = new Dictionary<string, WeakReference>(StringComparer.Ordinal);
+        registry.RegisterComponentFactory("hmr-managed", manifest =>
+        {
+            var path = manifest.Source!;
+            var plugin = loader.Load($"{manifest.Id}@{path}", path, "SamplePlugin.SampleComponent");
+            contexts[path] = new WeakReference(plugin.Context);
+            return new ManagedPluginComponent(loader, plugin);
+        });
+
+        using var temp = new TempDir();
+        var bad = temp.Path("bad-module");
+        Directory.CreateDirectory(bad);
+        var badDll = Path.Combine(bad, "SamplePlugin.dll");
+        File.WriteAllText(badDll, "not a managed assembly");
+        var v1Path = SamplePath();
+        var manifest = new PluginManifest("hmr", "hmr-managed", true,
+            new Dictionary<string, object?>(), [], [], Url: "sample-module", Source: v1Path);
+        await registry.ApplyAsync([manifest]);
+        var oldFiber = registry.Entries["hmr"].Fiber!;
+        var oldPlugin = Assert.Single(loader.Plugins.Values);
+
+        var request = new HmrRequest(
+            new HashSet<string> { "sample-module" },
+            new HashSet<string> { "Gocordis.Core", "Gocordis.Plugins" },
+            new Dictionary<string, IReadOnlyList<string>> { ["sample-module"] = [] },
+            [manifest]);
+        await Assert.ThrowsAnyAsync<Exception>(() => HmrEngine.ReloadAsync(
+            registry, request, candidate => candidate with { Source = badDll, Version = "2.0.0" }));
+
+        Assert.Same(oldFiber, registry.Entries["hmr"].Fiber!);
+        Assert.Equal(v1Path, registry.Entries["hmr"].Manifest.Source);
+        Assert.Equal(FiberState.Active, oldFiber.State);
+        // The old plugin object (and therefore its collectible ALC) is still
+        // registered with the loader; a failed HMR must not release it.
+        Assert.Same(oldPlugin, Assert.Single(loader.Plugins.Values));
     }
 
     private static string SamplePath()

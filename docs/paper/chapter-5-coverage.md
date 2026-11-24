@@ -25,6 +25,24 @@ paper behavior are tracked separately.
 | §5.2.2 p.68 | Phase 2 stale-entry detection: transitive imports respecting declined boundary | `HmrEngine.Plan` dependency traversal | `HmrEngineTests.StaleDetectionRespectsDeclinedBoundary`, `SharedPrivateDependencyChangeInvalidatesAllConsumers` | done | No JS module cache walk; the host supplies the assembly graph. The semantic result — which entries are stale — is unchanged. |
 | §5.2.2 p.69 | Phase 3 transactional reload: backup, invalidate, swap fibers, restore on any failure | `HmrEngine.ReloadAsync` submits ONE `PluginRegistry.ApplyAsync` batch; Core retire/reinsert and registry rollback are the only recovery authority | `HmrEngineTests.FailedSecondReloadRollsBackEveryStaleEntryToAConsistentState`, `ConcurrentHmrAndDeclarationChangeSerializeThroughTheRegistry`, `HmrManagedTests.HmrReloadReclaimsTheOldAssemblyLoadContext` | done | CLR "module cache backup" is the previous collectible ALC/payload retained by the old fiber until replacement commits. No GenericHmr state machine is used; ALC release is generation-fenced by `GenerationTracker`. |
 
+**Non-hot-swappable boundaries (explicit).** A changed shared contract assembly
+(`--shared-assembly`), `Gocordis.Core`, `Gocordis.Plugins` or the host itself is
+an `external` in `HmrRequest`; the plan reports it in `HmrPlan.RestartRequired`
+and never includes it in `Accepted` or `StaleEntryIds`. These upgrades require
+a controlled host restart because contract identity is sealed into the Default
+ALC for the process lifetime and Core participates in every fiber's decision
+domain. `HmrEngineTests.ExternalAssemblyChangeRequiresRestartInsteadOfHotReload`
+and `CoreUpgradeIsAnExplicitRestartBoundaryEvenWhenStashed` assert the
+user-visible diagnostic. On a **staging-time** failure (before Commit) the
+original fibers, generations and package payloads are never retired and keep
+their exact identity; `FailedSecondReloadRollsBackEveryStaleEntryToAConsistentState`
+asserts declaration/fiber/generation restoration and
+`FailedManagedReloadKeepsTheOldFiberAndItsCollectibleContextAlive` asserts the
+old collectible ALC stays alive (not reclaimed) after a failed module load. On a post-Commit failure the registry restores the previous
+**declarations and observable capability values** through the existing rollback;
+a new fiber identity is then inherent to the frozen retire→reinsert semantics
+(identity-preserving replace is a rejected difference).
+
 ## §5.3 Case Study: Koishi (p.69–70)
 
 | Paper | Concept | C# implementation | Test evidence | Status | Semantic difference / acceptance |

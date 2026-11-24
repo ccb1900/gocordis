@@ -109,6 +109,59 @@ public sealed class CoreSemanticsTests
     }
 
     [Fact]
+    public async Task ContextUsesCapturedDeclarationsWhenTheComponentMutatesAfterLoad()
+    {
+        await using var runtime = new Runtime();
+        var dependency = new Key<int>("captured-dependency");
+        var ownKey = new Key<int>("captured-own");
+        var lateKey = new Key<int>("not-declared-at-load");
+        var seen = 0;
+        var lateRejected = false;
+        await runtime.LoadAsync(new DelegateComponent("upstream", context =>
+        {
+            context.Provide(dependency, 41);
+            return ValueTask.FromResult<Cleanup?>(null);
+        }, provide: [dependency]));
+        var component = new MutatingDeclarationComponent(
+            "changing-declarations",
+            async context =>
+            {
+                context.Provide(ownKey, 1);
+                seen = context.Require(dependency);
+                return () =>
+                {
+                    // Teardown still reads the original captured declarations:
+                    // Require during Cleanup stays legal, a later key does not.
+                    seen += context.Require(dependency);
+                    try
+                    {
+                        context.Require(lateKey);
+                    }
+                    catch (UndeclaredCapabilityException)
+                    {
+                        lateRejected = true;
+                    }
+
+                    return ValueTask.CompletedTask;
+                };
+            },
+            [dependency],
+            [ownKey]);
+
+        var fiber = await runtime.LoadAsync(component);
+        Assert.Equal(FiberState.Active, fiber.State);
+        component.ClearDeclarations();
+        Assert.Empty(component.Inject());
+        Assert.Empty(component.Provide());
+
+        await runtime.DisposeAsync(fiber);
+
+        Assert.Equal(82, seen);
+        Assert.True(lateRejected);
+        Assert.Equal(FiberState.Gone, fiber.State);
+    }
+
+    [Fact]
     public async Task UndeclaredProvideFailsTheFiber()
     {
         var key = new Key<int>("hidden");

@@ -1978,6 +1978,7 @@ public sealed class Runtime : IAsyncDisposable
             f.Failure?.Message)
         {
             Revision = f.Revision,
+            FailureType = f.Failure?.GetType().Name,
             CleanupIncomplete = f.CleanupIncomplete,
             CleanupFailures = [.. f.CleanupFailures.Select(error => error.Message)],
             EffectFailures = [.. f.EffectFailures],

@@ -89,12 +89,41 @@ public sealed class WasmCapabilityBridge
     private readonly Dictionary<int, ICapabilityEndpoint> _handles = [];
     private readonly object _gate = new();
     private Func<CapabilityId, ICapabilityEndpoint>? _require;
+    private IReadOnlySet<CapabilityId>? _allowed;
     private WasmPluginInstance? _instance;
     private int _nextHandle = 1;
     private bool _disposed;
     private CancellationToken _cancellation;
 
     public void SetRequire(Func<CapabilityId, ICapabilityEndpoint> require) => _require = require;
+
+    /// <summary>The guest may only import capability ids it declared in its
+    /// custom section. This is an allowlist, not a security sandbox: WASM still
+    /// relies on the engine's memory/epoch limits and the host's OS policy.</summary>
+    public void SetAllowedCapabilities(IEnumerable<CapabilityId> ids) =>
+        _allowed = ids.ToHashSet();
+
+    /// <summary>Single authorization point used by the capability_require host
+    /// import. Returns false for malformed, undeclared or unavailable ids.</summary>
+    public bool TryAuthorize(string idText, out ICapabilityEndpoint? endpoint)
+    {
+        endpoint = null;
+        if (_require is null || !CapabilityId.TryParse(idText, out var id) ||
+            (_allowed is not null && !_allowed.Contains(id)))
+        {
+            return false;
+        }
+
+        try
+        {
+            endpoint = _require(id);
+            return endpoint is not null;
+        }
+        catch (DependencyMissingException)
+        {
+            return false;
+        }
+    }
 
     public void SetCancellationToken(CancellationToken cancellationToken) => _cancellation = cancellationToken;
 
@@ -116,18 +145,8 @@ public sealed class WasmCapabilityBridge
     /// <summary>Host import gocordis.capability_require(ptr, len) → handle (0 = rejected).</summary>
     public int Require(int pointer, int length)
     {
-        if (_require is null || !TryRead(pointer, length, out var text) ||
-            !CapabilityId.TryParse(text, out var id))
-        {
-            return 0;
-        }
-
-        ICapabilityEndpoint endpoint;
-        try
-        {
-            endpoint = _require(id);
-        }
-        catch (DependencyMissingException)
+        if (!TryRead(pointer, length, out var text) || !TryAuthorize(text, out var endpoint) ||
+            endpoint is null)
         {
             return 0;
         }
@@ -338,6 +357,7 @@ public sealed class WasmCapabilityComponent : Component
     {
         var bridge = _bridge;
         bridge.SetCancellationToken(context.CancellationToken);
+        bridge.SetAllowedCapabilities(_requires.Select(declaration => declaration.Id));
         bridge.SetRequire(id =>
         {
             var key = _catalog.KeyFor<ICapabilityEndpoint>(id, CapabilityValueKind.Endpoint);

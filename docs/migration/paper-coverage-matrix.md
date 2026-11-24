@@ -29,7 +29,7 @@ C# `PlatformConvergenceTests.cs` 中的方法后缀是**本地用例序号**，�
 | --- | --- | --- | --- | --- |
 | C01 | §1.1 p.4 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:17 (`C01_TemporalRecoveryAndSpatialResolutionAreOneContract`) | 已覆盖 | C01_TemporalRecoveryAndSpatialResolutionAreOneContract：同一组件先声明后提供（空间维门控+响应式激活），effect 安装/逆撤销（时间维恢复）；逆序断言 install/undo 日志。 |
 | C02 | §3.1 p.9 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:71 (`C02_EffectInverseIsLeftInverseNotRightInverse`) | 已覆盖 | C02_EffectInverseIsLeftInverseNotRightInverse：同一上下文栈上断言 g∘f=id（撤销后回到 []）与 f∘g≠id（恢复态再前向产生不同状态）。 |
-| C03 | Def 2 p.10；Thm 7 p.11 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:137 (`Thm68_Matrix`) | 已覆盖 | Thm68_Matrix |
+| C03 | Def 2 p.10；Thm 7 p.11 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:137 (`Thm68_Matrix`) | 已覆盖 | Thm68_Matrix（可执行证据；非形式化证明，逆函数正确性仍是组件 witness 契约） |
 | C04 | Def 1/3/6 pp.9–11；Thm 5 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:107 (`C04_EffectCompositionHasIdentityAndReverseOrderInverse`) | 已覆盖 | C04_EffectCompositionHasIdentityAndReverseOrderInverse：effect iterator 的空序列=单位元，左/右分组安装序列一致（结合律），逆按 g3∘g2∘g1 执行；不伪装公开 API 中存在 trackΓ 对象。 |
 | C05 | Def 8/9 pp.12–13；Thm 10–11 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:186 (`C05_WitnessEffectMovesDeltaToGammaAndBack`) | 已覆盖 | C05_WitnessEffectMovesDeltaToGammaAndBack：断言 delta→gamma 见证在 Active 成立、逆把 gamma→delta，状态序列精确为 gamma,delta。 |
 | C06 | Thm 16 p.15；Def 17/18 pp.15–16 | tests/Gocordis.Conformance.Tests/PaperConformanceTests.cs:13 (`C06_StrictLifoRecoveryLeavesNoResidue`) | 已覆盖 | C06_StrictLifoRecoveryLeavesNoResidue |
@@ -50,13 +50,13 @@ C# `PlatformConvergenceTests.cs` 中的方法后缀是**本地用例序号**，�
 | C21 | §4.2.2 pp.36–37；Table 1 p.40 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:947 (`C21_LifecycleRulesAreObservableForIterativeActivation`) | 已覆盖 | C21_LifecycleRulesAreObservableForIterativeActivation：三场景 [Theory] 覆盖 L-Begin 门控、L-Iter 多步、L-Finish 全提交、L-Divert（在途步逆只覆盖已落步）、L-Leave（依赖消失回 Pending）、L-Unload（整栈逆序）。 |
 | C22 | Def 54 p.36；§4.4 Config p.57 | tests/Gocordis.Conformance.Tests/PaperConformanceTests.cs:51 (`C22_DependencyLossIsWithdrawalNotFailure`) | 已覆盖 | C22_DependencyLossIsWithdrawalNotFailure |
 | C23 | Def 55/56 pp.38–39；Lemma 57 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:1093 (`C23_EffectsMayOnlyWriteOwnStateAndDeclaredProviderSlots`) | 已覆盖 | C23_EffectsMayOnlyWriteOwnStateAndDeclaredProviderSlots：越界 Provide 被 UndeclaredCapabilityException 拒绝，外部键的 provider 值不变，Snapshot 中 owner 的 Provides/Requires/绑定只含声明键。 |
-| C24 | Def 63 p.43 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:25 (`Thm64_Matrix`) | 已覆盖 | Thm64_Matrix |
-| C25 | Thm 64 p.43 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:25 (`Thm64_Matrix`) | 已覆盖 | Thm64_Matrix |
-| C26 | Thm 68 p.46；Cor 69 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:137 (`Thm68_Matrix`) | 已覆盖 | Thm68_Matrix |
-| C27 | Thm 70 pp.47–48 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:265 (`Thm70_Matrix`) | 已覆盖 | Thm70_Matrix |
+| C24 | Def 63 p.43 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:25 (`Thm64_Matrix`) | 已覆盖 | Thm64_Matrix（可执行证据；非形式化证明，固定场景、无归纳） |
+| C25 | Thm 64 p.43 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:25 (`Thm64_Matrix`) | 已覆盖 | Thm64_Matrix（可执行证据；非形式化证明，固定场景、无归纳） |
+| C26 | Thm 68 p.46；Cor 69 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:137 (`Thm68_Matrix`) | 已覆盖 | Thm68_Matrix（可执行证据；非形式化证明，逆函数正确性仍是组件 witness 契约） |
+| C27 | Thm 70 pp.47–48 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:265 (`Thm70_Matrix`) | 已覆盖 | Thm70_Matrix（可执行证据；非形式化证明，有限拓扑，无任意交错穷举） |
 | C28 | Thm 71 p.48 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:1140 (`C28_IterativeStepsShareOneResolutionAndRecoverOnDivert`) | 已覆盖 | C28_IterativeStepsShareOneResolutionAndRecoverOnDivert：多步迭代每步 Require 得到同一值与同一绑定字符串；在途 Divert 时只逆已提交步，状态 Gone 且无 Failure。 |
-| C29 | Def 72 p.49；Thm 73 pp.49–50 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:413 (`Thm73_Matrix`) | 已覆盖 | Thm73_Matrix |
-| C30 | Def 74–76 pp.51–52；Thm 80 pp.54–55 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:521 (`Thm80_Matrix`) | 已覆盖 | Thm80_Matrix |
+| C29 | Def 72 p.49；Thm 73 pp.49–50 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:413 (`Thm73_Matrix`) | 已覆盖 | Thm73_Matrix（可执行证据；非形式化证明，前提为有限名称/有限 iterator/无环；upper bound not proved） |
+| C30 | Def 74–76 pp.51–52；Thm 80 pp.54–55 | tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs:521 (`Thm80_Matrix`) | 已覆盖 | Thm80_Matrix（可执行证据；非形式化证明，有限配置穷举，Def 76 totality 单独验证，失败 Fiber 排除） |
 | C31 | Lemmas 59–62 pp.40–42 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:1218 (`C31_WritePartitionIsInvariantUnderRenamingAndVestigialRecords`) | 已覆盖 | C31_WritePartitionIsInvariantUnderRenamingAndVestigialRecords：名字双射后规范化结构（状态/声明边/绑定）相同；retire→重插后旧 fiber id 与旧绑定在 Snapshot 中不可见。 |
 | C32 | §4.4 Asynchrony pp.55–56 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:1599 (`C32_InertialIteratorLandsCancellableStepBeforeItsInverse`) | 已覆盖 | C32_InertialIteratorLandsCancellableStepBeforeItsInverse：真实迭代器的在途步含可取消异步等待；外部 Dispose 后该步仍落地，Core 先登记其逆再按 LIFO 撤销（install:1→install:2→undo:2→undo:1）；陈旧完成隔离另见 `PC19_StaleActivationCannotAffectANewGeneration`。 |
 | C33 | §4.4 Failure p.56 | tests/Gocordis.Conformance.Tests/PaperGapClosureTests.cs:1321 (`C33_FailureIsIsolatedOnTheFiberAndBlocksReentry`) | 已覆盖 | C33_FailureIsIsolatedOnTheFiberAndBlocksReentry：子 fiber Apply raise → Failed，失败迭代内的逆恰好一次，父保持 Active（不向父传播），后续操作不触发重入。 |

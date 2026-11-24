@@ -54,7 +54,7 @@
 | 8 | Capability | C11、C17、C37 | `runtime/key.go`、`providers.go:191` | `Key<T>` / `EventKey<T>` / `MetaKey<T,M>` 引用身份、一 key 一提供者（按 realm） | `DuplicateProviderIsRejectedAtLoad`、Meta 测试 | 已验证 |
 | 9 | Event（注册部分） | §2.1 p.7、§3.4.2 p.29 | `runtime/event_registry.go` | Effect 拥有的事件注册/注销；派发模式不进 Core | `EventHandlersAreRemovedWhenOwnerIsDisposed` | 已验证 |
 | 10 | Reconciliation | C19–C22、C25、C26 | `runtime/reconcile.go:19`、`orchestrator.go:62` | 单一 `Runtime` 权威：可重入 gate + target/quiet 循环 + Close 排空 | `ConcurrentLoadAndDisposeStayLinearizable`（20 并发 Load/Dispose） | 已验证 |
-| 2.11 | 观察与快照 | C13、C30 | `runtime/observation.go:41`、`observation_equivalence.go` | 只读 `Snapshot()` + `ObservationEquivalence.Equivalent`（忽略生成 id，比较名称/状态/代次/声明/绑定） | `C13_ObservationEquivalenceIgnoresGenerativeFiberIds` | 已验证 |
+| 2.11 | 观察与快照 | C13、C30 | `src/Gocordis.Core/Observation.cs` | 只读 `Snapshot()` + `ObservationEquivalence.Equivalent`：比较名称/状态/声明/绑定/失败类型与消息/清理失败/Effect 失败属性；忽略生成 id、Generation、Revision、ParentId、ActivationId | `C13_ObservationEquivalenceIgnoresGenerativeFiberIds`、`ObservationEquivalenceTests` | 已验证 |
 | 2.12 | 确定性驱动（仅测试） | 论文无 | `runtime/deterministic.go` | `DeterministicDriver`：种子化交错重放，仅存在于 Conformance 测试项目 | `SameSeedReplaysTheSameInterleaving` | 已验证 |
 | 2.13 | 错误词表 | C33、C36 | `runtime/error.go:21` | `DependencyMissing` / `UndeclaredCapability` / `DuplicateProvider` / `DependencyCycle` / `Diverted` | 各失败路径测试 | 已验证 |
 
@@ -181,7 +181,7 @@ Thm70 现已归位到 `TheoremMatrixTests.Thm70_Matrix`，不再计入 `PaperCon
 | WASM（Go wasm backend 与 E2E） | `WasmRuntimeTests.cs`、`BackendLifecycleTests.cs` | Wasmtime 宿主调用、ABI create/destroy、自定义段、HMR 世代栅栏、Core 生命周期 | 已验证 |
 | Process（Go backend、transport） | `ProcessRuntimeTests.cs`、`BackendLifecycleTests.cs`、`AuditRegressionTests.cs` | 握手/超时回收、RPC、shutdown、崩溃中调用、降级策略、Core 生命周期 | 已验证 |
 | UI / Console（Go registry、webui） | `ContributionTests.cs`、`Phase6Tests.cs` | owner 防陈旧、查询/命令、HTTP API、监听安全门 | 已验证 |
-| Thm64 / Thm68 / Thm73 / Thm80 逐条 | `tests/Gocordis.Conformance.Tests/TheoremTests.cs`（旧单点基线）、`tests/Gocordis.Conformance.Tests/TheoremMatrixTests.cs`（新增 5×3 矩阵） | 保持性、恢复精确性、顺序性、进展性、汇合性；Go→C# 逐条映射见 `theorem-matrix.md`。主线程已验证 | 已实现 |
+| Thm64 / Thm68 / Thm73 / Thm80 逐条 | `tests/Gocordis.Conformance.Tests/TheoremTests.cs`（旧单点基线）、`TheoremMatrixTests.cs`（5×3 矩阵）、`TheoremPremiseTests.cs`、`ObservationEquivalenceTests.cs` | 保持性、恢复精确性、顺序性、进展性、汇合性；Go→C# 映射见 `theorem-matrix.md`。固定场景与前提的可执行证据，**不是形式化证明**；无归纳、无全调度、Thm73 复杂度上界未证明 | 有可执行证据；非形式化证明 |
 | 事件五派发模式（Go event conformance） | `tests/Gocordis.Extensions.Tests/ExtensionTests.cs` | serial/bail/parallel/waterfall + 可逆注册 | 已验证 |
 | PC01–PC30 平台收敛 E2E | `tests/Gocordis.Conformance.Tests/PlatformConvergenceTests.cs` + `ProductGateTests.cs` | 仅代表性 6/30 gate 已移植：声明幂等、无第二生命周期、stale 完成隔离、Close 全 Gone、ID 稳定（本地后缀不是 Go gate 编号）。其余 24 项未移植 | 已验证（代表性 6/30） |
 | 论文 C01–C40 可证伪覆盖矩阵 | `tests/Gocordis.Conformance.Tests/PaperItemMatrixTests.cs`、`docs/migration/paper-coverage-matrix.md` | 40 行逐条校验锚点/状态/证据；38 已覆盖、0 待补、2 接受差异；主线程已验证 | 已实现 |

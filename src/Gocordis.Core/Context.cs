@@ -59,21 +59,21 @@ public sealed class Context
     public T Require<T>(Key<T> key)
     {
         EnsureReadable();
-        RequireDeclared(key, _fiber.Component.Inject());
+        RequireDeclared(key, _fiber.CapturedInjectKeys);
         return _activation.Runtime.RequireValue<T>(key, _activation);
     }
 
     public T Require<T>(VersionedKey<T> key)
     {
         EnsureReadable();
-        RequireDeclared(key, _fiber.Component.Inject());
+        RequireDeclared(key, _fiber.CapturedInjectKeys);
         return _activation.Runtime.ResolveVersioned(key, _activation);
     }
 
     public T Require<T>(EventKey<T> key)
     {
         EnsureReadable();
-        RequireDeclared(key, _fiber.Component.Inject());
+        RequireDeclared(key, _fiber.CapturedInjectKeys);
         return _activation.Runtime.RequireValue<T>(key, _activation);
     }
 
@@ -89,7 +89,7 @@ public sealed class Context
     public void Provide<T>(VersionedKey<T> key, T value)
     {
         EnsureWritable();
-        RequireDeclared(key, _fiber.Component.Provide());
+        RequireDeclared(key, _fiber.CapturedProvideKeys);
         _activation.Runtime.RegisterVersioned(key, value, _activation);
         AddInverse(() =>
         {
@@ -105,7 +105,7 @@ public sealed class Context
     private void ProvideCore(CapabilityKey key, object? value)
     {
         EnsureWritable();
-        RequireDeclared(key, _fiber.Component.Provide());
+        RequireDeclared(key, _fiber.CapturedProvideKeys);
         _activation.Runtime.Mutate(() =>
         {
             if (_fiber.Provided.ContainsKey(key))
@@ -137,7 +137,7 @@ public sealed class Context
     public ValueTask IsolateAsync<T>(Key<T> key, Realm realm)
     {
         EnsureWritable();
-        RequireDeclared(key, [.. _fiber.Component.Inject(), .. _fiber.Component.Provide()]);
+        RequireDeclared(key, [.. _fiber.CapturedInjectKeys, .. _fiber.CapturedProvideKeys]);
         ArgumentNullException.ThrowIfNull(realm);
         return _activation.Runtime.IsolateAsync(_fiber, key, realm);
     }
@@ -145,7 +145,7 @@ public sealed class Context
     public void DeclareMeta<T, M>(MetaKey<T, M> key, M value)
     {
         EnsureWritable();
-        RequireDeclared(key, _fiber.Component.Inject());
+        RequireDeclared(key, _fiber.CapturedInjectKeys);
         _activation.Runtime.Mutate(() =>
         {
             var state = GetOrCreateMeta(key);
@@ -234,7 +234,7 @@ public sealed class Context
     public ValueTask OnAsync<T>(EventKey<T> key, Func<T, ValueTask> handler)
     {
         EnsureWritable();
-        RequireDeclared(key, _fiber.Component.Inject());
+        RequireDeclared(key, _fiber.CapturedInjectKeys);
         return _activation.Runtime.RegisterHandler(key, handler, _activation);
     }
 

@@ -117,8 +117,19 @@ public sealed class HmrEngineTests
         Assert.Equal("v1", registry.Entries["second"].Manifest.Source);
         Assert.All(registry.Entries.Values, entry =>
             Assert.Equal(FiberState.Active, entry.Fiber!.State));
-        Assert.NotNull(originalFirst);
-        Assert.NotNull(originalSecond);
+
+        // A staging-time failure happens before Commit, so the registry never
+        // retires the live fibers: old Fiber identity, generation and payload
+        // are preserved exactly, alongside the original declarations.
+        var restoredFirst = registry.Entries["first"].Fiber!;
+        var restoredSecond = registry.Entries["second"].Fiber!;
+        Assert.Same(originalFirst, restoredFirst);
+        Assert.Same(originalSecond, restoredSecond);
+        Assert.Equal(originalFirst.Generation, restoredFirst.Generation);
+        Assert.Equal(originalSecond.Generation, restoredSecond.Generation);
+        // Each v2 module was staged once and rejected before activation.
+        Assert.Equal(2, loads["first"]);
+        Assert.Equal(2, loads["second"]);
     }
 
     [Fact]
@@ -162,6 +173,20 @@ public sealed class HmrEngineTests
 
         Assert.Empty(plan.StaleEntryIds);
         Assert.Contains("shared-contract", plan.Declined);
+        Assert.Equal(["shared-contract"], plan.RestartRequired);
+    }
+
+    [Fact]
+    public void CoreUpgradeIsAnExplicitRestartBoundaryEvenWhenStashed()
+    {
+        var plan = HmrEngine.Plan(new HmrRequest(
+            new HashSet<string> { "Gocordis.Core" },
+            new HashSet<string> { "Gocordis.Core", "Gocordis.Plugins" },
+            new Dictionary<string, IReadOnlyList<string>> { ["Gocordis.Core"] = [] },
+            [Manifest("a", "plugin", "a")]));
+
+        Assert.Contains("Gocordis.Core", plan.Declined);
+        Assert.Equal(["Gocordis.Core"], plan.RestartRequired);
     }
 
     [Fact]

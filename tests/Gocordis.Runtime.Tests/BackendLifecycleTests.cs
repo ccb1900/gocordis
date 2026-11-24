@@ -300,6 +300,26 @@ public sealed class BackendLifecycleTests
         Assert.Contains(ProcessErrorPolicy.RpcErrorPhrase, error.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ManagedRealComponentErrorPropagatesToItsFiberAndUnwindsItsCapability()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        var component = new ManagedPluginComponent(
+            new ManagedPluginLoader(),
+            $"managed-error-{Guid.NewGuid():N}",
+            SamplePath("SamplePlugin"),
+            "SamplePlugin.ThrowingSampleComponent");
+
+        var fiber = await runtime.LoadAsync(component);
+
+        Assert.Equal(FiberState.Failed, fiber.State);
+        Assert.Equal("managed-component-failure", fiber.Failure?.Message);
+        var failure = Assert.Single(runtime.Snapshot().Fibers).Failure;
+        Assert.Equal("managed-component-failure", failure);
+        Assert.Throws<DependencyMissingException>(() =>
+            runtime.RequireCapability(new Key<string>("sample.failure")));
+    }
+
     // ---- fixtures ------------------------------------------------------------
 
     private static IPluginBackend CreateBackend(BackendKind kind, bool valid) => kind switch

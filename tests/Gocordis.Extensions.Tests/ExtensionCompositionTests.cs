@@ -115,6 +115,18 @@ public sealed class ExtensionCompositionTests
         Assert.Throws<DependencyMissingException>(() => runtime.RequireCapability(ExtensionKeys.Http));
     }
 
+    [Fact]
+    public async Task PublishDisposesTheServiceOnceWhenBindingFails()
+    {
+        await using var runtime = new Runtime();
+        var key = new Key<CountingService>("ext-one-shot");
+        var service = new CountingService();
+        var fiber = await runtime.LoadAsync(new DuplicateBindProvider(key, service));
+
+        Assert.Equal(FiberState.Failed, fiber.State);
+        Assert.Equal(1, service.DisposeCount);
+    }
+
     private static async Task WaitForStateAsync(Runtime runtime, Guid fiberId, FiberState expected)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);
@@ -171,6 +183,39 @@ public sealed class ExtensionCompositionTests
 
         public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
             ExtensionPublish.PublishAsync(context, _key, _service);
+    }
+
+    private sealed class DuplicateBindProvider : Component
+    {
+        private readonly Key<CountingService> _key;
+        private readonly CountingService _service;
+
+        public DuplicateBindProvider(Key<CountingService> key, CountingService service)
+        {
+            _key = key;
+            _service = service;
+        }
+
+        public override string Name => "duplicate-bind-provider";
+
+        public override IReadOnlyList<ICapabilityKey> Provide() => [_key];
+
+        public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            context.Provide(_key, _service);
+            return await ExtensionPublish.PublishAsync(context, _key, () => _service);
+        }
+    }
+
+    private sealed class CountingService : IAsyncDisposable
+    {
+        public int DisposeCount { get; private set; }
+
+        public ValueTask DisposeAsync()
+        {
+            DisposeCount++;
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class Probe : IAsyncDisposable

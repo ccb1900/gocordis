@@ -43,28 +43,30 @@ public static class ExtensionPublish
         where K : notnull
     {
         var service = create();
+        // One-shot: a divert inside EffectAsync can run the inverse before
+        // throwing, and a failed Provide can be followed by unwind. Neither
+        // path may dispose a non-idempotent service twice.
+        var disposed = 0;
+        ValueTask DisposeOnceAsync()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) == 0 && service is IAsyncDisposable disposable)
+            {
+                return disposable.DisposeAsync();
+            }
+
+            return ValueTask.CompletedTask;
+        }
+
         try
         {
             // Installed first => undone last: withdraw before disposal.
-            await context.EffectAsync(
-                static () => ValueTask.CompletedTask,
-                async () =>
-                {
-                    if (service is IAsyncDisposable disposable)
-                    {
-                        await disposable.DisposeAsync();
-                    }
-                });
+            await context.EffectAsync(static () => ValueTask.CompletedTask, () => DisposeOnceAsync());
             context.Provide(key, service);
             return null;
         }
         catch
         {
-            if (service is IAsyncDisposable disposable)
-            {
-                await disposable.DisposeAsync();
-            }
-
+            await DisposeOnceAsync();
             throw;
         }
     }

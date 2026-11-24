@@ -155,9 +155,11 @@ effect 绑定；禁用/卸载插件时 UI 自动撤销。C# 端只贡献 API 查
 
 ### 4.4 官方扩展能力
 
-Timer、HTTP、FS、Env、SOCKS、Diagnostics、Watch、RouteGuard 现在都是普通插件能力：
+Timer、HTTP、FS、SOCKS、Diagnostics、Watch、RouteGuard 现在都是普通插件能力：
 宿主在启动时把这些 Provider Component 装载进同一个 Runtime，并从
-`ExtensionKeys` 解析服务，不再私下 `new` 一个服务实例。
+`ExtensionKeys` 解析服务，不再私下 `new` 一个服务实例。Env 是**显式启用**的能力：
+它依赖 FS 且会应用 dotenv 层到进程环境，宿主不会默认加载它；需要时由嵌入宿主
+显式 `Runtime.LoadAsync(new EnvExtensionComponent(dir))`。
 
 - 消费方：`Inject() => [ExtensionKeys.Timer]`，`ApplyAsync` 中
   `context.Require(ExtensionKeys.Timer)`；provider 未到达时保持 `Pending`，

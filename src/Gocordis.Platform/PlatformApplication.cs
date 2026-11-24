@@ -164,11 +164,13 @@ public class PlatformApplication : IAsyncDisposable
 
             // Official extensions are ordinary provider fibers in the same
             // Runtime, not private host objects. Dependency order is expressed
-            // by Inject(): Env waits for FS and SOCKS waits for HTTP.
+            // by Inject(): SOCKS waits for HTTP. Env is opt-in and is NOT
+            // registered as host-supplied: a plugin that declares it must load
+            // EnvExtensionComponent explicitly rather than sit Pending forever.
             foreach (var key in new ICapabilityKey[]
             {
                 ExtensionKeys.Timer, ExtensionKeys.Http, ExtensionKeys.FileSystem,
-                ExtensionKeys.Env, ExtensionKeys.Socks, ExtensionKeys.Diagnostics,
+                ExtensionKeys.Socks, ExtensionKeys.Diagnostics,
                 ExtensionKeys.Watch, ExtensionKeys.RouteGuard,
             })
             {

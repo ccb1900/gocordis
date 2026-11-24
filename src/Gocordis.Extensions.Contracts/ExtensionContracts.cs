@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Net.WebSockets;
 using Gocordis.Core;
 using Gocordis.Plugins;
 
@@ -127,6 +128,8 @@ public interface IHttpService : IAsyncDisposable
     IDisposable AddInterceptorChain(
         Func<HttpRequestMessage, Func<Task<HttpResponseMessage>>, Task<HttpResponseMessage>> interceptor);
     IDisposable RegisterProxyDialer(IEnumerable<string> schemes, SocksDialer dialer);
+    IDisposable RegisterProxyUrlFactory(IEnumerable<string> schemes, Func<Uri?> resolve);
+    Task<WebSocket> ConnectWebSocketAsync(Uri uri, CancellationToken token = default);
     Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token = default);
     Task<string> GetStringAsync(string uri);
     HttpState State();

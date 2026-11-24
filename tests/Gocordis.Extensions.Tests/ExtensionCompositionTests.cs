@@ -1,5 +1,11 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Net.WebSockets;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.DependencyInjection;
 using System.Text;
 using Gocordis.Core;
 using Xunit;
@@ -117,6 +123,43 @@ public sealed class ExtensionCompositionTests
         await runtime.DisposeAsync(socksFiber);
         Assert.Equal(0, http.ProxyCount);
         Assert.Equal(FiberState.Active, httpFiber.State);
+    }
+
+    [Fact]
+    public async Task HttpCapabilityDialsWebSocketAndEchoes()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        await using var server = builder.Build();
+        server.UseWebSockets();
+        server.Map("/ws", async context =>
+        {
+            if (!context.WebSockets.IsWebSocketRequest)
+            {
+                context.Response.StatusCode = 400;
+                return;
+            }
+
+            using var socket = await context.WebSockets.AcceptWebSocketAsync();
+            var buffer = new byte[128];
+            var received = await socket.ReceiveAsync(buffer, context.RequestAborted);
+            await socket.SendAsync(buffer.AsMemory(0, received.Count),
+                WebSocketMessageType.Text, true, context.RequestAborted);
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", context.RequestAborted);
+        });
+        await server.StartAsync();
+        var address = server.Services.GetRequiredService<IServer>()
+            .Features.Get<IServerAddressesFeature>()!.Addresses.First();
+
+        await using var runtime = new Runtime();
+        await runtime.LoadAsync(new HttpExtensionComponent());
+        var http = runtime.RequireCapability(ExtensionKeys.Http);
+        using var client = await http.ConnectWebSocketAsync(new Uri(new Uri(address.Replace("http://", "ws://", StringComparison.Ordinal)), "/ws"));
+        await client.SendAsync(Encoding.UTF8.GetBytes("ping"), WebSocketMessageType.Text, true, default);
+        var buffer = new byte[128];
+        var response = await client.ReceiveAsync(buffer, default);
+        Assert.Equal("ping", Encoding.UTF8.GetString(buffer, 0, response.Count));
+        await server.StopAsync();
     }
 
     [Fact]

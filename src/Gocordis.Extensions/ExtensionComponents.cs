@@ -204,6 +204,19 @@ public sealed class SocksExtensionComponent : Component
                 return ValueTask.CompletedTask;
             });
 
+        // WebSocket dials use a URL-based proxy resolver (ClientWebSocket takes
+        // an IWebProxy, not a dialer). Both contributions are owned by this fiber.
+        var urlRegistration = http.RegisterProxyUrlFactory(
+            ["ws", "wss"],
+            () => socks.ResolveAddress("socks5") is { } url ? new Uri(url) : null);
+        await context.EffectAsync(
+            static () => ValueTask.CompletedTask,
+            () =>
+            {
+                urlRegistration.Dispose();
+                return ValueTask.CompletedTask;
+            });
+
         return await ExtensionPublish.PublishAsync<ISocksRegistry>(context, ExtensionKeys.Socks, socks);
     }
 }

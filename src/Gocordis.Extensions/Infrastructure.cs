@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Text;
 
 namespace Gocordis.Extensions;
@@ -227,6 +228,7 @@ public sealed class HttpService : IAsyncDisposable, IHttpService
     private readonly List<Func<HttpRequestMessage, ValueTask>> _interceptors = [];
     private readonly List<ChainRegistration> _chain = [];
     private readonly Dictionary<long, ProxyRegistration> _proxies = [];
+    private readonly Dictionary<long, (HashSet<string> Schemes, Func<Uri?> Resolve)> _proxyUrls = [];
     private readonly HashSet<StreamLease> _leases = [];
     private long _nextProxyId;
     private bool _closed;
@@ -391,6 +393,75 @@ public sealed class HttpService : IAsyncDisposable, IHttpService
                 _chain.Remove(registration);
             }
         });
+    }
+
+    /// <summary>
+    /// Registers a URL-based proxy resolver for WebSocket dials (the dialer
+    /// registry above is used by HttpClient connections). Removal is identity-fenced.
+    /// </summary>
+    public IDisposable RegisterProxyUrlFactory(IEnumerable<string> schemes, Func<Uri?> resolve)
+    {
+        ArgumentNullException.ThrowIfNull(schemes);
+        ArgumentNullException.ThrowIfNull(resolve);
+        long id;
+        lock (_sync)
+        {
+            EnsureOpen();
+            id = ++_nextProxyId;
+            _proxyUrls[id] = (schemes.Select(NormalizeHttpScheme).ToHashSet(StringComparer.OrdinalIgnoreCase), resolve);
+        }
+
+        return new Subscription(() =>
+        {
+            lock (_sync)
+            {
+                _proxyUrls.Remove(id);
+            }
+        });
+    }
+
+    /// <summary>Dials a WebSocket with the currently winning proxy contribution.</summary>
+    public async Task<WebSocket> ConnectWebSocketAsync(Uri uri, CancellationToken token = default)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        var socket = new ClientWebSocket();
+        var proxy = ResolveWebSocketProxy(uri);
+        if (proxy is not null)
+        {
+            socket.Options.Proxy = new WebProxy(proxy);
+        }
+
+        try
+        {
+            await socket.ConnectAsync(uri, token);
+            return socket;
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    private Uri? ResolveWebSocketProxy(Uri uri)
+    {
+        lock (_sync)
+        {
+            foreach (var (_, entry) in _proxyUrls.OrderByDescending(pair => pair.Key))
+            {
+                var scheme = uri.Scheme;
+                if (entry.Schemes.Contains(scheme) || entry.Schemes.Contains("*"))
+                {
+                    var candidate = entry.Resolve();
+                    if (candidate is not null)
+                    {
+                        return candidate;
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     public HttpState State()

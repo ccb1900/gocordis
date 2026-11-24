@@ -199,6 +199,53 @@ public sealed class ExtensionCompositionTests
     }
 
     [Fact]
+    public async Task ThrowingReadyCallbackIsIsolatedAndWatcherStillWorks()
+    {
+        await using var runtime = new Runtime();
+        using var temp = new TempDir();
+        var path = Path.Combine(temp.Root, "ready.txt");
+        await File.WriteAllTextAsync(path, "one");
+        await runtime.LoadAsync(new WatchExtensionComponent());
+        var watch = runtime.RequireCapability(ExtensionKeys.Watch);
+        var observed = 0;
+        using var handle = watch.Watch(path, evt =>
+        {
+            if (evt.Kind == WatchEventKind.Ready)
+            {
+                throw new InvalidOperationException("bad consumer");
+            }
+
+            if (evt.Kind == WatchEventKind.Change)
+            {
+                observed++;
+            }
+        });
+
+        await File.WriteAllTextAsync(path, "two");
+        await WaitForAsync(() => Volatile.Read(ref observed) > 0);
+        Assert.True(observed > 0);
+    }
+
+    [Fact]
+    public async Task MemoryWatchAndConcurrentWritesAreSafe()
+    {
+        await using var fs = new FileSystemService();
+        fs.MountMemory("/mem");
+        await fs.WriteAllTextAsync("/mem/a.txt", "start");
+        var writes = Enumerable.Range(0, 50).Select(async i =>
+        {
+            await fs.WriteAllTextAsync("/mem/a.txt", i.ToString());
+        });
+        var subscriptions = Enumerable.Range(0, 50).Select(_ =>
+        {
+            using var handle = fs.Watch("/mem/a.txt", _ => { });
+            return Task.CompletedTask;
+        });
+        await Task.WhenAll(writes.Concat(subscriptions));
+        Assert.Contains("4", await fs.ReadAllTextAsync("/mem/a.txt"));
+    }
+
+    [Fact]
     public async Task WatchOwnedAsyncUnwindsWithItsOwnerAndStopsCallbacks()
     {
         await using var runtime = new Runtime();

@@ -341,14 +341,24 @@ public sealed class MemoryFileSystemProvider : IFileSystemProvider
 
     private void Notify(string path)
     {
-        foreach (var (prefix, callbacks) in _watches)
+        (string Prefix, Action<string> Callback)[] snapshot;
+        lock (_sync)
         {
-            if (path.StartsWith(prefix, StringComparison.Ordinal) || prefix.Length == 0)
+            snapshot = _watches
+                .Where(pair => pair.Key.Length == 0 || path.StartsWith(pair.Key, StringComparison.Ordinal))
+                .SelectMany(pair => pair.Value.Select(callback => (pair.Key, callback)))
+                .ToArray();
+        }
+
+        foreach (var (_, callback) in snapshot)
+        {
+            try
             {
-                foreach (var callback in callbacks.ToArray())
-                {
-                    callback(path);
-                }
+                callback(path);
+            }
+            catch
+            {
+                // A failing subscriber must not corrupt the provider or writer.
             }
         }
     }

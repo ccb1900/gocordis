@@ -44,7 +44,7 @@ public sealed class ReversibleWatchService : IAsyncDisposable, IWatchService
         {
             // A missing source is reported as an Error observation, not a
             // surprise exception for a watcher that can be retried later.
-            onEvent(new WatchEvent(WatchEventKind.Error, path,
+            SafeInvoke(onEvent, new WatchEvent(WatchEventKind.Error, path,
                 Error: $"watch source does not exist: {path}"));
             return new InertSubscription();
         }
@@ -110,8 +110,16 @@ public sealed class ReversibleWatchService : IAsyncDisposable, IWatchService
         // never run while the service is serializing watcher state. Native
         // observations raised before this returns are buffered per
         // subscription and flushed afterwards, so Ready is always first.
-        onEvent(new WatchEvent(WatchEventKind.Ready, full));
-        subscription.MarkReady();
+        try
+        {
+            subscription.DeliverReady();
+        }
+        catch
+        {
+            subscription.Dispose();
+            throw;
+        }
+
         return subscription;
     }
 
@@ -174,6 +182,18 @@ public sealed class ReversibleWatchService : IAsyncDisposable, IWatchService
         }
 
         return subscription ?? throw new InvalidOperationException("watch effect did not register");
+    }
+
+    private static void SafeInvoke(Action<WatchEvent> onEvent, WatchEvent evt)
+    {
+        try
+        {
+            onEvent(evt);
+        }
+        catch
+        {
+            // Consumer callbacks must never corrupt watcher state.
+        }
     }
 
     public ValueTask DisposeAsync()
@@ -273,6 +293,12 @@ public sealed class ReversibleWatchService : IAsyncDisposable, IWatchService
             }
 
             InvokeSafely(evt);
+        }
+
+        internal void DeliverReady()
+        {
+            ReversibleWatchService.SafeInvoke(_onEvent, new WatchEvent(WatchEventKind.Ready, _root));
+            MarkReady();
         }
 
         internal void MarkReady()

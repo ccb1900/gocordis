@@ -24,19 +24,25 @@ public sealed class FileSystemService : IAsyncDisposable, IFileSystemService
         MountProvider(prefix, new LocalFileSystemProvider(root), owns: true);
 
     /// <summary>Mounts a provider under a prefix; the service owns it when owns is true.</summary>
-    public void MountProvider(string prefix, IFileSystemProvider provider, bool owns = true)
+    public void MountProvider(string prefix, IFileSystemProvider provider, bool owns = true) =>
+        MountProvider(prefix, provider, owns, Guid.NewGuid());
+
+    private void MountProvider(string prefix, IFileSystemProvider provider, bool owns, Guid token)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prefix);
         ArgumentNullException.ThrowIfNull(provider);
+        MountEntry? evicted = null;
         lock (_sync)
         {
             if (_mounts.TryGetValue(prefix, out var existing) && existing.Owns)
             {
-                existing.Provider.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                evicted = existing;
             }
 
-            _mounts[prefix] = new MountEntry(provider, owns, Guid.NewGuid());
+            _mounts[prefix] = new MountEntry(provider, owns, token);
         }
+
+        evicted?.Provider.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
     /// <summary>Mounts an in-memory tree; seeds are (path, bytes) pairs.</summary>
@@ -45,13 +51,8 @@ public sealed class FileSystemService : IAsyncDisposable, IFileSystemService
 
     public IDisposable MountScoped(string prefix, string root)
     {
-        Mount(prefix, root);
-        Guid token;
-        lock (_sync)
-        {
-            token = _mounts[prefix].Token;
-        }
-
+        var token = Guid.NewGuid();
+        MountProvider(prefix, new LocalFileSystemProvider(root), owns: true, token);
         return new Subscription(() => Unmount(prefix, token));
     }
 

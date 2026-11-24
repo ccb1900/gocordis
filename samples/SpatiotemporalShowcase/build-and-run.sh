@@ -82,7 +82,7 @@ pack_and_install() {
         --entry-assembly "$asm.dll" \
         --entry-type "$entry_type" \
         --shared-assembly Showcase.Contracts \
-        "${schema_args[@]}" "${extra[@]}"
+        "${schema_args[@]+"${schema_args[@]}"}" "${extra[@]+"${extra[@]}"}"
     dotnet "$CLI_DLL" plugin install "$package" --store "$STORE" --host-version 1.0.0
 }
 

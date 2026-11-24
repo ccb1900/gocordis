@@ -4,12 +4,13 @@ using Gocordis.Cli;
 using Gocordis.Packaging;
 using Gocordis.Plugins;
 using Xunit;
+using CliProgram = Gocordis.Cli.Program;
 
 namespace Gocordis.Packaging.Tests;
 
 /// <summary>
 /// Red tests for the product plugin tooling gap: create / doctor / package
-/// (pack alias) / preflight. Every test drives the public <see cref="Program.Main"/>
+/// (pack alias) / preflight. Every test drives the public <see cref="Gocordis.Cli.Program.Main"/>
 /// entry point, the same way the existing CLI tests do.
 /// </summary>
 [Collection("CLI")]
@@ -236,7 +237,7 @@ public sealed class PluginToolingTests
         System.Console.SetError(error);
         try
         {
-            var code = await Program.Main(args);
+            var code = await CliProgram.Main(args);
             return (code, output.ToString(), error.ToString());
         }
         finally

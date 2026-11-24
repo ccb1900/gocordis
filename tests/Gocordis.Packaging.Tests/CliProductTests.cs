@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Gocordis.Cli;
 using Gocordis.Packaging;
 using Xunit;
+using CliProgram = Gocordis.Cli.Program;
 
 namespace Gocordis.Packaging.Tests;
 
@@ -176,6 +177,33 @@ public sealed class CliProductTests
     }
 
     [Fact]
+    public async Task AppRunFlagsBecomeHostOptionsAtTheCliEntrypoint()
+    {
+        using var temp = new TempDir();
+        var path = await WriteManifestAsync(temp);
+        var pem = temp.File("run-key.pem");
+        await File.WriteAllTextAsync(pem, "pem-public-key");
+
+        var options = CliProgram.BuildAppRunOptions(
+        [
+            "app", "run", path, "--store", temp.Path("store"),
+            "--host-version", HostVersion, "--validate-only", "--allow-remote",
+            "--allowed-host", "console.example.com", "--allowed-host", "admin.example.com",
+            "--trust", "trusted-only", "--public-key", pem,
+        ]);
+
+        // Reflection avoids pulling Platform/UI.Hosts into this test assembly:
+        // it would shadow Gocordis.Core.Runtime in unrelated tests here.
+        var shape = options.GetType();
+        Assert.Equal(["console.example.com", "admin.example.com"],
+            (IEnumerable<string>)shape.GetProperty("AllowedHosts")!.GetValue(options)!);
+        Assert.True((bool)shape.GetProperty("AllowRemote")!.GetValue(options)!);
+        Assert.True((bool)shape.GetProperty("ValidateOnly")!.GetValue(options)!);
+        Assert.True(((PluginTrustPolicy)shape.GetProperty("Trust")!.GetValue(options)!).RequireSignature);
+        Assert.Equal("Web", shape.GetProperty("Host")!.GetValue(options)!.ToString());
+    }
+
+    [Fact]
     public async Task AppAddRejectsInvalidRangeAndUninstalledPlugins()
     {
         using var temp = new TempDir();
@@ -288,7 +316,7 @@ public sealed class CliProductTests
         System.Console.SetError(error);
         try
         {
-            var code = await Program.Main(args);
+            var code = await CliProgram.Main(args);
             return (code, output.ToString(), error.ToString());
         }
         finally

@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Gocordis.Cli;
 using Gocordis.Packaging;
 using Xunit;
+using CliProgram = Gocordis.Cli.Program;
 
 namespace Gocordis.Packaging.Tests;
 
@@ -127,7 +128,7 @@ public sealed class PluginSourceTests
         System.Console.SetError(error);
         try
         {
-            var code = await Program.Main(args);
+            var code = await CliProgram.Main(args);
             return (code, output.ToString(), error.ToString());
         }
         finally

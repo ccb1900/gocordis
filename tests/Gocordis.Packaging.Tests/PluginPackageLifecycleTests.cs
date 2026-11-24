@@ -292,9 +292,9 @@ public sealed class PluginPackageLifecycleTests
         File.Move(temp, packagePath, overwrite: true);
     }
 
-    private static async Task<(PluginStore Store, PluginRegistry Registry, Runtime Runtime, ConsoleHost Host)> CreateHostedStoreAsync(TempDir temp)
+    private static async Task<(PluginStore Store, PluginRegistry Registry, Gocordis.Core.Runtime Runtime, ConsoleHost Host)> CreateHostedStoreAsync(TempDir temp)
     {
-        var runtime = new Runtime();
+        var runtime = new Gocordis.Core.Runtime();
         var host = new ConsoleHost(runtime);
         var registry = new PluginRegistry(runtime);
         registry.ExternalCapabilities.Add(UiContributionRegistry.Key);

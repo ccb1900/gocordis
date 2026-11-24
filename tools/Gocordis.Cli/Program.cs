@@ -1137,6 +1137,26 @@ public static class Program
         return 0;
     }
 
+    /// <summary>
+    /// The single place where `app run` flags become host options. Public so a
+    /// CLI-level regression test can prove flags are not silently dropped.
+    /// </summary>
+    public static PlatformHostOptions BuildAppRunOptions(string[] args, string? manifestPath = null)
+    {
+        var path = manifestPath ?? Positional(args, 0)
+            ?? throw new ArgumentException("app run requires a manifest path");
+        return new PlatformHostOptions(
+            path,
+            StorePath(args),
+            Option(args, "--address") ?? "http://127.0.0.1:0",
+            AllowRemote: args.Contains("--allow-remote", StringComparer.Ordinal),
+            Host: UiHostKind.Web,
+            HostVersion: HostVersion(args),
+            ValidateOnly: args.Contains("--validate-only", StringComparer.Ordinal),
+            Trust: BuildTrustPolicy(args),
+            AllowedHosts: OptionValues(args, "--allowed-host"));
+    }
+
     private static async Task<int> AppRunAsync(string[] args)
     {
         var path = Positional(args, 0);
@@ -1146,28 +1166,15 @@ public static class Program
         }
 
         var validateOnly = args.Contains("--validate-only", StringComparer.Ordinal);
-        PluginTrustPolicy trust;
+        PlatformHostOptions options;
         try
         {
-            trust = BuildTrustPolicy(args);
+            options = BuildAppRunOptions(args, path);
         }
         catch (ArgumentException ex)
         {
             return Fail(ex.Message);
         }
-
-        // The CLI is a thin front end: one Runtime, one Registry and the backend
-        // factory all live in Platform, exactly as in a generated application.
-        var options = new PlatformHostOptions(
-            path,
-            StorePath(args),
-            Option(args, "--address") ?? "http://127.0.0.1:0",
-            AllowRemote: args.Contains("--allow-remote", StringComparer.Ordinal),
-            Host: UiHostKind.Web,
-            HostVersion: HostVersion(args),
-            ValidateOnly: validateOnly,
-            Trust: trust,
-            AllowedHosts: OptionValues(args, "--allowed-host"));
 
         return await PlatformRunner.RunAsync(options, new PlatformRunHooks
         {

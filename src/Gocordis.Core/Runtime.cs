@@ -205,6 +205,22 @@ public sealed class Runtime : IAsyncDisposable
     }
 
     /// <summary>
+    /// Deterministic quiescence barrier: completes after all previously
+    /// submitted commands have been handled and the final snapshot published.
+    /// It does not change declarations or fiber state; it only orders reads.
+    /// </summary>
+    public Task QuiesceAsync()
+    {
+        var reply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!TryWrite(new MutateCommand(static () => { }, reply)))
+        {
+            throw new ObjectDisposedException(nameof(Runtime));
+        }
+
+        return reply.Task;
+    }
+
+    /// <summary>
     /// Paper C34: reassign a fiber to a realm as a revision composite. The old
     /// fiber is retired and deactivated, its records are removed, then a NEW
     /// fiber with the same name/component is reinserted at the new realm. The

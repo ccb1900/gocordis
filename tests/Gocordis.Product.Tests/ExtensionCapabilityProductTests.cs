@@ -74,8 +74,11 @@ public sealed class ExtensionCapabilityProductTests
             }
 
             // The host and the package must carry the byte-identical contract DLL.
+            // Copy the exact assembly already loaded in this process. Copying a
+            // freshly built source-tree copy can have a different MVID and be
+            // rejected as a process-level contract upgrade.
             File.Copy(
-                Path.Combine(root, "src", "ExtensionContracts", "Timer", "bin", "Debug", "net10.0", "Gocordis.Extensions.Contracts.Timer.dll"),
+                typeof(TimerKeys).Assembly.Location,
                 Path.Combine(payload, "Gocordis.Extensions.Contracts.Timer.dll"), overwrite: true);
 
             var store = Path.Combine(workspace, "store");

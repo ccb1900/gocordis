@@ -49,11 +49,10 @@ public sealed class PaperContributionsTests
         // Awaiting the retired fiber's terminal state is the deterministic
         // quiescence point — no sleep or state polling.
         await oldProviderFiber.GoneAsync();
-        // The dedicated C22 test asserts the final Pending state; here the
-        // deterministic contract is that the consumer is no longer Active and
-        // has not Failed while its provider is withdrawn and unwound.
-        var consumerState = registry.Entries["consumer"].Fiber!.State;
-        Assert.Contains(consumerState, new[] { FiberState.Pending, FiberState.Loading });
+        // A quiescence barrier orders this read after the reactive reapply that
+        // followed the provider withdrawal — no sleep or state polling.
+        await runtime.QuiesceAsync();
+        Assert.Equal(FiberState.Pending, registry.Entries["consumer"].Fiber!.State);
         Assert.Null(registry.Entries["consumer"].Fiber!.Failure);
         Assert.Contains("undo:provider", journal);
         Assert.Contains("child:undo", journal);

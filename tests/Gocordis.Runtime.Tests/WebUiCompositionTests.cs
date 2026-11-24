@@ -295,6 +295,28 @@ public sealed class WebUiCompositionTests
         }
     }
 
+    [Fact]
+    public async Task EmbeddedBootstrapExposesDashboardGraphSnapshotAndEvents()
+    {
+        // A fresh checkout has no React dist; the embedded fallback must still
+        // render the whole control surface, not only the plugin list.
+        await using var runtime = new Gocordis.Core.Runtime();
+        var host = new ConsoleHost(runtime);
+        await using var server = new WebUiServer(host);
+        await server.StartAsync();
+        using var client = NewClient(server);
+
+        var script = await client.GetStringAsync("/app.js");
+        Assert.Contains("/api/ui/pages", script, StringComparison.Ordinal);
+        Assert.Contains("framework/dashboard", script, StringComparison.Ordinal);
+        Assert.Contains("insight/graph", script, StringComparison.Ordinal);
+        Assert.Contains("runtime/snapshot", script, StringComparison.Ordinal);
+        Assert.Contains("runtime/events", script, StringComparison.Ordinal);
+
+        var style = await client.GetStringAsync("/app.css");
+        Assert.Contains(".graph", style, StringComparison.Ordinal);
+    }
+
     private static HttpClient NewClient(WebUiServer server) =>
         new() { BaseAddress = new Uri(server.Address!) };
 

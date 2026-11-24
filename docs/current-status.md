@@ -16,6 +16,8 @@ dotnet run --project src/Gocordis.Platform -- \
 
 Console: no fixed default port (`http://127.0.0.1:0` picks an ephemeral port); `8170` is only what the examples pass explicitly via `--address`. Web is the only runnable host; the CLI rejects `winforms`/`avalonia` because they are render-plan profiles, not native window hosts.
 
+A fresh checkout run with `dotnet run` gets the embedded zero-build console: dashboard counts, contributed pages, dependency graph (declared/runtime toggle), runtime snapshot and recent events. `web/console/dist` is tracked so `dotnet build` copies the real React SPA to `web-dist` on a fresh checkout; the embedded fallback above is only a safety net. In both cases the UI is more than a plugin list.
+
 ## Runnable full loop
 
 ```bash
@@ -39,7 +41,7 @@ dotnet test  Gocordis.sln --nologo --no-build -m:1
 bash docs/migration/verify-baseline.sh   # Go baseline drift check
 ```
 
-**Last locally verified** (2026-11-24, branch `dotnet`, working tree after implementing the chapter-matrix gaps): C# **613 passed / 1 skipped / 0 failed** across 8 test assemblies (Core 49, Conformance 168, Runtime 183+1 skipped, Extensions 69, Packaging 79, UI 3, Client 2, Product 60; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **103** tests green plus production build, plugin-kit 2 tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
+**Last locally verified** (2026-11-24, branch `dotnet`, working tree after implementing the chapter-matrix gaps): C# **614 passed / 1 skipped / 0 failed** across 8 test assemblies (Core 49, Conformance 168, Runtime 184+1 skipped, Extensions 69, Packaging 79, UI 3, Client 2, Product 60; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **103** tests green plus production build, plugin-kit 2 tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
 
 Task 01 的有限校准基线见 `docs/migration/acceptance-baseline.md`；它区分三个验收域与 E0–E4 证据等级，P0-01…P0-04 均已关闭（真实 Process↔WASM 调用与包闭环由 `CrossBackendCapabilityTests`、`BackendDispatchProductTests` 覆盖）。
 

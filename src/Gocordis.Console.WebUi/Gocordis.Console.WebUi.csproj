@@ -5,9 +5,9 @@
     <EmbeddedResource Include="wwwroot/app.css" LogicalName="Gocordis.Console.WebUi.app.css" />
   </ItemGroup>
   <ItemGroup>
-    <!-- The built React console is shipped next to the assembly in web-dist/.
-         WebUiServer prefers it at runtime and falls back to the embedded
-         bootstrap UI above when a fresh checkout has no web/console/dist. -->
+    <!-- The built React console is tracked in web/console/dist and shipped
+         next to the assembly in web-dist/. WebUiServer prefers it at runtime;
+         the embedded bootstrap above remains the no-SPA safety net. -->
     <Content Include="../../web/console/dist/**/*"
              Link="web-dist/%(RecursiveDir)%(Filename)%(Extension)"
              CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

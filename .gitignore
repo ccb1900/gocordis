@@ -4,7 +4,8 @@ build/
 !src/Gocordis.Plugin.Sdk/build/
 !src/Gocordis.Plugin.Sdk/build/Gocordis.Plugin.Sdk.props
 web/console/node_modules/
-web/console/dist/
+# web/console/dist is tracked: `dotnet run` from a fresh checkout must serve
+# the real React console without requiring a separate npm build step.
 
 # Dependencies are reproducible from their lockfiles — never tracked.
 client/node_modules/

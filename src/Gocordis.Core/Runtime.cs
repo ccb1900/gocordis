@@ -38,6 +38,11 @@ public sealed class Runtime : IAsyncDisposable
     private sealed record IsolateCommand(
         Fiber Fiber, ICapabilityKey Key, Realm Realm, TaskCompletionSource Reply) : RuntimeCommand;
 
+    /// <summary>Paper §5.2.1 intercept update: meta is read-time policy, so it
+    /// is changed in the decision domain without retiring the fiber.</summary>
+    private sealed record SetMetaCommand(
+        Fiber Fiber, IMetaKey Key, object? Value, TaskCompletionSource Reply) : RuntimeCommand;
+
     /// <summary>
     /// Paper C34 revision composite: retire the old fiber, deactivate it,
     /// O-Remove its records and reinsert the same-name component at a fresh
@@ -222,6 +227,49 @@ public sealed class Runtime : IAsyncDisposable
         }
 
         return reply.Task;
+    }
+
+    /// <summary>Updates an entry's interception metadata in place: no reload,
+    /// no state transition, no second lifecycle authority.</summary>
+    public Task SetMetaAsync(Fiber fiber, IMetaKey key, object? value)
+    {
+        ArgumentNullException.ThrowIfNull(fiber);
+        ArgumentNullException.ThrowIfNull(key);
+        var reply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!TryWrite(new SetMetaCommand(fiber, key, value, reply)))
+        {
+            throw new ObjectDisposedException(nameof(Runtime));
+        }
+
+        return reply.Task;
+    }
+
+    /// <summary>Read-only metadata view for diagnostics and reconciliation tests.</summary>
+    public object? GetMeta(Fiber fiber, IMetaKey key)
+    {
+        ArgumentNullException.ThrowIfNull(fiber);
+        ArgumentNullException.ThrowIfNull(key);
+        lock (_stateLock)
+        {
+            return fiber.Metadata.TryGetValue(key, out var state)
+                ? state.Override ?? state.Declared
+                : null;
+        }
+    }
+
+    private void HandleSetMeta(SetMetaCommand command)
+    {
+        Mutate(() =>
+        {
+            if (!command.Fiber.Metadata.TryGetValue(command.Key, out var state))
+            {
+                state = new Fiber.MetaState();
+                command.Fiber.Metadata[command.Key] = state;
+            }
+
+            state.Override = command.Value;
+        });
+        _pendingReplies.Add(() => command.Reply.TrySetResult());
     }
 
     internal ValueTask IsolateAsync(Fiber fiber, ICapabilityKey key, Realm realm)
@@ -409,6 +457,9 @@ public sealed class Runtime : IAsyncDisposable
                                 break;
                             case IsolateCommand isolate:
                                 HandleIsolate(isolate);
+                                break;
+                            case SetMetaCommand meta:
+                                HandleSetMeta(meta);
                                 break;
                             case RehomeCommand rehome:
                                 HandleRehome(rehome);

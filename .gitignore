@@ -29,3 +29,6 @@ BenchmarkDotNet.Artifacts/
 
 # Locally packed SDK feed for plugin development
 local-packages/
+
+# Uploaded review artifacts / Windows alternate data streams
+*:Zone.Identifier

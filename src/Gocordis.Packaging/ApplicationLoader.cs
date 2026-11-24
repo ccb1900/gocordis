@@ -1,7 +1,22 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Gocordis.Plugins;
 
 namespace Gocordis.Packaging;
+
+/// <summary>Paper §5.2.1 Entry: stable id, module URL, isolation/interception
+/// annotations, config and administrative disabled state. Group and Include
+/// are ordinary configuration nodes; they are expanded into child entries by
+/// the loader and never become a second Runtime.</summary>
+public sealed record EntryNode(
+    string Id,
+    string? Url = null,
+    bool Disabled = false,
+    IReadOnlyDictionary<string, object?>? Config = null,
+    string? Isolate = null,
+    string? Intercept = null,
+    IReadOnlyList<EntryNode>? Children = null,
+    string? Include = null);
 
 public sealed record ApplicationPlugin(
     string Id,
@@ -13,21 +28,37 @@ public sealed record ApplicationPlugin(
     // PackageHash which bytes were resolved.
     string? LockedVersion = null,
     string? PackageHash = null,
-    string? Source = null);
+    string? Source = null,
+    // Paper Entry annotations carried into PluginManifest.
+    string? Url = null,
+    string? Isolate = null,
+    string? Intercept = null,
+    string? ParentId = null,
+    string? PackageId = null);
 
 public sealed record ApplicationManifest(
     string Id,
     string Version,
     string HostVersion,
-    IReadOnlyList<ApplicationPlugin> Plugins)
+    IReadOnlyList<ApplicationPlugin> Plugins,
+    IReadOnlyList<EntryNode>? Entries = null)
 {
-    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    /// <summary>Path the manifest was loaded from, used to resolve Include files.</summary>
+    [JsonIgnore]
+    public string? SourcePath { get; init; }
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
 
     public static async Task<ApplicationManifest> LoadAsync(string path, CancellationToken cancellationToken = default)
     {
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
-        return JsonSerializer.Deserialize<ApplicationManifest>(bytes, JsonOptions)
+        var manifest = JsonSerializer.Deserialize<ApplicationManifest>(bytes, JsonOptions)
                ?? throw new InvalidDataException($"application manifest '{path}' is empty");
+        return manifest with { SourcePath = Path.GetFullPath(path) };
     }
 
     public async Task SaveAsync(string path, CancellationToken cancellationToken = default)
@@ -63,6 +94,77 @@ public sealed class ApplicationLoader
         _registry = registry;
     }
 
+    private static readonly JsonSerializerOptions IncludeOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true,
+    };
+
+    /// <summary>
+    /// Expands the paper §5.2.1 configuration tree into the flat declaration
+    /// set Core consumes. Group nodes are structural (children carry the
+    /// parent id); Include nodes graft an external JSON entry list. No component
+    /// is instantiated here and no Runtime command is issued.
+    /// </summary>
+    private static async Task<IReadOnlyList<ApplicationPlugin>> EffectivePluginsAsync(
+        ApplicationManifest application, CancellationToken cancellationToken)
+    {
+        var result = new Dictionary<string, ApplicationPlugin>(StringComparer.Ordinal);
+
+        async Task AddNode(EntryNode node, string? parentId)
+        {
+            if (node.Include is { } include)
+            {
+                var basePath = Path.GetDirectoryName(application.SourcePath ?? string.Empty) ?? string.Empty;
+                var includePath = Path.IsPathRooted(include)
+                    ? include
+                    : Path.Combine(basePath, include);
+                var json = await File.ReadAllTextAsync(includePath, cancellationToken);
+                var included = JsonSerializer.Deserialize<List<EntryNode>>(json, IncludeOptions) ?? [];
+                foreach (var child in included)
+                {
+                    await AddNode(child, parentId);
+                }
+            }
+
+            foreach (var child in node.Children ?? [])
+            {
+                await AddNode(child, node.Id);
+            }
+
+            if (node.Url is not null || node.Config is not null || node.Isolate is not null ||
+                node.Intercept is not null || node.Disabled)
+            {
+                var (packageId, range) = ParseUrl(node.Url ?? node.Id);
+                result[node.Id] = new ApplicationPlugin(
+                    node.Id, range, !node.Disabled, node.Config,
+                    Url: node.Url, Isolate: node.Isolate, Intercept: node.Intercept,
+                    ParentId: parentId, PackageId: packageId);
+            }
+        }
+
+        foreach (var entry in application.Entries ?? [])
+        {
+            await AddNode(entry, null);
+        }
+
+        // Explicit flat declarations remain authoritative for the same id.
+        foreach (var plugin in application.Plugins)
+        {
+            result[plugin.Id] = plugin;
+        }
+
+        return [.. result.Values];
+    }
+
+    private static (string Id, string Range) ParseUrl(string url)
+    {
+        var separator = url.IndexOf('@');
+        return separator < 0
+            ? (url, "[1.0,)")
+            : (url[..separator], url[(separator + 1)..]);
+    }
+
     public async Task ApplyAsync(ApplicationManifest application, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(application);
@@ -73,10 +175,11 @@ public sealed class ApplicationLoader
         }
 
         var declarations = new List<PluginManifest>(application.Plugins.Count);
-        foreach (var plugin in application.Plugins)
+        foreach (var plugin in await EffectivePluginsAsync(application, cancellationToken))
         {
             var selection = plugin.LockedVersion ?? plugin.VersionRange;
-            var installed = await _store.ResolveAsync(plugin.Id, selection, cancellationToken)
+            var packageId = plugin.PackageId ?? plugin.Id;
+            var installed = await _store.ResolveAsync(packageId, selection, cancellationToken)
                             ?? throw new MissingPluginDependencyException(
                                 $"application '{application.Id}' declares '{plugin.Id}' {selection}, which is not installed");
             if (plugin.PackageHash is { } expectedHash &&
@@ -88,7 +191,7 @@ public sealed class ApplicationLoader
             }
 
             declarations.Add(new PluginManifest(
-                installed.Id,
+                plugin.Id,
                 installed.Manifest.Type,
                 plugin.Enabled,
                 plugin.Config ?? new Dictionary<string, object?>(),
@@ -101,7 +204,8 @@ public sealed class ApplicationLoader
                 installed.Manifest.EntryAssembly,
                 installed.Manifest.EntryType,
                 installed.Manifest.SharedAssemblies,
-                installed.Manifest.Capabilities));
+                installed.Manifest.Capabilities,
+                plugin.Url, plugin.Isolate, plugin.Intercept, plugin.ParentId));
         }
 
         var planWire = declarations

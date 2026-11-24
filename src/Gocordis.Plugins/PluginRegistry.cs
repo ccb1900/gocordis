@@ -31,6 +31,10 @@ public sealed class PluginRegistry : IAsyncDisposable
     private readonly Dictionary<string, PluginEntry> _entries = [];
     private IReadOnlyList<ManifestDiagnostic> _diagnostics = [];
 
+    /// <summary>Resolves an Entry's isolate annotation to a Core Realm. The host
+    /// owns this map; the registry only submits it to RehomeAsync.</summary>
+    public Func<string?, string, Realm>? RealmFor { get; set; }
+
     public PluginRegistry(Runtime runtime)
     {
         _runtime = runtime;
@@ -127,10 +131,16 @@ public sealed class PluginRegistry : IAsyncDisposable
         try
         {
             var previous = new Dictionary<string, PluginEntry>(_entries, StringComparer.Ordinal);
+            var mutatedInPlace = false;
             PreparedBatch? batch = null;
             try
             {
-                batch = Prepare(declarations.ToArray(), rejectProtectedDisable: true);
+                var desired = declarations.ToArray();
+                // Paper §5.2.1: apply the least disruptive field-level changes
+                // BEFORE staging any new component. Rhome/intercept/config that
+                // the component accepts keep the existing fiber and component.
+                mutatedInPlace = await ApplyInPlaceAsync(previous, desired);
+                batch = Prepare(desired, rejectProtectedDisable: true);
                 await CommitAsync(batch);
             }
             catch (Exception commitError)
@@ -143,6 +153,10 @@ public sealed class PluginRegistry : IAsyncDisposable
                     await ReleaseUnusedStagedAsync(batch);
                     await RollbackAsync(batch, previous, commitError);
                 }
+                else if (mutatedInPlace)
+                {
+                    await RestorePreviousAsync(previous);
+                }
 
                 throw;
             }
@@ -153,6 +167,82 @@ public sealed class PluginRegistry : IAsyncDisposable
         {
             _gate.Release();
         }
+    }
+
+    private async Task<bool> ApplyInPlaceAsync(
+        Dictionary<string, PluginEntry> previous, PluginManifest[] desired)
+    {
+        var mutated = false;
+        foreach (var manifest in desired)
+        {
+            if (!previous.TryGetValue(manifest.Id, out var entry) ||
+                entry.Fiber is not { State: FiberState.Active } fiber)
+            {
+                continue;
+            }
+
+            var entryComponent = entry.Component;
+            switch (EntryDiff.Classify(entry.Manifest, manifest))
+            {
+                case EntryChangeKind.Rehome:
+                {
+                    var realm = RealmFor?.Invoke(manifest.Isolate, manifest.Id) ?? Realm.Default;
+                    var replacement = entryComponent ??
+                        (_factories.TryGetValue(manifest.Type, out var factory)
+                            ? factory(manifest)
+                            : throw new InvalidOperationException(
+                                $"no component factory for '{manifest.Type}' during rehome"));
+                    var nextFiber = await _runtime.RehomeAsync(fiber, realm, replacement);
+                    _entries[manifest.Id] = entry with
+                    {
+                        Manifest = manifest,
+                        Fiber = nextFiber,
+                        ConfigurationKey = Fingerprint(manifest),
+                        Component = replacement,
+                    };
+                    mutated = true;
+                    break;
+                }
+                case EntryChangeKind.Intercept:
+                    await _runtime.SetMetaAsync(
+                        fiber, EntryMetaKeys.Intercept, manifest.Intercept ?? string.Empty);
+                    _entries[manifest.Id] = entry with
+                    {
+                        Manifest = manifest,
+                        ConfigurationKey = Fingerprint(manifest),
+                    };
+                    mutated = true;
+                    break;
+                case EntryChangeKind.Config when entryComponent is IConfigurableComponent configurable:
+                    if (await configurable.TryApplyConfigAsync(manifest.Config))
+                    {
+                        _entries[manifest.Id] = entry with
+                        {
+                            Manifest = manifest,
+                            ConfigurationKey = Fingerprint(manifest),
+                        };
+                        mutated = true;
+                    }
+
+                    break;
+            }
+        }
+
+        return mutated;
+    }
+
+    private async Task RestorePreviousAsync(Dictionary<string, PluginEntry> previous)
+    {
+        foreach (var fiber in _entries.Values.Select(entry => entry.Fiber).OfType<Fiber>())
+        {
+            await _runtime.DisposeAsync(fiber);
+        }
+
+        _entries.Clear();
+        var batch = Prepare(previous.Values.Select(entry => entry.Manifest).ToArray(),
+            rejectProtectedDisable: false);
+        await CommitAsync(batch);
+        await ReleaseUnusedStagedAsync(batch);
     }
 
     /// <summary>

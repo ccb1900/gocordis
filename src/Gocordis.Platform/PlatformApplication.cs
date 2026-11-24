@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO;
 using System.Text.Json.Nodes;
 using Gocordis.Console.WebUi;
@@ -105,6 +106,23 @@ public class PlatformApplication : IAsyncDisposable
         Runtime = new Gocordis.Core.Runtime();
         Console = new ConsoleHost(Runtime);
         Registry = new PluginRegistry(Runtime);
+        // Paper §5.2.1 managed realms: a shared name maps to one realm for all
+        // entries; "local" is private to an entry id and follows that entry if
+        // it moves between groups. The host owns the identity table.
+        var realms = new ConcurrentDictionary<string, Realm>(StringComparer.Ordinal);
+        Registry.RealmFor = (isolate, entryId) =>
+        {
+            if (string.IsNullOrWhiteSpace(isolate) ||
+                string.Equals(isolate, "default", StringComparison.OrdinalIgnoreCase))
+            {
+                return Realm.Default;
+            }
+
+            var key = string.Equals(isolate, "local", StringComparison.OrdinalIgnoreCase)
+                ? $"local:{entryId}"
+                : $"shared:{isolate}";
+            return realms.GetOrAdd(key, static name => new Realm(name));
+        };
         // Give the console's insight/graph query access to the declaration set
         // so its "declared" view is populated (runtime view uses Snapshot).
         Console.AttachRegistry(Registry);

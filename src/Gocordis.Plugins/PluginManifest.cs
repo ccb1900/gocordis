@@ -100,12 +100,19 @@ public sealed record PluginManifest(
     string? EntryAssembly = null,
     string? EntryType = null,
     IReadOnlyList<string>? SharedAssemblies = null,
-    IReadOnlyList<string>? Capabilities = null)
+    IReadOnlyList<string>? Capabilities = null,
+    // Paper §5.2.1 Entry fields. They are optional so existing package
+    // declarations stay valid; the loader fills them from the application tree.
+    string? Url = null,
+    string? Isolate = null,
+    string? Intercept = null,
+    string? ParentId = null)
 {
     private static readonly HashSet<string> KnownFields = new(StringComparer.Ordinal)
     {
         "id", "type", "enabled", "config", "requires", "provides", "version", "source", "checksum",
         "backend", "entry_assembly", "entry_type", "shared_assemblies", "capabilities",
+        "url", "isolate", "intercept", "parent_id",
     };
 
     /// <summary>Capability declarations in canonical wire form; never null.</summary>
@@ -205,12 +212,17 @@ public sealed record PluginManifest(
         var entryType = ReadString(component, "entry_type", id);
         var sharedAssemblies = ReadStringArray(component, "shared_assemblies", id);
         var capabilities = ReadCapabilities(ReadStringArray(component, "capabilities", id));
+        var url = ReadString(component, "url", id);
+        var isolate = ReadString(component, "isolate", id);
+        var intercept = ReadString(component, "intercept", id);
+        var parentId = ReadString(component, "parent_id", id);
 
         return new PluginManifest(
             id, type, enabled, config, requires, provides,
             version, source, checksum, backend, entryAssembly, entryType,
             sharedAssemblies.Count > 0 ? sharedAssemblies : null,
-            capabilities.Count > 0 ? capabilities : null);
+            capabilities.Count > 0 ? capabilities : null,
+            url, isolate, intercept, parentId);
     }
 
     internal static PluginManifest FromJsonElement(JsonElement component)
@@ -244,12 +256,17 @@ public sealed record PluginManifest(
         var entryType = ReadJsonString(component, "entry_type", id);
         var sharedAssemblies = ReadJsonStringArray(component, "shared_assemblies", id);
         var capabilities = ReadCapabilities(ReadJsonStringArray(component, "capabilities", id));
+        var url = ReadJsonString(component, "url", id);
+        var isolate = ReadJsonString(component, "isolate", id);
+        var intercept = ReadJsonString(component, "intercept", id);
+        var parentId = ReadJsonString(component, "parent_id", id);
 
         return new PluginManifest(
             id, type, enabled, config, requires, provides,
             version, source, checksum, backend, entryAssembly, entryType,
             sharedAssemblies.Count > 0 ? sharedAssemblies : null,
-            capabilities.Count > 0 ? capabilities : null);
+            capabilities.Count > 0 ? capabilities : null,
+            url, isolate, intercept, parentId);
     }
 
     private static IReadOnlyList<string> ReadCapabilities(IReadOnlyList<string> wire)

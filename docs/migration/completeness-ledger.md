@@ -46,9 +46,11 @@ the code as a consumer does; `new Service()` success is not evidence.
 ## 3. Closure order
 
 1. HTTP-SOCKS real proxy loop (P0).
-2. **done** Contracts-only assembly (`Gocordis.Extensions.Contracts`) with
-   `Key<I…>`, interfaces and DTOs; SDK stops referencing the implementation
-   assembly and no longer carries `Microsoft.AspNetCore.App` into plugins.
+2. **done** One contract assembly per official extension
+   (`Gocordis.Extensions.Contracts.<Name>`) with its own `Key<I…>`, interfaces
+   and DTOs; SDK stays contract-free and `plugin create --contract <Name>`
+   adds only the consumer's contract package. Generated plugins carry no
+   `Microsoft.AspNetCore.App` reference.
 3. **done** FS provider abstraction + Memory provider; HTTP WebSocket client;
    single Watch implementation with a compatibility adapter (P1).
 4. **done (measurement only)** Re-measured 100/1000/10000 at this HEAD;

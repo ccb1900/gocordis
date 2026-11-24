@@ -3,6 +3,13 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="../Gocordis.Core/Gocordis.Core.csproj" />
     <ProjectReference Include="../Gocordis.Plugins/Gocordis.Plugins.csproj" />
-    <ProjectReference Include="../Gocordis.Extensions.Contracts/Gocordis.Extensions.Contracts.csproj" />
+    <ProjectReference Include="../ExtensionContracts/Timer/Gocordis.Extensions.Contracts.Timer.csproj" />
+    <ProjectReference Include="../ExtensionContracts/Http/Gocordis.Extensions.Contracts.Http.csproj" />
+    <ProjectReference Include="../ExtensionContracts/Fs/Gocordis.Extensions.Contracts.Fs.csproj" />
+    <ProjectReference Include="../ExtensionContracts/Env/Gocordis.Extensions.Contracts.Env.csproj" />
+    <ProjectReference Include="../ExtensionContracts/Socks/Gocordis.Extensions.Contracts.Socks.csproj" />
+    <ProjectReference Include="../ExtensionContracts/Devtools/Gocordis.Extensions.Contracts.Devtools.csproj" />
+    <ProjectReference Include="../ExtensionContracts/Watch/Gocordis.Extensions.Contracts.Watch.csproj" />
+    <ProjectReference Include="../ExtensionContracts/RouteGuard/Gocordis.Extensions.Contracts.RouteGuard.csproj" />
   </ItemGroup>
 </Project>

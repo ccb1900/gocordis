@@ -503,7 +503,7 @@ public static class Program
         var version = Option(args, "--version") ?? "1.0.0";
         if (output is null || id is null || name is null || type is null)
         {
-            return Fail("usage: plugin create <outputDir> --id <id> --name <name> --type <type> [--version] [--sdk-version <v>] [--feed <local-feed>]");
+            return Fail("usage: plugin create <outputDir> --id <id> --name <name> --type <type> [--version] [--sdk-version <v>] [--feed <local-feed>] [--contract <name> ...]");
         }
 
         if (!IsPluginId(id))
@@ -554,6 +554,18 @@ public static class Program
 
             // Third-party developers use the packaged SDK, not a path into the
             // runtime repository. The local feed is produced by `dotnet pack`.
+            var contractNames = OptionValues(args, "--contract");
+            foreach (var contract in contractNames)
+            {
+                if (!contract.All(char.IsLetterOrDigit) || contract.Length == 0 || !char.IsLetter(contract[0]))
+                {
+                    return Fail($"invalid contract name '{contract}'");
+                }
+            }
+
+            var sdkVersion = Option(args, "--sdk-version") ?? "1.0.0";
+            var contractRefs = string.Concat(contractNames.Select(contract =>
+                $"                    <PackageReference Include=\"Gocordis.Extensions.Contracts.{contract}\" Version=\"{sdkVersion}\" />\n"));
             var project = """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
@@ -564,9 +576,12 @@ public static class Program
                   </PropertyGroup>
                   <ItemGroup>
                     <PackageReference Include="Gocordis.Plugin.Sdk" Version="__SDK_VERSION__" />
+                __CONTRACT_REFS__
                   </ItemGroup>
                 </Project>
-                """.Replace("__SDK_VERSION__", Option(args, "--sdk-version") ?? "1.0.0", StringComparison.Ordinal);
+                """
+                .Replace("__SDK_VERSION__", sdkVersion, StringComparison.Ordinal)
+                .Replace("__CONTRACT_REFS__", contractRefs.TrimEnd(), StringComparison.Ordinal);
 
             var plugin = """
                 namespace __NAMESPACE__;
@@ -1324,7 +1339,7 @@ public static class Program
         {
             "--store", "--host-version", "--address", "--id", "--name", "--version", "--type", "--host-range", "--source",
             "--output", "--out", "--key", "--public-key", "--backend", "--entry-assembly", "--entry-type",
-            "--shared-assembly", "--allowed-host", "--host-version-range", "--provides", "--dependency",
+            "--shared-assembly", "--allowed-host", "--host-version-range", "--provides", "--dependency", "--contract",
             "--config-schema", "--capability", "--trust", "--public-key",
         };
         var flags = new HashSet<string>(StringComparer.Ordinal)
@@ -1367,7 +1382,7 @@ public static class Program
 
     private static void PrintUsage() => System.Console.Error.WriteLine("""
         gocordis create <outputDir> [--id] [--version] [--host-version]
-        gocordis plugin create <outputDir> --id <id> --name <name> --type <type> [--version] [--sdk-version <v>] [--feed <local-feed>]
+        gocordis plugin create <outputDir> --id <id> --name <name> --type <type> [--version] [--sdk-version <v>] [--feed <local-feed>] [--contract <name> ...]
         gocordis plugin pack|package <sourceDir> <output> [--id] [--version] [--type] [--host-range]
                             [--backend managed|builtin|wasm|process] [--entry-assembly <dll|wat|wasm|exe>]
                             [--entry-type <type>]

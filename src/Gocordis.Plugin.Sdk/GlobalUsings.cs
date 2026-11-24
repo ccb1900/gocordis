@@ -2,4 +2,3 @@
 // authoring surface. Runtime internals are intentionally not re-exported.
 global using Gocordis.Core;
 global using Gocordis.Plugins;
-global using Gocordis.Extensions;

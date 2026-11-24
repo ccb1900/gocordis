@@ -153,7 +153,7 @@ public sealed class SharedContractPackagingTests
                 <AssemblyName>Shared.Contracts</AssemblyName>
               </PropertyGroup>
               <ItemGroup>
-                <ProjectReference Include="{root}/src/Gocordis.Core/Gocordis.Core.csproj" />
+                <Reference Include="Gocordis.Core"><HintPath>{root}/src/Gocordis.Core/bin/Debug/net10.0/Gocordis.Core.dll</HintPath></Reference>
               </ItemGroup>
             </Project>
             """);
@@ -182,8 +182,8 @@ public sealed class SharedContractPackagingTests
                 <AssemblyName>{name}</AssemblyName>
               </PropertyGroup>
               <ItemGroup>
-                <ProjectReference Include="{root}/src/Gocordis.Core/Gocordis.Core.csproj" />
-                <ProjectReference Include="{root}/src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
+                <Reference Include="Gocordis.Core"><HintPath>{root}/src/Gocordis.Core/bin/Debug/net10.0/Gocordis.Core.dll</HintPath></Reference>
+                <Reference Include="Gocordis.Plugins"><HintPath>{root}/src/Gocordis.Plugins/bin/Debug/net10.0/Gocordis.Plugins.dll</HintPath></Reference>
                 <ProjectReference Include="{Path.Combine(workspace, "contracts", "contracts.csproj")}" />
               </ItemGroup>
             </Project>

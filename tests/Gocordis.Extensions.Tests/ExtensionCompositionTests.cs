@@ -23,7 +23,7 @@ public sealed class ExtensionCompositionTests
     public async Task ConsumerStaysPendingUntilTimerProviderArrivesThenWithdrawsAndReactivates()
     {
         await using var runtime = new Runtime();
-        var consumer = new ProbeConsumer<ITimerService>(ExtensionKeys.Timer);
+        var consumer = new ProbeConsumer<ITimerService>(TimerKeys.Service);
         var consumerFiber = await runtime.LoadAsync(consumer);
         Assert.Equal(FiberState.Pending, consumerFiber.State);
         Assert.False(consumer.Applied);
@@ -32,12 +32,12 @@ public sealed class ExtensionCompositionTests
         Assert.Equal(FiberState.Active, providerFiber.State);
         await WaitForStateAsync(runtime, consumerFiber.Id, FiberState.Active);
         Assert.True(consumer.Applied);
-        Assert.NotNull(runtime.RequireCapability(ExtensionKeys.Timer));
+        Assert.NotNull(runtime.RequireCapability(TimerKeys.Service));
 
         await runtime.DisposeAsync(providerFiber);
         await WaitForStateAsync(runtime, consumerFiber.Id, FiberState.Pending);
         Assert.Null(consumerFiber.Failure);
-        Assert.Throws<DependencyMissingException>(() => runtime.RequireCapability(ExtensionKeys.Timer));
+        Assert.Throws<DependencyMissingException>(() => runtime.RequireCapability(TimerKeys.Service));
 
         consumer.Reset();
         var replacement = await runtime.LoadAsync(new TimerExtensionComponent());
@@ -58,8 +58,8 @@ public sealed class ExtensionCompositionTests
 
         // Consumers and intermediate providers are declared BEFORE their
         // upstream providers: every one of them must wait as Pending.
-        var envConsumer = await runtime.LoadAsync(new ProbeConsumer<IEnvService>(ExtensionKeys.Env));
-        var socksConsumer = await runtime.LoadAsync(new ProbeConsumer<ISocksRegistry>(ExtensionKeys.Socks));
+        var envConsumer = await runtime.LoadAsync(new ProbeConsumer<IEnvService>(EnvKeys.Service));
+        var socksConsumer = await runtime.LoadAsync(new ProbeConsumer<ISocksRegistry>(SocksKeys.Service));
         var envFiber = await runtime.LoadAsync(new EnvExtensionComponent(temp.Root));
         var socksFiber = await runtime.LoadAsync(new SocksExtensionComponent());
         Assert.Equal(FiberState.Pending, envConsumer.State);
@@ -77,8 +77,8 @@ public sealed class ExtensionCompositionTests
         await WaitForStateAsync(runtime, socksConsumer.Id, FiberState.Active);
         Assert.Equal("applied", Environment.GetEnvironmentVariable(variable));
 
-        var http = runtime.RequireCapability(ExtensionKeys.Http);
-        Assert.Same(http, runtime.RequireCapability(ExtensionKeys.Socks).Http);
+        var http = runtime.RequireCapability(HttpKeys.Service);
+        Assert.Same(http, runtime.RequireCapability(SocksKeys.Service).Http);
 
         await runtime.DisposeAsync(httpFiber);
         await WaitForStateAsync(runtime, socksFiber.Id, FiberState.Pending);
@@ -99,8 +99,8 @@ public sealed class ExtensionCompositionTests
         await using var fake = new FakeSocks5();
         var httpFiber = await runtime.LoadAsync(new HttpExtensionComponent());
         var socksFiber = await runtime.LoadAsync(new SocksExtensionComponent());
-        var http = runtime.RequireCapability(ExtensionKeys.Http);
-        var socks = runtime.RequireCapability(ExtensionKeys.Socks);
+        var http = runtime.RequireCapability(HttpKeys.Service);
+        var socks = runtime.RequireCapability(SocksKeys.Service);
         // The SOCKS fiber registers its dialer when it becomes Active.
         Assert.Equal(1, http.ProxyCount);
 
@@ -153,7 +153,7 @@ public sealed class ExtensionCompositionTests
 
         await using var runtime = new Runtime();
         await runtime.LoadAsync(new HttpExtensionComponent());
-        var http = runtime.RequireCapability(ExtensionKeys.Http);
+        var http = runtime.RequireCapability(HttpKeys.Service);
         using var client = await http.ConnectWebSocketAsync(new Uri(new Uri(address.Replace("http://", "ws://", StringComparison.Ordinal)), "/ws"));
         await client.SendAsync(Encoding.UTF8.GetBytes("ping"), WebSocketMessageType.Text, true, default);
         var buffer = new byte[128];
@@ -206,7 +206,7 @@ public sealed class ExtensionCompositionTests
         var path = Path.Combine(temp.Root, "ready.txt");
         await File.WriteAllTextAsync(path, "one");
         await runtime.LoadAsync(new WatchExtensionComponent());
-        var watch = runtime.RequireCapability(ExtensionKeys.Watch);
+        var watch = runtime.RequireCapability(WatchKeys.Service);
         var observed = 0;
         using var handle = watch.Watch(path, evt =>
         {
@@ -253,7 +253,7 @@ public sealed class ExtensionCompositionTests
         var path = Path.Combine(temp.Root, "watched.txt");
         await File.WriteAllTextAsync(path, "one");
         var provider = await runtime.LoadAsync(new WatchExtensionComponent());
-        var watch = runtime.RequireCapability(ExtensionKeys.Watch);
+        var watch = runtime.RequireCapability(WatchKeys.Service);
         var observed = 0;
         var owner = await runtime.LoadAsync(new WatchOwner(watch, path, _ => observed++));
         Assert.Equal(FiberState.Active, owner.State);
@@ -318,12 +318,12 @@ public sealed class ExtensionCompositionTests
     {
         await using var runtime = new Runtime();
         var provider = await runtime.LoadAsync(new HttpExtensionComponent());
-        var service = runtime.RequireCapability(ExtensionKeys.Http);
+        var service = runtime.RequireCapability(HttpKeys.Service);
         Assert.False(service.IsDisposed);
 
         await runtime.DisposeAsync(provider);
         Assert.True(service.IsDisposed);
-        Assert.Throws<DependencyMissingException>(() => runtime.RequireCapability(ExtensionKeys.Http));
+        Assert.Throws<DependencyMissingException>(() => runtime.RequireCapability(HttpKeys.Service));
     }
 
     [Fact]

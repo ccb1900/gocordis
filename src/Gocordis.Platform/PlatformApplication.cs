@@ -171,9 +171,9 @@ public class PlatformApplication : IAsyncDisposable
             // EnvExtensionComponent explicitly rather than sit Pending forever.
             foreach (var key in new ICapabilityKey[]
             {
-                ExtensionKeys.Timer, ExtensionKeys.Http, ExtensionKeys.FileSystem,
-                ExtensionKeys.Socks, ExtensionKeys.Diagnostics,
-                ExtensionKeys.Watch, ExtensionKeys.RouteGuard,
+                TimerKeys.Service, HttpKeys.Service, FsKeys.Service,
+                SocksKeys.Service, DiagnosticsKeys.Service,
+                WatchKeys.Service, RouteGuardKeys.Service,
             })
             {
                 Registry.ExternalCapabilities.Add(key);
@@ -189,8 +189,8 @@ public class PlatformApplication : IAsyncDisposable
             // Env is opt-in: loading it by default would mutate the process
             // environment from an undeclared .env in the current directory.
 
-            _diagnostics = Runtime.RequireCapability(ExtensionKeys.Diagnostics);
-            _routeGuard = Runtime.RequireCapability(ExtensionKeys.RouteGuard) as ServerRouteGuard
+            _diagnostics = Runtime.RequireCapability(DiagnosticsKeys.Service);
+            _routeGuard = Runtime.RequireCapability(RouteGuardKeys.Service) as ServerRouteGuard
                 ?? throw new InvalidOperationException("route guard capability has no ASP.NET middleware implementation");
 
             // Backend selection belongs to the composition root. The control

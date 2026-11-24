@@ -70,7 +70,7 @@ render-plan 设计，当前没有窗口、消息循环或 Console。
 ### 4.1 创建与本地开发
 
 SDK 是一个很薄的 MSBuild 包，向插件项目暴露 `Gocordis.Core`、`Gocordis.Plugins`
-与契约程序集 `Gocordis.Extensions.Contracts`（`ExtensionKeys` 与公共接口/DTO，不含 ASP.NET Core），
+与各插件自己的公开契约包 `Gocordis.Extensions.Contracts.<Name>`（接口/DTO/Key，不含实现和 ASP.NET Core），
 不含 Runtime、Registry、后端实现或 Store。从空目录开始：
 
 ```bash
@@ -167,7 +167,7 @@ Timer、HTTP、FS、SOCKS、Diagnostics、Watch、RouteGuard 现在都是普通�
 - 提供自定义实现：`Provide() => [ExtensionKeys.X]`，用
   `ExtensionPublish.PublishAsync(context, key, service)` 发布，它会先撤销能力、
   再释放服务，保证 LIFO 顺序。
-- 打包插件必须声明 `--shared-assembly Gocordis.Extensions.Contracts`，否则两套 DLL 的
+- 打包插件必须声明 `--shared-assembly Gocordis.Extensions.Contracts.<Name>`，否则两套 DLL 的
   `Key<T>` 静态实例不同，门控会静默失效。Env 依赖 FS、SOCKS 依赖 HTTP。
 
 ### 4.5 声明预检（不执行插件）

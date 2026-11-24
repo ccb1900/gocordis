@@ -74,22 +74,22 @@ public static class ExtensionPublish
 
 public sealed class TimerExtensionComponent : ExtensionProviderComponent<ITimerService>
 {
-    public TimerExtensionComponent() : base(ExtensionKeys.Timer, "extension.timer", static () => (ITimerService)new TimerService()) { }
+    public TimerExtensionComponent() : base(TimerKeys.Service, "extension.timer", static () => (ITimerService)new TimerService()) { }
 }
 
 public sealed class HttpExtensionComponent : ExtensionProviderComponent<IHttpService>
 {
-    public HttpExtensionComponent() : base(ExtensionKeys.Http, "extension.http", static () => (IHttpService)new HttpService()) { }
+    public HttpExtensionComponent() : base(HttpKeys.Service, "extension.http", static () => (IHttpService)new HttpService()) { }
 }
 
 public sealed class FileSystemExtensionComponent : ExtensionProviderComponent<IFileSystemService>
 {
-    public FileSystemExtensionComponent() : base(ExtensionKeys.FileSystem, "extension.fs", static () => (IFileSystemService)new FileSystemService()) { }
+    public FileSystemExtensionComponent() : base(FsKeys.Service, "extension.fs", static () => (IFileSystemService)new FileSystemService()) { }
 }
 
 public sealed class WatchExtensionComponent : ExtensionProviderComponent<IWatchService>
 {
-    public WatchExtensionComponent() : base(ExtensionKeys.Watch, "extension.watch", static () => (IWatchService)new ReversibleWatchService()) { }
+    public WatchExtensionComponent() : base(WatchKeys.Service, "extension.watch", static () => (IWatchService)new ReversibleWatchService()) { }
 }
 
 /// <summary>
@@ -106,7 +106,7 @@ public sealed class RouteGuardExtensionComponent : Component
 
     public override string Name => "extension.route-guard";
 
-    public override IReadOnlyList<ICapabilityKey> Provide() => [ExtensionKeys.RouteGuard];
+    public override IReadOnlyList<ICapabilityKey> Provide() => [RouteGuardKeys.Service];
 
     public override ValueTask<Cleanup?> ApplyAsync(Context context)
     {
@@ -116,14 +116,14 @@ public sealed class RouteGuardExtensionComponent : Component
             guard.Add(HostAcl.Policy(_allowedHosts, []));
         }
 
-        return ExtensionPublish.PublishAsync<IRouteGuardService>(context, ExtensionKeys.RouteGuard, guard);
+        return ExtensionPublish.PublishAsync<IRouteGuardService>(context, RouteGuardKeys.Service, guard);
     }
 }
 
 public sealed class DiagnosticsExtensionComponent : ExtensionProviderComponent<IDiagnosticsService>
 {
     public DiagnosticsExtensionComponent(string hostVersion)
-        : base(ExtensionKeys.Diagnostics, "extension.devtools", () => (IDiagnosticsService)new DiagnosticsService(hostVersion)) { }
+        : base(DiagnosticsKeys.Service, "extension.devtools", () => (IDiagnosticsService)new DiagnosticsService(hostVersion)) { }
 }
 
 /// <summary>
@@ -138,13 +138,13 @@ public sealed class EnvExtensionComponent : Component
 
     public override string Name => "extension.env";
 
-    public override IReadOnlyList<ICapabilityKey> Inject() => [ExtensionKeys.FileSystem];
+    public override IReadOnlyList<ICapabilityKey> Inject() => [FsKeys.Service];
 
-    public override IReadOnlyList<ICapabilityKey> Provide() => [ExtensionKeys.Env];
+    public override IReadOnlyList<ICapabilityKey> Provide() => [EnvKeys.Service];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
-        var fs = context.Require(ExtensionKeys.FileSystem);
+        var fs = context.Require(FsKeys.Service);
         var env = new EnvService();
         try
         {
@@ -162,7 +162,7 @@ public sealed class EnvExtensionComponent : Component
                 }
             }
 
-            return await ExtensionPublish.PublishAsync<IEnvService>(context, ExtensionKeys.Env, env);
+            return await ExtensionPublish.PublishAsync<IEnvService>(context, EnvKeys.Service, env);
         }
         catch
         {
@@ -182,13 +182,13 @@ public sealed class SocksExtensionComponent : Component
 {
     public override string Name => "extension.http-socks";
 
-    public override IReadOnlyList<ICapabilityKey> Inject() => [ExtensionKeys.Http];
+    public override IReadOnlyList<ICapabilityKey> Inject() => [HttpKeys.Service];
 
-    public override IReadOnlyList<ICapabilityKey> Provide() => [ExtensionKeys.Socks];
+    public override IReadOnlyList<ICapabilityKey> Provide() => [SocksKeys.Service];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
-        var http = context.Require(ExtensionKeys.Http);
+        var http = context.Require(HttpKeys.Service);
         var socks = new SocksRegistry(http);
         // The proxy contribution is installed inside this fiber's effect, and
         // its handle removes only this registration (previous winner resurfaces).
@@ -217,6 +217,6 @@ public sealed class SocksExtensionComponent : Component
                 return ValueTask.CompletedTask;
             });
 
-        return await ExtensionPublish.PublishAsync<ISocksRegistry>(context, ExtensionKeys.Socks, socks);
+        return await ExtensionPublish.PublishAsync<ISocksRegistry>(context, SocksKeys.Service, socks);
     }
 }

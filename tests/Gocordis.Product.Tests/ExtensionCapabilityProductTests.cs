@@ -41,9 +41,9 @@ public sealed class ExtensionCapabilityProductTests
                     <AssemblyName>ext-consumer</AssemblyName>
                   </PropertyGroup>
                   <ItemGroup>
-                    <ProjectReference Include="{root}/src/Gocordis.Core/Gocordis.Core.csproj" />
-                    <ProjectReference Include="{root}/src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
-                    <ProjectReference Include="{root}/src/Gocordis.Extensions.Contracts/Gocordis.Extensions.Contracts.csproj" />
+                    <Reference Include="Gocordis.Core"><HintPath>{root}/src/Gocordis.Core/bin/Debug/net10.0/Gocordis.Core.dll</HintPath></Reference>
+                    <Reference Include="Gocordis.Plugins"><HintPath>{root}/src/Gocordis.Plugins/bin/Debug/net10.0/Gocordis.Plugins.dll</HintPath></Reference>
+                    <Reference Include="Gocordis.Extensions.Contracts.Timer"><HintPath>{root}/src/ExtensionContracts/Timer/bin/Debug/net10.0/Gocordis.Extensions.Contracts.Timer.dll</HintPath></Reference>
                   </ItemGroup>
                 </Project>
                 """);
@@ -57,10 +57,10 @@ public sealed class ExtensionCapabilityProductTests
                 public sealed class Consumer : Component
                 {
                     public override string Name => "ext-consumer";
-                    public override IReadOnlyList<ICapabilityKey> Inject() => [ExtensionKeys.Timer];
+                    public override IReadOnlyList<ICapabilityKey> Inject() => [TimerKeys.Service];
                     public override ValueTask<Cleanup?> ApplyAsync(Context context)
                     {
-                        _ = context.Require(ExtensionKeys.Timer);
+                        _ = context.Require(TimerKeys.Service);
                         return ValueTask.FromResult<Cleanup?>(null);
                     }
                 }
@@ -75,8 +75,8 @@ public sealed class ExtensionCapabilityProductTests
 
             // The host and the package must carry the byte-identical contract DLL.
             File.Copy(
-                Path.Combine(root, "src", "Gocordis.Extensions.Contracts", "bin", "Debug", "net10.0", "Gocordis.Extensions.Contracts.dll"),
-                Path.Combine(payload, "Gocordis.Extensions.Contracts.dll"), overwrite: true);
+                Path.Combine(root, "src", "ExtensionContracts", "Timer", "bin", "Debug", "net10.0", "Gocordis.Extensions.Contracts.Timer.dll"),
+                Path.Combine(payload, "Gocordis.Extensions.Contracts.Timer.dll"), overwrite: true);
 
             var store = Path.Combine(workspace, "store");
             var package = Path.Combine(workspace, "ext-consumer.gocordis-plugin");
@@ -84,7 +84,7 @@ public sealed class ExtensionCapabilityProductTests
                 "ext-consumer", "1.0.0", "ext-consumer", "[1.0,)",
                 Backend: "managed", EntryAssembly: "ext-consumer.dll",
                 EntryType: "ExtConsumer.Consumer",
-                SharedAssemblies: ["Gocordis.Extensions.Contracts"]), package);
+                SharedAssemblies: ["Gocordis.Extensions.Contracts.Timer"]), package);
             await new PluginStore(store, HostVersion).InstallAsync(package);
 
             var manifestPath = Path.Combine(workspace, "gocordis.app.json");
@@ -97,7 +97,7 @@ public sealed class ExtensionCapabilityProductTests
 
             var consumerFiber = app.Registry.Entries["ext-consumer"].Fiber!;
             Assert.Equal(FiberState.Active, consumerFiber.State);
-            Assert.NotNull(app.Runtime.RequireCapability(ExtensionKeys.Timer));
+            Assert.NotNull(app.Runtime.RequireCapability(TimerKeys.Service));
 
             var timerFiber = app.Runtime.Snapshot().Fibers.Single(fiber => fiber.Name == "extension.timer");
             await app.Runtime.DisposeAsync(app.Runtime.GetFiber(timerFiber.Id)!);

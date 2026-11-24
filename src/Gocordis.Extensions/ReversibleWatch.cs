@@ -5,27 +5,6 @@ using Gocordis.Core;
 
 namespace Gocordis.Extensions;
 
-/// <summary>The three observations a watcher can report.</summary>
-public enum WatchEventKind
-{
-    Change,
-    Ready,
-    Error,
-}
-
-/// <summary>One immutable watcher observation.</summary>
-public sealed record WatchEvent(
-    WatchEventKind Kind,
-    string Path,
-    long Revision = 0,
-    string? Error = null);
-
-/// <summary>
-/// Watcher options. Recursive watches observe subdirectories; Filter is a
-/// semicolon-separated set of globs (supports * and ** directory wildcards).
-/// </summary>
-public sealed record WatchOptions(bool Recursive = false, string? Filter = null);
-
 /// <summary>
 /// File watcher whose subscriptions are reversible effects of their owner.
 /// Ready is emitted after native notifications are installed so consumers can
@@ -33,7 +12,7 @@ public sealed record WatchOptions(bool Recursive = false, string? Filter = null)
 /// native watcher faults. Every state change is serialized by one lock and
 /// disposal is idempotent.
 /// </summary>
-public sealed class ReversibleWatchService : IAsyncDisposable
+public sealed class ReversibleWatchService : IAsyncDisposable, IWatchService
 {
     private readonly object _sync = new();
     private readonly Dictionary<Guid, Subscription> _subscriptions = [];

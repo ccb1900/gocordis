@@ -3,5 +3,6 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="../Gocordis.Core/Gocordis.Core.csproj" />
     <ProjectReference Include="../Gocordis.Plugins/Gocordis.Plugins.csproj" />
+    <ProjectReference Include="../Gocordis.Extensions.Contracts/Gocordis.Extensions.Contracts.csproj" />
   </ItemGroup>
 </Project>

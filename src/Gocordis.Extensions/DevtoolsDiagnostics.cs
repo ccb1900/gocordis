@@ -2,49 +2,13 @@ using Gocordis.Plugins;
 
 namespace Gocordis.Extensions;
 
-/// <summary>Seriousness of a diagnostic finding.</summary>
-public enum DiagnosticSeverity
-{
-    Error,
-    Warn,
-    Info,
-}
-
-/// <summary>One stable, machine-readable finding.</summary>
-public sealed record Diagnostic(DiagnosticSeverity Severity, string Code, string Message)
-{
-    public override string ToString() => $"[{Severity.ToString().ToLowerInvariant()}] {Code}: {Message}";
-}
-
-/// <summary>Stable diagnostic codes emitted by <see cref="DiagnosticsService"/>.</summary>
-public static class DiagnosticCode
-{
-    public const string InvalidVersion = "INVALID_VERSION";
-    public const string VersionMismatch = "VERSION_MISMATCH";
-    public const string UnknownDependency = "UNKNOWN_DEPENDENCY";
-    public const string UnknownProvider = "UNKNOWN_PROVIDER";
-    public const string DuplicateProvider = "DUPLICATE_PROVIDER";
-}
-
-/// <summary>
-/// One module in the declaration set. Dependencies are module identities;
-/// Provides are capability keys. HostVersionConstraint accepts &gt;=, &lt;=,
-/// == or ^ (minimum) forms.
-/// </summary>
-public sealed record ModuleDeclaration(
-    string Id,
-    string Version,
-    IReadOnlyList<string>? Dependencies = null,
-    IReadOnlyList<string>? Provides = null,
-    string? HostVersionConstraint = null);
-
 /// <summary>
 /// Pure descriptive diagnosis over a module/plugin declaration set and a host
 /// version. Nothing is loaded, registered or mutated; findings are returned in
 /// a deterministic order (modules first, then plugins, declaration order within
 /// each group).
 /// </summary>
-public sealed class DiagnosticsService
+public sealed class DiagnosticsService : IDiagnosticsService
 {
     private readonly string _hostVersion;
 

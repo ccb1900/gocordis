@@ -12,7 +12,7 @@ namespace Gocordis.Product.Tests;
 /// <summary>
 /// External-developer evidence for the pluginized extension layer: a plugin
 /// compiled outside the repo references the official extension capability key,
-/// is packaged with Gocordis.Extensions as a shared assembly, and is gated by
+/// is packaged with the contracts-only assembly, and is gated by
 /// the host-provided Timer provider through declaration reconciliation.
 /// </summary>
 public sealed class ExtensionCapabilityProductTests
@@ -43,7 +43,7 @@ public sealed class ExtensionCapabilityProductTests
                   <ItemGroup>
                     <ProjectReference Include="{root}/src/Gocordis.Core/Gocordis.Core.csproj" />
                     <ProjectReference Include="{root}/src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
-                    <ProjectReference Include="{root}/src/Gocordis.Extensions/Gocordis.Extensions.csproj" />
+                    <ProjectReference Include="{root}/src/Gocordis.Extensions.Contracts/Gocordis.Extensions.Contracts.csproj" />
                   </ItemGroup>
                 </Project>
                 """);
@@ -68,10 +68,15 @@ public sealed class ExtensionCapabilityProductTests
 
             await BuildAsync(source);
             var bin = Path.Combine(source, "bin", "Debug", "net10.0");
-            foreach (var name in new[] { "ext-consumer.dll", "ext-consumer.deps.json", "Gocordis.Extensions.dll" })
+            foreach (var name in new[] { "ext-consumer.dll", "ext-consumer.deps.json" })
             {
                 File.Copy(Path.Combine(bin, name), Path.Combine(payload, name), overwrite: true);
             }
+
+            // The host and the package must carry the byte-identical contract DLL.
+            File.Copy(
+                Path.Combine(root, "src", "Gocordis.Extensions.Contracts", "bin", "Debug", "net10.0", "Gocordis.Extensions.Contracts.dll"),
+                Path.Combine(payload, "Gocordis.Extensions.Contracts.dll"), overwrite: true);
 
             var store = Path.Combine(workspace, "store");
             var package = Path.Combine(workspace, "ext-consumer.gocordis-plugin");
@@ -79,7 +84,7 @@ public sealed class ExtensionCapabilityProductTests
                 "ext-consumer", "1.0.0", "ext-consumer", "[1.0,)",
                 Backend: "managed", EntryAssembly: "ext-consumer.dll",
                 EntryType: "ExtConsumer.Consumer",
-                SharedAssemblies: ["Gocordis.Extensions"]), package);
+                SharedAssemblies: ["Gocordis.Extensions.Contracts"]), package);
             await new PluginStore(store, HostVersion).InstallAsync(package);
 
             var manifestPath = Path.Combine(workspace, "gocordis.app.json");

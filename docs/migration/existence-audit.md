@@ -25,7 +25,7 @@ translation of every Go extension.
 | `Gocordis.Console.WebUi` | Only real UI host + control API | `PlatformApplication` Web branch | No management UI, no install UI | Keep |
 | `Gocordis.UI.Hosts` | Render-plan profiles | `PlatformApplication.RenderPlan()` only; CLI no longer exposes them as hosts | Render-plan design is lost, no product path breaks | **Keep as profiles only**; native hosts not delivered |
 | `Gocordis.Client` | Typed console HTTP client | No in-repo product consumer | Nothing in the current product breaks | **Candidate external SDK**, not core-required; keep but do not count as product capability |
-| `Gocordis.Plugin.Sdk` | Thin re-export of public authoring surface | Generated plugin projects (`plugin create`, local feed) | Third-party authors must reference runtime sources again | Keep; re-exports Core, Plugins and official `ExtensionKeys`/providers; never Runtime |
+| `Gocordis.Plugin.Sdk` | Thin re-export of public authoring surface | Generated plugin projects (`plugin create`, local feed) | Third-party authors must reference runtime sources again | Keep; re-exports Core, Plugins and contracts-only `ExtensionKeys`/interfaces; never Runtime or ASP.NET |
 | `Gocordis.Platform` | Single composition root | Product executable, `app run`, generated app template | No product host | Keep |
 | `tools/Gocordis.Cli` | App/plugin author workflow + preflight | Developer workflow, empty-directory E2E | No offline authoring | Keep |
 | `tests/*`, `tests/fixtures/*`, `tests/Gocordis.Benchmarks` | Conformance, E2E, deterministic measurement | CI/local gates | Evidence disappears; product binaries still run | Keep |

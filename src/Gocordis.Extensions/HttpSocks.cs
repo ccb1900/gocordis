@@ -5,15 +5,12 @@ using System.Text;
 
 namespace Gocordis.Extensions;
 
-/// <summary>Dials a target host through a registered SOCKS proxy.</summary>
-public delegate Task<Stream> SocksDialer(string host, int port, CancellationToken cancellationToken);
-
 /// <summary>
 /// Reversible SOCKS5 proxy registrations with a minimal CONNECT dialer built on
 /// System.Net.Sockets. Registrations are owned by identity: withdrawing one
 /// never removes another registration for the same scheme.
 /// </summary>
-public sealed class SocksRegistry : IAsyncDisposable
+public sealed class SocksRegistry : IAsyncDisposable, ISocksRegistry
 {
     private readonly object _sync = new();
     private readonly Dictionary<string, List<Entry>> _registrations = new(StringComparer.Ordinal);
@@ -23,9 +20,9 @@ public sealed class SocksRegistry : IAsyncDisposable
     /// The HTTP service this registry was composed with. A SOCKS provider must
     /// declare and require the HTTP capability before registering proxies.
     /// </summary>
-    public HttpService? Http { get; }
+    public IHttpService? Http { get; }
 
-    public SocksRegistry(HttpService? http = null) => Http = http;
+    public SocksRegistry(IHttpService? http = null) => Http = http;
 
     /// <summary>
     /// Normalizes socks/socks5/socks5h to socks5. Both socks5 and socks5h use
@@ -358,26 +355,4 @@ public sealed class SocksRegistry : IAsyncDisposable
             }
         }
     }
-}
-
-/// <summary>A SOCKS5 CONNECT failure carrying the REP code from the proxy.</summary>
-public sealed class SocksConnectException : InvalidOperationException
-{
-    public SocksConnectException(byte replyCode)
-        : base($"SOCKS5 CONNECT failed: {Describe(replyCode)}") => ReplyCode = replyCode;
-
-    public byte ReplyCode { get; }
-
-    public static string Describe(byte replyCode) => replyCode switch
-    {
-        1 => "general failure",
-        2 => "connection not allowed by ruleset",
-        3 => "network unreachable",
-        4 => "host unreachable",
-        5 => "connection refused",
-        6 => "TTL expired",
-        7 => "command not supported",
-        8 => "address type not supported",
-        _ => $"unknown REP code {replyCode}",
-    };
 }

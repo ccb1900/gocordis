@@ -6,7 +6,7 @@ using Gocordis.Core;
 namespace Gocordis.Extensions;
 
 /// <summary>JS-style timers owned by a service; disposal cancels everything.</summary>
-public sealed class TimerService : IAsyncDisposable
+public sealed class TimerService : IAsyncDisposable, ITimerService
 {
     private readonly object _sync = new();
     private readonly List<CancellationTokenSource> _timers = [];
@@ -530,6 +530,14 @@ public sealed class TimerService : IAsyncDisposable
         registration = default;
         return source;
     }
+
+    // The public contract exposes disposable handles; concrete callers keep the
+    // richer TimerHandle API without widening the shared contract assembly.
+    IDisposable ITimerService.TimeoutOwned(Context owner, TimeSpan delay, Func<ValueTask> action) =>
+        TimeoutOwned(owner, delay, action);
+
+    IDisposable ITimerService.IntervalOwned(Context owner, TimeSpan period, Func<ValueTask> action) =>
+        IntervalOwned(owner, period, action);
 }
 
 /// <summary>Once/interval scheduler with a deterministic pump (no wall-clock race in tests).</summary>

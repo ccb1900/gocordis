@@ -17,7 +17,7 @@ public sealed class ExtensionCompositionTests
     public async Task ConsumerStaysPendingUntilTimerProviderArrivesThenWithdrawsAndReactivates()
     {
         await using var runtime = new Runtime();
-        var consumer = new ProbeConsumer<TimerService>(ExtensionKeys.Timer);
+        var consumer = new ProbeConsumer<ITimerService>(ExtensionKeys.Timer);
         var consumerFiber = await runtime.LoadAsync(consumer);
         Assert.Equal(FiberState.Pending, consumerFiber.State);
         Assert.False(consumer.Applied);
@@ -52,8 +52,8 @@ public sealed class ExtensionCompositionTests
 
         // Consumers and intermediate providers are declared BEFORE their
         // upstream providers: every one of them must wait as Pending.
-        var envConsumer = await runtime.LoadAsync(new ProbeConsumer<EnvService>(ExtensionKeys.Env));
-        var socksConsumer = await runtime.LoadAsync(new ProbeConsumer<SocksRegistry>(ExtensionKeys.Socks));
+        var envConsumer = await runtime.LoadAsync(new ProbeConsumer<IEnvService>(ExtensionKeys.Env));
+        var socksConsumer = await runtime.LoadAsync(new ProbeConsumer<ISocksRegistry>(ExtensionKeys.Socks));
         var envFiber = await runtime.LoadAsync(new EnvExtensionComponent(temp.Root));
         var socksFiber = await runtime.LoadAsync(new SocksExtensionComponent());
         Assert.Equal(FiberState.Pending, envConsumer.State);

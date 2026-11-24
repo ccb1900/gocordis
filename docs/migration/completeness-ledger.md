@@ -14,7 +14,7 @@ the code as a consumer does; `new Service()` success is not evidence.
 | Core Runtime / Fiber / Effect / Pending / withdrawal | `runtime/context.go:542-549`, `extensions/config/config.go` | `ctx.plugin`, declaration reconciliation | `src/Gocordis.Core/Runtime.cs`, `Fiber.cs`, `Context.cs` | **done** | `CoreSemanticsTests`, `PaperConformanceTests`, `TheoremMatrixTests`; paper C01–C40 matrix machine-checked |
 | Provider capability identity | `runtime/key.go:9-49` (type+name) | typed `Context` keys | `src/Gocordis.Core/Capabilities.cs:25-30`, `Runtime.cs:87-92` | **done** | reference identity; `Key<T>` never stringified; no second provider registry |
 | Timer service | `extensions/timer/timer.go:313,751-768` | extension plugin pattern | `src/Gocordis.Extensions/Timing.cs:9`, `ExtensionComponents.cs` | **partial** | Plugin provider + gating done (`ExtensionCompositionTests`); key binds concrete `TimerService`, not a public interface; no cross-backend provider replacement |
-| HTTP service | `extensions/http/http.go:216,1609-1632` | `ctx.http` style service | `src/Gocordis.Extensions/Infrastructure.cs:411`, `ExtensionComponents.cs` | **partial** | Provider fiber + disposal done; identity-fenced proxy dialer registry + per-connection resolution done (`RegisterProxyDialer`, `SocketsHttpHandler.ConnectCallback`, ambient proxy disabled); no WebSocket dial; key binds concrete type |
+| HTTP service | `extensions/http/http.go:216,1609-1632` | `ctx.http` style service | `src/Gocordis.Extensions/Infrastructure.cs:411`, `ExtensionComponents.cs` | **partial** | Provider fiber + disposal done; identity-fenced proxy dialer registry + per-connection resolution done; key binds `IHttpService` from the contracts-only assembly; no WebSocket dial |
 | HTTP-SOCKS | `extensions/http-socks/component.go:15-49` (`Inject HTTP`, `RegisterProxy` in effect, inverse removes only own id) | extension contribution pattern | `src/Gocordis.Extensions/HttpSocks.cs:16`, `ExtensionComponents.cs:181-194` | **done (P0 closed)** | `SocksContributionRoutesAnHttpRequestAndUnwindsOnProviderWithdrawal` proves a real HTTP request traverses the fake SOCKS proxy and the registration is unwound on provider withdrawal; `ProxyRegistrationsAreIdentityFencedAndLastWins` proves last-wins and identity-fenced removal |
 | FS service | `extensions/fs/fs.go:77,899-924` | capability service | `src/Gocordis.Extensions/Infrastructure.cs:16`, `ExtensionComponents.cs` | **partial** | mount/path policy done; no provider abstraction, no Memory provider; `MountScoped` handle is not identity-safe on re-mount |
 | FS Local/Memory providers | `extensions/fs/contract/contract.go:72-161`, `fs/local/local.go`, `fs/memory/memory.go` | multiple implementations via broker/realm | not present | **missing (P1)** | Acceptance: `IFileSystemProvider` with Local and Memory implementations; env can consume Memory; mount/unmount reversible and identity-fenced |
@@ -46,8 +46,9 @@ the code as a consumer does; `new Service()` success is not evidence.
 ## 3. Closure order
 
 1. HTTP-SOCKS real proxy loop (P0).
-2. Contracts-only assembly (`Gocordis.Extensions.Contracts`) with interfaces,
-   keys and DTOs; SDK stops referencing the implementation assembly.
+2. **done** Contracts-only assembly (`Gocordis.Extensions.Contracts`) with
+   `Key<I…>`, interfaces and DTOs; SDK stops referencing the implementation
+   assembly and no longer carries `Microsoft.AspNetCore.App` into plugins.
 3. FS provider abstraction + Memory provider; HTTP WebSocket; single Watch
    implementation (P1).
 4. Re-measure batch load at 100/1000/10000 and decide from scaling ratios (P2).

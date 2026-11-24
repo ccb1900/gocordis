@@ -16,7 +16,7 @@ SDK_VERSION=1.0.0-local.$(date +%s%N)
 CONFIG=Debug
 dotnet pack src/Gocordis.Core/Gocordis.Core.csproj -c $CONFIG -o <feed> -p:PackageVersion=$SDK_VERSION
 dotnet pack src/Gocordis.Plugins/Gocordis.Plugins.csproj -c $CONFIG -o <feed> -p:PackageVersion=$SDK_VERSION
-dotnet pack src/Gocordis.Extensions/Gocordis.Extensions.csproj -c $CONFIG -o <feed> -p:PackageVersion=$SDK_VERSION
+dotnet pack src/Gocordis.Extensions.Contracts/Gocordis.Extensions.Contracts.csproj -c $CONFIG -o <feed> -p:PackageVersion=$SDK_VERSION
 dotnet pack src/Gocordis.Plugin.Sdk/Gocordis.Plugin.Sdk.csproj -c $CONFIG -o <feed> -p:PackageVersion=$SDK_VERSION
 
 # 1) create / develop / build
@@ -45,11 +45,11 @@ A runnable version of exactly this flow is
 
 `Gocordis.Plugin.Sdk` re-exports the public authoring surface via an MSBuild
 `.props` file (`Component`, `Context`, `Key<T>`, `EventKey<T>`, declarations,
-plus `ExtensionKeys` and the official extension provider components from
-`Gocordis.Extensions`). It deliberately does NOT export `Runtime`,
+plus `ExtensionKeys` and public interfaces from contracts-only
+`Gocordis.Extensions.Contracts`). It deliberately does NOT export `Runtime`,
 `PluginRegistry`, backends, package store or effect internals. Packaged plugins
 that consume or provide official extension capabilities MUST declare
-`--shared-assembly Gocordis.Extensions` so Key<T> identity is shared with the
+`--shared-assembly Gocordis.Extensions.Contracts` so Key<T> identity is shared with the
 host; cross-backend capabilities use the host catalog instead.
 
 ## Current gaps (explicitly deferred, not hidden in docs)

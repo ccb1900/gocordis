@@ -90,7 +90,9 @@ public sealed record PlatformResolvedPlugin(string Id, string Version, bool Enab
 public class PlatformApplication : IAsyncDisposable
 {
     private readonly PlatformHostOptions _options;
-    private DiagnosticsService? _diagnostics;
+    private IDiagnosticsService? _diagnostics;
+    // WebUi needs the ASP.NET middleware surface, which is intentionally not
+    // part of the public capability contract. The host knows the implementation.
     private ServerRouteGuard? _routeGuard;
     private ApplicationManifest? _manifest;
     private readonly List<PlatformResolvedPlugin> _resolved = [];
@@ -188,7 +190,8 @@ public class PlatformApplication : IAsyncDisposable
             // environment from an undeclared .env in the current directory.
 
             _diagnostics = Runtime.RequireCapability(ExtensionKeys.Diagnostics);
-            _routeGuard = Runtime.RequireCapability(ExtensionKeys.RouteGuard);
+            _routeGuard = Runtime.RequireCapability(ExtensionKeys.RouteGuard) as ServerRouteGuard
+                ?? throw new InvalidOperationException("route guard capability has no ASP.NET middleware implementation");
 
             // Backend selection belongs to the composition root. The control
             // plane receives the same factory and registers it for every declared

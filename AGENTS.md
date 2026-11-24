@@ -43,7 +43,8 @@ Actual `ProjectReference` graph (enforced where noted by `BoundaryTests.cs` / PC
 |---|---|---|---|
 | Kernel | `Gocordis.Core` | **none** (NuGet libs OK) | Runtime, Fiber, Context, effects, events, keys, realms. State setters internal. |
 | Semantics | `Gocordis.Plugins` | Core | Component/Manifest/Registry, declaration reconciliation, UI/API contribution contracts. |
-| Platform services | `Gocordis.Extensions` | Core, Plugins | broker, event dispatch modes, timers, fs/http/socks, diagnostics. Official capabilities (Timer/HTTP/FS/Env/SOCKS/Diagnostics/Watch/RouteGuard) are published by ordinary Provider Components via `ExtensionKeys` and loaded into the one Runtime; pattern libraries without a Go ServiceKey stay library-only. |
+| Extension contracts | `Gocordis.Extensions.Contracts` | Core, Plugins | Stable `ExtensionKeys` (Key<I…>), public service interfaces and DTOs; no ASP.NET Core, no implementations. |
+| Platform services | `Gocordis.Extensions` | Core, Plugins, Extension contracts | broker, event dispatch modes, timers, fs/http/socks, diagnostics. Official capabilities (Timer/HTTP/FS/Env/SOCKS/Diagnostics/Watch/RouteGuard) are published by ordinary Provider Components via `ExtensionKeys` and loaded into the one Runtime; pattern libraries without a Go ServiceKey stay library-only. |
 | Backend contracts | `Gocordis.Runtime.Contracts` | Core | Physical home of `IPluginBackend`, `BackendProtocol`, `CoreBackendContext`, `GenerationTracker`. No backend implementation. |
 | Backends | `Runtime.Managed` / `Runtime.Process` / `Runtime.Wasm` | Core, Plugins, Runtime.Contracts | Execution backends behind one Core contract. **Process/WASM MUST NOT reference Managed.** Backend selection belongs to the composition root. |
 | Packaging | `Gocordis.Packaging` | Core, Extensions, Plugins | `.gocordis-plugin` format, store, control plane, `gocordis-ui.json`, `UiPackageBinder`. |

@@ -72,24 +72,24 @@ public static class ExtensionPublish
     }
 }
 
-public sealed class TimerExtensionComponent : ExtensionProviderComponent<TimerService>
+public sealed class TimerExtensionComponent : ExtensionProviderComponent<ITimerService>
 {
-    public TimerExtensionComponent() : base(ExtensionKeys.Timer, "extension.timer", static () => new TimerService()) { }
+    public TimerExtensionComponent() : base(ExtensionKeys.Timer, "extension.timer", static () => (ITimerService)new TimerService()) { }
 }
 
-public sealed class HttpExtensionComponent : ExtensionProviderComponent<HttpService>
+public sealed class HttpExtensionComponent : ExtensionProviderComponent<IHttpService>
 {
-    public HttpExtensionComponent() : base(ExtensionKeys.Http, "extension.http", static () => new HttpService()) { }
+    public HttpExtensionComponent() : base(ExtensionKeys.Http, "extension.http", static () => (IHttpService)new HttpService()) { }
 }
 
-public sealed class FileSystemExtensionComponent : ExtensionProviderComponent<FileSystemService>
+public sealed class FileSystemExtensionComponent : ExtensionProviderComponent<IFileSystemService>
 {
-    public FileSystemExtensionComponent() : base(ExtensionKeys.FileSystem, "extension.fs", static () => new FileSystemService()) { }
+    public FileSystemExtensionComponent() : base(ExtensionKeys.FileSystem, "extension.fs", static () => (IFileSystemService)new FileSystemService()) { }
 }
 
-public sealed class WatchExtensionComponent : ExtensionProviderComponent<ReversibleWatchService>
+public sealed class WatchExtensionComponent : ExtensionProviderComponent<IWatchService>
 {
-    public WatchExtensionComponent() : base(ExtensionKeys.Watch, "extension.watch", static () => new ReversibleWatchService()) { }
+    public WatchExtensionComponent() : base(ExtensionKeys.Watch, "extension.watch", static () => (IWatchService)new ReversibleWatchService()) { }
 }
 
 /// <summary>
@@ -116,14 +116,14 @@ public sealed class RouteGuardExtensionComponent : Component
             guard.Add(HostAcl.Policy(_allowedHosts, []));
         }
 
-        return ExtensionPublish.PublishAsync(context, ExtensionKeys.RouteGuard, guard);
+        return ExtensionPublish.PublishAsync<IRouteGuardService>(context, ExtensionKeys.RouteGuard, guard);
     }
 }
 
-public sealed class DiagnosticsExtensionComponent : ExtensionProviderComponent<DiagnosticsService>
+public sealed class DiagnosticsExtensionComponent : ExtensionProviderComponent<IDiagnosticsService>
 {
     public DiagnosticsExtensionComponent(string hostVersion)
-        : base(ExtensionKeys.Diagnostics, "extension.devtools", () => new DiagnosticsService(hostVersion)) { }
+        : base(ExtensionKeys.Diagnostics, "extension.devtools", () => (IDiagnosticsService)new DiagnosticsService(hostVersion)) { }
 }
 
 /// <summary>
@@ -162,7 +162,7 @@ public sealed class EnvExtensionComponent : Component
                 }
             }
 
-            return await ExtensionPublish.PublishAsync(context, ExtensionKeys.Env, env);
+            return await ExtensionPublish.PublishAsync<IEnvService>(context, ExtensionKeys.Env, env);
         }
         catch
         {
@@ -204,6 +204,6 @@ public sealed class SocksExtensionComponent : Component
                 return ValueTask.CompletedTask;
             });
 
-        return await ExtensionPublish.PublishAsync(context, ExtensionKeys.Socks, socks);
+        return await ExtensionPublish.PublishAsync<ISocksRegistry>(context, ExtensionKeys.Socks, socks);
     }
 }

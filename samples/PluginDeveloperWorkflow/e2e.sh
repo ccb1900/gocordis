@@ -14,9 +14,9 @@ SDK_VERSION="1.0.0-e2e.$(date +%s%N)"
 CLI=(dotnet run --project "$ROOT/tools/Gocordis.Cli/Gocordis.Cli.csproj" --no-build --)
 
 # Match the host's Debug build: SharedAssemblyRegistry seals by full DLL
-# identity (MVID/SHA), so a Release Gocordis.Extensions.dll would conflict with
-# the host's Debug copy in the default ALC.
-for project in Core Plugins Extensions Plugin.Sdk; do
+# identity (MVID/SHA), so a Release Gocordis.Extensions.Contracts.dll would
+# conflict with the host's Debug copy in the default ALC.
+for project in Core Plugins Extensions.Contracts Plugin.Sdk; do
   env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
     dotnet pack "$ROOT/src/Gocordis.$project/Gocordis.$project.csproj" \
       -c Debug -o "$OUT/feed" -p:PackageVersion="$SDK_VERSION" --nologo -v:q
@@ -56,15 +56,15 @@ CS
 
 # 4) pack a standard package. SDK package dependencies are not copied into a
 #    classlib's output, so stage the shared identity DLL explicitly (the host
-#    and this package must carry byte-identical Gocordis.Extensions.dll).
-cp "$ROOT/src/Gocordis.Extensions/bin/Debug/net10.0/Gocordis.Extensions.dll" \
-  "$OUT/work/demo.plugin/bin/Debug/net10.0/Gocordis.Extensions.dll"
+#    and this package must carry byte-identical Gocordis.Extensions.Contracts.dll).
+cp "$ROOT/src/Gocordis.Extensions.Contracts/bin/Debug/net10.0/Gocordis.Extensions.Contracts.dll" \
+  "$OUT/work/demo.plugin/bin/Debug/net10.0/Gocordis.Extensions.Contracts.dll"
 
 "${CLI[@]}" plugin pack "$OUT/work/demo.plugin/bin/Debug/net10.0" \
   "$OUT/demo.plugin.gocordis-plugin" \
   --id demo.plugin --version 1.0.0 --type demo.plugin \
   --backend managed --entry-assembly demo.plugin.dll --entry-type "$ENTRY" \
-  --shared-assembly Gocordis.Extensions \
+  --shared-assembly Gocordis.Extensions.Contracts \
   --capability 'require|gocordis.extension/timer|endpoint|1.0.0|application/json|'
 
 # 5) create an application, install the plugin, declare it, validate the host

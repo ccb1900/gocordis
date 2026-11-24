@@ -2,23 +2,6 @@ using Microsoft.AspNetCore.Http;
 
 namespace Gocordis.Extensions;
 
-/// <summary>The route facts a guard decision is based on.</summary>
-/// <param name="Method">HTTP method (uppercase, e.g. GET).</param>
-/// <param name="Path">Request path, e.g. /assets/app.js.</param>
-/// <param name="Host">Raw Host header (port included).</param>
-/// <param name="Pattern">Registration key, e.g. "GET /assets/app.js".</param>
-public sealed record RouteSnapshot(string Method, string Path, string Host, string Pattern)
-{
-    public string NormalizedHost => HostAcl.StripPort(Host);
-
-    public static RouteSnapshot Static(string path, string host) => Create("GET", path, host);
-
-    public static RouteSnapshot WebSocket(string path, string host) => Create("GET", path, host);
-
-    private static RouteSnapshot Create(string method, string path, string host) =>
-        new(method, path, host, $"{method} {path}");
-}
-
 /// <summary>
 /// Pure host access-control decisions. Deny wins; loopback is always allowed;
 /// an empty allow list means loopback-only; a leading dot matches the apex and
@@ -150,7 +133,7 @@ public static class HostAcl
 /// handlers. Denied routes are answered with 404, matching a route that was
 /// never registered. Each registration is withdrawn by identity only.
 /// </summary>
-public sealed class ServerRouteGuard : IAsyncDisposable
+public sealed class ServerRouteGuard : IAsyncDisposable, IRouteGuardService
 {
     private readonly object _sync = new();
     private readonly List<GuardRegistration> _checks = [];

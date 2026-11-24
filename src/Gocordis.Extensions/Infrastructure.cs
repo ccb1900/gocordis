@@ -7,15 +7,8 @@ using System.Text;
 
 namespace Gocordis.Extensions;
 
-/// <summary>Write semantics aligned with JS Cordis 4.0.0-rc.13+ filesystem options.</summary>
-public sealed record FileWriteOptions(bool Exclusive = false, bool Atomic = false);
-
-/// <summary>Copy semantics aligned with JS Cordis 4.0.0-rc.13+ filesystem options.</summary>
-public sealed record FileCopyOptions(
-    bool Overwrite = false, bool Exclusive = false, bool Atomic = false);
-
 /// <summary>Mount-routed filesystem with path-escape guard and reversible watchers.</summary>
-public sealed class FileSystemService : IAsyncDisposable
+public sealed class FileSystemService : IAsyncDisposable, IFileSystemService
 {
     private readonly Dictionary<string, string> _mounts = new(StringComparer.Ordinal);
     private readonly List<FileSystemWatcher> _watchers = [];
@@ -399,18 +392,11 @@ public sealed class FileSystemService : IAsyncDisposable
     }
 }
 
-/// <summary>Linearizable, read-only view of the HTTP service's ownership.</summary>
-/// <param name="Closed">Whether the service has been closed.</param>
-/// <param name="Active">Requests that have not yet returned.</param>
-/// <param name="OpenStreams">Live stream bodies handed to callers but not yet closed.</param>
-/// <param name="Interceptors">Currently installed next-chain interceptors.</param>
-public sealed record HttpState(bool Closed, int Active, int OpenStreams, int Interceptors);
-
 /// <summary>
 /// HttpClient with ordered, reversible next-chain interceptors. Stream bodies are
 /// service-owned until closed: request completion and stream closure are distinct.
 /// </summary>
-public sealed class HttpService : IAsyncDisposable
+public sealed class HttpService : IAsyncDisposable, IHttpService
 {
     private readonly SocketsHttpHandler _handler = new();
     private readonly HttpClient _client;
@@ -881,7 +867,7 @@ public sealed class HttpService : IAsyncDisposable
 /// dotenv-style configuration with four-file precedence, mode selection and
 /// stack-based reversible population of the process environment.
 /// </summary>
-public sealed class EnvService : IAsyncDisposable
+public sealed class EnvService : IAsyncDisposable, IEnvService
 {
     private readonly List<IDisposable> _layers = [];
 

@@ -10,7 +10,11 @@ public sealed record HmrRequest(
     IReadOnlySet<string> Stashed,
     IReadOnlySet<string> Externals,
     IReadOnlyDictionary<string, IReadOnlyList<string>> Imports,
-    IReadOnlyList<PluginManifest> Entries);
+    IReadOnlyList<PluginManifest> Entries,
+    // Revision of the declaration snapshot Entries came from. When omitted,
+    // ReloadAsync observes the registry at entry; callers that read Entries
+    // earlier MUST carry that read's revision to close the plan→commit window.
+    long? ExpectedDeclarationVersion = null);
 
 public sealed record HmrPlan(
     IReadOnlySet<string> Accepted,
@@ -176,17 +180,25 @@ public static class HmrEngine
                 cancellationToken);
         }
 
+        // Read once at entry, synchronously, before the first await: the plan is
+        // derived from this revision and the commit is guarded by it. A caller
+        // that already captured Entries at a specific revision passes it in the
+        // request so planning cannot use a newer snapshot than the guard.
+        var expectedVersion = request.ExpectedDeclarationVersion ?? registry.DeclarationVersion;
+
         var plan = Plan(request, replaceModule);
         if (plan.StaleEntryIds.Count == 0)
         {
             return plan;
         }
 
-        // No token crosses this boundary. PluginRegistry.ApplyAsync validates,
-        // stages and commits as ONE atomic transaction; its RollbackAsync
-        // restores the previous declarations if any step fails for a real
+        // No token crosses this boundary. PluginRegistry.ApplyAsync validates
+        // the expected revision under the SAME gate as staging and commit; a
+        // concurrent enable/disable/config change therefore cannot be silently
+        // overwritten by a plan built from older declarations. Its RollbackAsync
+        // restores the previous state if any commit step fails for a real
         // reason. Cancellation is not one of those reasons by design.
-        await registry.ApplyAsync(plan.Desired);
+        await registry.ApplyAsync(plan.Desired, expectedVersion);
         return plan;
     }
 

@@ -194,21 +194,48 @@ public sealed class HmrEngineTests
     {
         await using var runtime = new Gocordis.Core.Runtime();
         await using var registry = new PluginRegistry(runtime);
-        registry.RegisterFactory("plugin", _ => new Probe("plugin"));
+        var toggleApplyEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishToggleApply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // A source change forces a real Rebuild (and therefore a factory call)
+        // inside the competing declaration apply. A disable-only change reuses
+        // the staged component and would not enter ApplyAsync at all.
+        registry.RegisterComponentFactory("plugin", manifest => new Probe(
+            manifest.Id,
+            manifest.Source == "b" ? toggleApplyEntered : null,
+            manifest.Source == "b" ? finishToggleApply.Task : null));
         var manifest = Manifest("a", "plugin", "a");
         await registry.ApplyAsync([manifest]);
+        var versionBefore = registry.DeclarationVersion;
 
         var request = new HmrRequest(
             new HashSet<string> { "a" }, new HashSet<string>(),
             new Dictionary<string, IReadOnlyList<string>> { ["a"] = [] }, [manifest]);
 
+        // The toggle enters the registry gate and blocks inside ApplyAsync. HMR
+        // reads the then-current version before it waits on the same gate, so its
+        // plan is stale by the time it reaches the commit phase.
+        var toggle = registry.ApplyAsync([manifest with { Source = "b" }]);
+        await toggleApplyEntered.Task;
         var hmr = HmrEngine.ReloadAsync(registry, request,
             candidate => candidate with { Version = "2.0.0" });
-        var toggle = registry.ApplyAsync([manifest with { Enabled = false }]);
-        await Task.WhenAll(hmr, toggle);
+        finishToggleApply.TrySetResult();
 
-        Assert.NotEmpty(registry.Entries);
-        Assert.All(registry.Entries.Values, entry => Assert.NotNull(entry.Manifest));
+        var conflict = await Assert.ThrowsAsync<DeclarationVersionConflictException>(() => hmr);
+        await toggle;
+        Assert.Equal(versionBefore, conflict.ExpectedVersion);
+        Assert.Equal(versionBefore + 1, conflict.ActualVersion);
+
+        // A stale HMR plan must not overwrite the concurrent enable/disable
+        // result. The toggle's declaration is the final authority; HMR touched
+        // no fiber and did not advance the version.
+        var final = Assert.Single(registry.Entries.Values);
+        Assert.Equal("a", final.Manifest.Id);
+        Assert.Equal("1.0.0", final.Manifest.Version);
+        Assert.Equal("b", final.Manifest.Source);
+        Assert.True(final.Manifest.Enabled);
+        Assert.NotNull(final.Fiber);
+        Assert.Equal(versionBefore + 1, registry.DeclarationVersion);
+        Assert.Single(runtime.Snapshot().Fibers);
     }
 
     private static PluginManifest Manifest(string id, string type, string url) =>
@@ -216,9 +243,30 @@ public sealed class HmrEngineTests
 
     private sealed class Probe : Component
     {
-        public Probe(string name) => Name = name;
+        private readonly TaskCompletionSource? _applyEntered;
+        private readonly Task? _blockApplyUntil;
+
+        public Probe(
+            string name,
+            TaskCompletionSource? applyEntered = null,
+            Task? blockApplyUntil = null)
+        {
+            Name = name;
+            _applyEntered = applyEntered;
+            _blockApplyUntil = blockApplyUntil;
+        }
+
         public override string Name { get; }
-        public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
-            ValueTask.FromResult<Cleanup?>(null);
+
+        public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            _applyEntered?.TrySetResult();
+            if (_blockApplyUntil is not null)
+            {
+                await _blockApplyUntil;
+            }
+
+            return null;
+        }
     }
 }

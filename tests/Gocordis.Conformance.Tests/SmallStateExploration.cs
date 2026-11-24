@@ -374,6 +374,163 @@ public sealed class SmallStateExplorationTests
         Assert.True(runtime.Events.Sequence > start);
     }
 
+    [Fact]
+    public async Task ConcurrentApplyAndDisposeInterleavingsAreRepeatableAndResidueFree()
+    {
+        for (var round = 0; round < 3; round++)
+        {
+            var (forward, forwardJournal) = await RunInterleavingAsync(releaseFirst: true);
+            var (reverse, reverseJournal) = await RunInterleavingAsync(releaseFirst: false);
+            var (repeat, repeatJournal) = await RunInterleavingAsync(releaseFirst: true);
+
+            Assert.True(ObservationEquivalence.Equivalent(forward, reverse),
+                "the two deterministic release orders reached different observations");
+            Assert.True(ObservationEquivalence.Equivalent(forward, repeat),
+                "the same schedule was not repeatable");
+            // Independent fibers unwind in LIFO within each activation, but the
+            // cross-fiber order is a scheduler detail; compare journal content.
+            Assert.Equal(forwardJournal.OrderBy(x => x, StringComparer.Ordinal).ToArray(),
+                repeatJournal.OrderBy(x => x, StringComparer.Ordinal).ToArray());
+            Assert.Equal(4, forwardJournal.Length);
+            Assert.Equal(4, reverseJournal.Length);
+        }
+    }
+
+    /// <summary>
+    /// Two Apply tasks are held at a deterministic barrier; two Dispose tasks
+    /// are submitted while both are in flight, then the gates are released in
+    /// a chosen order. No sleep and no scheduler-order assumption: the only
+    /// synchronization is TaskCompletionSource.
+    /// </summary>
+    private static async Task<(RuntimeSnapshot Snapshot, string[] Journal)> RunInterleavingAsync(
+        bool releaseFirst)
+    {
+        var gate = new ApplyGate();
+        var journal = new List<string>();
+        var journalGate = new object();
+        await using var runtime = new Runtime();
+
+        var firstLoad = runtime.LoadAsync(new GatedApply(
+            "interleave-a", gate, gate.First, journal, journalGate));
+        var secondLoad = runtime.LoadAsync(new GatedApply(
+            "interleave-b", gate, gate.Second, journal, journalGate));
+        await gate.BothEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var fibers = runtime.Snapshot().Fibers.ToArray();
+        var first = runtime.GetFiber(fibers.Single(f => f.Name == "interleave-a").Id);
+        var second = runtime.GetFiber(fibers.Single(f => f.Name == "interleave-b").Id);
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+
+        var firstDispose = runtime.DisposeAsync(first);
+        var secondDispose = runtime.DisposeAsync(second);
+        if (releaseFirst)
+        {
+            gate.First.SetResult();
+            await firstDispose.WaitAsync(TimeSpan.FromSeconds(5));
+            gate.Second.SetResult();
+        }
+        else
+        {
+            gate.Second.SetResult();
+            await secondDispose.WaitAsync(TimeSpan.FromSeconds(5));
+            gate.First.SetResult();
+        }
+
+        await Task.WhenAll(firstLoad, secondLoad, firstDispose, secondDispose)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        await runtime.QuiesceAsync();
+
+        var snapshot = runtime.Snapshot();
+        Assert.Empty(snapshot.Fibers);
+        Assert.Empty(snapshot.CleanupFailures);
+        Assert.Empty(snapshot.EffectFailures);
+
+        string[] log;
+        lock (journalGate)
+        {
+            log = journal.ToArray();
+        }
+
+        foreach (var name in new[] { "interleave-a", "interleave-b" })
+        {
+            var install = Array.IndexOf(log, $"install:{name}");
+            var undo = Array.IndexOf(log, $"undo:{name}");
+            Assert.True(install >= 0, $"{name} install never ran");
+            Assert.True(undo > install, $"{name} inverse did not follow its install");
+        }
+
+        return (snapshot, log);
+    }
+
+    private sealed class ApplyGate
+    {
+        private int _entered;
+
+        public TaskCompletionSource BothEntered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource First { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Second { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Enter()
+        {
+            if (Interlocked.Increment(ref _entered) == 2)
+            {
+                BothEntered.TrySetResult();
+            }
+        }
+    }
+
+    private sealed class GatedApply : Component
+    {
+        private readonly ApplyGate _gate;
+        private readonly TaskCompletionSource _release;
+        private readonly List<string> _journal;
+        private readonly object _journalGate;
+
+        public GatedApply(
+            string name, ApplyGate gate, TaskCompletionSource release,
+            List<string> journal, object journalGate)
+        {
+            Name = name;
+            _gate = gate;
+            _release = release;
+            _journal = journal;
+            _journalGate = journalGate;
+        }
+
+        public override string Name { get; }
+
+        public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            _gate.Enter();
+            lock (_journalGate)
+            {
+                _journal.Add($"install:{Name}");
+            }
+
+            // Register the inverse BEFORE the gate wait: a Dispose submitted
+            // while this step is in flight must still unwind the landed effect.
+            await context.EffectAsync(
+                () => ValueTask.CompletedTask,
+                () =>
+                {
+                    lock (_journalGate)
+                    {
+                        _journal.Add($"undo:{Name}");
+                    }
+
+                    return ValueTask.CompletedTask;
+                });
+            await _release.Task;
+            return null;
+        }
+    }
+
     private static IEnumerable<SmallOp[]> Enumerate(int depth)
     {
         var buffer = new SmallOp[depth];

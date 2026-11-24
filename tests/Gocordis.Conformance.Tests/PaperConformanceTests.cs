@@ -92,10 +92,14 @@ public sealed class PaperConformanceTests
     [Fact]
     public async Task C13_ObservationEquivalenceIgnoresGenerativeFiberIds()
     {
-        static async Task<RuntimeSnapshot> BuildSnapshot()
+        // One semantic key identity for both runs: observation equivalence now
+        // compares Key instance identity, not just the name, while fiber ids
+        // remain generative and ignored.
+        var key = new Key<int>("shared");
+
+        static async Task<RuntimeSnapshot> BuildSnapshot(Key<int> key)
         {
             var runtime = new Runtime();
-            var key = new Key<int>("shared");
             await runtime.LoadAsync(new ProbeComponent(
                 "provider",
                 async context =>
@@ -115,8 +119,8 @@ public sealed class PaperConformanceTests
             return runtime.Snapshot();
         }
 
-        var first = await BuildSnapshot();
-        var second = await BuildSnapshot();
+        var first = await BuildSnapshot(key);
+        var second = await BuildSnapshot(key);
 
         Assert.NotEqual(
             first.Fibers.Select(f => f.Id),

@@ -130,6 +130,11 @@ public sealed class Runtime : IAsyncDisposable
     /// </summary>
     private readonly List<Action> _pendingReplies = [];
 
+    /// <summary>Waiters for a specific observable FiberState, resolved after
+    /// each published snapshot. This is a read-ordering primitive, not a second
+    /// lifecycle authority.</summary>
+    private readonly List<(Guid FiberId, FiberState State, TaskCompletionSource Reply)> _stateWaiters = [];
+
     private long _nextActivationId;
     private bool _bindingsChanged;
     private bool _closing;
@@ -215,6 +220,29 @@ public sealed class Runtime : IAsyncDisposable
         if (!TryWrite(new MutateCommand(static () => { }, reply)))
         {
             throw new ObjectDisposedException(nameof(Runtime));
+        }
+
+        return reply.Task;
+    }
+
+    /// <summary>
+    /// Waits until the named fiber reaches the requested observable state.
+    /// Completion is emitted after the snapshot is published; no polling and
+    /// no lifecycle writes are performed by the caller.
+    /// </summary>
+    public Task WaitForFiberStateAsync(Guid fiberId, FiberState state)
+    {
+        var reply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_stateLock)
+        {
+            if (_fibers.TryGetValue(fiberId, out var fiber) && fiber.State == state)
+            {
+                reply.TrySetResult();
+            }
+            else
+            {
+                _stateWaiters.Add((fiberId, state, reply));
+            }
         }
 
         return reply.Task;
@@ -1056,12 +1084,17 @@ public sealed class Runtime : IAsyncDisposable
             fiber.SignalGone();
             CompleteDispose(fiber);
         }
-        else if (cleanupError is not null)
+        else if (cleanupError is not null || fiber.CleanupFailures.Count > 0)
         {
             // A failed inverse is a terminal outcome, not a clean Pending that
-            // the reconciler would silently reactivate.
+            // the reconciler would silently reactivate. A compensation that
+            // failed during an in-flight divert is already recorded on the
+            // fiber, so it must take the same terminal path even when the
+            // later LIFO unwind had no slot left to run.
             fiber.State = FiberState.Failed;
-            fiber.Failure = cleanupError;
+            fiber.Failure = cleanupError ??
+                            fiber.Failure ??
+                            new CleanupIncompleteException(fiber.CleanupFailures);
         }
         else if (fiber.Failure is not null)
         {
@@ -1373,7 +1406,11 @@ public sealed class Runtime : IAsyncDisposable
                 {
                     // Context.EffectAsync already attributed its own install
                     // failure in Exception.Data; don't record it twice.
-                    if (!installError.Data.Contains("gocordis.effect"))
+                    // A DivertedException is the paper's normal target-change
+                    // signal, not a failed effect install. The step still runs
+                    // its already-registered inverses during unwind.
+                    if (installError is not DivertedException &&
+                        !installError.Data.Contains("gocordis.effect"))
                     {
                         RecordEffectFailure(
                             activation, new EffectSlot(null, step.Label ?? "step"), installError,
@@ -1998,11 +2035,36 @@ public sealed class Runtime : IAsyncDisposable
             CleanupIncomplete = f.CleanupIncomplete,
             CleanupFailures = [.. f.CleanupFailures.Select(error => error.Message)],
             EffectFailures = [.. f.EffectFailures],
+            RequiredKeys = [.. f.CapturedInjectKeys],
+            ProvidedKeys = [.. f.CapturedProvideKeys],
+            HomeRealm = f.Realm,
+            Routes = [.. f.RealmOverrides.Select(pair => new KeyRoute(pair.Key, pair.Value))],
+            SemanticBindings = [.. f.Committed.Values.Select(binding => new CapabilityBindingSnapshot(
+                binding.Key,
+                new ProviderIdentitySnapshot(
+                    binding.Fiber.Component.Name,
+                    binding.Fiber.State,
+                    binding.Fiber.Realm,
+                    [.. binding.Fiber.CapturedInjectKeys],
+                    [.. binding.Fiber.CapturedProvideKeys])))],
         }).ToArray())
         {
             CleanupFailures = [.. _cleanupFailures],
             EffectFailures = [.. _effectFailures],
         };
+
+        lock (_stateLock)
+        {
+            for (var i = _stateWaiters.Count - 1; i >= 0; i--)
+            {
+                var (id, expected, waiter) = _stateWaiters[i];
+                if (_fibers.TryGetValue(id, out var fiber) && fiber.State == expected)
+                {
+                    _stateWaiters.RemoveAt(i);
+                    waiter.TrySetResult();
+                }
+            }
+        }
     }
 
     public async ValueTask DisposeAsync()

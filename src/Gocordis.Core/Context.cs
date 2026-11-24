@@ -4,6 +4,13 @@ namespace Gocordis.Core;
 /// Per-activation context. Install effects only while Installing; read declared
 /// coeffects while Installing/Committed/Unwinding (paper §4.4: Cleanup can
 /// still read its dependency); dead after Unwound.
+///
+/// Declaration authority (paper §5.1.4) applies uniformly to every accessor:
+/// Require reads and event registration require an Inject declaration, Meta
+/// reads/overrides require a MetaKey in Inject or Provide, and EmitAsync
+/// requires the EventKey in Inject. There is no blanket runtime-metadata
+/// exemption: an undeclared accessor fails rather than silently widening the
+/// capability contract.
 /// </summary>
 public sealed class Context
 {
@@ -80,6 +87,7 @@ public sealed class Context
     public M Meta<T, M>(MetaKey<T, M> key)
     {
         EnsureReadable();
+        RequireDeclaredEither(key);
         var declared = _fiber.Metadata.TryGetValue(key, out var state) && state.Declared is M d
             ? d : key.Identity;
         var overridden = state?.Override is M o ? o : key.Identity;
@@ -167,6 +175,7 @@ public sealed class Context
     public void OverrideMeta<T, M>(MetaKey<T, M> key, M value)
     {
         EnsureWritable();
+        RequireDeclaredEither(key);
         _activation.Runtime.Mutate(() =>
         {
             var state = GetOrCreateMeta(key);
@@ -223,8 +232,23 @@ public sealed class Context
         if (IsDiverted)
         {
             _activation.Runtime.Mutate(() => slot.State = EffectState.Undoing);
-            await inverse();
-            _activation.Runtime.Mutate(() => slot.State = EffectState.Undone);
+            try
+            {
+                await inverse();
+                _activation.Runtime.Mutate(() => slot.State = EffectState.Undone);
+            }
+            catch (Exception inverseFailure)
+            {
+                // The divert inverse ran exactly once. A failed compensation is
+                // never a clean Undo: the slot is Failed (so the later LIFO
+                // unwind skips it), both failure ledgers record it, and the
+                // fiber carries a cleanup failure into its terminal outcome.
+                _activation.Runtime.RecordEffectFailure(
+                    _activation, slot, inverseFailure, isInstall: false);
+                _activation.Runtime.Mutate(() => slot.State = EffectState.Failed);
+                _activation.Runtime.RecordCompensationFailure(_activation, inverseFailure);
+            }
+
             throw new DivertedException();
         }
 
@@ -241,6 +265,9 @@ public sealed class Context
     public ValueTask EmitAsync<T>(EventKey<T> key, T payload)
     {
         EnsureReadable();
+        // Emitting is an observable coeffect use, not a side effect of owning
+        // the key: only an Inject declaration authorizes it (§5.1.4).
+        RequireDeclared(key, _fiber.CapturedInjectKeys);
         return _activation.Runtime.EmitAsync(key, payload, _activation);
     }
 
@@ -263,6 +290,34 @@ public sealed class Context
         }
 
         return state;
+    }
+
+    /// <summary>
+    /// Meta is read-time interception policy rather than a value dependency:
+    /// either declaration side authorizes it, but a completely undeclared
+    /// MetaKey is still rejected (no runtime-metadata back door).
+    /// </summary>
+    private void RequireDeclaredEither(ICapabilityKey key)
+    {
+        if (Contains(key, _fiber.CapturedInjectKeys) || Contains(key, _fiber.CapturedProvideKeys))
+        {
+            return;
+        }
+
+        throw new UndeclaredCapabilityException($"key '{key.Name}' is not declared");
+    }
+
+    private static bool Contains(ICapabilityKey key, IReadOnlyList<ICapabilityKey> declarations)
+    {
+        foreach (var declared in declarations)
+        {
+            if (ReferenceEquals(declared, key))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static void RequireDeclared(ICapabilityKey key, IReadOnlyList<ICapabilityKey> declarations)

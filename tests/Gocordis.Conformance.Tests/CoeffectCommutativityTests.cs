@@ -22,8 +22,11 @@ public sealed class CoeffectCommutativityTests
     [Fact]
     public async Task DisjointDeclaredCoeffectsCommuteAcrossTwoLoadOrders()
     {
-        var first = Run([Op.ProviderA, Op.ProviderB, Op.ConsumerA, Op.ConsumerB]);
-        var second = Run([Op.ProviderB, Op.ProviderA, Op.ConsumerB, Op.ConsumerA]);
+        // One shared key identity per declaration; only load order varies.
+        var a = new Key<string>("commute/a");
+        var b = new Key<string>("commute/b");
+        var first = Run([Op.ProviderA, Op.ProviderB, Op.ConsumerA, Op.ConsumerB], a, b);
+        var second = Run([Op.ProviderB, Op.ProviderA, Op.ConsumerB, Op.ConsumerA], a, b);
         var forward = await first;
         var reversed = await second;
 
@@ -32,11 +35,9 @@ public sealed class CoeffectCommutativityTests
         Assert.True(ObservationEquivalence.Equivalent(forward, reversed));
     }
 
-    private static async Task<RuntimeSnapshot> Run(IEnumerable<Op> ops)
+    private static async Task<RuntimeSnapshot> Run(IEnumerable<Op> ops, Key<string> a, Key<string> b)
     {
         await using var runtime = new Gocordis.Core.Runtime();
-        var a = new Key<string>("commute/a");
-        var b = new Key<string>("commute/b");
         foreach (var op in ops)
         {
             switch (op)

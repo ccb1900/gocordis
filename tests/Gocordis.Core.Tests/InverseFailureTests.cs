@@ -93,4 +93,107 @@ public sealed class InverseFailureTests
         await runtime.LoadAsync(provider);
         Assert.Equal(FiberState.Failed, consumer.State);
     }
+
+    [Fact]
+    public async Task DivertInverseFailureRunsOnceRecordsBothFailuresAndNeverLooksClean()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var inverseRuns = 0;
+        await using var runtime = new Runtime();
+
+        var component = new DelegateComponent("divert-inverse-failure", async context =>
+        {
+            started.SetResult();
+            await context.EffectAsync(
+                async () => { await release.Task; },
+                () =>
+                {
+                    Interlocked.Increment(ref inverseRuns);
+                    return ValueTask.FromException(new InvalidOperationException("divert inverse failed"));
+                });
+            return null;
+        });
+
+        var loading = runtime.LoadAsync(component);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var fiber = runtime.GetFiber(runtime.Snapshot().Fibers.Single().Id);
+        Assert.NotNull(fiber);
+
+        var disposal = runtime.DisposeAsync(fiber);
+        release.SetResult();
+        await Task.WhenAll(loading, disposal).WaitAsync(TimeSpan.FromSeconds(5));
+
+        // The inverse is attempted exactly once: the failed slot is never
+        // retried by the later unwind.
+        Assert.Equal(1, inverseRuns);
+
+        var snapshot = runtime.Snapshot();
+        Assert.Empty(snapshot.Fibers); // disposed fiber is Gone, but evidence survives
+        var effectFailure = Assert.Single(snapshot.EffectFailures);
+        Assert.False(effectFailure.IsInstall);
+        Assert.Equal("divert inverse failed", effectFailure.Message);
+        Assert.Equal("InvalidOperationException", effectFailure.ExceptionType);
+
+        var cleanupFailure = Assert.Single(snapshot.CleanupFailures);
+        Assert.Equal("divert inverse failed", cleanupFailure.Message);
+        Assert.Equal("divert-inverse-failure", cleanupFailure.FiberName);
+    }
+
+    [Fact]
+    public async Task DivertInverseFailureOnDependencyLossDoesNotPretendCleanRecovery()
+    {
+        var key = new Key<int>("divert-inverse-dependency");
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var inverseRuns = 0;
+        await using var runtime = new Runtime();
+
+        var provider = await runtime.LoadAsync(new DelegateComponent(
+            "provider",
+            async context =>
+            {
+                context.Provide(key, 1);
+                return null;
+            },
+            provide: [key]));
+
+        var consumer = new DelegateComponent(
+            "consumer",
+            async context =>
+            {
+                context.Require(key);
+                started.SetResult();
+                await context.EffectAsync(
+                    async () => { await release.Task; },
+                    () =>
+                    {
+                        Interlocked.Increment(ref inverseRuns);
+                        return ValueTask.FromException(new InvalidOperationException("lost inverse failed"));
+                    });
+                return null;
+            },
+            inject: [key]);
+        var loading = runtime.LoadAsync(consumer);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var consumerFiber = Assert.Single(runtime.Snapshot().Fibers, f => f.Name == "consumer");
+        var handle = runtime.GetFiber(consumerFiber.Id);
+        Assert.NotNull(handle);
+
+        var providerDisposal = runtime.DisposeAsync(provider);
+        release.SetResult();
+        await Task.WhenAll(loading, providerDisposal).WaitAsync(TimeSpan.FromSeconds(5));
+        await runtime.QuiesceAsync();
+
+        Assert.Equal(1, inverseRuns);
+        Assert.Equal(FiberState.Failed, handle.State);
+        Assert.True(handle.CleanupIncomplete);
+        Assert.IsType<CleanupIncompleteException>(handle.Failure);
+
+        var snapshot = runtime.Snapshot();
+        Assert.Contains(snapshot.CleanupFailures, record => record.Message == "lost inverse failed");
+        Assert.Contains(snapshot.EffectFailures, record =>
+            !record.IsInstall && record.Message == "lost inverse failed");
+    }
 }

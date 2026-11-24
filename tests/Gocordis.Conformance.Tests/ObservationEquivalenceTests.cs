@@ -108,6 +108,146 @@ public sealed class ObservationEquivalenceTests
         Assert.False(ObservationEquivalence.Equivalent(failedTypeA, failedTypeB));
     }
 
+    [Fact]
+    public async Task GlobalFailuresSurviveFiberRemovalAndBreakEquivalence()
+    {
+        static async Task<RuntimeSnapshot> RunWithFailedInverseAsync()
+        {
+            await using var runtime = new Runtime();
+            var fiber = await runtime.LoadAsync(new FailingInverseProbe());
+            await runtime.DisposeAsync(fiber);
+            return runtime.Snapshot();
+        }
+
+        var withFailure = await RunWithFailedInverseAsync();
+        var clean = new RuntimeSnapshot([]);
+
+        Assert.Empty(withFailure.Fibers);
+        Assert.NotEmpty(withFailure.CleanupFailures);
+        Assert.NotEmpty(withFailure.EffectFailures);
+        Assert.False(ObservationEquivalence.Equivalent(clean, withFailure));
+        Assert.False(ObservationEquivalence.Equivalent(withFailure, clean));
+    }
+
+    [Fact]
+    public void SameNameDifferentKeyInstanceIsNotEquivalent()
+    {
+        var leftKey = new Key<string>("same-name");
+        var rightKey = new Key<string>("same-name");
+        var left = Snapshot(Fiber("consumer", requiredKeys: [leftKey]));
+        var sameInstance = Snapshot(Fiber("consumer", requiredKeys: [leftKey]));
+        var otherInstance = Snapshot(Fiber("consumer", requiredKeys: [rightKey]));
+
+        Assert.True(ObservationEquivalence.Equivalent(left, sameInstance));
+        Assert.False(ObservationEquivalence.Equivalent(left, otherInstance));
+    }
+
+    [Fact]
+    public void SameNameDifferentValueTypeIsNotEquivalent()
+    {
+        var text = new Key<string>("same-name");
+        var number = new Key<int>("same-name");
+        var left = Snapshot(Fiber("consumer", requiredKeys: [text]));
+        var right = Snapshot(Fiber("consumer", requiredKeys: [number]));
+
+        Assert.False(ObservationEquivalence.Equivalent(left, right));
+    }
+
+    [Fact]
+    public void DuplicateComponentNamesAreOrderIndependentButKeepTheirSemanticProjection()
+    {
+        var first = new Key<string>("first");
+        var second = new Key<string>("second");
+        var left = Snapshot(
+            Fiber("duplicate", FiberState.Active, requiredKeys: [first]),
+            Fiber("duplicate", FiberState.Pending, requiredKeys: [second]));
+        var reversed = Snapshot(
+            Fiber("duplicate", FiberState.Pending, requiredKeys: [second]),
+            Fiber("duplicate", FiberState.Active, requiredKeys: [first]));
+
+        Assert.True(ObservationEquivalence.Equivalent(left, reversed));
+
+        var swappedKeys = Snapshot(
+            Fiber("duplicate", FiberState.Active, requiredKeys: [second]),
+            Fiber("duplicate", FiberState.Pending, requiredKeys: [first]));
+        Assert.False(ObservationEquivalence.Equivalent(left, swappedKeys));
+    }
+
+    [Fact]
+    public void DifferentRealmAndPerKeyVisibilityAreNotEquivalent()
+    {
+        var key = new Key<string>("routed");
+        var other = new Realm("other");
+        var baseline = Snapshot(Fiber("consumer", requiredKeys: [key]));
+        var otherHome = Snapshot(Fiber("consumer", requiredKeys: [key], homeRealm: other));
+        var routed = Snapshot(Fiber("consumer", requiredKeys: [key],
+            routes: [new KeyRoute(key, other)]));
+
+        Assert.False(ObservationEquivalence.Equivalent(baseline, otherHome));
+        Assert.False(ObservationEquivalence.Equivalent(baseline, routed));
+        Assert.False(ObservationEquivalence.Equivalent(otherHome, routed));
+    }
+
+    [Fact]
+    public void BoundProvidersCompareFullProviderSemanticIdentityNotJustName()
+    {
+        var key = new Key<string>("bound");
+        var otherKey = new Key<string>("bound");
+        var providerIdentity = new ProviderIdentitySnapshot(
+            "provider", FiberState.Active, Realm.Default, [key], []);
+
+        var baseline = Snapshot(Fiber("consumer", bindings: [
+            new CapabilityBindingSnapshot(key, providerIdentity)]));
+        var same = Snapshot(Fiber("consumer", bindings: [
+            new CapabilityBindingSnapshot(key, new ProviderIdentitySnapshot(
+                "provider", FiberState.Active, Realm.Default, [key], []))]));
+        var differentProviderKey = Snapshot(Fiber("consumer", bindings: [
+            new CapabilityBindingSnapshot(key, new ProviderIdentitySnapshot(
+                "provider", FiberState.Active, Realm.Default, [otherKey], []))]));
+        var differentProviderState = Snapshot(Fiber("consumer", bindings: [
+            new CapabilityBindingSnapshot(key, new ProviderIdentitySnapshot(
+                "provider", FiberState.Unloading, Realm.Default, [key], []))]));
+
+        Assert.True(ObservationEquivalence.Equivalent(baseline, same));
+        Assert.False(ObservationEquivalence.Equivalent(baseline, differentProviderKey));
+        Assert.False(ObservationEquivalence.Equivalent(baseline, differentProviderState));
+    }
+
+    private static RuntimeSnapshot Snapshot(params FiberSnapshot[] fibers) => new(fibers);
+
+    private static FiberSnapshot Fiber(
+        string name,
+        FiberState state = FiberState.Active,
+        ICapabilityKey[]? requiredKeys = null,
+        ICapabilityKey[]? providedKeys = null,
+        Realm? homeRealm = null,
+        KeyRoute[]? routes = null,
+        CapabilityBindingSnapshot[]? bindings = null) =>
+        new(Guid.NewGuid(), name, state, 0, null,
+            (requiredKeys ?? []).Select(key => key.Name).ToArray(),
+            (providedKeys ?? []).Select(key => key.Name).ToArray(),
+            [], null)
+        {
+            RequiredKeys = requiredKeys ?? [],
+            ProvidedKeys = providedKeys ?? [],
+            HomeRealm = homeRealm ?? Realm.Default,
+            Routes = routes ?? [],
+            SemanticBindings = bindings ?? [],
+        };
+
+    private sealed class FailingInverseProbe : Component
+    {
+        public override string Name => "observation-failing-inverse";
+
+        public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            await context.EffectAsync(
+                () => ValueTask.CompletedTask,
+                () => ValueTask.FromException(new InvalidOperationException("observation inverse failed")));
+            return null;
+        }
+    }
+
     private static RuntimeSnapshot Snap(
         FiberState state,
         string? failure = null,

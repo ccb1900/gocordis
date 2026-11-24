@@ -22,7 +22,9 @@ public sealed class StoreProviderComponent : Component
 
     public override string Name => "showcase-store-provider";
 
-    public override IReadOnlyList<ICapabilityKey> Inject() => [ApiGateway.Key];
+    // This component emits K.StoreChanged from its background writer, so the
+    // event key must be declared as an inject (Context.EmitAsync is strict).
+    public override IReadOnlyList<ICapabilityKey> Inject() => [ApiGateway.Key, K.StoreChanged];
 
     public override IReadOnlyList<ICapabilityKey> Provide() => [K.Store, K.StoreChanged];
 

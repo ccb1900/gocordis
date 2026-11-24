@@ -11,8 +11,36 @@ public sealed record PluginEntry(
     string ConfigurationKey,
     Component? Component = null);
 
+/// <summary>
+/// Declarations and the revision they were read at, taken under one gate hold.
+/// A reader that plans a later Apply must carry the revision into the commit so
+/// a concurrent declaration change cannot be silently overwritten.
+/// </summary>
+public sealed record DeclarationSnapshot(
+    IReadOnlyDictionary<string, PluginEntry> Entries,
+    long DeclarationVersion);
+
 /// <summary>A declaration file that could not be discovered, with its error.</summary>
 public sealed record ManifestDiagnostic(string Path, Exception Error);
+
+/// <summary>
+/// Optimistic-concurrency failure for a declaration batch whose expected
+/// revision is no longer current. The batch is rejected BEFORE staging or
+/// touching a fiber; no rollback is needed because nothing was mutated.
+/// </summary>
+public sealed class DeclarationVersionConflictException : InvalidOperationException
+{
+    public DeclarationVersionConflictException(long expectedVersion, long actualVersion)
+        : base($"declaration version conflict: expected {expectedVersion}, current {actualVersion}")
+    {
+        ExpectedVersion = expectedVersion;
+        ActualVersion = actualVersion;
+    }
+
+    public long ExpectedVersion { get; }
+
+    public long ActualVersion { get; }
+}
 
 /// <summary>
 /// Plugin discovery, declaration reconciliation and lifecycle. All fiber state
@@ -30,6 +58,7 @@ public sealed class PluginRegistry : IAsyncDisposable
     private readonly Dictionary<string, Func<PluginManifest, Component>> _factories = [];
     private readonly Dictionary<string, PluginEntry> _entries = [];
     private IReadOnlyList<ManifestDiagnostic> _diagnostics = [];
+    private long _declarationVersion;
 
     /// <summary>Resolves an Entry's isolate annotation to a Core Realm. The host
     /// owns this map; the registry only submits it to RehomeAsync.</summary>
@@ -59,6 +88,34 @@ public sealed class PluginRegistry : IAsyncDisposable
             {
                 _gate.Release();
             }
+        }
+    }
+
+    /// <summary>
+    /// Monotonic declaration revision. It advances only after a fully committed
+    /// Apply; failed or rolled-back batches leave it untouched. Reading it
+    /// without the gate is an approximation — use <see cref="ReadDeclarations"/>
+    /// when the revision must describe an exact declaration snapshot.
+    /// </summary>
+    public long DeclarationVersion => Volatile.Read(ref _declarationVersion);
+
+    /// <summary>
+    /// Atomically reads declarations together with their revision under the
+    /// same gate as Apply/Dispose. This is the read side of the HMR
+    /// read→plan→commit optimistic-concurrency guard.
+    /// </summary>
+    public DeclarationSnapshot ReadDeclarations()
+    {
+        _gate.Wait();
+        try
+        {
+            return new DeclarationSnapshot(
+                new Dictionary<string, PluginEntry>(_entries, StringComparer.Ordinal),
+                _declarationVersion);
+        }
+        finally
+        {
+            _gate.Release();
         }
     }
 
@@ -128,11 +185,25 @@ public sealed class PluginRegistry : IAsyncDisposable
     /// exactly those fibers back to the previous declarations. The gate covers
     /// all three phases.
     /// </summary>
-    public async Task ApplyAsync(IEnumerable<PluginManifest> declarations)
+    public Task ApplyAsync(IEnumerable<PluginManifest> declarations) =>
+        ApplyAsync(declarations, expectedVersion: null);
+
+    /// <summary>
+    /// Applies a declaration batch only if the revision observed when the batch
+    /// was planned is still current. The check and the whole Prepare→Commit→
+    /// Rollback sequence share ONE gate hold: a stale caller is rejected before
+    /// a single component is staged or a single fiber is touched.
+    /// </summary>
+    public async Task ApplyAsync(IEnumerable<PluginManifest> declarations, long? expectedVersion)
     {
         await _gate.WaitAsync();
         try
         {
+            if (expectedVersion.HasValue && _declarationVersion != expectedVersion.Value)
+            {
+                throw new DeclarationVersionConflictException(expectedVersion.Value, _declarationVersion);
+            }
+
             var previous = new Dictionary<string, PluginEntry>(_entries, StringComparer.Ordinal);
             var batch = Prepare(previous, declarations.ToArray(), rejectProtectedDisable: true);
             var undo = new RegistryUndo(this, previous);
@@ -149,6 +220,11 @@ public sealed class PluginRegistry : IAsyncDisposable
             {
                 await ReleaseUnusedStagedAsync(batch);
             }
+
+            // Only a committed batch advances the revision. A version check
+            // failure, a Prepare failure and a rolled-back Commit all leave the
+            // previous revision (and the previous declarations) in place.
+            _declarationVersion++;
         }
         finally
         {

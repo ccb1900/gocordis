@@ -100,6 +100,28 @@ public sealed class IncludeDepthLimitException : InvalidOperationException
 }
 
 /// <summary>
+/// Two declaration nodes in one Include expansion tree carry the same Id.
+/// Failing explicitly replaces a silent dictionary overwrite: a duplicated id
+/// has two different sources/parents, and neither can be inferred as the winner.
+/// Explicit flat Plugins are a separate, later authority and may override an
+/// entry-derived id without triggering this error.
+/// </summary>
+public sealed class DuplicateEntryException : InvalidOperationException
+{
+    public DuplicateEntryException(string id, string path)
+        : base($"duplicate entry id '{id}' in application Include tree at '{path}'")
+    {
+        Id = id;
+        Path = path;
+    }
+
+    public string Id { get; }
+
+    /// <summary>Normalized path of the file declaring the duplicate node.</summary>
+    public string Path { get; }
+}
+
+/// <summary>
 /// Turns an application declaration into PluginRegistry declarations. It does
 /// not own fibers and never writes runtime state directly.
 /// </summary>
@@ -149,8 +171,11 @@ public sealed class ApplicationLoader
     /// <see cref="IncludeCycleException"/>; nesting past
     /// <see cref="MaxIncludeDepth"/> fails with <see cref="IncludeDepthLimitException"/>.
     /// A repeated Include outside the current stack is ignored: the first
-    /// expansion owns its declarations and parent linkage. Explicit flat
-    /// declarations still override entry-derived ones for the same id.
+    /// expansion owns its declarations and parent linkage. Two declaration
+    /// nodes with the same Id anywhere in the expansion tree fail with
+    /// <see cref="DuplicateEntryException"/> instead of overwriting each other.
+    /// Explicit flat declarations still override entry-derived ones for the
+    /// same id; they are a later, distinct authority.
     /// </summary>
     public static async Task<IReadOnlyList<ApplicationPlugin>> EffectivePluginsAsync(
         ApplicationManifest application, CancellationToken cancellationToken = default)
@@ -160,7 +185,7 @@ public sealed class ApplicationLoader
         var expandedIncludes = new HashSet<string>(PathComparer);
         var basePath = Path.GetDirectoryName(application.SourcePath ?? string.Empty) ?? string.Empty;
 
-        async Task AddNode(EntryNode node, string? parentId)
+        async Task AddNode(EntryNode node, string? parentId, string sourcePath)
         {
             if (node.Include is { } include)
             {
@@ -190,7 +215,7 @@ public sealed class ApplicationLoader
                         var included = JsonSerializer.Deserialize<List<EntryNode>>(json, IncludeOptions) ?? [];
                         foreach (var child in included)
                         {
-                            await AddNode(child, parentId);
+                            await AddNode(child, parentId, includePath);
                         }
                     }
                     finally
@@ -204,12 +229,21 @@ public sealed class ApplicationLoader
 
             foreach (var child in node.Children ?? [])
             {
-                await AddNode(child, node.Id);
+                await AddNode(child, node.Id, sourcePath);
             }
 
             if (node.Url is not null || node.Config is not null || node.Isolate is not null ||
                 node.Intercept is not null || node.Disabled)
             {
+                if (result.ContainsKey(node.Id))
+                {
+                    // Structural group nodes do not declare a plugin, so only
+                    // declaration-producing nodes can collide here. Report the
+                    // offending node's source path and id rather than letting
+                    // a later node silently replace an earlier declaration.
+                    throw new DuplicateEntryException(node.Id, sourcePath);
+                }
+
                 var (packageId, range) = ParseUrl(node.Url ?? node.Id);
                 result[node.Id] = new ApplicationPlugin(
                     node.Id, range, !node.Disabled, node.Config,
@@ -220,7 +254,7 @@ public sealed class ApplicationLoader
 
         foreach (var entry in application.Entries ?? [])
         {
-            await AddNode(entry, null);
+            await AddNode(entry, null, application.SourcePath ?? string.Empty);
         }
 
         // Explicit flat declarations remain authoritative for the same id.

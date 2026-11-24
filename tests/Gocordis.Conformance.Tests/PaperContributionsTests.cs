@@ -45,13 +45,15 @@ public sealed class PaperContributionsTests
         // Revertible effects + calculus: withdrawing the provider drains the
         // consumer first, then unwinds the provider's effect in LIFO order.
         var oldProviderFiber = registry.Entries["provider"].Fiber!;
+        var consumerFiber = registry.Entries["consumer"].Fiber!;
         await registry.ApplyAsync([provider with { Enabled = false }, listener, consumer]);
         // Awaiting the retired fiber's terminal state is the deterministic
         // quiescence point — no sleep or state polling.
         await oldProviderFiber.GoneAsync();
-        // A quiescence barrier orders this read after the reactive reapply that
-        // followed the provider withdrawal — no sleep or state polling.
-        await runtime.QuiesceAsync();
+        // Wait for the consumer's observable Pending state directly, published
+        // with the snapshot after the reactive withdrawal completes.
+        await runtime.WaitForFiberStateAsync(consumerFiber.Id, FiberState.Pending)
+            .WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(FiberState.Pending, registry.Entries["consumer"].Fiber!.State);
         Assert.Null(registry.Entries["consumer"].Fiber!.Failure);
         Assert.Contains("undo:provider", journal);

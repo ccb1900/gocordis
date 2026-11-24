@@ -715,6 +715,7 @@ public class PlatformApplication : IAsyncDisposable
     /// Paper §5.2.2 product entry: run the three-phase HMR engine against the
     /// CURRENT declarations of this host. Callers name changed modules and the
     /// replacement fields; they cannot inject an arbitrary declaration set.
+    /// The declaration revision seen by the read is pinned into the commit.
     /// </summary>
     public async Task<HmrPlan> HmrAsync(
         HmrRequest request, JsonObject? replacement = null, CancellationToken cancellationToken = default)
@@ -725,8 +726,16 @@ public class PlatformApplication : IAsyncDisposable
             throw new InvalidOperationException("HMR requires a started platform host");
         }
 
-        var declarations = Registry.Entries.Values.Select(entry => entry.Manifest).ToArray();
-        var effective = request with { Entries = declarations };
+        // Declarations and their revision come from ONE gate hold. Carrying the
+        // revision into the request makes the registry reject the commit if an
+        // enable/disable/config change lands while this HMR is being planned.
+        var snapshot = Registry.ReadDeclarations();
+        var declarations = snapshot.Entries.Values.Select(entry => entry.Manifest).ToArray();
+        var effective = request with
+        {
+            Entries = declarations,
+            ExpectedDeclarationVersion = snapshot.DeclarationVersion,
+        };
         var source = replacement?["source"]?.GetValue<string>();
         if (!string.IsNullOrWhiteSpace(source))
         {

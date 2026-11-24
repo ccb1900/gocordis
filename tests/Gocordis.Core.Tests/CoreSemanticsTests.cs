@@ -1126,6 +1126,147 @@ public sealed class CoreSemanticsTests
         Assert.Empty(runtime.Snapshot().Fibers);
     }
 
+    [Fact]
+    public async Task UndeclaredMetaReadAndOverrideFailWhileDeclaredAccessKeepsWorking()
+    {
+        var permitted = new MetaKey<int, string>(
+            "declared-meta", string.Empty, (_, incoming) => incoming);
+        var forbidden = new MetaKey<int, string>(
+            "undeclared-meta", string.Empty, (_, incoming) => incoming);
+        Exception? readFailure = null;
+        Exception? overrideFailure = null;
+        string? observed = null;
+
+        await using var runtime = new Runtime();
+        var component = new DelegateComponent(
+            "meta-declaration-probe",
+            async context =>
+            {
+                readFailure = Capture(() => context.Meta(forbidden));
+                overrideFailure = Capture(() => context.OverrideMeta(forbidden, "x"));
+                context.DeclareMeta(permitted, "declared");
+                context.OverrideMeta(permitted, "overridden");
+                observed = context.Meta(permitted);
+                return null;
+            },
+            inject: [permitted]);
+
+        var fiber = await runtime.LoadAsync(component);
+        Assert.Equal(FiberState.Active, fiber.State);
+        Assert.IsType<UndeclaredCapabilityException>(readFailure);
+        Assert.IsType<UndeclaredCapabilityException>(overrideFailure);
+        Assert.Equal("overridden", observed);
+    }
+
+    [Fact]
+    public async Task UndeclaredEmitFailsWhileDeclaredInjectStillDispatches()
+    {
+        var channel = new EventKey<string>("declared-event");
+        var provided = new EventKey<string>("provided-event");
+        var forbidden = new EventKey<string>("undeclared-event");
+        var provideOnly = new EventKey<string>("provide-only-event");
+        var received = new List<string>();
+        Exception? undeclaredFailure = null;
+        Exception? provideOnlyFailure = null;
+        var providedDelivery = string.Empty;
+
+        await using var runtime = new Runtime();
+        await runtime.LoadAsync(new DelegateComponent(
+            "channel",
+            async context =>
+            {
+                context.Provide(channel, "channel");
+                return null;
+            },
+            provide: [channel]));
+        await runtime.LoadAsync(new DelegateComponent(
+            "event-provider",
+            async context =>
+            {
+                context.Provide(provided, "provider");
+                return null;
+            },
+            provide: [provided]));
+
+        await runtime.LoadAsync(new DelegateComponent(
+            "listener",
+            async context =>
+            {
+                await context.OnAsync(channel, value => { received.Add(value); return ValueTask.CompletedTask; });
+                await context.OnAsync(provided, value =>
+                {
+                    providedDelivery = value;
+                    return ValueTask.CompletedTask;
+                });
+                return null;
+            },
+            inject: [channel, provided]));
+
+        var emitter = await runtime.LoadAsync(new DelegateComponent(
+            "emitter",
+            async context =>
+            {
+                await context.EmitAsync(channel, "declared");
+                undeclaredFailure = await CaptureAsync(() => context.EmitAsync(forbidden, "forbidden").AsTask());
+                return null;
+            },
+            inject: [channel]));
+
+        var trigger = await runtime.LoadAsync(new DelegateComponent(
+            "provided-trigger",
+            async context =>
+            {
+                await context.EmitAsync(provided, "provided");
+                return null;
+            },
+            inject: [provided]));
+
+        var provideOnlyEmitter = await runtime.LoadAsync(new DelegateComponent(
+            "provide-only-emitter",
+            async context =>
+            {
+                context.Provide(provideOnly, "channel");
+                provideOnlyFailure = await CaptureAsync(
+                    () => context.EmitAsync(provideOnly, "rejected").AsTask());
+                return null;
+            },
+            provide: [provideOnly]));
+
+        Assert.Equal(FiberState.Active, emitter.State);
+        Assert.Equal(FiberState.Active, trigger.State);
+        Assert.Equal(FiberState.Active, provideOnlyEmitter.State);
+        Assert.IsType<UndeclaredCapabilityException>(undeclaredFailure);
+        Assert.IsType<UndeclaredCapabilityException>(provideOnlyFailure);
+        Assert.Equal(new[] { "declared" }, received);
+        Assert.Equal("provided", providedDelivery);
+    }
+
+    private static Exception? Capture(Action action)
+    {
+        try
+        {
+            action();
+            return null;
+        }
+        catch (Exception error)
+        {
+            return error;
+        }
+    }
+
+    private static async Task<Exception?> CaptureAsync(Func<Task> action)
+    {
+        try
+        {
+            await action();
+            return null;
+        }
+        catch (Exception error)
+        {
+            return error;
+        }
+    }
+
     private static async Task WaitForStateAsync(Runtime runtime, Guid fiberId, FiberState expected)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);

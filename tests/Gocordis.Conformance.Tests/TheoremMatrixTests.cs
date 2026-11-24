@@ -524,10 +524,11 @@ public sealed class TheoremMatrixTests
         {
             case "provider-consumer-load-order":
             {
-                static async Task<RuntimeSnapshot> Build(bool consumerFirst)
+                var key = new Key<int>("confluence");
+
+                static async Task<RuntimeSnapshot> Build(bool consumerFirst, Key<int> key)
                 {
                     var runtime = new Runtime();
-                    var key = new Key<int>("confluence");
                     var provider = new Probe("provider", context =>
                     {
                         context.Provide(key, 1);
@@ -552,17 +553,19 @@ public sealed class TheoremMatrixTests
                     return runtime.Snapshot();
                 }
 
-                Assert.True(ObservationEquivalence.Equivalent(await Build(true), await Build(false)));
+                Assert.True(ObservationEquivalence.Equivalent(
+                    await Build(true, key), await Build(false, key)));
                 break;
             }
 
             case "chain-load-order":
             {
-                static async Task<RuntimeSnapshot> Build(bool reverse)
+                var a = new Key<int>("join-a");
+                var b = new Key<int>("join-b");
+
+                static async Task<RuntimeSnapshot> Build(bool reverse, Key<int> a, Key<int> b)
                 {
                     var runtime = new Runtime();
-                    var a = new Key<int>("join-a");
-                    var b = new Key<int>("join-b");
                     var consumer = new Probe("consumer", context =>
                     {
                         context.Require(a);
@@ -596,8 +599,8 @@ public sealed class TheoremMatrixTests
                     return runtime.Snapshot();
                 }
 
-                var first = await Build(true);
-                var second = await Build(false);
+                var first = await Build(true, a, b);
+                var second = await Build(false, a, b);
                 Assert.All(first.Fibers, fiber => Assert.Equal(FiberState.Active, fiber.State));
                 Assert.True(ObservationEquivalence.Equivalent(first, second));
                 break;
@@ -605,10 +608,11 @@ public sealed class TheoremMatrixTests
 
             case "teardown-order":
             {
-                static async Task<RuntimeSnapshot> Build(bool consumerFirst)
+                var key = new Key<int>("teardown");
+
+                static async Task<RuntimeSnapshot> Build(bool consumerFirst, Key<int> key)
                 {
                     var runtime = new Runtime();
-                    var key = new Key<int>("teardown");
                     var provider = await runtime.LoadAsync(new Probe(
                         "provider",
                         context =>
@@ -641,7 +645,8 @@ public sealed class TheoremMatrixTests
                     return runtime.Snapshot();
                 }
 
-                Assert.True(ObservationEquivalence.Equivalent(await Build(true), await Build(false)));
+                Assert.True(ObservationEquivalence.Equivalent(
+                    await Build(true, key), await Build(false, key)));
                 break;
             }
 

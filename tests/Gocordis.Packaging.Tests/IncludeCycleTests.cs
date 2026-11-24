@@ -118,6 +118,88 @@ public sealed class IncludeCycleTests
         Assert.Null(overridden.ParentId);
     }
 
+    [Fact]
+    public async Task DuplicateEntryIdAcrossIncludeFilesFailsWithIdAndSourcePath()
+    {
+        using var temp = new TempDir();
+        temp.Write("a.json", JsonSerializer.Serialize(new[]
+        {
+            new EntryNode("shared", Config: new Dictionary<string, object?> { ["source"] = "first" }),
+        }));
+        temp.Write("b.json", JsonSerializer.Serialize(new[]
+        {
+            new EntryNode("shared", Config: new Dictionary<string, object?> { ["source"] = "second" }),
+        }));
+        var app = App(temp,
+            new EntryNode("first", Include: "a.json"),
+            new EntryNode("second", Include: "b.json"));
+
+        var error = await Assert.ThrowsAsync<DuplicateEntryException>(
+            () => ApplicationLoader.EffectivePluginsAsync(app));
+
+        Assert.Equal("shared", error.Id);
+        Assert.EndsWith("b.json", error.Path);
+        Assert.Contains("shared", error.Message);
+    }
+
+    [Fact]
+    public async Task ApplyRejectsDuplicateEntryBeforeAnyDeclarationIsResolved()
+    {
+        using var temp = new TempDir();
+        temp.Write("duplicate.json", JsonSerializer.Serialize(new[]
+        {
+            new EntryNode("child", Url: "one@1.0.0"),
+            new EntryNode("child", Url: "two@1.0.0"),
+        }));
+        var app = App(temp, new EntryNode("root", Include: "duplicate.json"));
+
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        var loader = new ApplicationLoader(new PluginStore(temp.At("store"), "1.0.0"), registry);
+
+        await Assert.ThrowsAsync<DuplicateEntryException>(() => loader.ApplyAsync(app));
+        Assert.Empty(registry.Entries);
+    }
+
+    [Fact]
+    public async Task DuplicateEntryIdInsideOneIncludeFileFailsInsteadOfDictionaryOverwrite()
+    {
+        using var temp = new TempDir();
+        temp.Write("children.json", JsonSerializer.Serialize(new[]
+        {
+            new EntryNode("child", Url: "one@1.0.0"),
+            new EntryNode("child", Url: "two@1.0.0"),
+        }));
+        var app = App(temp, new EntryNode("root", Include: "children.json"));
+
+        var error = await Assert.ThrowsAsync<DuplicateEntryException>(
+            () => ApplicationLoader.EffectivePluginsAsync(app));
+
+        Assert.Equal("child", error.Id);
+        Assert.EndsWith("children.json", error.Path);
+    }
+
+    [Fact]
+    public async Task FlatPluginStillOverridesAnEntryWithTheSameId()
+    {
+        using var temp = new TempDir();
+        temp.Write("child.json", JsonSerializer.Serialize(new[]
+        {
+            new EntryNode("child", Url: "entry@1.0.0",
+                Config: new Dictionary<string, object?> { ["source"] = "entry" }),
+        }));
+        var app = App(temp, new EntryNode("root", Include: "child.json")) with
+        {
+            Plugins = [new ApplicationPlugin("child", "[1.0,)", true,
+                new Dictionary<string, object?> { ["source"] = "flat" })],
+        };
+
+        var effective = Assert.Single(await ApplicationLoader.EffectivePluginsAsync(app));
+
+        Assert.Equal("child", effective.Id);
+        Assert.Equal("flat", effective.Config!["source"]?.ToString());
+    }
+
     private static ApplicationManifest App(TempDir temp, params EntryNode[] entries) =>
         new ApplicationManifest("app", "1.0.0", "1.0.0",
             Array.Empty<ApplicationPlugin>(), entries) with { SourcePath = temp.At("app.json") };

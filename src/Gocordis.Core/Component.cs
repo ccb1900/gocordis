@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Gocordis.Core;
 
 /// <summary>
@@ -54,7 +56,54 @@ public sealed record FiberSnapshot(
 
     /// <summary>Install/inverse failures attributed to an effect slot.</summary>
     public IReadOnlyList<EffectFailureRecord> EffectFailures { get; init; } = [];
+
+    /// <summary>
+    /// Reference identities of the declared inject keys, mirrored to
+    /// <see cref="Requires"/> by index. A capability is not identified by its
+    /// name alone: its Key instance and value type are part of the contract.
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<ICapabilityKey> RequiredKeys { get; init; } = [];
+
+    /// <summary>Reference identities of the declared provide keys, mirrored to <see cref="Provides"/>.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<ICapabilityKey> ProvidedKeys { get; init; } = [];
+
+    /// <summary>
+    /// The fiber's home realm plus per-key routes. Capability visibility is a
+    /// paper-observable dimension (Def 24/ADR-0001): no ancestor fallback.
+    /// </summary>
+    [JsonIgnore]
+    public Realm HomeRealm { get; init; } = global::Gocordis.Core.Realm.Default;
+
+    [JsonIgnore]
+    public IReadOnlyList<KeyRoute> Routes { get; init; } = [];
+
+    /// <summary>
+    /// Committed bindings projected with the provider's full semantic identity
+    /// instead of a name-only substitute for its generative fiber id.
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<CapabilityBindingSnapshot> SemanticBindings { get; init; } = [];
 }
+
+/// <summary>One per-key realm route: reference identity of both ends matters.</summary>
+public sealed record KeyRoute(ICapabilityKey Key, Realm Realm);
+
+/// <summary>
+/// Semantic identity of a binding source. Generative FiberId/ActivationId are
+/// excluded; the provider's name, current state, home realm and declared key
+/// identities are retained.
+/// </summary>
+public sealed record ProviderIdentitySnapshot(
+    string Name,
+    FiberState State,
+    Realm Realm,
+    IReadOnlyList<ICapabilityKey> Requires,
+    IReadOnlyList<ICapabilityKey> Provides);
+
+/// <summary>A committed capability binding: which key resolved to which provider.</summary>
+public sealed record CapabilityBindingSnapshot(ICapabilityKey Key, ProviderIdentitySnapshot Provider);
 
 public sealed record RuntimeSnapshot(IReadOnlyList<FiberSnapshot> Fibers)
 {

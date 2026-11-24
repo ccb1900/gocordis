@@ -125,10 +125,12 @@ public sealed class TheoremTests
     [Fact]
     public async Task Thm80_ConfluenceIgnoresLoadOrder()
     {
-        static async Task<RuntimeSnapshot> Build(bool consumerFirst)
+        // One semantic key identity for both orders; only load order varies.
+        var key = new Key<int>("shared");
+
+        static async Task<RuntimeSnapshot> Build(bool consumerFirst, Key<int> key)
         {
             var runtime = new Gocordis.Core.Runtime();
-            var key = new Key<int>("shared");
             var provider = new Probe("provider", context =>
             {
                 context.Provide(key, 1);
@@ -153,7 +155,7 @@ public sealed class TheoremTests
             return runtime.Snapshot();
         }
 
-        Assert.True(ObservationEquivalence.Equivalent(await Build(true), await Build(false)));
+        Assert.True(ObservationEquivalence.Equivalent(await Build(true, key), await Build(false, key)));
     }
 
     private static void AssertWellFormed(Gocordis.Core.Runtime runtime)

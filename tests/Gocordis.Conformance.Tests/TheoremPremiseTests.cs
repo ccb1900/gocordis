@@ -117,10 +117,12 @@ public sealed class TheoremPremiseTests
     [Fact]
     public async Task Thm80_AllLoadOrdersOverAFiniteSetReachOneNormalForm()
     {
-        static async Task<RuntimeSnapshot> Build(IReadOnlyList<int> order)
+        // Shared semantic key identity across all permutations; only order varies.
+        var shared = new Key<int>("confluence-shared");
+
+        static async Task<RuntimeSnapshot> Build(IReadOnlyList<int> order, Key<int> shared)
         {
             await using var runtime = new Runtime();
-            var shared = new Key<int>("confluence-shared");
 
             for (var index = 0; index < order.Count; index++)
             {
@@ -158,10 +160,10 @@ public sealed class TheoremPremiseTests
 
         var permutations = Permutations([0, 1, 2, 3]).ToArray();
         Assert.Equal(24, permutations.Length);
-        var baseline = await Build(permutations[0]);
+        var baseline = await Build(permutations[0], shared);
         foreach (var order in permutations.Skip(1))
         {
-            var candidate = await Build(order);
+            var candidate = await Build(order, shared);
             Assert.True(
                 ObservationEquivalence.Equivalent(baseline, candidate),
                 $"load order [{string.Join(",", order)}] produced a different normal form: " +

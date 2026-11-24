@@ -2,7 +2,7 @@
 
 **Source of truth**: `docs/论文.pdf` (arXiv 2608.25512v1, 92 pages), checked
 against the PDF bookmark outline on 2026-11-24. **Branch**: `dotnet`, refreshed
-with `git fetch/pull --ff-only origin dotnet`; verified HEAD `aba9749`.
+against the `dotnet` branch; verified code commit `623b9991` (registry transaction, product-boundary, repeated start/stop and deterministic quiescence review fixes).
 
 This matrix is built from the paper's **目录**, not from `ROADMAP.md`, not from
 the C01–C40 item ledger, and not from class-name similarity. C01–C40 remains a
@@ -17,6 +17,8 @@ Status vocabulary:
 - **部分实现** — a mechanism exists, but a required behavior/boundary/product chain is missing.
 - **未实现** — no implementation or only motivational text.
 - **不适用（语言适配／文档）** — paper mechanism has a reasonable C# equivalent with documented difference, or the chapter is discussion/related work/conclusion.
+
+For §5.2.1/§5.2.2, **已实现** additionally requires multi-field combination evidence, failure rollback evidence and concurrency/serialization evidence — single-field happy-path tests alone do not qualify.
 
 Each row has four evidence dimensions: **C# Implementation**, **Product
 Integration**, **Verification Evidence**, plus a **Difference / Acceptance

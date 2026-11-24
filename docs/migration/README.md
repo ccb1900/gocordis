@@ -47,6 +47,7 @@
 | [`pc-gate-disposition.md`](pc-gate-disposition.md) | Go 收敛 | PC01–PC30 逐项去向，消除“24 项未移植”无状态描述 | 与 C# 场景测试对齐 |
 | [`review-round-10.md`](review-round-10.md) | 四维冻结 | 论文 C34/迭代器/失败语义、JS 增量、Koishi E2E、Go 基线裁决 | 红测 + 本地验证 |
 | [`review-round-11.md`](review-round-11.md) | 实跑验收 | 真实启动应用、安装 Managed 插件、浏览器检查控制台 | 运行实例 + 红测 |
+| [`review-round-12.md`](review-round-12.md) | 事务与安全 | Registry 多字段组合/回滚、HMR 真实路径、Process 最小环境、观察游标与 Include 环检测 | 红测 + 本地验证 |
 | [`../guide/csharp-developer-manual.md`](../guide/csharp-developer-manual.md) | 批次 C | C# 开发者手册：十二铁律 → C# API 与反模式 | 与 `AGENTS.md` 十二铁律逐条锚定 |
 | [`migration-coverage.md`](migration-coverage.md) | 全周期 | 每个 Go 模块迁移到哪个 C# 项目；用什么机制替代；什么不迁移 | 清单逐项推进；状态只能由验收证据推进 |
 | [`execution-log.md`](execution-log.md) | 全周期 | 每一步做了什么、为什么、证据是什么 | 持续追加，不回改历史条目 |

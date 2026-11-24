@@ -89,7 +89,7 @@ One host-owned `CapabilityCatalog` (`Gocordis.Core`) allocates a single `ICapabi
   `plugin sandbox` name (old name kept as alias).
 - **Task 04 stability/scale**: BenchmarkDotNet hot-path benchmarks plus repeated
   enable/disable ledger-stability test. Cold 10k apply after batch snapshots is
-  still O(N²)-ish (FindCycle/Reconcile per command) — see benchmark README.
+  still O(N²)-ish (FindCycle/Reconcile per command). Re-measured at current HEAD: 3.545 ms / 241.436 ms / 32.583 s for 100/1,000/10,000 — see benchmark README.
 
 ## Known boundaries (not "done" claims)
 

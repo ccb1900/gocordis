@@ -10,7 +10,19 @@ dotnet run --project tests/Gocordis.Benchmarks -c Release -- \
   --filter '*SteadyApply*' --job Short
 ```
 
-## First measurements (this machine, Short/Dry jobs)
+## Re-measured at `f687e73` (ShortRun, 3 warmup + 3 iterations)
+
+| scenario | 100 | 1,000 | 10,000 |
+| --- | --- | --- | --- |
+| ColdApply | 3.545 ms / 5.35 MB | 241.436 ms / 461.14 MB | 32,582.639 ms / 45,910.5 MB |
+
+Scaling is still quadratic: ~68x then ~135x time and ~86x then ~99x allocated
+per decade. Ownership: `HandleLoad` calls `ValidateDeclarations` + `FindCycle`
+(full-fiber scans) per command, and the Registry's ~N teardown commands after
+batch close each publish a full snapshot. No production optimization was made
+in this pass; this is the baseline for a separately scheduled P2 task.
+
+## Earlier measurements (this machine, Short/Dry jobs)
 
 | scenario | 100 | 1,000 | 10,000 |
 | --- | --- | --- | --- |

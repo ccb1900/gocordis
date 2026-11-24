@@ -28,7 +28,7 @@ the code as a consumer does; `new Service()` success is not evidence.
 | Broker / registry / observe / event / scheduler / HMR | library-only in Go (no ServiceKey) | optional patterns | `src/Gocordis.Extensions/Patterns.cs`, `Observation.cs`, `GenericHmr.cs` | **not-porting (documented)** | No Go capability contract; keeping them as libraries preserves the reference semantics instead of inventing plugin semantics |
 | Three execution backends | `loader/proc`, `loader/wasm` | JS module loader | `src/Gocordis.Runtime.{Managed,Process,Wasm}` + `Runtime.Contracts` | **done** | `CrossBackendCapabilityTests`, `BackendDispatchProductTests`; Process/WASM require capability declarations |
 | Package trust / version lock | provenance in Go | manifest metadata | `src/Gocordis.Packaging/PluginTrustPolicy.cs`, `PluginStore.cs` | **done** | CLI/product host/Console share `FromPemFiles`; documented as provenance, not sandbox |
-| Runtime batch load | channel orchestrator 256 + gate | async reconcile | `Runtime.LoadBatchAsync`, `PluginRegistry.CommitAsync` | **partial (P2)** | 100/1000/10000 measured historically; `FindCycle` + `Reconcile` + post-batch teardown snapshots remain O(N²); re-measure at this HEAD before optimizing |
+| Runtime batch load | channel orchestrator 256 + gate | async reconcile | `Runtime.LoadBatchAsync`, `PluginRegistry.CommitAsync` | **partial (P2, measured)** | Re-measured at this HEAD: 3.545 ms / 241.436 ms / 32.583 s and 5.35 / 461.14 / 45,910.5 MB. Scaling ~quadratic; `FindCycle` + `Reconcile` + post-batch teardown snapshots remain the targets. Optimization is a separate scheduled task, not this migration pass |
 
 ## 2. Decisions that must not be reopened silently
 

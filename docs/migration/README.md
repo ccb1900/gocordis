@@ -90,3 +90,4 @@
 - 后续阶段状态以 [`migration-coverage.md`](migration-coverage.md) 的逐项状态为准，不在本文件重复维护。
 
 Existence / authority audit: [`existence-audit.md`](existence-audit.md) (current per-capability classification and single-authority map; maintained alongside `docs/current-status.md`, not a historical round).
+Migration completeness ledger: [`completeness-ledger.md`](completeness-ledger.md) (Go/JS/C# capability matrix with source anchors, status, test evidence and acceptance conditions; maintained current).

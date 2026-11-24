@@ -106,5 +106,5 @@ One host-owned `CapabilityCatalog` (`Gocordis.Core`) allocates a single `ICapabi
 
 1. **Current engineering spec**: root `AGENTS.md`, `docs/guide/csharp-developer-manual.md`.
 2. **Current status**: this file (and `README.md` pointer).
-3. **Current classification**: `docs/migration/existence-audit.md` (explicit carve-out from the archive).
+3. **Current classification**: `docs/migration/existence-audit.md` and `docs/migration/completeness-ledger.md` (explicit carve-outs from the archive, maintained with current state).
 4. **Historical migration record**: the rest of `docs/migration/` — archive only, including `README.md`, round/review documents and their old branch names, SHAs and counts.

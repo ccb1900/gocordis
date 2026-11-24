@@ -85,8 +85,19 @@ public sealed class ReversibleWatchService : IAsyncDisposable, IWatchService
         watcher.Created += handler;
         watcher.Deleted += handler;
         watcher.Renamed += (sender, args) => handler(sender, args);
-        watcher.Error += (_, args) => subscription.Deliver(new WatchEvent(WatchEventKind.Error, full,
-            Error: args.GetException()?.Message ?? "file watcher error"));
+        watcher.Error += (_, args) =>
+        {
+            lock (_sync)
+            {
+                if (_disposed || subscription.IsDisposed)
+                {
+                    return;
+                }
+            }
+
+            subscription.Deliver(new WatchEvent(WatchEventKind.Error, full,
+                Error: args.GetException()?.Message ?? "file watcher error"));
+        };
 
         lock (_sync)
         {
@@ -130,6 +141,35 @@ public sealed class ReversibleWatchService : IAsyncDisposable, IWatchService
         catch
         {
             subscription?.Dispose(); // refused effect: compensate immediately
+            throw;
+        }
+
+        return subscription ?? throw new InvalidOperationException("watch effect did not register");
+    }
+
+    /// <summary>Async owner-bound registration; no thread is blocked on an effect.</summary>
+    public async ValueTask<IDisposable> WatchOwnedAsync(Context owner, string path,
+        Action<WatchEvent> onEvent, WatchOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        IDisposable? subscription = null;
+        try
+        {
+            await owner.EffectAsync(
+                () =>
+                {
+                    subscription = Watch(path, onEvent, options);
+                    return ValueTask.CompletedTask;
+                },
+                () =>
+                {
+                    subscription?.Dispose();
+                    return ValueTask.CompletedTask;
+                });
+        }
+        catch
+        {
+            subscription?.Dispose();
             throw;
         }
 
@@ -196,6 +236,7 @@ public sealed class ReversibleWatchService : IAsyncDisposable, IWatchService
         private readonly string? _filter;
         private readonly Action<WatchEvent> _onEvent;
         private readonly object _deliverySync = new();
+        private bool _flushing;
         private Queue<WatchEvent>? _buffered;
         private bool _readyDelivered;
         private int _disposed;
@@ -224,32 +265,65 @@ public sealed class ReversibleWatchService : IAsyncDisposable, IWatchService
         {
             lock (_deliverySync)
             {
-                if (!_readyDelivered)
+                if (!_readyDelivered || _flushing)
                 {
                     (_buffered ??= new Queue<WatchEvent>()).Enqueue(evt);
                     return;
                 }
-
-                _onEvent(evt);
             }
+
+            InvokeSafely(evt);
         }
 
         internal void MarkReady()
         {
-            lock (_deliverySync)
+            while (true)
             {
-                _readyDelivered = true;
-                if (_buffered is null)
+                WatchEvent[] pending;
+                lock (_deliverySync)
                 {
-                    return;
+                    if (_readyDelivered)
+                    {
+                        return;
+                    }
+
+                    _flushing = true;
+                    pending = _buffered?.ToArray() ?? [];
+                    _buffered = null;
                 }
 
-                while (_buffered.Count > 0)
+                foreach (var item in pending)
                 {
-                    _onEvent(_buffered.Dequeue());
+                    InvokeSafely(item);
                 }
 
-                _buffered = null;
+                lock (_deliverySync)
+                {
+                    _flushing = false;
+                    _readyDelivered = true;
+                    if (_buffered is null || _buffered.Count == 0)
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+
+        private void InvokeSafely(WatchEvent evt)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                _onEvent(evt);
+            }
+            catch
+            {
+                // A consumer callback must never corrupt watcher state or kill
+                // the native event thread.
             }
         }
 

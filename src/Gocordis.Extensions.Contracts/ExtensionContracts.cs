@@ -178,6 +178,7 @@ public interface IWatchService : IAsyncDisposable
     long Revision(string path);
     IDisposable Watch(string path, Action<WatchEvent> onEvent, WatchOptions? options = null);
     IDisposable WatchOwned(Context owner, string path, Action<WatchEvent> onEvent, WatchOptions? options = null);
+    ValueTask<IDisposable> WatchOwnedAsync(Context owner, string path, Action<WatchEvent> onEvent, WatchOptions? options = null);
 }
 
 /// <summary>Route guard contribution capability (no ASP.NET types in the contract).</summary>

@@ -120,6 +120,31 @@ public sealed class ExtensionCompositionTests
     }
 
     [Fact]
+    public async Task WatchOwnedAsyncUnwindsWithItsOwnerAndStopsCallbacks()
+    {
+        await using var runtime = new Runtime();
+        using var temp = new TempDir();
+        var path = Path.Combine(temp.Root, "watched.txt");
+        await File.WriteAllTextAsync(path, "one");
+        var provider = await runtime.LoadAsync(new WatchExtensionComponent());
+        var watch = runtime.RequireCapability(ExtensionKeys.Watch);
+        var observed = 0;
+        var owner = await runtime.LoadAsync(new WatchOwner(watch, path, _ => observed++));
+        Assert.Equal(FiberState.Active, owner.State);
+
+        await File.WriteAllTextAsync(path, "two");
+        await WaitForAsync(() => Volatile.Read(ref observed) > 0);
+
+        await runtime.DisposeAsync(owner);
+        var before = Volatile.Read(ref observed);
+        await File.WriteAllTextAsync(path, "three");
+        await Task.Delay(100);
+        Assert.True(Volatile.Read(ref observed) == before,
+            "withdrawn watcher must not deliver changes");
+        Assert.Equal(FiberState.Active, provider.State);
+    }
+
+    [Fact]
     public async Task ProxyRegistrationsAreIdentityFencedAndLastWins()
     {
         await using var service = new HttpService();
@@ -187,6 +212,15 @@ public sealed class ExtensionCompositionTests
         Assert.Equal(1, service.DisposeCount);
     }
 
+    private static async Task WaitForAsync(Func<bool> predicate)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!predicate() && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(10);
+        }
+    }
+
     private static async Task WaitForStateAsync(Runtime runtime, Guid fiberId, FiberState expected)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);
@@ -243,6 +277,28 @@ public sealed class ExtensionCompositionTests
 
         public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
             ExtensionPublish.PublishAsync(context, _key, _service);
+    }
+
+    private sealed class WatchOwner : Component
+    {
+        private readonly IWatchService _watch;
+        private readonly string _path;
+        private readonly Action<WatchEvent> _onEvent;
+
+        public WatchOwner(IWatchService watch, string path, Action<WatchEvent> onEvent)
+        {
+            _watch = watch;
+            _path = path;
+            _onEvent = onEvent;
+        }
+
+        public override string Name => "watch-owner";
+
+        public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            await _watch.WatchOwnedAsync(context, _path, _onEvent);
+            return null;
+        }
     }
 
     private sealed class DuplicateBindProvider : Component

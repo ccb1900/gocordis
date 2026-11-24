@@ -571,100 +571,32 @@ public sealed class ObserveStream<T> : IAsyncDisposable
     }
 }
 
-/// <summary>File watch with revision coalescing, built on FileSystemWatcher.</summary>
+/// <summary>
+/// Compatibility adapter for the legacy watch API. It owns no watcher logic:
+/// all behavior, revision and disposal semantics come from ReversibleWatchService,
+/// so only one watch implementation exists in the product.
+/// </summary>
 public sealed class WatchService : IAsyncDisposable
 {
-    // One lock for BOTH maps: watcher registration, revision reads and
-    // disposal must be serialized (FileSystemService pattern).
-    private readonly object _sync = new();
-    private readonly Dictionary<string, FileSystemWatcher> _watchers = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, long> _revisions = new(StringComparer.Ordinal);
-    private bool _disposed;
+    private readonly ReversibleWatchService _inner = new();
 
-    public long Revision(string path)
-    {
-        lock (_sync)
-        {
-            return _revisions.GetValueOrDefault(path);
-        }
-    }
+    public long Revision(string path) => _inner.Revision(path);
 
     public IDisposable Watch(string path, Action<string, long> onChange)
     {
-        lock (_sync)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-        }
-
-        var full = Path.GetFullPath(path);
-        var directory = Directory.Exists(full) ? full : Path.GetDirectoryName(full)!;
-        var filter = Directory.Exists(full) ? "*" : Path.GetFileName(full);
-        var watcher = new FileSystemWatcher(directory, filter);
-        FileSystemEventHandler handler = (_, args) =>
-        {
-            long revision;
-            lock (_revisions)
+        ArgumentNullException.ThrowIfNull(onChange);
+        return _inner.Watch(path,
+            evt =>
             {
-                _revisions.TryGetValue(full, out var current);
-                revision = current + 1;
-                _revisions[full] = revision;
-            }
-
-            onChange(args.FullPath, revision);
-        };
-        watcher.Changed += handler;
-        watcher.Created += handler;
-        watcher.EnableRaisingEvents = true;
-        lock (_sync)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            _watchers[full] = watcher;
-        }
-
-        return new Subscription(() =>
-        {
-            lock (_sync)
-            {
-                _watchers.Remove(full);
-            }
-
-            watcher.EnableRaisingEvents = false;
-            watcher.Dispose();
-        });
+                if (evt.Kind == WatchEventKind.Change)
+                {
+                    onChange(evt.Path, evt.Revision);
+                }
+            },
+            new WatchOptions(Recursive: true));
     }
 
-    public async ValueTask DisposeAsync()
-    {
-        FileSystemWatcher[] watchers;
-        lock (_sync)
-        {
-            if (_disposed)
-            {
-                return;
-            }
-
-            _disposed = true;
-            watchers = [.. _watchers.Values];
-            _watchers.Clear();
-        }
-
-        foreach (var watcher in watchers)
-        {
-            watcher.EnableRaisingEvents = false;
-            watcher.Dispose();
-        }
-
-        await ValueTask.CompletedTask;
-    }
-
-    private sealed class Subscription : IDisposable
-    {
-        private Action? _action;
-
-        public Subscription(Action action) => _action = action;
-
-        public void Dispose() => Interlocked.Exchange(ref _action, null)?.Invoke();
-    }
+    public ValueTask DisposeAsync() => _inner.DisposeAsync();
 }
 
 /// <summary>One package recorded in a declaration lockfile.</summary>

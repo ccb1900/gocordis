@@ -39,28 +39,37 @@ the conflation the platform boundaries forbid.
 
 ## 2. Extensions capability-by-capability classification
 
-`Gocordis.Plugin.Sdk` references only Core and Plugins. Nothing in Extensions is
-part of the standard SDK surface; absence of a product consumer is therefore a
-real classification signal, not merely a missing wiring opportunity.
+Go baseline arbitration: an extension becomes a runtime capability only when
+Go declares a `ServiceKey` + Provider `Component` (`timer`, `http`, `fs`, `env`,
+`server`, `devtools`, `cli`, `market`, `package-manager`). Libraries without a
+Go ServiceKey (`broker`, `registry`, `event`, `observe`, `watch`, `scheduler`,
+`hmr`, `config`, `pluginmeta`, `patch`, `bundle`) stay libraries — turning them
+into plugins would invent semantics the reference does not have.
 
-| Capability | Evidence of consumer | Classification |
-| --- | --- | --- |
-| `DiagnosticsService`, diagnostic codes | `PlatformApplication` registers query; version/provider findings | **Product**: keep |
-| `HostAcl`, `ServerRouteGuard` | Platform builds it from `--allowed-host`; WebUi installs middleware | **Product**: keep |
-| `HttpService` | `HttpPluginPackageSource` accepts it, but shipped CLI passes no service | **Optional seam**: keep, do not claim product consumption |
-| `GenericHmr` | Only `RuntimeGapTests`; no host call chain | **Experimental / deferred**: not product hot reload |
-| `ObservationLog<T>`, `ObserveStream<T>` | Only tests; Console uses snapshot + HTTP/SSE | **Experimental**: keep, no product promise |
-| `TimerService`, `Scheduler` | Only tests; no product periodic job | **Experimental** |
-| `FileSystemService`, `EnvService` | Only tests; Web uses separate `WebAssetPaths` | **Experimental** |
-| `ReversibleWatchService` | Only tests | **Experimental** |
-| `SocksRegistry`, `SocksDialer` | Only tests; no product registration | **Experimental** |
-| `Broker<T>`, `StableRegistry<T>`, `WatchService` | Public API + tests, no product composition | **Candidate developer API**: would need SDK export, example and published contract to become a promise |
-| `MarketService`, `PackageManager`, `CliDispatcher`, `ServerHost` | No production use; control plane and CLI have their own authorities | **Experimental / duplicate-authority risk**: never wire into product |
-| `EventDispatcher` | Type does not exist; ADR-0004 demoted dispatch and Core owns registration | **Removed**; stale migration mentions are archive only |
+The C# product now exports `ExtensionKeys` and Provider Components from
+`Gocordis.Extensions` through the SDK. `PlatformApplication` loads them as
+ordinary Runtime fibers and resolves services by capability key; it no longer
+constructs private service instances.
 
-Consequence: the audit does not "Keep Extensions" as a block. Only the first two
-rows are product capabilities; the rest are explicitly labelled so they cannot be
-presented as completed migration work.
+| Capability | Go ServiceKey / Component | C# plugin status | Evidence |
+| --- | --- | --- | --- |
+| Timer | yes | **Plugin provider** `TimerExtensionComponent` | gating / withdrawal / reactivation test |
+| HTTP | yes | **Plugin provider** `HttpExtensionComponent` | provider fiber + `HttpService.IsDisposed` on withdrawal |
+| FS | yes | **Plugin provider** `FileSystemExtensionComponent` | Env chain test |
+| Env | yes, Injects FS | **Plugin provider** `EnvExtensionComponent` (Inject FS) | Pending until FS, Pending after FS loss |
+| HTTP-SOCKS | contribution, Injects HTTP | **Plugin provider** `SocksExtensionComponent` (Inject HTTP) | Pending until HTTP, `SocksRegistry.Http` identity |
+| Devtools | yes | **Plugin provider** `DiagnosticsExtensionComponent` | host query resolves required capability |
+| Watch | library in Go, owner-bound effects in C# | **Plugin provider** `WatchExtensionComponent` | capability wrapper over existing `WatchOwned` |
+| Route guard | server ACL contribution in Go | **Plugin provider** `RouteGuardExtensionComponent` | host ACL configured on runtime-owned guard |
+| `GenericHmr` | optional dev tool in Go | **Experimental / deferred**, not a product hot-reload path | host never loads it |
+| `ObservationLog`, `ObserveStream`, `Broker<T>`, `StableRegistry<T>`, `WatchService` | no ServiceKey in Go | **Library-only**, no Key, no provider | tests only; not SDK product promise |
+| `Scheduler`, `CliDispatcher`, `MarketService`, `PackageManager`, `ServerHost` | optional key in Go but no C# product consumer | **Library / duplicate-authority risk**; never wire into product | control plane and CLI own those decisions |
+| `EventDispatcher` | dispatch modes are library over Core keys | **Removed type**; Core owns registration (ADR-0004) | stale migration mentions are archive only |
+
+Consequence: the audit does not "Keep Extensions" as a block. The eight rows
+with plugin providers are real composable capabilities with declaration,
+gating, withdrawal and teardown evidence; the rest are explicitly labelled so
+they cannot be presented as completed migration work.
 
 ## 3. Single-authority map (current)
 

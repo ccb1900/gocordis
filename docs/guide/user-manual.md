@@ -69,11 +69,12 @@ render-plan 设计，当前没有窗口、消息循环或 Console。
 
 ### 4.1 创建与本地开发
 
-SDK 是一个很薄的 MSBuild 包，只向插件项目暴露 `Gocordis.Core` 与 `Gocordis.Plugins`
-的公开创作面（不含 Runtime、Registry、后端实现或 Store）。从空目录开始：
+SDK 是一个很薄的 MSBuild 包，向插件项目暴露 `Gocordis.Core`、`Gocordis.Plugins`
+与官方扩展能力面 `Gocordis.Extensions`（`ExtensionKeys` 与 Provider Component），
+不含 Runtime、Registry、后端实现或 Store。从空目录开始：
 
 ```bash
-# 一次性：把 SDK 与 Core/Plugins 打包到本地 NuGet feed（详细命令见
+# 一次性：把 SDK 与 Core/Plugins/Extensions 打包到本地 NuGet feed（详细命令见
 # docs/guide/plugin-developer-workflow.md）
 gocordis plugin create ./my-plugin --id demo.plugin --name Demo \
   --type demo.plugin --feed <local-feed>
@@ -152,7 +153,22 @@ effect 绑定；禁用/卸载插件时 UI 自动撤销。C# 端只贡献 API 查
 `CapabilityCatalog` 分配 Key；版本是兼容性元数据，不参与身份。当前只支持
 `endpoint` 这一种跨后端 ValueKind，其他 Kind 的 Wire 编解码尚未实现。
 
-### 4.4 声明预检（不执行插件）
+### 4.4 官方扩展能力
+
+Timer、HTTP、FS、Env、SOCKS、Diagnostics、Watch、RouteGuard 现在都是普通插件能力：
+宿主在启动时把这些 Provider Component 装载进同一个 Runtime，并从
+`ExtensionKeys` 解析服务，不再私下 `new` 一个服务实例。
+
+- 消费方：`Inject() => [ExtensionKeys.Timer]`，`ApplyAsync` 中
+  `context.Require(ExtensionKeys.Timer)`；provider 未到达时保持 `Pending`，
+  provider 卸载后撤回并回到 `Pending`。
+- 提供自定义实现：`Provide() => [ExtensionKeys.X]`，用
+  `ExtensionPublish.PublishAsync(context, key, service)` 发布，它会先撤销能力、
+  再释放服务，保证 LIFO 顺序。
+- 打包插件必须声明 `--shared-assembly Gocordis.Extensions`，否则两套 DLL 的
+  `Key<T>` 静态实例不同，门控会静默失效。Env 依赖 FS、SOCKS 依赖 HTTP。
+
+### 4.5 声明预检（不执行插件）
 
 ```bash
 gocordis plugin preflight demo-plugin.gocordis-plugin --host-version 1.0.0
@@ -206,8 +222,9 @@ CLI 不会凭空构造身份策略。
 - 第三方不可信插件安全：Managed 插件是受信任代码；Process 只提供地址空间隔离，不是
   OS 权限沙箱；当前没有远程市场、撤销列表或自动信任升级。
 - 跨平台证据：Windows 的真实 Process/WASM E2E 需要 Windows CI；本地验证以 Linux 为主。
-- `Gocordis.Extensions` 中多数能力（HMR、Timer、Scheduler、Observe、Watch、Socks 等）
-  目前只有测试消费者，属于实验性/可选原语，不在标准 SDK 中，也不算产品承诺。
+- `Gocordis.Extensions` 中只有带 `ExtensionKeys` 与 Provider Component 的官方能力
+  （Timer、HTTP、FS、Env、SOCKS、Diagnostics、Watch、RouteGuard）属于可组合产品能力；
+  Broker/registry/event/observe/scheduler/HMR/package-manager 等仍是可选库，不是产品承诺。
 
 ## 8. 可运行范例与延伸阅读
 

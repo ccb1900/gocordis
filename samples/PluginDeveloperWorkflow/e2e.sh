@@ -13,7 +13,7 @@ mkdir -p "$OUT/feed" "$OUT/work"
 SDK_VERSION="1.0.0-e2e.$(date +%s%N)"
 CLI=(dotnet run --project "$ROOT/tools/Gocordis.Cli/Gocordis.Cli.csproj" --no-build --)
 
-for project in Core Plugins Plugin.Sdk; do
+for project in Core Plugins Extensions Plugin.Sdk; do
   env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
     dotnet pack "$ROOT/src/Gocordis.$project/Gocordis.$project.csproj" \
       -c Release -o "$OUT/feed" -p:PackageVersion="$SDK_VERSION" --nologo -v:q

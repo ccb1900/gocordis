@@ -4,5 +4,6 @@
   <ItemGroup>
     <Using Include="Gocordis.Core" />
     <Using Include="Gocordis.Plugins" />
+    <Using Include="Gocordis.Extensions" />
   </ItemGroup>
 </Project>

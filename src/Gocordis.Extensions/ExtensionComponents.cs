@@ -29,9 +29,10 @@ public abstract class ExtensionProviderComponent<T> : Component where T : notnul
         ExtensionPublish.PublishAsync(context, _key, _create());
 }
 
-internal static class ExtensionPublish
+public static class ExtensionPublish
 {
-    internal static async ValueTask<Cleanup?> PublishAsync<K>(Context context, Key<K> key, K service)
+    /// <summary>Publish a disposable service with correct LIFO withdrawal order.</summary>
+    public static async ValueTask<Cleanup?> PublishAsync<K>(Context context, Key<K> key, K service)
         where K : notnull
     {
         // Installed first => undone last: withdraw before disposal.
@@ -101,9 +102,13 @@ public sealed class EnvExtensionComponent : Component
         var fs = context.Require(ExtensionKeys.FileSystem);
         var env = new EnvService();
         var mode = EnvService.ResolveMode(null);
+        // FS service is mount-based: a provider reads through its own scoped
+        // mount and removes it after the declaration set has been loaded.
+        var prefix = "/env-" + Guid.NewGuid().ToString("N");
+        using var mount = fs.MountScoped(prefix, _directory);
         foreach (var name in new[] { ".env", ".env.local", $".env.{mode}", $".env.{mode}.local" })
         {
-            var path = Path.Combine(_directory, name);
+            var path = prefix + "/" + name;
             if (await fs.ExistsAsync(path))
             {
                 env.Apply(EnvService.Parse(await fs.ReadAllTextAsync(path)));

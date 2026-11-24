@@ -568,6 +568,9 @@ public sealed class HttpService : IAsyncDisposable
         return await response.Content.ReadAsStringAsync();
     }
 
+    /// <summary>Observable lifetime for capability-withdrawal tests and diagnostics.</summary>
+    public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)

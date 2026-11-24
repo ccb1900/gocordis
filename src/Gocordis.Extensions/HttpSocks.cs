@@ -20,6 +20,14 @@ public sealed class SocksRegistry : IAsyncDisposable
     private int _disposed;
 
     /// <summary>
+    /// The HTTP service this registry was composed with. A SOCKS provider must
+    /// declare and require the HTTP capability before registering proxies.
+    /// </summary>
+    public HttpService? Http { get; }
+
+    public SocksRegistry(HttpService? http = null) => Http = http;
+
+    /// <summary>
     /// Normalizes socks/socks5/socks5h to socks5. Both socks5 and socks5h use
     /// remote-DNS CONNECT semantics: the (IDNA-encoded) target name is sent to
     /// the proxy instead of being resolved locally; there is no local-resolution

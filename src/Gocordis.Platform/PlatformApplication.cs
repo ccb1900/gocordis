@@ -90,8 +90,8 @@ public sealed record PlatformResolvedPlugin(string Id, string Version, bool Enab
 public class PlatformApplication : IAsyncDisposable
 {
     private readonly PlatformHostOptions _options;
-    private readonly DiagnosticsService _diagnostics;
-    private readonly ServerRouteGuard? _routeGuard;
+    private DiagnosticsService? _diagnostics;
+    private ServerRouteGuard? _routeGuard;
     private ApplicationManifest? _manifest;
     private readonly List<PlatformResolvedPlugin> _resolved = [];
     private bool _started;
@@ -111,12 +111,9 @@ public class PlatformApplication : IAsyncDisposable
         // One host-owned Id → Key allocator for every backend. It is assembled
         // from declarations before any fiber activates and holds no lifecycle state.
         Capabilities = new CapabilityCatalog();
-        _diagnostics = new DiagnosticsService(options.HostVersion);
-        if (options.AllowedHosts is { Count: > 0 } allowedHosts)
-        {
-            _routeGuard = new ServerRouteGuard();
-            _routeGuard.Add(HostAcl.Policy(allowedHosts, []));
-        }
+        // Diagnostics and route guard are NOT constructed here. They are
+        // published by official extension components loaded into the one
+        // Runtime in StartAsync, then resolved through capability keys.
 
         // Read-only query: it observes declarations and never touches a fiber.
         Console.Api.RegisterQuery("devtools/diagnostics", Diagnostics,
@@ -164,6 +161,35 @@ public class PlatformApplication : IAsyncDisposable
             Registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
             Registry.ExternalCapabilities.Add(ApiGateway.Key);
             await Runtime.LoadAsync(new ConsoleCapabilitiesComponent(Console));
+
+            // Official extensions are ordinary provider fibers in the same
+            // Runtime, not private host objects. Dependency order is expressed
+            // by Inject(): Env waits for FS and SOCKS waits for HTTP.
+            foreach (var key in new ICapabilityKey[]
+            {
+                ExtensionKeys.Timer, ExtensionKeys.Http, ExtensionKeys.FileSystem,
+                ExtensionKeys.Env, ExtensionKeys.Socks, ExtensionKeys.Diagnostics,
+                ExtensionKeys.Watch, ExtensionKeys.RouteGuard,
+            })
+            {
+                Registry.ExternalCapabilities.Add(key);
+            }
+
+            await Runtime.LoadAsync(new FileSystemExtensionComponent());
+            await Runtime.LoadAsync(new HttpExtensionComponent());
+            await Runtime.LoadAsync(new TimerExtensionComponent());
+            await Runtime.LoadAsync(new WatchExtensionComponent());
+            await Runtime.LoadAsync(new EnvExtensionComponent());
+            await Runtime.LoadAsync(new SocksExtensionComponent());
+            await Runtime.LoadAsync(new DiagnosticsExtensionComponent(_options.HostVersion));
+            await Runtime.LoadAsync(new RouteGuardExtensionComponent());
+
+            _diagnostics = Runtime.RequireCapability(ExtensionKeys.Diagnostics);
+            _routeGuard = Runtime.RequireCapability(ExtensionKeys.RouteGuard);
+            if (_options.AllowedHosts is { Count: > 0 } allowedHosts)
+            {
+                _routeGuard.Add(HostAcl.Policy(allowedHosts, []));
+            }
 
             // Backend selection belongs to the composition root. The control
             // plane receives the same factory and registers it for every declared
@@ -548,7 +574,7 @@ public class PlatformApplication : IAsyncDisposable
         }
 
         var findings = new JsonArray();
-        foreach (var finding in _diagnostics.Diagnose(modules, plugins))
+        foreach (var finding in _diagnostics!.Diagnose(modules, plugins))
         {
             findings.Add(new JsonObject
             {

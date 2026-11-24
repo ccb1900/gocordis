@@ -248,6 +248,31 @@ public sealed class PlatformApplicationTests
     }
 
     [Fact]
+    public async Task RuntimeSnapshotQueryExposesInspectorFields()
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, temp.Path("store"), HostVersion: "1.5.0"));
+        await app.StartAsync();
+
+        var snapshot = app.Console.Api.Query("runtime/snapshot")!;
+        Assert.NotNull(snapshot["sequence"]);
+        Assert.Equal("runtime:1", snapshot["runtimeID"]?.GetValue<string>());
+
+        var fiber = snapshot["fibers"]!.AsArray()[0]!;
+        Assert.False(string.IsNullOrWhiteSpace(fiber["component"]?.GetValue<string>()));
+        Assert.False(string.IsNullOrWhiteSpace(fiber["intent"]?.GetValue<string>()));
+        Assert.Equal(fiber["generation"]!.GetValue<int>(), fiber["activationID"]!.GetValue<int>());
+        Assert.NotNull(fiber["parentFiberIDs"]);
+        Assert.NotNull(fiber["childFiberIDs"]);
+        Assert.NotEmpty(snapshot["providers"]!.AsArray());
+        Assert.NotEmpty(snapshot["dependencies"]!.AsArray());
+        Assert.NotNull(snapshot["scopes"]);
+        Assert.NotNull(snapshot["effects"]);
+    }
+
+    [Fact]
     public async Task ValidateOnlyStartsTheRealAssemblyButOpensNoTransport()
     {
         using var temp = new TempDir();

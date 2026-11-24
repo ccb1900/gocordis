@@ -564,19 +564,76 @@ public sealed class ConsoleHost
 
     public JsonObject RuntimeSnapshot()
     {
-        var fibers = new JsonArray();
         var snapshot = Runtime.Snapshot();
+        var fibers = new JsonArray();
+        var providers = new JsonArray();
+        var dependencies = new JsonArray();
+        var providerKeys = new HashSet<string>(StringComparer.Ordinal);
+
         foreach (var fiber in snapshot.Fibers)
         {
+            var children = snapshot.Fibers
+                .Where(candidate => candidate.ParentId == fiber.Id)
+                .Select(candidate => (JsonNode?)JsonValue.Create(candidate.Id.ToString()))
+                .ToArray();
+            JsonNode[] parents = fiber.ParentId is { } parent
+                ? [JsonValue.Create(parent.ToString())]
+                : [];
+
             fibers.Add(new JsonObject
             {
                 ["id"] = fiber.Id.ToString(),
                 ["name"] = fiber.Name,
+                ["component"] = fiber.Name,
                 ["state"] = fiber.State.ToString(),
+                // Intent/scope are not distinct FiberSnapshot fields; state-based
+                // values keep the inspector honest instead of showing dashes.
+                ["intent"] = fiber.State switch
+                {
+                    FiberState.Active => "Mounted",
+                    FiberState.Pending => "Awaiting",
+                    FiberState.Failed => "Failed",
+                    _ => fiber.State.ToString(),
+                },
+                ["err"] = fiber.Failure,
+                ["activationID"] = fiber.Generation,
+                ["scopeID"] = 0,
+                ["parentFiberIDs"] = new JsonArray(parents),
+                ["childFiberIDs"] = new JsonArray(children),
                 ["generation"] = fiber.Generation,
                 ["requires"] = new JsonArray(fiber.Requires.Select(name => (JsonNode?)JsonValue.Create(name)).ToArray()),
                 ["provides"] = new JsonArray(fiber.Provides.Select(name => (JsonNode?)JsonValue.Create(name)).ToArray()),
             });
+
+            foreach (var key in fiber.Provides)
+            {
+                providerKeys.Add(key);
+                providers.Add(new JsonObject
+                {
+                    ["key"] = key,
+                    ["state"] = fiber.State.ToString(),
+                    ["ownerFiberID"] = fiber.Id.ToString(),
+                    ["ownerActivationID"] = fiber.Generation,
+                    ["scopeID"] = 0,
+                });
+            }
+
+            var bindings = fiber.BoundProviders
+                .Select(binding => binding.Split("->", 2))
+                .Where(parts => parts.Length == 2)
+                .ToDictionary(parts => parts[0], parts => parts[1], StringComparer.Ordinal);
+            foreach (var requirement in fiber.Requires)
+            {
+                bindings.TryGetValue(requirement, out var providerFiber);
+                dependencies.Add(new JsonObject
+                {
+                    ["key"] = requirement,
+                    ["consumerFiberID"] = fiber.Id.ToString(),
+                    ["consumerActivationID"] = fiber.Generation,
+                    ["providerFiberID"] = providerFiber,
+                    ["status"] = providerFiber is null ? "Pending" : "Bound",
+                });
+            }
         }
 
         var effectFailures = new JsonArray();
@@ -594,6 +651,31 @@ public sealed class ConsoleHost
             });
         }
 
-        return new JsonObject { ["fibers"] = fibers, ["effectFailures"] = effectFailures };
+        // No scope/effect-stack read model exists in Core yet: emit the one
+        // default scope and empty effects rather than fabricating rows.
+        var scopes = new JsonArray
+        {
+            new JsonObject
+            {
+                ["id"] = 0,
+                ["providerKeys"] = new JsonArray(providerKeys
+                    .Select(key => (JsonNode?)JsonValue.Create(key)).ToArray()),
+                ["fiberIDs"] = new JsonArray(snapshot.Fibers
+                    .Select(fiber => (JsonNode?)JsonValue.Create(fiber.Id.ToString())).ToArray()),
+            },
+        };
+
+        return new JsonObject
+        {
+            ["sequence"] = Runtime.Events.Snapshot().Sequence,
+            ["runtimeID"] = "runtime:1",
+            ["state"] = "Running",
+            ["fibers"] = fibers,
+            ["scopes"] = scopes,
+            ["providers"] = providers,
+            ["dependencies"] = dependencies,
+            ["effects"] = new JsonArray(),
+            ["effectFailures"] = effectFailures,
+        };
     }
 }

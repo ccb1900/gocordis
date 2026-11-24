@@ -94,6 +94,41 @@ describe("DTO → table rows", () => {
   });
 });
 
+describe("backend ↔ frontend contract", () => {
+  it("parses the canonical runtime/snapshot payload from the C# query", () => {
+    // Shape matches ContributionApi.RuntimeSnapshot(): camelCase fields and
+    // only the projections the kernel actually exposes.
+    const canonical = {
+      data: {
+        sequence: 12,
+        runtimeID: "runtime:1",
+        state: "Running",
+        fibers: [{
+          id: "f1", name: "extension.timer", component: "extension.timer",
+          state: "Active", intent: "Mounted", err: null,
+          activationID: 4, scopeID: 0, parentFiberIDs: [], childFiberIDs: [],
+          generation: 4, requires: [], provides: ["gocordis.extension.timer"],
+        }],
+        scopes: [{ id: 0, providerKeys: ["gocordis.extension.timer"], fiberIDs: ["f1"] }],
+        providers: [{
+          key: "gocordis.extension.timer", state: "Active", ownerFiberID: "f1",
+          ownerActivationID: 4, scopeID: 0,
+        }],
+        dependencies: [], effects: [], effectFailures: [],
+      },
+    };
+
+    const p = parseSnapshot(canonical);
+    expect(p.sequence).toBe(12);
+    expect(p.fibers[0]).toMatchObject({
+      id: "f1", component: "extension.timer", intent: "Mounted",
+      activationID: "4", state: "Active",
+    });
+    expect(p.scopes[0].providerKeys).toBe("gocordis.extension.timer");
+    expect(p.providers[0].capabilityKey).toBe("gocordis.extension.timer");
+  });
+});
+
 describe("missing-data handling", () => {
   it("never throws on absent, null, primitive or wrapped payloads", () => {
     const empty = { sequence: 0, runtimeID: "—", state: "—", fibers: [], scopes: [], providers: [], dependencies: [], effects: [], effectFailures: [] };

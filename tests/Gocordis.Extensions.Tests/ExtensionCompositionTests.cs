@@ -30,9 +30,11 @@ public sealed class ExtensionCompositionTests
         Assert.Null(consumerFiber.Failure);
         Assert.Throws<DependencyMissingException>(() => runtime.RequireCapability(ExtensionKeys.Timer));
 
+        consumer.Reset();
         var replacement = await runtime.LoadAsync(new TimerExtensionComponent());
         Assert.Equal(FiberState.Active, replacement.State);
         await WaitForStateAsync(runtime, consumerFiber.Id, FiberState.Active);
+        Assert.True(consumer.Applied, "reactivation must run ApplyAsync again");
         Assert.Null(consumerFiber.Failure);
     }
 
@@ -41,6 +43,9 @@ public sealed class ExtensionCompositionTests
     {
         await using var runtime = new Runtime();
         using var temp = new TempDir();
+        var variable = "GOCORDIS_EXT_" + Guid.NewGuid().ToString("N").ToUpperInvariant();
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, ".env"), $"{variable}=applied\n");
+        Assert.Null(Environment.GetEnvironmentVariable(variable));
 
         // Consumers and intermediate providers are declared BEFORE their
         // upstream providers: every one of them must wait as Pending.
@@ -61,6 +66,7 @@ public sealed class ExtensionCompositionTests
         await WaitForStateAsync(runtime, socksFiber.Id, FiberState.Active);
         await WaitForStateAsync(runtime, envConsumer.Id, FiberState.Active);
         await WaitForStateAsync(runtime, socksConsumer.Id, FiberState.Active);
+        Assert.Equal("applied", Environment.GetEnvironmentVariable(variable));
 
         var http = runtime.RequireCapability(ExtensionKeys.Http);
         Assert.Same(http, runtime.RequireCapability(ExtensionKeys.Socks).Http);
@@ -73,6 +79,8 @@ public sealed class ExtensionCompositionTests
         await WaitForStateAsync(runtime, envFiber.Id, FiberState.Pending);
         await WaitForStateAsync(runtime, envConsumer.Id, FiberState.Pending);
         Assert.Null(envConsumer.Failure);
+        Assert.True(Environment.GetEnvironmentVariable(variable) is null,
+            "withdrawn env layer must be unwound");
     }
 
     [Fact]
@@ -81,8 +89,9 @@ public sealed class ExtensionCompositionTests
         await using var runtime = new Runtime();
         var key = new Key<Probe>("ext-probe-order");
         bool capabilityGoneAtDispose = false;
-        var service = new Probe(() =>
-            capabilityGoneAtDispose = ThrowsDependencyMissing(() => runtime.RequireCapability(key)));
+        // HasProvided inspects the binding table without looking at fiber state,
+        // so this fails if disposal is installed/undone before withdrawal.
+        var service = new Probe(() => capabilityGoneAtDispose = !runtime.HasProvided(key));
         var provider = new ProbeProvider(key, service);
 
         var fiber = await runtime.LoadAsync(provider);
@@ -104,19 +113,6 @@ public sealed class ExtensionCompositionTests
         await runtime.DisposeAsync(provider);
         Assert.True(service.IsDisposed);
         Assert.Throws<DependencyMissingException>(() => runtime.RequireCapability(ExtensionKeys.Http));
-    }
-
-    private static bool ThrowsDependencyMissing(Action action)
-    {
-        try
-        {
-            action();
-            return false;
-        }
-        catch (DependencyMissingException)
-        {
-            return true;
-        }
     }
 
     private static async Task WaitForStateAsync(Runtime runtime, Guid fiberId, FiberState expected)
@@ -143,6 +139,8 @@ public sealed class ExtensionCompositionTests
         public ProbeConsumer(Key<T> key) => _key = key;
 
         public bool Applied { get; private set; }
+
+        public void Reset() => Applied = false;
 
         public override string Name => "probe-timer-consumer";
 
@@ -190,7 +188,11 @@ public sealed class ExtensionCompositionTests
 
     private sealed class TempDir : IDisposable
     {
-        public TempDir() => Root = Path.Combine(Path.GetTempPath(), "gocordis-ext-composition-" + Guid.NewGuid().ToString("N"));
+        public TempDir()
+        {
+            Root = Path.Combine(Path.GetTempPath(), "gocordis-ext-composition-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Root);
+        }
 
         public string Root { get; }
 

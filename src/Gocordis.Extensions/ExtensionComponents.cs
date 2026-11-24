@@ -26,27 +26,47 @@ public abstract class ExtensionProviderComponent<T> : Component where T : notnul
     public override IReadOnlyList<ICapabilityKey> Provide() => [_key];
 
     public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
-        ExtensionPublish.PublishAsync(context, _key, _create());
+        ExtensionPublish.PublishAsync(context, _key, _create);
 }
 
 public static class ExtensionPublish
 {
-    /// <summary>Publish a disposable service with correct LIFO withdrawal order.</summary>
-    public static async ValueTask<Cleanup?> PublishAsync<K>(Context context, Key<K> key, K service)
+    /// <summary>Publish an already-created service with correct LIFO order.</summary>
+    public static ValueTask<Cleanup?> PublishAsync<K>(Context context, Key<K> key, K service)
+        where K : notnull => PublishAsync(context, key, () => service);
+
+    /// <summary>
+    /// Create and publish a service. If effect installation or binding fails,
+    /// the freshly created service is disposed before the failure propagates.
+    /// </summary>
+    public static async ValueTask<Cleanup?> PublishAsync<K>(Context context, Key<K> key, Func<K> create)
         where K : notnull
     {
-        // Installed first => undone last: withdraw before disposal.
-        await context.EffectAsync(
-            static () => ValueTask.CompletedTask,
-            async () =>
-            {
-                if (service is IAsyncDisposable disposable)
+        var service = create();
+        try
+        {
+            // Installed first => undone last: withdraw before disposal.
+            await context.EffectAsync(
+                static () => ValueTask.CompletedTask,
+                async () =>
                 {
-                    await disposable.DisposeAsync();
-                }
-            });
-        context.Provide(key, service);
-        return null;
+                    if (service is IAsyncDisposable disposable)
+                    {
+                        await disposable.DisposeAsync();
+                    }
+                });
+            context.Provide(key, service);
+            return null;
+        }
+        catch
+        {
+            if (service is IAsyncDisposable disposable)
+            {
+                await disposable.DisposeAsync();
+            }
+
+            throw;
+        }
     }
 }
 
@@ -70,9 +90,32 @@ public sealed class WatchExtensionComponent : ExtensionProviderComponent<Reversi
     public WatchExtensionComponent() : base(ExtensionKeys.Watch, "extension.watch", static () => new ReversibleWatchService()) { }
 }
 
-public sealed class RouteGuardExtensionComponent : ExtensionProviderComponent<ServerRouteGuard>
+/// <summary>
+/// Route guard provider. Host ACL policies are installed inside the provider
+/// fiber (as part of the capability publication), so a withdrawn/reactivated
+/// provider always carries the current policy instead of a stale host copy.
+/// </summary>
+public sealed class RouteGuardExtensionComponent : Component
 {
-    public RouteGuardExtensionComponent() : base(ExtensionKeys.RouteGuard, "extension.route-guard", static () => new ServerRouteGuard()) { }
+    private readonly IReadOnlyList<string>? _allowedHosts;
+
+    public RouteGuardExtensionComponent(IReadOnlyList<string>? allowedHosts = null) =>
+        _allowedHosts = allowedHosts;
+
+    public override string Name => "extension.route-guard";
+
+    public override IReadOnlyList<ICapabilityKey> Provide() => [ExtensionKeys.RouteGuard];
+
+    public override ValueTask<Cleanup?> ApplyAsync(Context context)
+    {
+        var guard = new ServerRouteGuard();
+        if (_allowedHosts is { Count: > 0 })
+        {
+            guard.Add(HostAcl.Policy(_allowedHosts, []));
+        }
+
+        return ExtensionPublish.PublishAsync(context, ExtensionKeys.RouteGuard, guard);
+    }
 }
 
 public sealed class DiagnosticsExtensionComponent : ExtensionProviderComponent<DiagnosticsService>
@@ -101,21 +144,31 @@ public sealed class EnvExtensionComponent : Component
     {
         var fs = context.Require(ExtensionKeys.FileSystem);
         var env = new EnvService();
-        var mode = EnvService.ResolveMode(null);
-        // FS service is mount-based: a provider reads through its own scoped
-        // mount and removes it after the declaration set has been loaded.
-        var prefix = "/env-" + Guid.NewGuid().ToString("N");
-        using var mount = fs.MountScoped(prefix, _directory);
-        foreach (var name in new[] { ".env", ".env.local", $".env.{mode}", $".env.{mode}.local" })
+        try
         {
-            var path = prefix + "/" + name;
-            if (await fs.ExistsAsync(path))
+            var mode = EnvService.ResolveMode(null);
+            // FS service is mount-based: a provider reads through its own scoped
+            // mount and removes it after the declaration set has been loaded.
+            var prefix = "/env-" + Guid.NewGuid().ToString("N");
+            using var mount = fs.MountScoped(prefix, _directory);
+            foreach (var name in new[] { ".env", ".env.local", $".env.{mode}", $".env.{mode}.local" })
             {
-                env.Apply(EnvService.Parse(await fs.ReadAllTextAsync(path)));
+                var path = prefix + "/" + name;
+                if (await fs.ExistsAsync(path))
+                {
+                    env.Apply(EnvService.Parse(await fs.ReadAllTextAsync(path)));
+                }
             }
-        }
 
-        return await ExtensionPublish.PublishAsync(context, ExtensionKeys.Env, env);
+            return await ExtensionPublish.PublishAsync(context, ExtensionKeys.Env, env);
+        }
+        catch
+        {
+            // EnvService mutates process state via ApplyLayer; a failed load or
+            // a diverted publish must never leave those variables behind.
+            await env.DisposeAsync();
+            throw;
+        }
     }
 }
 

@@ -359,6 +359,22 @@ public sealed class Runtime : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Read-only binding probe for unwind-order tests and diagnostics. Unlike
+    /// <see cref="RequireCapability{T}"/> it ignores fiber state, so a caller
+    /// can tell whether the capability was actually withdrawn during unwind.
+    /// It records no binding and changes no lifecycle state.
+    /// </summary>
+    public bool HasProvided<T>(Key<T> key) where T : notnull
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        lock (_stateLock)
+        {
+            var provider = FindProvider(Realm.Default, key);
+            return provider is not null && provider.Provided.ContainsKey(key);
+        }
+    }
+
     // ---- decision loop ------------------------------------------------------
 
     private async Task RunAsync()

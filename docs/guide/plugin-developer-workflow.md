@@ -10,10 +10,14 @@ package, the CLI and a product application manifest — not runtime internals.
 # NuGet caches by version: reusing 1.0.0 can compile the plugin against an older
 # Core and fail at activation with MissingMethodException.
 SDK_VERSION=1.0.0-local.$(date +%s%N)
-dotnet pack src/Gocordis.Core/Gocordis.Core.csproj -c Release -o <feed> -p:PackageVersion=$SDK_VERSION
-dotnet pack src/Gocordis.Plugins/Gocordis.Plugins.csproj -c Release -o <feed> -p:PackageVersion=$SDK_VERSION
-dotnet pack src/Gocordis.Extensions/Gocordis.Extensions.csproj -c Release -o <feed> -p:PackageVersion=$SDK_VERSION
-dotnet pack src/Gocordis.Plugin.Sdk/Gocordis.Plugin.Sdk.csproj -c Release -o <feed> -p:PackageVersion=$SDK_VERSION
+# Use the SAME configuration as the host binary (Debug for `dotnet run --no-build`,
+# Release for a published host). The host seals shared assemblies by full DLL
+# identity; a Release Gocordis.Extensions.dll conflicts with a Debug host copy.
+CONFIG=Debug
+dotnet pack src/Gocordis.Core/Gocordis.Core.csproj -c $CONFIG -o <feed> -p:PackageVersion=$SDK_VERSION
+dotnet pack src/Gocordis.Plugins/Gocordis.Plugins.csproj -c $CONFIG -o <feed> -p:PackageVersion=$SDK_VERSION
+dotnet pack src/Gocordis.Extensions/Gocordis.Extensions.csproj -c $CONFIG -o <feed> -p:PackageVersion=$SDK_VERSION
+dotnet pack src/Gocordis.Plugin.Sdk/Gocordis.Plugin.Sdk.csproj -c $CONFIG -o <feed> -p:PackageVersion=$SDK_VERSION
 
 # 1) create / develop / build
 gocordis plugin create <dir> --id demo.plugin --name "Demo" --type demo.plugin \

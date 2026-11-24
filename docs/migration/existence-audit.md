@@ -25,7 +25,7 @@ translation of every Go extension.
 | `Gocordis.Console.WebUi` | Only real UI host + control API | `PlatformApplication` Web branch | No management UI, no install UI | Keep |
 | `Gocordis.UI.Hosts` | Render-plan profiles | `PlatformApplication.RenderPlan()` only; CLI no longer exposes them as hosts | Render-plan design is lost, no product path breaks | **Keep as profiles only**; native hosts not delivered |
 | `Gocordis.Client` | Typed console HTTP client | No in-repo product consumer | Nothing in the current product breaks | **Candidate external SDK**, not core-required; keep but do not count as product capability |
-| `Gocordis.Plugin.Sdk` | Thin re-export of public authoring surface | Generated plugin projects (`plugin create`, local feed) | Third-party authors must reference runtime sources again | Keep; deliberately does not re-export Extensions or Runtime |
+| `Gocordis.Plugin.Sdk` | Thin re-export of public authoring surface | Generated plugin projects (`plugin create`, local feed) | Third-party authors must reference runtime sources again | Keep; re-exports Core, Plugins and official `ExtensionKeys`/providers; never Runtime |
 | `Gocordis.Platform` | Single composition root | Product executable, `app run`, generated app template | No product host | Keep |
 | `tools/Gocordis.Cli` | App/plugin author workflow + preflight | Developer workflow, empty-directory E2E | No offline authoring | Keep |
 | `tests/*`, `tests/fixtures/*`, `tests/Gocordis.Benchmarks` | Conformance, E2E, deterministic measurement | CI/local gates | Evidence disappears; product binaries still run | Keep |
@@ -39,12 +39,21 @@ the conflation the platform boundaries forbid.
 
 ## 2. Extensions capability-by-capability classification
 
-Go baseline arbitration: an extension becomes a runtime capability only when
-Go declares a `ServiceKey` + Provider `Component` (`timer`, `http`, `fs`, `env`,
-`server`, `devtools`, `cli`, `market`, `package-manager`). Libraries without a
-Go ServiceKey (`broker`, `registry`, `event`, `observe`, `watch`, `scheduler`,
-`hmr`, `config`, `pluginmeta`, `patch`, `bundle`) stay libraries — turning them
-into plugins would invent semantics the reference does not have.
+Go baseline arbitration: an extension becomes a runtime capability when Go
+declares a `ServiceKey` + Provider `Component` (`timer`, `http`, `fs`, `env`,
+`server`, `devtools`, `cli`, `market`, `package-manager`), or when a C# wrapper
+is explicitly marked below as a capability over a Go contribution/library
+(SOCKS, Watch, RouteGuard). Libraries with no Go ServiceKey and no wrapper
+(`broker`, `registry`, `event`, `observe`, `scheduler`, `hmr`, `config`,
+`pluginmeta`, `patch`, `bundle`) stay libraries — turning them into plugins
+would invent semantics the reference does not have.
+
+Go's `server.ServiceKey` was a full route/middleware/WS registration service
+consumed by `server/{acl,echo,static,proxy}`. C# has no Server Key: `WebUiServer`
+is a directly constructed transport and console query/UI contributions are the
+declaration-led replacement for raw plugin routes. Only the ACL contribution is
+migrated (`RouteGuardExtensionComponent`); echo/static/proxy/WS route consumers
+are intentionally NOT ported.
 
 The C# product now exports `ExtensionKeys` and Provider Components from
 `Gocordis.Extensions` through the SDK. `PlatformApplication` loads them as

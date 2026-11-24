@@ -179,17 +179,14 @@ public class PlatformApplication : IAsyncDisposable
             await Runtime.LoadAsync(new HttpExtensionComponent());
             await Runtime.LoadAsync(new TimerExtensionComponent());
             await Runtime.LoadAsync(new WatchExtensionComponent());
-            await Runtime.LoadAsync(new EnvExtensionComponent());
             await Runtime.LoadAsync(new SocksExtensionComponent());
             await Runtime.LoadAsync(new DiagnosticsExtensionComponent(_options.HostVersion));
-            await Runtime.LoadAsync(new RouteGuardExtensionComponent());
+            await Runtime.LoadAsync(new RouteGuardExtensionComponent(_options.AllowedHosts));
+            // Env is opt-in: loading it by default would mutate the process
+            // environment from an undeclared .env in the current directory.
 
             _diagnostics = Runtime.RequireCapability(ExtensionKeys.Diagnostics);
             _routeGuard = Runtime.RequireCapability(ExtensionKeys.RouteGuard);
-            if (_options.AllowedHosts is { Count: > 0 } allowedHosts)
-            {
-                _routeGuard.Add(HostAcl.Policy(allowedHosts, []));
-            }
 
             // Backend selection belongs to the composition root. The control
             // plane receives the same factory and registers it for every declared
@@ -574,14 +571,19 @@ public class PlatformApplication : IAsyncDisposable
         }
 
         var findings = new JsonArray();
-        foreach (var finding in _diagnostics!.Diagnose(modules, plugins))
+        // The query is registered in the constructor; before StartAsync the
+        // runtime-owned diagnostics provider has not published its capability.
+        if (_diagnostics is not null)
         {
-            findings.Add(new JsonObject
+            foreach (var finding in _diagnostics.Diagnose(modules, plugins))
             {
-                ["severity"] = finding.Severity.ToString().ToLowerInvariant(),
-                ["code"] = finding.Code,
-                ["message"] = finding.Message,
-            });
+                findings.Add(new JsonObject
+                {
+                    ["severity"] = finding.Severity.ToString().ToLowerInvariant(),
+                    ["code"] = finding.Code,
+                    ["message"] = finding.Message,
+                });
+            }
         }
 
         // Package dependency vs application assembly: the store checks that a

@@ -6,9 +6,10 @@ below are PDF page numbers from the outline. C# repo: `dotnet` branch. This is a
 exercises the consumer-visible behavior. Kernel primitives, product wiring and
 paper behavior are tracked separately.
 
-The authoritative four-dimension matrix is `docs/paper/chapter-coverage-matrix.md`;
-§5.2.2 is explicitly **partial** there: `HmrEngine` is a tested library with no
-production CLI/API caller, and package upgrade must not be reported as paper HMR.
+The authoritative four-dimension matrix is `docs/paper/chapter-coverage-matrix.md`.
+§5.2.2 now has a real product call chain: `POST /api/hmr` →
+`PlatformApplication.HmrAsync` → `HmrEngine`; package upgrade remains a separate
+operation and must not be reported as paper HMR.
 
 ## §5.1 Core Library (p.57–64)
 
@@ -25,9 +26,9 @@ production CLI/API caller, and package upgrade must not be reported as paper HMR
 | --- | --- | --- | --- | --- | --- |
 | §5.2.1 p.65 | Entry fields `id/url/isolate/intercept/config/disabled`; configuration tree; keyed diff; field-level least-disturbance dispatch | `PluginManifest` entry fields, `EntryNode`, `ApplicationManifest.Entries`, `ApplicationLoader.EffectivePluginsAsync`, `EntryDiff`, `IConfigurableComponent`, `PluginRegistry.ApplyInPlaceAsync` | `EntryReconciliationTests` (intercept in-place, rehome, config opt-in, endpoint equivalence), `ConfigurationTreeTests` (Group keyed diff, Include graft, disable→fresh fiber) | done | `url` maps to package id@range plus `Source` payload path; `isolate` maps to host-owned `Realm` identities via `RehomeAsync`; `intercept` maps to a `MetaKey<string,string>` updated in place. Group/Include are loader-level configuration nodes, not a second Runtime or dependency container. |
 | §5.2.1 p.66–67 | Managed realms: local vs shared realm, reassignment with delimiters, dependents that stay bound | `Runtime.RehomeAsync`, `HandleRehome`, `CompleteRehome`, `PluginRegistry.RealmFor` resolver in `PlatformApplication` | `EntryReconciliationTests.IsolateOnlyChangeRehomesProviderAndKeepsConsumerBound`, `RevisionSemanticsTests.*`, `PaperGapClosureTests.C34_RealmReassignmentIsARetireReinsertComposite` | done | CLR-side uses Realm reference identity and Core retire/reinsert; it does not reproduce the paper's delimiter tags literally but preserves the observable rule: dependents sharing the moved isolate stay bound, others recompute. |
-| §5.2.2 p.67–68 | Phase 1 classification: stashed/externals, accepted/declined fixed point, cycles decline | `HmrEngine.Plan` | `HmrEngineTests.ClassificationAcceptsChangedModuleAndItsImporters`, `ImportCycleWithoutAnAcceptedModuleDefaultsToDeclined`, `ExternalAssemblyChangeRequiresRestartInsteadOfHotReload` | partial (library-level; no product caller) | CLR module URLs are assembly identity/payload paths; imports are read in both directions because a changed assembly affects both its dependencies and its importers. Externals (Core, contracts) are restart boundaries. |
-| §5.2.2 p.68 | Phase 2 stale-entry detection: transitive imports respecting declined boundary | `HmrEngine.Plan` dependency traversal | `HmrEngineTests.StaleDetectionRespectsDeclinedBoundary`, `SharedPrivateDependencyChangeInvalidatesAllConsumers` | partial (library-level; no product caller) | No JS module cache walk; the host supplies the assembly graph. The semantic result — which entries are stale — is unchanged. |
-| §5.2.2 p.69 | Phase 3 transactional reload: backup, invalidate, swap fibers, restore on any failure | `HmrEngine.ReloadAsync` submits ONE `PluginRegistry.ApplyAsync` batch; Core retire/reinsert and registry rollback are the only recovery authority | `HmrEngineTests.FailedSecondReloadRollsBackEveryStaleEntryToAConsistentState`, `ConcurrentHmrAndDeclarationChangeSerializeThroughTheRegistry`, `HmrManagedTests.HmrReloadReclaimsTheOldAssemblyLoadContext` | partial (library-level; no product caller) | CLR "module cache backup" is the previous collectible ALC/payload retained by the old fiber until replacement commits. No GenericHmr state machine is used; ALC release is generation-fenced by `GenerationTracker`. |
+| §5.2.2 p.67–68 | Phase 1 classification: stashed/externals, accepted/declined fixed point, cycles decline | `HmrEngine.Plan` | `HmrEngineTests.ClassificationAcceptsChangedModuleAndItsImporters`, `ImportCycleWithoutAnAcceptedModuleDefaultsToDeclined`, `ExternalAssemblyChangeRequiresRestartInsteadOfHotReload` | done | CLR module URLs are assembly identity/payload paths; imports are read in both directions because a changed assembly affects both its dependencies and its importers. Externals (Core, contracts) are restart boundaries. |
+| §5.2.2 p.68 | Phase 2 stale-entry detection: transitive imports respecting declined boundary | `HmrEngine.Plan` dependency traversal | `HmrEngineTests.StaleDetectionRespectsDeclinedBoundary`, `SharedPrivateDependencyChangeInvalidatesAllConsumers` | done | No JS module cache walk; the host supplies the assembly graph. The semantic result — which entries are stale — is unchanged. |
+| §5.2.2 p.69 | Phase 3 transactional reload: backup, invalidate, swap fibers, restore on any failure | `HmrEngine.ReloadAsync` submits ONE `PluginRegistry.ApplyAsync` batch; Core retire/reinsert and registry rollback are the only recovery authority | `HmrEngineTests.FailedSecondReloadRollsBackEveryStaleEntryToAConsistentState`, `ConcurrentHmrAndDeclarationChangeSerializeThroughTheRegistry`, `HmrManagedTests.HmrReloadReclaimsTheOldAssemblyLoadContext` | done | CLR "module cache backup" is the previous collectible ALC/payload retained by the old fiber until replacement commits. No GenericHmr state machine is used; ALC release is generation-fenced by `GenerationTracker`. |
 
 **Non-hot-swappable boundaries (explicit).** A changed shared contract assembly
 (`--shared-assembly`), `Gocordis.Core`, `Gocordis.Plugins` or the host itself is
@@ -69,7 +70,7 @@ a new fiber identity is then inherent to the frozen retire→reinsert semantics
 - **Theorem 80 endpoint**: incremental reconciliation quiesces at the fresh-load endpoint; `EntryReconciliationTests.IncrementalReconciliationReachesTheSameEndpointAsAFreshLoad`.
 - **Group keyed diff**: stable Entry ids, not array positions; `ConfigurationTreeTests.GroupChildrenUseKeyedDiffAndChangingOneEntryLeavesOthersAlone`.
 - **Managed realms**: isolate moves through Core Rehome; `IsolateOnlyChangeRehomesProviderAndKeepsConsumerBound`.
-- **HMR rollback (library-level)**: failures restore declarations/fibers/ALC generations; no product call chain yet; `FailedSecondReloadRollsBackEveryStaleEntryToAConsistentState`, `HmrReloadReclaimsTheOldAssemblyLoadContext`.
+- **HMR rollback**: failures restore declarations/fibers/ALC generations; product entry is `/api/hmr`; `FailedSecondReloadRollsBackEveryStaleEntryToAConsistentState`, `HmrReloadReclaimsTheOldAssemblyLoadContext`.
 - **Koishi web console**: independent application, not a server UI shell; `KoishiPackagedProductTests`.
 
 ## Verification commands

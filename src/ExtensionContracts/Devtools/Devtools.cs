@@ -22,6 +22,11 @@ public static class DiagnosticCode
     public const string UnknownDependency = "UNKNOWN_DEPENDENCY";
     public const string UnknownProvider = "UNKNOWN_PROVIDER";
     public const string DuplicateProvider = "DUPLICATE_PROVIDER";
+    /// <summary>Paper §6.5: two plugins declare each other's capabilities as
+    /// requirements. The runtime rejects the cycle at mount; diagnostics advise
+    /// extracting an integration component instead.</summary>
+    public const string MutualCapabilityDependency = "MUTUAL_CAPABILITY_DEPENDENCY";
+    public const string DuplicatePluginId = "DUPLICATE_PLUGIN_ID";
 }
 
 public sealed record ModuleDeclaration(

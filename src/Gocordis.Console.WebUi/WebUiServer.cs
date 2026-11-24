@@ -54,6 +54,7 @@ public sealed class WebUiServer : IAsyncDisposable
     private readonly ConsoleHost _host;
     private readonly bool _allowRemote;
     private readonly IPluginControlPlane? _control;
+    private readonly Func<HmrRequest, JsonObject?, CancellationToken, Task<HmrPlan>>? _hmr;
     private readonly ConsoleAccessPolicy? _accessPolicy;
     private readonly Func<string, string?> _clientModuleRoot;
     private readonly string? _reactDist;
@@ -67,11 +68,13 @@ public sealed class WebUiServer : IAsyncDisposable
         string? webDistPath = null,
         IPluginControlPlane? control = null,
         ConsoleAccessPolicy? accessPolicy = null,
-        ServerRouteGuard? routeGuard = null)
+        ServerRouteGuard? routeGuard = null,
+        Func<HmrRequest, JsonObject?, CancellationToken, Task<HmrPlan>>? hmr = null)
     {
         _host = host;
         _allowRemote = allowRemote;
         _control = control;
+        _hmr = hmr;
         _accessPolicy = accessPolicy;
         _clientModuleRoot = clientModuleRootResolver ?? DefaultClientModuleRoot;
         _reactDist = FindReactDist(webDistPath);
@@ -425,6 +428,86 @@ public sealed class WebUiServer : IAsyncDisposable
             }
 
             return MutationResult(await _control.SetEnabledAsync(pluginId, enabled, context.RequestAborted));
+        });
+
+        // Paper §5.2.2: the three-phase HMR engine is a real product entry point,
+        // not a package upgrade. The host composes the delegate; the transport
+        // only validates the wire shape and reports the plan.
+        _app.MapPost("/api/hmr", async (HttpContext context) =>
+        {
+            var denial = Deny(ConsoleAccessScope.Lifecycle);
+            if (denial is not null) return denial;
+            if (_hmr is null)
+            {
+                return Unavailable("HMR engine is not composed into this host");
+            }
+
+            JsonNode? payload;
+            try
+            {
+                payload = await ReadBodyAsync(context);
+            }
+            catch (ApiRequestException ex)
+            {
+                return ApiResults.Error(ex.Status, "invalid_request", ex.Message);
+            }
+
+            var body = payload as JsonObject;
+            if (body is null)
+            {
+                return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request", "JSON object required");
+            }
+
+            if (!TryReadStringSet(body["stashed"], out var stashed) ||
+                !TryReadStringSet(body["externals"], out var externals))
+            {
+                return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request",
+                    "stashed and externals must be arrays of strings");
+            }
+
+            var imports = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+            if (body["imports"] is JsonObject importObject)
+            {
+                foreach (var (module, value) in importObject)
+                {
+                    if (!TryReadStringSet(value, out var imported))
+                    {
+                        return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request",
+                            $"imports['{module}'] must be an array of strings");
+                    }
+
+                    imports[module] = imported.OrderBy(item => item, StringComparer.Ordinal).ToArray();
+                }
+            }
+
+            if (stashed.Count == 0)
+            {
+                return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request",
+                    "stashed must contain at least one changed module");
+            }
+
+            var request = new HmrRequest(stashed, externals, imports, []);
+            HmrPlan plan;
+            try
+            {
+                plan = await _hmr(request, body, context.RequestAborted);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request", ex.Message);
+            }
+
+            return ApiResults.Data(new JsonObject
+            {
+                ["accepted"] = new JsonArray(plan.Accepted.OrderBy(x => x, StringComparer.Ordinal)
+                    .Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
+                ["declined"] = new JsonArray(plan.Declined.OrderBy(x => x, StringComparer.Ordinal)
+                    .Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
+                ["staleEntries"] = new JsonArray(plan.StaleEntryIds
+                    .Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
+                ["restartRequired"] = new JsonArray((plan.RestartRequired ?? [])
+                    .Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
+            });
         });
 
         _app.MapGet("/api/plugins/{id}/config", (string id) =>
@@ -1031,6 +1114,33 @@ public sealed class WebUiServer : IAsyncDisposable
 
     private static JsonArray StringArray(IReadOnlyList<string> values) =>
         new(values.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray());
+
+    private static bool TryReadStringSet(JsonNode? node, out HashSet<string> values)
+    {
+        values = new HashSet<string>(StringComparer.Ordinal);
+        if (node is null)
+        {
+            return true;
+        }
+
+        if (node is not JsonArray array)
+        {
+            return false;
+        }
+
+        foreach (var item in array)
+        {
+            if (item is not JsonValue value || !value.TryGetValue<string>(out var text) ||
+                string.IsNullOrWhiteSpace(text))
+            {
+                return false;
+            }
+
+            values.Add(text);
+        }
+
+        return true;
+    }
 
     private static JsonArray DependencyArray(IReadOnlyList<PluginDependency> dependencies) =>
         new(dependencies.Select(dependency => (JsonNode?)new JsonObject

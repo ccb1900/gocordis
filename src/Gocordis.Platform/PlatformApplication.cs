@@ -284,7 +284,8 @@ public class PlatformApplication : IAsyncDisposable
                     registry: Registry,
                     control: control,
                     accessPolicy: _options.AccessPolicy,
-                    routeGuard: _routeGuard);
+                    routeGuard: _routeGuard,
+                    hmr: HmrAsync);
                 await WebUi.StartAsync(cancellationToken);
             }
 
@@ -692,6 +693,79 @@ public class PlatformApplication : IAsyncDisposable
 
     protected virtual ValueTask DisposeRouteGuardAsync() =>
         _routeGuard?.DisposeAsync() ?? ValueTask.CompletedTask;
+
+    /// <summary>
+    /// Paper §5.2.2 product entry: run the three-phase HMR engine against the
+    /// CURRENT declarations of this host. Callers name changed modules and the
+    /// replacement fields; they cannot inject an arbitrary declaration set.
+    /// </summary>
+    public async Task<HmrPlan> HmrAsync(
+        HmrRequest request, JsonObject? replacement = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (!_started)
+        {
+            throw new InvalidOperationException("HMR requires a started platform host");
+        }
+
+        var declarations = Registry.Entries.Values.Select(entry => entry.Manifest).ToArray();
+        var effective = request with { Entries = declarations };
+        var source = replacement?["source"]?.GetValue<string>();
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            // A remote HMR caller must not be able to point a plugin factory at
+            // an arbitrary host path. Only payloads inside this host's store are
+            // valid replacement sources.
+            var fullSource = Path.GetFullPath(source);
+            // Resolve an in-store symlink to its real target before checking
+            // containment, so a link cannot escape the store.
+            FileSystemInfo candidate = new FileInfo(fullSource);
+            if (!candidate.Exists)
+            {
+                candidate = new DirectoryInfo(fullSource);
+            }
+
+            if (candidate.Exists && candidate.LinkTarget is not null &&
+                candidate.ResolveLinkTarget(returnFinalTarget: true) is { } target)
+            {
+                fullSource = Path.GetFullPath(target.FullName);
+            }
+
+            var storeRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_options.StorePath));
+            var relative = Path.GetRelativePath(storeRoot, fullSource);
+            var insideStore = !Path.IsPathRooted(relative) &&
+                              relative != ".." &&
+                              !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+            if (!insideStore)
+            {
+                throw new InvalidOperationException(
+                    "HMR replacement source must be inside the configured plugin store");
+            }
+
+            source = fullSource;
+        }
+
+        var version = replacement?["version"]?.GetValue<string>();
+        return await HmrEngine.ReloadAsync(
+            Registry,
+            effective,
+            manifest =>
+            {
+                var next = manifest;
+                if (!string.IsNullOrWhiteSpace(source))
+                {
+                    next = next with { Source = source };
+                }
+
+                if (!string.IsNullOrWhiteSpace(version))
+                {
+                    next = next with { Version = version };
+                }
+
+                return next;
+            },
+            cancellationToken);
+    }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {

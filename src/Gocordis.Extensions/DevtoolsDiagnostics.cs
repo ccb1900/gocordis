@@ -70,6 +70,28 @@ public sealed class DiagnosticsService : IDiagnosticsService
             }
         }
 
+        // Pure diagnostics must never throw on malformed input: report a
+        // duplicate id instead of failing ToDictionary.
+        var pluginsById = new Dictionary<string, PluginManifest>(StringComparer.Ordinal);
+        foreach (var plugin in plugins)
+        {
+            if (!pluginsById.TryAdd(plugin.Id, plugin))
+            {
+                findings.Add(new Diagnostic(DiagnosticSeverity.Error, DiagnosticCode.DuplicatePluginId,
+                    $"duplicate plugin declaration '{plugin.Id}'"));
+            }
+        }
+
+        var capabilityOwners = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var plugin in plugins)
+        {
+            foreach (var capability in plugin.Provides.Where(capability => !string.IsNullOrWhiteSpace(capability)))
+            {
+                capabilityOwners.TryAdd(capability, plugin.Id);
+            }
+        }
+
+        var reportedPairs = new HashSet<string>(StringComparer.Ordinal);
         foreach (var plugin in plugins)
         {
             foreach (var capability in plugin.Requires)
@@ -81,6 +103,30 @@ public sealed class DiagnosticsService : IDiagnosticsService
 
                 findings.Add(new Diagnostic(DiagnosticSeverity.Error, DiagnosticCode.UnknownProvider,
                     $"plugin '{plugin.Id}' requires capability '{capability}' with no provider"));
+            }
+
+            foreach (var required in plugin.Requires.Where(capability =>
+                         !string.IsNullOrWhiteSpace(capability) &&
+                         capabilityOwners.TryGetValue(capability, out var owner) &&
+                         !string.Equals(owner, plugin.Id, StringComparison.Ordinal)))
+            {
+                var ownerId = capabilityOwners[required];
+                var other = pluginsById[ownerId];
+                if (!other.Requires.Any(candidate => plugin.Provides.Contains(candidate, StringComparer.Ordinal)))
+                {
+                    continue;
+                }
+
+                var pair = string.Join('|', new[] { plugin.Id, ownerId }
+                    .OrderBy(id => id, StringComparer.Ordinal));
+                if (reportedPairs.Add(pair))
+                {
+                    findings.Add(new Diagnostic(
+                        DiagnosticSeverity.Warn,
+                        DiagnosticCode.MutualCapabilityDependency,
+                        $"plugins '{plugin.Id}' and '{ownerId}' require each other's capabilities; " +
+                        "extract an integration component (paper §6.5) instead of relying on the mount-time cycle rejection"));
+                }
             }
         }
 

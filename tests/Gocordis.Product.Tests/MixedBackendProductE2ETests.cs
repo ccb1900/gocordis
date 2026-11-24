@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using Gocordis.Core;
@@ -245,10 +246,49 @@ public sealed class MixedBackendProductE2ETests
         Assert.Equal("pong", (await app.Runtime.RequireCapability(echoKey).InvokeAsync(
             CapabilityEnvelope.Text("go"), CancellationToken.None)).AsText());
 
+        // Product-level rolling-upgrade observation: a live consumer keeps
+        // calling while the provider fiber is swapped, so the real retire→reinsert
+        // window is measured rather than assumed away. Unit-level drain semantics
+        // are asserted separately by RollingUpgradeBoundaryTests.
+        var callFailures = new ConcurrentQueue<Exception>();
+        using var keepCalling = new CancellationTokenSource();
+        var concurrentCalls = Task.Run(async () =>
+        {
+            while (!keepCalling.IsCancellationRequested)
+            {
+                try
+                {
+                    var response = await app.Runtime.RequireCapability(echoKey).InvokeAsync(
+                        CapabilityEnvelope.Text("go"), CancellationToken.None);
+                    if (response.AsText() != "pong")
+                    {
+                        callFailures.Enqueue(new InvalidOperationException($"unexpected response: {response.AsText()}"));
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (Exception ex)
+                {
+                    callFailures.Enqueue(ex);
+                }
+            }
+        });
+
         var v2 = await PackVersion("2.0.0");
         var upload2 = await app.Control!.UploadAsync(File.OpenRead(v2), "up-2.gocordis-plugin");
         var upgraded = await app.Control!.UpgradeAsync("up-a", upload2.UploadKey, "[2.0.0,]");
         Assert.True(upgraded.Accepted, $"upgrade failed: {upgraded.Error}");
+        await Task.Delay(150);
+        keepCalling.Cancel();
+        await concurrentCalls;
+        // Paper §6.2 is still PARTIAL at product level: the registry uses
+        // retire→reinsert, so an in-flight consumer can observe a short
+        // "no active provider" window. The bounded evidence here asserts the
+        // failure mode is only withdrawal (not a corrupt/partial capability)
+        // and that the call path is healthy again after the new fiber commits.
+        Assert.All(callFailures, ex =>
+            Assert.Contains("no active provider", ex.Message, StringComparison.Ordinal));
 
         var after = Assert.Single(app.Runtime.Snapshot().Fibers,
             fiber => fiber.Name == "process-plugin");

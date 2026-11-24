@@ -54,6 +54,49 @@ public sealed class KoishiPackagedProductTests
         // four separately packaged plugins, not a hardcoded "ready" literal.
         Assert.Equal("row:demo:ping", app.Console.Api.Query("koishi/echo")?["value"]?.GetValue<string>());
 
+        // Paper §5.2.2 product chain: the three-phase HMR engine is invoked
+        // through a real HTTP endpoint of the running product host.
+        var featureBeforeHmr = app.Registry.Entries["koishi.feature"].Fiber!;
+        using var hostHttp = new HttpClient { BaseAddress = app.Address! };
+        var hmrResponse = await Stage(hostHttp.PostAsJsonAsync("/api/hmr", new
+        {
+            stashed = new[] { "koishi.feature" },
+            externals = new[] { "Gocordis.Core", "Gocordis.Plugins" },
+            imports = new Dictionary<string, string[]> { ["koishi.feature"] = [] },
+            version = "2.0.0",
+        }), "hmr request");
+        Assert.True(hmrResponse.IsSuccessStatusCode, await hmrResponse.Content.ReadAsStringAsync());
+        var hmrPayload = JsonNode.Parse(await hmrResponse.Content.ReadAsStringAsync())!["data"]!;
+        Assert.Contains("koishi.feature", hmrPayload["staleEntries"]!.AsArray()
+            .Select(entry => entry!.GetValue<string>()));
+        Assert.Contains("koishi.feature", hmrPayload["accepted"]!.AsArray()
+            .Select(entry => entry!.GetValue<string>()));
+        Assert.NotSame(featureBeforeHmr, app.Registry.Entries["koishi.feature"].Fiber);
+        Assert.Equal(FiberState.Active, app.Registry.Entries["koishi.feature"].Fiber!.State);
+        Assert.Equal("row:demo:ping", app.Console.Api.Query("koishi/echo")?["value"]?.GetValue<string>());
+
+        // The product endpoint must not let a caller point a plugin factory at
+        // an arbitrary host path.
+        var rejectedSource = await Stage(hostHttp.PostAsJsonAsync("/api/hmr", new
+        {
+            stashed = new[] { "koishi.feature" },
+            externals = Array.Empty<string>(),
+            imports = new Dictionary<string, string[]> { ["koishi.feature"] = [] },
+            source = "/etc/passwd",
+        }), "hmr invalid source");
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, rejectedSource.StatusCode);
+
+        var inStorePayload = Directory.GetFiles(temp.Path("plugins"), "Koishi.Feature.dll",
+            SearchOption.AllDirectories).First();
+        var acceptedSource = await Stage(hostHttp.PostAsJsonAsync("/api/hmr", new
+        {
+            stashed = new[] { "koishi.feature" },
+            externals = Array.Empty<string>(),
+            imports = new Dictionary<string, string[]> { ["koishi.feature"] = [] },
+            source = System.IO.Path.GetDirectoryName(inStorePayload),
+        }), "hmr in-store source");
+        Assert.True(acceptedSource.IsSuccessStatusCode, await acceptedSource.Content.ReadAsStringAsync());
+
         // Independent console application: its own Runtime and Registry, its
         // own UI contribution, server state only via the typed HTTP client.
         await using var consoleApp = new KoishiConsoleApp();

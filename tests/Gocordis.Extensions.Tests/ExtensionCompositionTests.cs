@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
 using Gocordis.Core;
 using Xunit;
 
@@ -81,6 +84,63 @@ public sealed class ExtensionCompositionTests
         Assert.Null(envConsumer.Failure);
         Assert.True(Environment.GetEnvironmentVariable(variable) is null,
             "withdrawn env layer must be unwound");
+    }
+
+    [Fact]
+    public async Task SocksContributionRoutesAnHttpRequestAndUnwindsOnProviderWithdrawal()
+    {
+        await using var runtime = new Runtime();
+        await using var fake = new FakeSocks5();
+        var httpFiber = await runtime.LoadAsync(new HttpExtensionComponent());
+        var socksFiber = await runtime.LoadAsync(new SocksExtensionComponent());
+        var http = runtime.RequireCapability(ExtensionKeys.Http);
+        var socks = runtime.RequireCapability(ExtensionKeys.Socks);
+        // The SOCKS fiber registers its dialer when it becomes Active.
+        Assert.Equal(1, http.ProxyCount);
+
+        socks.Register("socks5", $"127.0.0.1:{fake.Port}");
+        Assert.Equal(1, http.ProxyCount);
+
+        var request = http.GetStringAsync("http://example.invalid/probe");
+        _ = request.ContinueWith(static _ => { }, TaskContinuationOptions.OnlyOnFaulted);
+        var winner = await Task.WhenAny(fake.ConnectSeen.Task, request)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(fake.ConnectSeen.Task.IsCompleted,
+            $"request did not traverse proxy; request state={request.Status}, error={request.Exception?.InnerException?.Message}");
+        var seen = await fake.ConnectSeen.Task;
+        // The fake SOCKS server only records a CONNECT when an HTTP request was
+        // actually routed through the registered proxy dialer.
+        Assert.False(string.IsNullOrWhiteSpace(seen.Host));
+        Assert.Equal(80, seen.Port);
+
+        // The proxy registration is owned by the SOCKS fiber, not by HTTP.
+        await runtime.DisposeAsync(socksFiber);
+        Assert.Equal(0, http.ProxyCount);
+        Assert.Equal(FiberState.Active, httpFiber.State);
+    }
+
+    [Fact]
+    public async Task ProxyRegistrationsAreIdentityFencedAndLastWins()
+    {
+        await using var service = new HttpService();
+        await using var first = new FakeSocks5();
+        await using var second = new FakeSocks5();
+        var firstHandle = service.RegisterProxyDialer(["http"],
+            (h, p, t) => first.ConnectAsync("socks5", h, p, t));
+        var secondHandle = service.RegisterProxyDialer(["http"],
+            (h, p, t) => second.ConnectAsync("socks5", h, p, t));
+        Assert.Equal(2, service.ProxyCount);
+
+        var request = service.GetStringAsync("http://example.invalid/winner");
+        _ = request.ContinueWith(static _ => { }, TaskContinuationOptions.OnlyOnFaulted);
+        await second.ConnectSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(first.ConnectSeen.Task.IsCompleted);
+
+        // Removing the older handle must not remove the newer winner.
+        firstHandle.Dispose();
+        Assert.Equal(1, service.ProxyCount);
+        secondHandle.Dispose();
+        Assert.Equal(0, service.ProxyCount);
     }
 
     [Fact]
@@ -227,6 +287,140 @@ public sealed class ExtensionCompositionTests
         public ValueTask DisposeAsync()
         {
             _onDispose();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class FakeSocks5 : IAsyncDisposable
+    {
+        private readonly TcpListener _listener;
+        private readonly Task _loop;
+
+        public FakeSocks5()
+        {
+            _listener = new TcpListener(IPAddress.Loopback, 0);
+            _listener.Start();
+            _loop = Task.Run(LoopAsync);
+        }
+
+        public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
+
+        public TaskCompletionSource<(string Host, int Port)> ConnectSeen { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<Stream> ConnectAsync(string scheme, string host, int port, CancellationToken token)
+        {
+            var client = new TcpClient();
+            try
+            {
+                await client.ConnectAsync(IPAddress.Loopback, Port, token);
+                var stream = client.GetStream();
+                await stream.WriteAsync(new byte[] { 5, 1, 0 }, token);
+                var choice = await ReadExactlyAsync(stream, 2, token);
+                if (choice[0] != 5 || choice[1] != 0)
+                {
+                    throw new InvalidOperationException("SOCKS5 method rejected");
+                }
+
+                var header = new byte[] { 5, 1, 0, 3, (byte)host.Length };
+                await stream.WriteAsync(header, token);
+                await stream.WriteAsync(Encoding.ASCII.GetBytes(host), token);
+                await stream.WriteAsync(new byte[] { (byte)(port >> 8), (byte)port }, token);
+                var reply = await ReadExactlyAsync(stream, 10, token);
+                if (reply[1] != 0)
+                {
+                    throw new InvalidOperationException($"SOCKS5 connect rejected: {reply[1]}");
+                }
+
+                ConnectSeen.TrySetResult((host, port));
+                return stream;
+            }
+            catch
+            {
+                client.Dispose();
+                throw;
+            }
+        }
+
+        private async Task LoopAsync()
+        {
+            try
+            {
+                while (true)
+                {
+                    var client = await _listener.AcceptTcpClientAsync();
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var stream = client.GetStream();
+                            await ReadExactlyAsync(stream, 3, CancellationToken.None);
+                            await stream.WriteAsync(new byte[] { 5, 0 });
+                            var header = await ReadExactlyAsync(stream, 4, CancellationToken.None);
+                            var atyp = header[3];
+                            var length = atyp switch { 1 => 4, 4 => 16, 3 => 1, _ => 0 };
+                            if (length == 0)
+                            {
+                                return;
+                            }
+
+                            var address = await ReadExactlyAsync(stream, length, CancellationToken.None);
+                            string target;
+                            if (atyp == 3)
+                            {
+                                var nameBytes = await ReadExactlyAsync(stream, address[0], CancellationToken.None);
+                                target = Encoding.ASCII.GetString(nameBytes);
+                            }
+                            else
+                            {
+                                target = atyp == 1
+                                    ? new IPAddress(address).ToString()
+                                    : new IPAddress(address).ToString();
+                            }
+
+                            var portBytes = await ReadExactlyAsync(stream, 2, CancellationToken.None);
+                            ConnectSeen.TrySetResult((target, (portBytes[0] << 8) | portBytes[1]));
+                            await stream.WriteAsync(new byte[] { 5, 0, 0, 1, 127, 0, 0, 1, 0, 80 });
+                            await Task.Delay(TimeSpan.FromSeconds(10));
+                        }
+                        catch
+                        {
+                            // handshake failures are observed by the dialer side
+                        }
+                        finally
+                        {
+                            client.Dispose();
+                        }
+                    });
+                }
+            }
+            catch
+            {
+                // listener shutdown is expected
+            }
+        }
+
+        private static async Task<byte[]> ReadExactlyAsync(Stream stream, int count, CancellationToken token)
+        {
+            var buffer = new byte[count];
+            var offset = 0;
+            while (offset < count)
+            {
+                var read = await stream.ReadAsync(buffer.AsMemory(offset, count - offset), token);
+                if (read == 0)
+                {
+                    throw new EndOfStreamException("fake SOCKS5 peer closed early");
+                }
+
+                offset += read;
+            }
+
+            return buffer;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            _listener.Stop();
             return ValueTask.CompletedTask;
         }
     }

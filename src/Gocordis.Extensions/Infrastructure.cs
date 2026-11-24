@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net.Security;
+using System.Net.Sockets;
 using System.Text;
 
 namespace Gocordis.Extensions;
@@ -410,15 +412,132 @@ public sealed record HttpState(bool Closed, int Active, int OpenStreams, int Int
 /// </summary>
 public sealed class HttpService : IAsyncDisposable
 {
-    private readonly HttpClient _client = new();
+    private readonly SocketsHttpHandler _handler = new();
+    private readonly HttpClient _client;
     private readonly object _sync = new();
     private readonly List<Func<HttpRequestMessage, ValueTask>> _interceptors = [];
     private readonly List<ChainRegistration> _chain = [];
+    private readonly Dictionary<long, ProxyRegistration> _proxies = [];
     private readonly HashSet<StreamLease> _leases = [];
+    private long _nextProxyId;
     private bool _closed;
     private int _active;
     private int _openStreams;
     private int _disposed;
+
+    public HttpService()
+    {
+        // Proxy selection happens per connection, not per HttpClient: a
+        // withdrawn contribution must not affect an existing in-flight call,
+        // and a new one must take effect immediately.
+        // Proxying is owned by this service's reversible registrations; ambient
+        // HTTP_PROXY must not silently bypass the Core-owned proxy lifecycle.
+        _handler.UseProxy = false;
+        _handler.ConnectCallback = ConnectAsync;
+        _client = new HttpClient(_handler);
+    }
+
+    /// <summary>Count of active proxy contributions (diagnostics and tests).</summary>
+    public int ProxyCount
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _proxies.Count;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Registers a dialer-based proxy for the given schemes. The returned handle
+    /// removes ONLY this registration; last registration wins per scheme, and
+    /// removal reveals the previous winner (Go HTTP semantics).
+    /// </summary>
+    public IDisposable RegisterProxyDialer(IEnumerable<string> schemes, SocksDialer dialer)
+    {
+        ArgumentNullException.ThrowIfNull(schemes);
+        ArgumentNullException.ThrowIfNull(dialer);
+        var normalized = schemes.Select(NormalizeHttpScheme).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (normalized.Count == 0)
+        {
+            throw new ArgumentException("at least one scheme is required", nameof(schemes));
+        }
+
+        long id;
+        lock (_sync)
+        {
+            EnsureOpen();
+            id = ++_nextProxyId;
+            _proxies[id] = new ProxyRegistration(id, normalized, dialer);
+        }
+
+        return new Subscription(() => RemoveProxy(id));
+    }
+
+    private static string NormalizeHttpScheme(string scheme)
+    {
+        var normalized = scheme.Trim().ToLowerInvariant();
+        return normalized is "" or "*" ? "*" : normalized;
+    }
+
+    private static async Task<Stream> ConnectDirectAsync(string host, int port, CancellationToken token)
+    {
+        var client = new TcpClient();
+        try
+        {
+            await client.ConnectAsync(host, port, token);
+            return client.GetStream();
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
+    }
+
+    private sealed record ProxyRegistration(long Id, HashSet<string> Schemes, SocksDialer Dialer);
+
+    private void RemoveProxy(long id)
+    {
+        lock (_sync)
+        {
+            _proxies.Remove(id);
+        }
+    }
+
+    private async ValueTask<Stream> ConnectAsync(SocketsHttpConnectionContext context, CancellationToken token)
+    {
+        var host = context.DnsEndPoint.Host;
+        var port = context.DnsEndPoint.Port;
+        var scheme = context.InitialRequestMessage.RequestUri?.Scheme ?? "http";
+        SocksDialer? dialer = null;
+        lock (_sync)
+        {
+            // Registration order is the precedence order: last wins.
+            foreach (var registration in _proxies.Values.OrderByDescending(item => item.Id))
+            {
+                if (registration.Schemes.Contains(scheme) || registration.Schemes.Contains("*"))
+                {
+                    dialer = registration.Dialer;
+                    break;
+                }
+            }
+        }
+
+        var stream = dialer is null
+            ? await ConnectDirectAsync(host, port, token)
+            : await dialer(host, port, token);
+        if (scheme is "https" or "wss")
+        {
+            var ssl = new SslStream(stream, leaveInnerStreamOpen: false);
+            await ssl.AuthenticateAsClientAsync(
+                new SslClientAuthenticationOptions { TargetHost = host }, token);
+            return ssl;
+        }
+
+        return stream;
+    }
 
     public void SetBaseAddress(Uri uri) => _client.BaseAddress = uri;
 
@@ -593,6 +712,7 @@ public sealed class HttpService : IAsyncDisposable
         }
 
         _client.Dispose();
+        _handler.Dispose();
         await ValueTask.CompletedTask;
     }
 

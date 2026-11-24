@@ -186,9 +186,24 @@ public sealed class SocksExtensionComponent : Component
 
     public override IReadOnlyList<ICapabilityKey> Provide() => [ExtensionKeys.Socks];
 
-    public override ValueTask<Cleanup?> ApplyAsync(Context context)
+    public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
         var http = context.Require(ExtensionKeys.Http);
-        return ExtensionPublish.PublishAsync(context, ExtensionKeys.Socks, new SocksRegistry(http));
+        var socks = new SocksRegistry(http);
+        // The proxy contribution is installed inside this fiber's effect, and
+        // its handle removes only this registration (previous winner resurfaces).
+        // SOCKS never owns the HTTP provider's lifetime.
+        var registration = http.RegisterProxyDialer(
+            ["http", "https", "ws", "wss"],
+            (host, port, token) => socks.ConnectAsync("socks5", host, port, token));
+        await context.EffectAsync(
+            static () => ValueTask.CompletedTask,
+            () =>
+            {
+                registration.Dispose();
+                return ValueTask.CompletedTask;
+            });
+
+        return await ExtensionPublish.PublishAsync(context, ExtensionKeys.Socks, socks);
     }
 }

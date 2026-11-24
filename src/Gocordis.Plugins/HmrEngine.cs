@@ -152,7 +152,15 @@ public static class HmrEngine
 
     /// <summary>Phase 3: commit the planned declarations in one registry
     /// transaction. A failed reload rolls back declarations, fibers and the
-    /// collectible ALC generations through the existing Core path.</summary>
+    /// collectible ALC generations through the existing Core path.
+    ///
+    /// Cancellation is PREFLIGHT-ONLY: the token is observed exactly once, at
+    /// entry, before planning and before the registry transaction starts. Once
+    /// the transaction has begun, cancellation is deliberately ignored — even
+    /// if a staged component cancels the caller's token — so a reload is never
+    /// interrupted halfway through its single declaration batch. A caller that
+    /// wants to abandon the commit must cancel before calling this method.
+    /// </summary>
     public static async Task<HmrPlan> ReloadAsync(
         PluginRegistry registry,
         HmrRequest request,
@@ -160,15 +168,24 @@ public static class HmrEngine
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(registry);
+        if (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(
+                "HMR reload cancellation is preflight-only: cancel before the registry transaction " +
+                "starts; a started transaction cannot be interrupted.",
+                cancellationToken);
+        }
+
         var plan = Plan(request, replaceModule);
         if (plan.StaleEntryIds.Count == 0)
         {
             return plan;
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
-        // PluginRegistry.ApplyAsync validates, stages and commits as one
-        // transaction; its RollbackAsync restores the previous declarations.
+        // No token crosses this boundary. PluginRegistry.ApplyAsync validates,
+        // stages and commits as ONE atomic transaction; its RollbackAsync
+        // restores the previous declarations if any step fails for a real
+        // reason. Cancellation is not one of those reasons by design.
         await registry.ApplyAsync(plan.Desired);
         return plan;
     }

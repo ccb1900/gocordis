@@ -100,6 +100,34 @@ public sealed class ConfigurationTreeTests
         Assert.Equal(FiberState.Active, replacement.State);
     }
 
+    [Fact]
+    public async Task DisableWithConfigChangeThroughTheLoaderRetiresTheFiber()
+    {
+        using var temp = new TempDir();
+        await InstallAsync(temp, "tree-provider");
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        var applied = new List<string>();
+        registry.RegisterComponentFactory("tree-provider", _ => new ConfigurableProbe("toggle", applied));
+        var loader = new ApplicationLoader(new PluginStore(temp.Path("store"), HostVersion), registry);
+        var enabled = new ApplicationManifest("tree", "1.0.0", HostVersion, [],
+            [new EntryNode("toggle", Url: "tree-provider@1.0.0",
+                Config: new Dictionary<string, object?> { ["value"] = "one" })]);
+
+        await loader.ApplyAsync(enabled);
+        var original = registry.Entries["toggle"].Fiber!;
+
+        await loader.ApplyAsync(new ApplicationManifest("tree", "1.0.0", HostVersion, [],
+            [new EntryNode("toggle", Url: "tree-provider@1.0.0", Disabled: true,
+                Config: new Dictionary<string, object?> { ["value"] = "two" })]));
+
+        Assert.Empty(applied);
+        Assert.Null(registry.Entries["toggle"].Fiber);
+        await original.GoneAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(FiberState.Gone, original.State);
+        Assert.Empty(runtime.Snapshot().Fibers);
+    }
+
     private static ApplicationManifest IncludeManifest(string path) =>
         new("tree", "1.0.0", HostVersion, [], [new EntryNode("external", Include: path)]);
 
@@ -127,6 +155,29 @@ public sealed class ConfigurationTreeTests
 
         public string Value { get; }
         public override string Name { get; }
+
+        public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
+            ValueTask.FromResult<Cleanup?>(null);
+    }
+
+    private sealed class ConfigurableProbe : Component, IConfigurableComponent
+    {
+        private readonly List<string> _applied;
+
+        public ConfigurableProbe(string name, List<string> applied)
+        {
+            Name = name;
+            _applied = applied;
+        }
+
+        public override string Name { get; }
+
+        public ValueTask<bool> TryApplyConfigAsync(
+            IReadOnlyDictionary<string, object?> config, CancellationToken cancellationToken = default)
+        {
+            _applied.Add(config["value"]?.ToString() ?? string.Empty);
+            return ValueTask.FromResult(true);
+        }
 
         public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
             ValueTask.FromResult<Cleanup?>(null);

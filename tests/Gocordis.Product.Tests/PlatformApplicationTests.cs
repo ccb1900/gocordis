@@ -603,6 +603,173 @@ public sealed class PlatformApplicationTests
         Assert.Equal("http://0.0.0.0:8080", allowed.Address);
     }
 
+    [Fact]
+    public async Task HmrRejectsSourceBehindASymlinkedIntermediateDirectory()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            // Directory symlinks/junctions need developer mode or elevation on
+            // Windows; the Windows-specific reparse test below covers that case
+            // when the privilege is available.
+            return;
+        }
+
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var store = temp.Path("store");
+        var plugins = Path.Combine(store, "plugins");
+        Directory.CreateDirectory(plugins);
+        var outside = temp.Path("outside");
+        Directory.CreateDirectory(outside);
+        var payload = Path.Combine(outside, "plugin.dll");
+        await File.WriteAllTextAsync(payload, "outside payload");
+
+        // The final file is NOT a link: its lexical path looks inside the
+        // store, but an intermediate directory redirects it outside.
+        Directory.CreateSymbolicLink(Path.Combine(plugins, "external"), outside);
+
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, store, HostVersion: "1.5.0"));
+        await app.StartAsync();
+
+        var rejection = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ReloadWithSourceAsync(app, Path.Combine(plugins, "external", "plugin.dll")));
+        Assert.Contains("inside the configured plugin store", rejection.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task HmrRejectsDotDotTraversalThroughASymlinkedDirectory()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            // Directory symlinks need developer mode or elevation on Windows;
+            // see the conditional reparse-point test below.
+            return;
+        }
+
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var store = temp.Path("store");
+        var plugins = Path.Combine(store, "plugins");
+        Directory.CreateDirectory(plugins);
+        var outside = temp.Path("outside");
+        Directory.CreateDirectory(outside);
+        Directory.CreateSymbolicLink(Path.Combine(plugins, "external"), outside);
+
+        // OS semantics: external/../payload.dll resolves against the LINK TARGET
+        // (temp/payload.dll), while lexical normalization would collapse it to
+        // an innocuous-looking in-store path.
+        var payload = temp.Path("payload.dll");
+        await File.WriteAllTextAsync(payload, "outside payload");
+
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, store, HostVersion: "1.5.0"));
+        await app.StartAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ReloadWithSourceAsync(app, Path.Combine(plugins, "external", "..", "payload.dll")));
+    }
+
+    [Fact]
+    public async Task HmrRejectsSourceWhoseFinalEntryIsASymlinkToOutside()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            // File symlinks need developer mode or elevation on Windows.
+            return;
+        }
+
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var store = temp.Path("store");
+        var plugins = Path.Combine(store, "plugins");
+        Directory.CreateDirectory(plugins);
+        var outside = temp.Path("outside");
+        Directory.CreateDirectory(outside);
+        var payload = Path.Combine(outside, "plugin.dll");
+        await File.WriteAllTextAsync(payload, "outside payload");
+        File.CreateSymbolicLink(Path.Combine(plugins, "linked.dll"), payload);
+
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, store, HostVersion: "1.5.0"));
+        await app.StartAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ReloadWithSourceAsync(app, Path.Combine(plugins, "linked.dll")));
+    }
+
+    [Fact]
+    public async Task HmrAcceptsARealPayloadInsideTheResolvedStoreRoot()
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var store = temp.Path("store");
+        var plugins = Path.Combine(store, "plugins");
+        Directory.CreateDirectory(plugins);
+        var payload = Path.Combine(plugins, "plugin.dll");
+        await File.WriteAllTextAsync(payload, "in-store payload");
+
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, store, HostVersion: "1.5.0"));
+        await app.StartAsync();
+
+        // On macOS the temp root itself lives behind /var -> /private/var.
+        // Both roots must be resolved the same way or this legitimate source
+        // would be rejected.
+        var plan = await ReloadWithSourceAsync(app, payload);
+        Assert.Empty(plan.StaleEntryIds);
+    }
+
+    [Fact]
+    public async Task HmrRejectsSourceBehindAWindowsReparsePoint()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            // Windows-only reparse-point/junction fixture; Unix symlinks are
+            // exercised by the two tests above.
+            return;
+        }
+
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var store = temp.Path("store");
+        var plugins = Path.Combine(store, "plugins");
+        Directory.CreateDirectory(plugins);
+        var outside = temp.Path("outside");
+        Directory.CreateDirectory(outside);
+        var payload = Path.Combine(outside, "plugin.dll");
+        await File.WriteAllTextAsync(payload, "outside payload");
+
+        try
+        {
+            Directory.CreateSymbolicLink(Path.Combine(plugins, "external"), outside);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Creating reparse points requires developer mode or elevation.
+            // Skipped conditionally; the resolver uses FileSystemInfo.LinkTarget
+            // (which covers Windows junctions) for the same containment check.
+            return;
+        }
+
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, store, HostVersion: "1.5.0"));
+        await app.StartAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ReloadWithSourceAsync(app, Path.Combine(plugins, "external", "plugin.dll")));
+    }
+
+    private static Task<HmrPlan> ReloadWithSourceAsync(PlatformApplication app, string source)
+    {
+        var request = new HmrRequest(
+            new HashSet<string>(StringComparer.Ordinal),
+            new HashSet<string>(StringComparer.Ordinal),
+            new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal),
+            []);
+        return app.HmrAsync(request, new JsonObject { ["source"] = source });
+    }
+
     private static async Task<string> WriteManifestAsync(TempDir temp)
     {
         var path = temp.File("gocordis.app.json");

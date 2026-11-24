@@ -9,6 +9,12 @@ public static class EntryMetaKeys
     public static readonly MetaKey<string, string> Intercept = new(
         "gocordis.entry.intercept", string.Empty, static (current, incoming) =>
             string.IsNullOrEmpty(incoming) ? current : incoming);
+
+    /// <summary>The configuration-tree parent id is also read-time metadata;
+    /// it never changes a fiber's capability set or realm.</summary>
+    public static readonly MetaKey<string, string> Parent = new(
+        "gocordis.entry.parent", string.Empty, static (current, incoming) =>
+            string.IsNullOrEmpty(incoming) ? current : incoming);
 }
 
 /// <summary>Components opt into in-place config updates; otherwise the loader
@@ -19,14 +25,29 @@ public interface IConfigurableComponent
         IReadOnlyDictionary<string, object?> config, CancellationToken cancellationToken = default);
 }
 
-public enum EntryChangeKind
+/// <summary>
+/// Every Entry field that differs between two declarations. A declaration
+/// batch can change several fields at once, so this is a set of independent
+/// flags, NOT a single priority-ordered label. The coordinator decides one
+/// plan that honours all of them; a low-priority field can never swallow
+/// <see cref="Disabled"/>.
+/// </summary>
+public readonly record struct EntryDelta(
+    bool Rebuild,
+    bool Rehome,
+    bool InterceptChanged,
+    bool ParentChanged,
+    bool ConfigChanged,
+    bool EnabledChanged,
+    bool Disabled)
 {
-    None,
-    Rebuild,
-    Rehome,
-    Intercept,
-    Config,
-    Disabled,
+    public bool IsEmpty => !Rebuild && !Rehome && !InterceptChanged &&
+                           !ParentChanged && !ConfigChanged && !EnabledChanged;
+
+    public bool HasMetaChange => InterceptChanged || ParentChanged;
+
+    /// <summary>True when the current fiber cannot survive this declaration.</summary>
+    public bool RetiresFiber => Rebuild || Rehome || Disabled;
 }
 
 /// <summary>Field-level dispatch for the paper's Entry fields. Fields that are
@@ -34,9 +55,12 @@ public enum EntryChangeKind
 /// declaration.</summary>
 public static class EntryDiff
 {
-    public static EntryChangeKind Classify(PluginManifest current, PluginManifest next)
+    /// <summary>Computes all field differences independently. Callers must plan
+    /// from the whole delta: <c>Disabled</c> is the target state and wins over
+    /// config/meta/rehome edits, while rebuild wins over rehome.</summary>
+    public static EntryDelta Classify(PluginManifest current, PluginManifest next)
     {
-        if (current.Id != next.Id || current.Type != next.Type ||
+        var rebuild = current.Id != next.Id || current.Type != next.Type ||
             current.Url != next.Url || current.Version != next.Version ||
             current.Source != next.Source || current.Checksum != next.Checksum ||
             current.Backend != next.Backend || current.EntryAssembly != next.EntryAssembly ||
@@ -44,30 +68,16 @@ public static class EntryDiff
             !SequenceEqual(current.Requires, next.Requires) ||
             !SequenceEqual(current.Provides, next.Provides) ||
             !SequenceEqual(current.CapabilitiesOrEmpty, next.CapabilitiesOrEmpty) ||
-            !SequenceEqual(current.SharedAssemblies ?? [], next.SharedAssemblies ?? []))
-        {
-            return EntryChangeKind.Rebuild;
-        }
+            !SequenceEqual(current.SharedAssemblies ?? [], next.SharedAssemblies ?? []);
 
-        if (!string.Equals(current.Isolate, next.Isolate, StringComparison.Ordinal))
-        {
-            return EntryChangeKind.Rehome;
-        }
-
-        if (!string.Equals(current.Intercept, next.Intercept, StringComparison.Ordinal) ||
-            !string.Equals(current.ParentId, next.ParentId, StringComparison.Ordinal))
-        {
-            return EntryChangeKind.Intercept;
-        }
-
-        if (!ConfigEqual(current.Config, next.Config))
-        {
-            return EntryChangeKind.Config;
-        }
-
-        return current.Enabled == next.Enabled
-            ? EntryChangeKind.None
-            : EntryChangeKind.Disabled;
+        return new EntryDelta(
+            Rebuild: rebuild,
+            Rehome: !string.Equals(current.Isolate, next.Isolate, StringComparison.Ordinal),
+            InterceptChanged: !string.Equals(current.Intercept, next.Intercept, StringComparison.Ordinal),
+            ParentChanged: !string.Equals(current.ParentId, next.ParentId, StringComparison.Ordinal),
+            ConfigChanged: !ConfigEqual(current.Config, next.Config),
+            EnabledChanged: current.Enabled != next.Enabled,
+            Disabled: !next.Enabled);
     }
 
     private static bool SequenceEqual(IReadOnlyList<string> left, IReadOnlyList<string> right)

@@ -18,8 +18,10 @@ namespace Gocordis.Product.Tests;
 public sealed class ManagedPluginProductE2ETests
 {
     private const string PluginId = "e2e-plugin";
-    private const string LoaderKeyV1 = PluginId + "@1.0.0";
-    private const string LoaderKeyV2 = PluginId + "@2.0.0";
+    // The host appends payload-root fingerprints to the loader identity; match
+    // the stable prefix so HMR/source changes cannot invalidate the E2E.
+    private const string LoaderPrefixV1 = PluginId + "@1.0.0";
+    private const string LoaderPrefixV2 = PluginId + "@2.0.0";
 
     private readonly Workspace _temp = new();
 
@@ -46,7 +48,7 @@ public sealed class ManagedPluginProductE2ETests
             await app.StartAsync();
 
             Assert.NotNull(app.Control);
-            Assert.False(app.Managed.Loader.Plugins.ContainsKey(LoaderKeyV1));
+            Assert.False(HasLoaderKey(app, LoaderPrefixV1));
             Assert.DoesNotContain(app.Console.Ui.Pages(),
                 page => page.Id.StartsWith("e2e-page-", StringComparison.Ordinal));
             Assert.Null(app.Registry.Entries[PluginId].Fiber);
@@ -58,12 +60,12 @@ public sealed class ManagedPluginProductE2ETests
             Assert.Equal(FiberState.Active, v1Fiber.State);
             Assert.Equal("e2e-plugin",
                 Assert.Single(app.Runtime.Snapshot().Fibers, fiber => fiber.Id == v1Fiber.Id).Name);
-            Assert.Equal("v1", ReadValue(app, LoaderKeyV1));
+            Assert.Equal("v1", ReadValue(app, LoaderPrefixV1));
             Assert.Contains("effect:v1", await File.ReadAllTextAsync(logPath), StringComparison.Ordinal);
             Assert.Contains(app.Console.Ui.Pages(), page => page.Id == "e2e-page-v1");
             Assert.Equal("v1", app.Console.Api.Query("e2e/value")?["value"]?.GetValue<string>());
-            var weakV1 = CaptureContext(app, LoaderKeyV1);
-            var v1Key = GetKey(app, LoaderKeyV1);
+            var weakV1 = CaptureContext(app, LoaderPrefixV1);
+            var v1Key = GetKey(app, LoaderPrefixV1);
 
             // ---- Disable: Core unwinds the effect and releases the ALC ----
             var disabled = await app.Control.SetEnabledAsync(PluginId, false);
@@ -75,7 +77,7 @@ public sealed class ManagedPluginProductE2ETests
             Assert.Contains("undo:v1", await File.ReadAllTextAsync(logPath), StringComparison.Ordinal);
             Assert.DoesNotContain(app.Console.Ui.Pages(), page => page.Id == "e2e-page-v1");
             Assert.Null(app.Console.Api.Query("e2e/value"));
-            Assert.False(app.Managed.Loader.Plugins.ContainsKey(LoaderKeyV1));
+            Assert.False(HasLoaderKey(app, LoaderPrefixV1));
             v1Fiber = null!; // the Fiber roots its Component and therefore the ALC
             Reclaimed(weakV1);
 
@@ -83,12 +85,12 @@ public sealed class ManagedPluginProductE2ETests
             var reenabled = await app.Control.SetEnabledAsync(PluginId, true);
             Assert.True(reenabled.Accepted, reenabled.Error);
             Assert.Equal(FiberState.Active, app.Registry.Entries[PluginId].Fiber!.State);
-            Assert.Equal("v1", ReadValue(app, LoaderKeyV1));
+            Assert.Equal("v1", ReadValue(app, LoaderPrefixV1));
             var effectsAfterReenable = await File.ReadAllTextAsync(logPath);
             Assert.Equal(2, CountLines(effectsAfterReenable, "effect:v1"));
             Assert.Equal(1, CountLines(effectsAfterReenable, "undo:v1"));
-            var weakBeforeUpgrade = CaptureContext(app, LoaderKeyV1);
-            var keyBeforeUpgrade = GetKey(app, LoaderKeyV1);
+            var weakBeforeUpgrade = CaptureContext(app, LoaderPrefixV1);
+            var keyBeforeUpgrade = GetKey(app, LoaderPrefixV1);
 
             // ---- Upgrade: new code, new key; old fiber retires before deletion ----
             var v2Package = await BuildAndPackAsync(root, "2.0.0", "v2");
@@ -99,8 +101,8 @@ public sealed class ManagedPluginProductE2ETests
                 Assert.True(upgraded.Accepted, upgraded.Error);
             }
 
-            Assert.Equal("v2", ReadValue(app, LoaderKeyV2));
-            Assert.False(app.Managed.Loader.Plugins.ContainsKey(LoaderKeyV1));
+            Assert.Equal("v2", ReadValue(app, LoaderPrefixV2));
+            Assert.False(HasLoaderKey(app, LoaderPrefixV1));
             Assert.False(Directory.Exists(Path.Combine(storePath, PluginId, "1.0.0")));
             var effectsAfterUpgrade = await File.ReadAllTextAsync(logPath);
             Assert.Contains("undo:v1", effectsAfterUpgrade, StringComparison.Ordinal);
@@ -110,8 +112,8 @@ public sealed class ManagedPluginProductE2ETests
             AssertCapabilityGone(app, keyBeforeUpgrade);
             keyBeforeUpgrade = null!;
             Reclaimed(weakBeforeUpgrade);
-            var weakV2 = CaptureContext(app, LoaderKeyV2);
-            var v2Key = GetKey(app, LoaderKeyV2);
+            var weakV2 = CaptureContext(app, LoaderPrefixV2);
+            var v2Key = GetKey(app, LoaderPrefixV2);
 
             // ---- Uninstall: no declaration, no fiber, no package bytes ----
             var uninstalled = await app.Control.UninstallAsync(PluginId, "[2.0.0]");
@@ -119,7 +121,7 @@ public sealed class ManagedPluginProductE2ETests
             Assert.False(app.Registry.Entries.ContainsKey(PluginId));
             AssertCapabilityGone(app, v2Key);
             v2Key = null!;
-            Assert.False(app.Managed.Loader.Plugins.ContainsKey(LoaderKeyV2));
+            Assert.False(HasLoaderKey(app, LoaderPrefixV2));
             Assert.False(Directory.Exists(Path.Combine(storePath, PluginId, "2.0.0")));
             Assert.DoesNotContain(app.Console.Ui.Pages(), page => page.Id == "e2e-page-v2");
             Reclaimed(weakV2);
@@ -134,7 +136,7 @@ public sealed class ManagedPluginProductE2ETests
             }
 
             Assert.Equal(FiberState.Active, app.Registry.Entries[PluginId].Fiber!.State);
-            Assert.Equal("v2", ReadValue(app, LoaderKeyV2));
+            Assert.Equal("v2", ReadValue(app, LoaderPrefixV2));
             Assert.Equal(2, CountLines(await File.ReadAllTextAsync(logPath), "effect:v2"));
 
             await app.StopAsync();
@@ -147,13 +149,20 @@ public sealed class ManagedPluginProductE2ETests
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static string ReadValue(PlatformApplication app, string loaderKey) =>
-        app.Runtime.RequireCapability(GetKey(app, loaderKey));
+    private static string ReadValue(PlatformApplication app, string loaderPrefix) =>
+        app.Runtime.RequireCapability(GetKey(app, loaderPrefix));
+
+    private static bool HasLoaderKey(PlatformApplication app, string loaderPrefix) =>
+        app.Managed.Loader.Plugins.Keys.Any(key => key.StartsWith(loaderPrefix, StringComparison.Ordinal));
+
+    private static string ResolveLoaderKey(PlatformApplication app, string loaderPrefix) =>
+        Assert.Single(app.Managed.Loader.Plugins.Keys,
+            key => key.StartsWith(loaderPrefix, StringComparison.Ordinal));
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static Key<string> GetKey(PlatformApplication app, string loaderKey)
+    private static Key<string> GetKey(PlatformApplication app, string loaderPrefix)
     {
-        var component = app.Managed.Loader.Plugins[loaderKey].Component;
+        var component = app.Managed.Loader.Plugins[ResolveLoaderKey(app, loaderPrefix)].Component;
         return (Key<string>)component.GetType()
             .GetField("LogKey", BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
     }
@@ -163,8 +172,8 @@ public sealed class ManagedPluginProductE2ETests
         Assert.Throws<DependencyMissingException>(() => app.Runtime.RequireCapability(key));
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static WeakReference CaptureContext(PlatformApplication app, string loaderKey) =>
-        new(app.Managed.Loader.Plugins[loaderKey].Context);
+    private static WeakReference CaptureContext(PlatformApplication app, string loaderPrefix) =>
+        new(app.Managed.Loader.Plugins[ResolveLoaderKey(app, loaderPrefix)].Context);
 
     private static int CountLines(string text, string line) =>
         text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(entry => entry == line);

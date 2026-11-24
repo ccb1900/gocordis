@@ -122,8 +122,11 @@ public sealed class PluginRegistry : IAsyncDisposable
     }
 
     /// <summary>
-    /// Prepare → Commit → Rollback. The gate covers the whole transaction so
-    /// staging, validation and commit never interleave with another call.
+    /// Prepare → Commit → Rollback. Prepare validates and stages the whole
+    /// batch BEFORE a single existing fiber is touched; commit records every
+    /// fiber it retires/creates and every in-place edit; rollback reconciles
+    /// exactly those fibers back to the previous declarations. The gate covers
+    /// all three phases.
     /// </summary>
     public async Task ApplyAsync(IEnumerable<PluginManifest> declarations)
     {
@@ -131,37 +134,21 @@ public sealed class PluginRegistry : IAsyncDisposable
         try
         {
             var previous = new Dictionary<string, PluginEntry>(_entries, StringComparer.Ordinal);
-            var mutatedInPlace = false;
-            PreparedBatch? batch = null;
+            var batch = Prepare(previous, declarations.ToArray(), rejectProtectedDisable: true);
+            var undo = new RegistryUndo(this, previous);
             try
             {
-                var desired = declarations.ToArray();
-                // Paper §5.2.1: apply the least disruptive field-level changes
-                // BEFORE staging any new component. Rhome/intercept/config that
-                // the component accepts keep the existing fiber and component.
-                mutatedInPlace = await ApplyInPlaceAsync(previous, desired);
-                batch = Prepare(desired, rejectProtectedDisable: true);
-                await CommitAsync(batch);
+                await CommitAsync(batch, undo);
             }
             catch (Exception commitError)
             {
-                if (batch is not null)
-                {
-                    // Staged-but-never-activated components may own an ALC. A
-                    // generation-fenced release is safe here (a live fiber is
-                    // never in this set) and prevents a silent leak on failure.
-                    await ReleaseUnusedStagedAsync(batch);
-                    await RollbackAsync(batch, previous, commitError);
-                }
-                else if (mutatedInPlace)
-                {
-                    await RestorePreviousAsync(previous);
-                }
-
+                await undo.RollbackAsync(commitError);
                 throw;
             }
-
-            await ReleaseUnusedStagedAsync(batch!);
+            finally
+            {
+                await ReleaseUnusedStagedAsync(batch);
+            }
         }
         finally
         {
@@ -169,80 +156,70 @@ public sealed class PluginRegistry : IAsyncDisposable
         }
     }
 
-    private async Task<bool> ApplyInPlaceAsync(
-        Dictionary<string, PluginEntry> previous, PluginManifest[] desired)
+    /// <summary>Applies read-time metadata and an accepted in-place config
+    /// update to a live fiber. The undo record is captured before the first
+    /// Core command, so a throw halfway through is fully compensated.</summary>
+    private async Task ApplyInPlaceAsync(EntryPlan plan, RegistryUndo undo)
     {
-        var mutated = false;
-        foreach (var manifest in desired)
+        var entry = _entries[plan.Id];
+        var fiber = entry.Fiber!;
+        if (plan.ApplyConfig)
         {
-            if (!previous.TryGetValue(manifest.Id, out var entry) ||
-                entry.Fiber is not { State: FiberState.Active } fiber)
+            var accepted = await ((IConfigurableComponent)plan.Component).TryApplyConfigAsync(plan.Manifest.Config);
+            if (!accepted)
             {
-                continue;
-            }
-
-            var entryComponent = entry.Component;
-            switch (EntryDiff.Classify(entry.Manifest, manifest))
-            {
-                case EntryChangeKind.Rehome:
-                {
-                    var realm = RealmFor?.Invoke(manifest.Isolate, manifest.Id) ?? Realm.Default;
-                    var replacement = entryComponent ??
-                        (_factories.TryGetValue(manifest.Type, out var factory)
-                            ? factory(manifest)
-                            : throw new InvalidOperationException(
-                                $"no component factory for '{manifest.Type}' during rehome"));
-                    var nextFiber = await _runtime.RehomeAsync(fiber, realm, replacement);
-                    _entries[manifest.Id] = entry with
-                    {
-                        Manifest = manifest,
-                        Fiber = nextFiber,
-                        ConfigurationKey = Fingerprint(manifest),
-                        Component = replacement,
-                    };
-                    mutated = true;
-                    break;
-                }
-                case EntryChangeKind.Intercept:
-                    await _runtime.SetMetaAsync(
-                        fiber, EntryMetaKeys.Intercept, manifest.Intercept ?? string.Empty);
-                    _entries[manifest.Id] = entry with
-                    {
-                        Manifest = manifest,
-                        ConfigurationKey = Fingerprint(manifest),
-                    };
-                    mutated = true;
-                    break;
-                case EntryChangeKind.Config when entryComponent is IConfigurableComponent configurable:
-                    if (await configurable.TryApplyConfigAsync(manifest.Config))
-                    {
-                        _entries[manifest.Id] = entry with
-                        {
-                            Manifest = manifest,
-                            ConfigurationKey = Fingerprint(manifest),
-                        };
-                        mutated = true;
-                    }
-
-                    break;
+                // The component refuses an in-place edit: fall back to a
+                // retire/reinsert of THIS entry only, using the replacement
+                // component Prepare already staged and validated. Metadata is
+                // applied to the replacement by the batch-load step below.
+                plan.Component = plan.Fallback ??
+                    throw new InvalidOperationException($"missing config fallback for '{plan.Id}'");
+                plan.Action = EntryAction.Rebuild;
+                plan.Load = true;
+                plan.ApplyConfig = false;
+                await RetireAsync(plan.Id);
+                return;
             }
         }
 
-        return mutated;
+        if (plan.SetIntercept)
+        {
+            await _runtime.SetMetaAsync(fiber, EntryMetaKeys.Intercept, plan.Manifest.Intercept ?? string.Empty);
+        }
+
+        if (plan.SetParent)
+        {
+            await _runtime.SetMetaAsync(fiber, EntryMetaKeys.Parent, plan.Manifest.ParentId ?? string.Empty);
+        }
+
+        _entries[plan.Id] = entry with { Manifest = plan.Manifest, ConfigurationKey = plan.Fingerprint };
     }
 
-    private async Task RestorePreviousAsync(Dictionary<string, PluginEntry> previous)
+    private async Task ApplyRehomeAsync(EntryPlan plan, RegistryUndo undo, PreparedBatch batch)
     {
-        foreach (var fiber in _entries.Values.Select(entry => entry.Fiber).OfType<Fiber>())
+        var entry = _entries[plan.Id];
+        var fiber = entry.Fiber!;
+        undo.CaptureMeta(plan.Id, fiber);
+        var replacement = await _runtime.RehomeAsync(fiber, plan.Realm ?? Realm.Default, plan.Component);
+        undo.Created(replacement);
+        batch.Applied.Add(plan.Component);
+        if (plan.SetIntercept)
         {
-            await _runtime.DisposeAsync(fiber);
+            await _runtime.SetMetaAsync(replacement, EntryMetaKeys.Intercept, plan.Manifest.Intercept ?? string.Empty);
         }
 
-        _entries.Clear();
-        var batch = Prepare(previous.Values.Select(entry => entry.Manifest).ToArray(),
-            rejectProtectedDisable: false);
-        await CommitAsync(batch);
-        await ReleaseUnusedStagedAsync(batch);
+        if (plan.SetParent)
+        {
+            await _runtime.SetMetaAsync(replacement, EntryMetaKeys.Parent, plan.Manifest.ParentId ?? string.Empty);
+        }
+
+        _entries[plan.Id] = entry with
+        {
+            Manifest = plan.Manifest,
+            Fiber = replacement,
+            ConfigurationKey = plan.Fingerprint,
+            Component = plan.Component,
+        };
     }
 
     /// <summary>
@@ -288,7 +265,17 @@ public sealed class PluginRegistry : IAsyncDisposable
 
     // ---- transaction phases -------------------------------------------------
 
-    private PreparedBatch Prepare(IReadOnlyList<PluginManifest> declarations, bool rejectProtectedDisable)
+    /// <summary>
+    /// Validates and stages the complete batch before commit mutates a fiber.
+    /// The plan is derived from the whole <see cref="EntryDelta"/>: Disabled
+    /// retires the fiber regardless of any other field, Rebuild outranks
+    /// Rehome, and meta/config edits keep the fiber only when they can really
+    /// be applied in place.
+    /// </summary>
+    private PreparedBatch Prepare(
+        IReadOnlyDictionary<string, PluginEntry> previous,
+        IReadOnlyList<PluginManifest> declarations,
+        bool rejectProtectedDisable)
     {
         var duplicateIds = declarations.GroupBy(manifest => manifest.Id)
             .Where(group => group.Count() > 1)
@@ -299,11 +286,9 @@ public sealed class PluginRegistry : IAsyncDisposable
             throw new InvalidOperationException($"duplicate plugin ids: {string.Join(", ", duplicateIds)}");
         }
 
-        var desired = new Dictionary<string, PluginManifest>(StringComparer.Ordinal);
+        var plans = new List<EntryPlan>();
         var staged = new Dictionary<string, Component>(StringComparer.Ordinal);
-        var fingerprints = new Dictionary<string, string>(StringComparer.Ordinal);
-        var providedKeys = new Dictionary<ICapabilityKey, string>(ReferenceEqualityComparer.Instance);
-        var batchNewlyStaged = new HashSet<Component>(ReferenceEqualityComparer.Instance);
+        var newlyStaged = new HashSet<Component>(ReferenceEqualityComparer.Instance);
 
         try
         {
@@ -314,76 +299,170 @@ public sealed class PluginRegistry : IAsyncDisposable
                     throw new ProtectedPluginException(manifest.Id);
                 }
 
-                var fingerprint = _entries.TryGetValue(manifest.Id, out var previous) &&
-                                 ManifestsEquivalent(previous.Manifest, manifest)
-                    ? previous.ConfigurationKey
-                    : Fingerprint(manifest);
-                if (_entries.TryGetValue(manifest.Id, out var current) &&
-                    current.ConfigurationKey == fingerprint &&
-                    current.Component is { } reused)
-                {
-                    // An unchanged declaration keeps its existing component: no
-                    // new factory call and therefore no redundant assembly load.
-                    desired[manifest.Id] = manifest;
-                    staged[manifest.Id] = reused;
-                    fingerprints[manifest.Id] = fingerprint;
-                    continue;
-                }
+                previous.TryGetValue(manifest.Id, out var prior);
+                var delta = prior is null ? default : EntryDiff.Classify(prior.Manifest, manifest);
+                var configInPlace = prior?.Fiber is { State: FiberState.Active } &&
+                                    delta.ConfigChanged && prior.Component is IConfigurableComponent;
+                var action = DecideAction(prior, manifest, delta, configInPlace);
+                var fingerprint = Fingerprint(manifest);
 
-                if (!_factories.TryGetValue(manifest.Type, out var factory))
-                {
-                    throw new InvalidOperationException(
-                        $"unknown plugin type '{manifest.Type}' for '{manifest.Id}'");
-                }
-
+                // A disabled declaration has no fiber to rehome/rebuild: reuse
+                // its existing component when there is one. Staging a fresh ALC
+                // here would be churn, not reconciliation.
+                var needsNewComponent = !manifest.Enabled
+                    ? prior?.Component is null
+                    : action == EntryAction.Rebuild ||
+                      (action == EntryAction.Rehome && (delta.ConfigChanged || prior?.Component is null));
                 Component component;
-                try
+                if (!needsNewComponent && prior?.Component is { } reusable)
                 {
-                    component = factory(manifest);
-                    _ = component.Inject();
-                    _ = component.Provide();
+                    // Unchanged/meta-only declarations keep their component:
+                    // no redundant factory call and no redundant ALC load.
+                    component = reusable;
                 }
-                catch (Exception ex)
+                else
                 {
-                    throw new InvalidOperationException($"factory for '{manifest.Id}' failed", ex);
+                    component = Stage(manifest.Id, manifest, newlyStaged);
+                    if (action == EntryAction.Rehome && prior?.Fiber is { } oldFiber &&
+                        !string.Equals(component.Name, oldFiber.Component.Name, StringComparison.Ordinal))
+                    {
+                        // Core's C34 reinsert requires the same component name.
+                        // Fall back to an ordinary revision for this entry.
+                        action = EntryAction.Rebuild;
+                    }
                 }
 
-                foreach (var key in component.Provide())
+                // Keep a validated replacement ready: a component may refuse an
+                // in-place config edit, and rollback rebuilds touched entries
+                // from their previous declarations. Both need a ready factory.
+                Component? fallback = null;
+                if (configInPlace && action == EntryAction.InPlace)
+                {
+                    fallback = Stage(manifest.Id, manifest, newlyStaged);
+                }
+
+                plans.Add(new EntryPlan
+                {
+                    Id = manifest.Id,
+                    Manifest = manifest,
+                    Delta = delta,
+                    Fingerprint = fingerprint,
+                    Action = action,
+                    Component = component,
+                    Fallback = fallback,
+                    SetIntercept = delta.InterceptChanged &&
+                                   action is EntryAction.InPlace or EntryAction.Rehome or EntryAction.Rebuild,
+                    SetParent = delta.ParentChanged &&
+                                action is EntryAction.InPlace or EntryAction.Rehome or EntryAction.Rebuild,
+                    ApplyConfig = configInPlace && action == EntryAction.InPlace,
+                    Realm = action == EntryAction.Rehome
+                        ? RealmFor?.Invoke(manifest.Isolate, manifest.Id) ?? Realm.Default
+                        : null,
+                    Load = action == EntryAction.Rebuild && manifest.Enabled,
+                });
+                staged[manifest.Id] = component;
+            }
+
+            // Only the effective component of each entry participates in the
+            // duplicate-provider check; an in-place config fallback provides
+            // the same keys as its owner and is not a second provider.
+            var providedKeys = new Dictionary<ICapabilityKey, string>(ReferenceEqualityComparer.Instance);
+            foreach (var plan in plans)
+            {
+                foreach (var key in plan.Component.Provide())
                 {
                     if (providedKeys.TryGetValue(key, out var owner))
                     {
                         throw new DuplicateProviderException(
-                            $"key '{key.Name}' is provided by both '{owner}' and '{manifest.Id}'");
+                            $"key '{key.Name}' is provided by both '{owner}' and '{plan.Id}'");
                     }
 
-                    providedKeys[key] = manifest.Id;
+                    providedKeys[key] = plan.Id;
                 }
-
-                desired[manifest.Id] = manifest;
-                staged[manifest.Id] = component;
-                fingerprints[manifest.Id] = fingerprint;
-                batchNewlyStaged.Add(component);
             }
 
             // A disabled declaration still owns its capability names. Consumers
             // of such a key must stay Pending when the provider is withdrawn,
             // not turn a valid declaration batch into a Prepare error.
             var inactiveCapabilities = DeclaredCapabilitiesOfDisabled(declarations);
-            var ordered = SortByTypedDependencies(staged, inactiveCapabilities);
-            return new PreparedBatch(desired, staged, ordered, fingerprints, batchNewlyStaged);
+            var ordered = SortByTypedDependencies(staged, inactiveCapabilities)
+                .Select(item => plans.Single(plan => plan.Id == item.Id))
+                .ToArray();
+            return new PreparedBatch(staged, ordered, newlyStaged.ToArray());
         }
         catch
         {
             // Prepare can fail after a factory has already opened a collectible
             // ALC (duplicate provider, cycle, unknown later type). Release every
             // component staged in this failed pass; none of them owns a fiber.
-            foreach (var component in batchNewlyStaged)
+            foreach (var component in newlyStaged)
             {
                 ReleaseStaged(component);
             }
 
             throw;
         }
+    }
+
+    private static EntryAction DecideAction(
+        PluginEntry? prior, PluginManifest manifest, EntryDelta delta, bool configInPlace)
+    {
+        if (prior is null)
+        {
+            return EntryAction.Rebuild;
+        }
+
+        // Administrative state is absolute: disable retires the fiber even if
+        // config, metadata, realm or declaration fields changed at the same time.
+        if (!manifest.Enabled)
+        {
+            return EntryAction.Rebuild;
+        }
+
+        if (delta.Rebuild)
+        {
+            return EntryAction.Rebuild;
+        }
+
+        if (delta.Rehome)
+        {
+            return EntryAction.Rehome;
+        }
+
+        if (prior.Fiber is not { State: FiberState.Active })
+        {
+            return EntryAction.Rebuild;
+        }
+
+        if (delta.ConfigChanged && !configInPlace)
+        {
+            return EntryAction.Rebuild;
+        }
+
+        return delta.IsEmpty ? EntryAction.Keep : EntryAction.InPlace;
+    }
+
+    private Component Stage(string id, PluginManifest manifest, HashSet<Component> newlyStaged)
+    {
+        if (!_factories.TryGetValue(manifest.Type, out var factory))
+        {
+            throw new InvalidOperationException($"unknown plugin type '{manifest.Type}' for '{id}'");
+        }
+
+        Component component;
+        try
+        {
+            component = factory(manifest);
+            _ = component.Inject();
+            _ = component.Provide();
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"factory for '{id}' failed", ex);
+        }
+
+        newlyStaged.Add(component);
+        return component;
     }
 
     private static void ReleaseStaged(Component component)
@@ -394,124 +473,272 @@ public sealed class PluginRegistry : IAsyncDisposable
         }
     }
 
-    private async Task CommitAsync(PreparedBatch batch)
+    private async Task CommitAsync(PreparedBatch batch, RegistryUndo undo)
     {
-        foreach (var id in _entries.Keys.Except(batch.Desired.Keys).ToArray())
+        // Platform-owned ids survive a declaration that omits them entirely.
+        foreach (var id in _entries.Keys.Except(batch.ById.Keys).ToArray())
         {
-            if (!ProtectedIds.Contains(id))
+            if (ProtectedIds.Contains(id))
             {
-                await RetireAsync(id);
+                continue;
+            }
+
+            undo.Touch(id);
+            await RetireAsync(id);
+        }
+
+        // Only entries whose runtime state really changes are recorded for
+        // rollback. An unchanged entry must keep its live fiber when a later
+        // step of the batch fails.
+        foreach (var plan in batch.Ordered)
+        {
+            switch (plan.Action)
+            {
+                case EntryAction.Keep:
+                    if (_entries.TryGetValue(plan.Id, out var kept))
+                    {
+                        _entries[plan.Id] = kept with
+                        {
+                            Manifest = plan.Manifest,
+                            ConfigurationKey = plan.Fingerprint,
+                        };
+                    }
+
+                    break;
+                case EntryAction.InPlace:
+                    undo.Touch(plan.Id);
+                    await ApplyInPlaceAsync(plan, undo);
+                    break;
+                case EntryAction.Rebuild:
+                    undo.Touch(plan.Id);
+                    await RetireAsync(plan.Id);
+            if (!plan.Load)
+            {
+                // Never retain the retired component here: a managed component
+                // roots its collectible ALC, and a disabled entry must not keep
+                // that ALC alive after Core has unwound the fiber.
+                _entries[plan.Id] = new PluginEntry(plan.Manifest, null, plan.Fingerprint, null);
+            }
+
+
+                    break;
             }
         }
 
-        var pending = new List<(string Id, PluginManifest Manifest, string Key, Component Component)>();
-        foreach (var (id, component) in batch.Ordered)
+        // Rehome consumers before their providers: a consumer that follows a
+        // provider into a new realm must still be Active when Core retires the
+        // provider's old fiber (C34 rehome requires an Active fiber).
+        foreach (var plan in batch.Ordered.Reverse())
         {
-            var manifest = batch.Desired[id];
-            var configurationKey = batch.Fingerprints[id];
-            if (ProtectedIds.Contains(id) && !manifest.Enabled &&
-                _entries.TryGetValue(id, out var protectedEntry) && protectedEntry.Fiber is not null)
-            {
-                _entries[id] = protectedEntry with { Manifest = manifest };
-                continue;
-            }
-
-            if (_entries.TryGetValue(id, out var current) && current.ConfigurationKey == configurationKey)
+            if (plan.Action != EntryAction.Rehome)
             {
                 continue;
             }
 
-            if (_entries.ContainsKey(id))
-            {
-                await RetireAsync(id);
-            }
-
-            if (!manifest.Enabled)
-            {
-                _entries[id] = new PluginEntry(manifest, null, configurationKey, component);
-                continue;
-            }
-
-            pending.Add((id, manifest, configurationKey, component));
+            undo.Touch(plan.Id);
+            await ApplyRehomeAsync(plan, undo, batch);
         }
 
         // One decision-domain batch: lifecycle order is unchanged (components
         // are submitted in topological order), but snapshot publication and
         // public replies are coalesced by Core's FlushAwaitingLoads.
-        if (pending.Count == 0)
+        var pending = batch.Ordered
+            .Where(plan => plan.Action == EntryAction.Rebuild && plan.Load)
+            .ToArray();
+        if (pending.Length == 0)
         {
             return;
         }
 
-        var fibers = await _runtime.LoadBatchAsync(pending.Select(item => item.Component));
-        for (var index = 0; index < pending.Count; index++)
+        var fibers = await _runtime.LoadBatchAsync(pending.Select(plan => plan.Component));
+        for (var index = 0; index < pending.Length; index++)
         {
-            var (id, manifest, configurationKey, component) = pending[index];
+            var plan = pending[index];
             var fiber = fibers[index];
-            batch.LoadedFibers.Add(fiber);
-            batch.Applied.Add(component);
+            undo.Created(fiber);
+            batch.Applied.Add(plan.Component);
             if (fiber.State == FiberState.Failed)
             {
                 throw new InvalidOperationException(
-                    $"plugin '{id}' failed to activate", fiber.Failure);
+                    $"plugin '{plan.Id}' failed to activate", fiber.Failure);
             }
 
-            _entries[id] = new PluginEntry(manifest, fiber, configurationKey, component);
+            _entries[plan.Id] = new PluginEntry(plan.Manifest, fiber, plan.Fingerprint, plan.Component);
+            if (plan.SetIntercept)
+            {
+                await _runtime.SetMetaAsync(fiber, EntryMetaKeys.Intercept, plan.Manifest.Intercept ?? string.Empty);
+            }
+
+            if (plan.SetParent)
+            {
+                await _runtime.SetMetaAsync(fiber, EntryMetaKeys.Parent, plan.Manifest.ParentId ?? string.Empty);
+            }
         }
     }
 
-    private async Task RollbackAsync(
-        PreparedBatch batch,
-        IReadOnlyDictionary<string, PluginEntry> previous,
-        Exception commitError)
+    /// <summary>
+    /// Explicit undo record for one Apply. It covers every entry whose
+    /// declaration or fiber the batch touched AND every fiber the batch
+    /// created, including in-place-modified originals (which are NOT part of
+    /// PreparedBatch's loaded fibers). Restoring a touched entry always means
+    /// disposing any fiber it has now and loading a fresh component from its
+    /// previous manifest, so an accepted in-place config edit cannot survive a
+    /// later commit failure, and untouched entries keep their live fibers.
+    /// </summary>
+    private sealed class RegistryUndo
     {
-        var errors = new List<Exception> { commitError };
-        foreach (var fiber in batch.LoadedFibers)
+        private readonly PluginRegistry _owner;
+        private readonly IReadOnlyDictionary<string, PluginEntry> _previous;
+        private readonly HashSet<string> _touched = new(StringComparer.Ordinal);
+        private readonly List<string> _restoreOrder = [];
+        private readonly HashSet<Fiber> _created = new(ReferenceEqualityComparer.Instance);
+        private readonly HashSet<Guid> _createdIds = [];
+        private readonly HashSet<Guid> _fiberIdsBefore;
+        private readonly Dictionary<string, Dictionary<IMetaKey, object?>> _meta = new(StringComparer.Ordinal);
+        private readonly List<Exception> _errors = [];
+
+        public RegistryUndo(PluginRegistry owner, IReadOnlyDictionary<string, PluginEntry> previous)
+        {
+            _owner = owner;
+            _previous = previous;
+            _fiberIdsBefore = owner._runtime.Snapshot().Fibers
+                .Select(fiber => fiber.Id).ToHashSet();
+        }
+
+        public void Touch(string id)
+        {
+            if (_touched.Add(id))
+            {
+                // Commit visits plans in dependency order; restore in that same
+                // order so a provider is back before its consumer is reloaded.
+                _restoreOrder.Add(id);
+                if (_owner._entries.TryGetValue(id, out var entry) && entry.Fiber is { } fiber)
+                {
+                    CaptureMeta(id, fiber);
+                }
+            }
+        }
+
+        public void Created(Fiber fiber)
+        {
+            _created.Add(fiber);
+            _createdIds.Add(fiber.Id);
+        }
+
+        public void CaptureMeta(string id, Fiber fiber)
+        {
+            if (_meta.ContainsKey(id))
+            {
+                return;
+            }
+
+            var values = new Dictionary<IMetaKey, object?>(ReferenceEqualityComparer.Instance);
+            foreach (var key in new IMetaKey[] { EntryMetaKeys.Intercept, EntryMetaKeys.Parent })
+            {
+                values[key] = _owner._runtime.GetMeta(fiber, key);
+            }
+
+            _meta[id] = values;
+        }
+
+        public async Task RollbackAsync(Exception original)
+        {
+            _errors.Add(original);
+
+            // A failed LoadBatchAsync can leave a fiber behind before it
+            // returns, so combine the explicit record with a snapshot diff.
+            // Both sets only contain fibers that did not exist before Apply.
+            var batchFibers = _owner._runtime.Snapshot().Fibers
+                .Where(fiber => !_fiberIdsBefore.Contains(fiber.Id))
+                .Select(fiber => _owner._runtime.GetFiber(fiber.Id))
+                .OfType<Fiber>()
+                .ToArray();
+            foreach (var fiber in batchFibers)
+            {
+                Created(fiber);
+            }
+
+            foreach (var fiber in _created)
+            {
+                await SafeAsync(() => _owner._runtime.DisposeAsync(fiber));
+            }
+
+            foreach (var id in _restoreOrder)
+            {
+                _owner._entries.TryGetValue(id, out var current);
+                _previous.TryGetValue(id, out var before);
+
+                // An in-place-edited original fiber is not in _created: dispose
+                // it explicitly so no stale Active fiber or duplicate provider
+                // survives next to the restored one.
+                if (current?.Fiber is { } live && !_createdIds.Contains(live.Id))
+                {
+                    await SafeAsync(() => _owner._runtime.DisposeAsync(live));
+                }
+
+                if (before is null)
+                {
+                    _owner._entries.Remove(id);
+                    continue;
+                }
+
+                if (before.Fiber is null || !before.Manifest.Enabled)
+                {
+                    _owner._entries[id] = before;
+                    continue;
+                }
+
+                var scratch = new HashSet<Component>(ReferenceEqualityComparer.Instance);
+                try
+                {
+                    var component = _owner.Stage(id, before.Manifest, scratch);
+                    var realm = _owner.RealmFor?.Invoke(before.Manifest.Isolate, id);
+                    var restored = await _owner._runtime.LoadAsync(component, realm: realm);
+                    if (restored.State == FiberState.Failed)
+                    {
+                        throw new InvalidOperationException(
+                            $"rollback could not reactivate '{id}'", restored.Failure);
+                    }
+
+                    if (_meta.TryGetValue(id, out var values))
+                    {
+                        foreach (var (key, value) in values)
+                        {
+                            await SafeAsync(() => _owner._runtime.SetMetaAsync(restored, key, value));
+                        }
+                    }
+
+                    _owner._entries[id] = before with { Component = component, Fiber = restored };
+                }
+                catch (Exception ex)
+                {
+                    _errors.Add(ex);
+                    foreach (var staged in scratch)
+                    {
+                        ReleaseStaged(staged);
+                    }
+
+                    // Keep the declaration; the runtime has no fiber for it now.
+                    _owner._entries[id] = before with { Fiber = null };
+                }
+            }
+
+            if (_errors.Count > 1)
+            {
+                throw new AggregateException("registry rollback encountered additional errors", _errors);
+            }
+        }
+
+        private async Task SafeAsync(Func<Task> action)
         {
             try
             {
-                await _runtime.DisposeAsync(fiber);
+                await action();
             }
             catch (Exception ex)
             {
-                errors.Add(ex);
+                _errors.Add(ex);
             }
-        }
-
-        _entries.Clear();
-        if (previous.Count == 0)
-        {
-            if (errors.Count > 1)
-            {
-                throw new AggregateException("rollback encountered additional errors", errors);
-            }
-
-            return;
-        }
-
-        PreparedBatch? restore = null;
-        try
-        {
-            restore = Prepare(previous.Values.Select(entry => entry.Manifest).ToArray(),
-                rejectProtectedDisable: false);
-            await CommitAsync(restore);
-        }
-        catch (Exception ex)
-        {
-            errors.Add(ex);
-            _entries.Clear();
-        }
-        finally
-        {
-            if (restore is not null)
-            {
-                await ReleaseUnusedStagedAsync(restore);
-            }
-        }
-
-        if (errors.Count > 1)
-        {
-            throw new AggregateException("rollback could not fully restore previous declarations", errors);
         }
     }
 
@@ -709,30 +936,6 @@ public sealed class PluginRegistry : IAsyncDisposable
         return ordered;
     }
 
-    /// <summary>
-    /// Cheap semantic equivalence for fingerprint reuse: compares the same
-    /// fields the fingerprint serializes, without allocating a JSON document
-    /// for an unchanged declaration. Config dictionaries are compared by key
-    /// and value, not by reference (ApplicationLoader creates new records).
-    /// </summary>
-    private static bool ManifestsEquivalent(PluginManifest left, PluginManifest right) =>
-        left.Id == right.Id &&
-        left.Type == right.Type &&
-        left.Enabled == right.Enabled &&
-        left.Version == right.Version &&
-        left.Source == right.Source &&
-        left.Checksum == right.Checksum &&
-        left.Backend == right.Backend &&
-        left.EntryAssembly == right.EntryAssembly &&
-        left.EntryType == right.EntryType &&
-        left.Requires.SequenceEqual(right.Requires, StringComparer.Ordinal) &&
-        left.Provides.SequenceEqual(right.Provides, StringComparer.Ordinal) &&
-        left.CapabilitiesOrEmpty.SequenceEqual(right.CapabilitiesOrEmpty, StringComparer.Ordinal) &&
-        (left.SharedAssemblies ?? []).SequenceEqual(right.SharedAssemblies ?? [], StringComparer.Ordinal) &&
-        left.Config.Count == right.Config.Count &&
-        left.Config.All(pair => right.Config.TryGetValue(pair.Key, out var value) &&
-                                Equals(pair.Value, value));
-
     private static string Fingerprint(PluginManifest manifest)
     {
         var payload = JsonSerializer.Serialize(new
@@ -761,15 +964,38 @@ public sealed class PluginRegistry : IAsyncDisposable
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
     }
 
+    private enum EntryAction
+    {
+        Keep,
+        InPlace,
+        Rehome,
+        Rebuild,
+    }
+
+    /// <summary>One entry's part of the batch plan. Fields whose combination
+    /// would retire the fiber are already resolved into <see cref="Action"/>
+    /// before commit runs.</summary>
+    private sealed class EntryPlan
+    {
+        public required string Id { get; init; }
+        public required PluginManifest Manifest { get; init; }
+        public required EntryDelta Delta { get; init; }
+        public required string Fingerprint { get; init; }
+        public EntryAction Action { get; set; }
+        public required Component Component { get; set; }
+        public Component? Fallback { get; init; }
+        public bool SetIntercept { get; init; }
+        public bool SetParent { get; init; }
+        public bool ApplyConfig { get; set; }
+        public Realm? Realm { get; init; }
+        public bool Load { get; set; }
+    }
+
     private sealed record PreparedBatch(
-        IReadOnlyDictionary<string, PluginManifest> Desired,
-        IReadOnlyDictionary<string, Component> Staged,
-        IReadOnlyList<(string Id, Component Component)> Ordered,
-        IReadOnlyDictionary<string, string> Fingerprints,
+        IReadOnlyDictionary<string, Component> ById,
+        IReadOnlyList<EntryPlan> Ordered,
         IReadOnlyCollection<Component> NewlyStaged)
     {
-        internal List<Fiber> LoadedFibers { get; } = [];
-
         internal HashSet<Component> Applied { get; } = new(ReferenceEqualityComparer.Instance);
     }
 }

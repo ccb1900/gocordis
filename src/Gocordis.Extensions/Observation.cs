@@ -1,10 +1,12 @@
 using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 
 namespace Gocordis.Extensions;
 
 /// <summary>
-/// The requested anchor predates the retained ring: the gap cannot be replayed.
-/// Re-snapshot and re-anchor at <see cref="ObservationLog{T}.LatestSequence"/>.
+/// The requested anchor predates the retained ring by more than one event: the
+/// gap cannot be replayed. Re-snapshot and re-anchor at
+/// <see cref="ObservationLog{T}.LatestSequence"/>.
 /// Mirrors Go's events.ErrSequenceTooOld.
 /// </summary>
 public sealed class SequenceTooOldException : InvalidOperationException
@@ -100,31 +102,43 @@ public sealed class ObservationLog<T> : IDisposable
     }
 
     /// <summary>
-    /// Replays retained events with Sequence >= from, then streams live events.
-    /// from = 0 starts from the oldest retained event. A from older than the
-    /// retained ring is rejected with <see cref="SequenceTooOldException"/>.
+    /// Starts a subscription anchored at <paramref name="from"/>: the LAST
+    /// sequence the consumer has already consumed (the value paired with a
+    /// runtime snapshot's EventSequence). Retained events with Sequence &gt;
+    /// from are replayed in order, then live events stream; the anchor itself
+    /// is never replayed. That makes Subscribe(0) the "oldest retained"
+    /// sentinel, Subscribe(1) after consuming event 1 a replay of 2,3, and
+    /// Subscribe(LatestSequence) a live-only stream.
+    ///
+    /// An anchor older than the event immediately preceding the retained ring
+    /// (from &lt; OldestSequence - 1) is rejected with
+    /// <see cref="SequenceTooOldException"/>: the gap cannot be replayed, so
+    /// the consumer must re-snapshot and re-anchor at LatestSequence.
     /// </summary>
     public ObservationSubscription<T> Subscribe(long from)
     {
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            // 0 is the documented "oldest retained" sentinel, never a stale
-            // anchor. Only explicit positive anchors can be too old.
-            var replayFrom = from == 0 && _ring.Count > 0 ? _ring.Peek().Sequence : from;
-            if (from != 0 && _ring.Count > 0 && from < _ring.Peek().Sequence)
+            ArgumentOutOfRangeException.ThrowIfNegative(from);
+            var oldest = _ring.Count == 0 ? 0 : _ring.Peek().Sequence;
+            // from is the last CONSUMED sequence, not the first one to receive.
+            // A one-behind anchor is valid (replay starts at oldest); anything
+            // older left an unreplayable gap in the dropped ring prefix.
+            if (from != 0 && oldest != 0 && from < oldest - 1)
             {
-                throw new SequenceTooOldException(from, _ring.Peek().Sequence);
+                throw new SequenceTooOldException(from, oldest);
             }
 
-            var subscription = new ObservationSubscription<T>(this, _queueLimit);
+            var subscription = new ObservationSubscription<T>(this, _queueLimit, _ringCapacity);
             foreach (var ev in _ring)
             {
-                if (ev.Sequence >= replayFrom)
+                if (ev.Sequence > from)
                 {
                     subscription.Enqueue(ev, replay: true);
                 }
             }
+
             _subscribers.Add(subscription);
             return subscription;
         }
@@ -163,8 +177,10 @@ public sealed class ObservationLog<T> : IDisposable
 }
 
 /// <summary>
-/// One live observation episode. Queued replay and live events drain in
-/// Sequence order; once the bounded queue is exceeded the subscription records
+/// One live observation episode. Replay and live events are held in a bounded
+/// <see cref="Channel{T}"/>; TryRead drains them in Sequence order, an
+/// asynchronous WaitToReadAsync replaces polling, and a slow subscriber that
+/// exceeds the live queue limit records
 /// <see cref="SubscriptionOverflowException"/> as its terminal cause.
 /// </summary>
 public sealed class ObservationSubscription<T> : IDisposable
@@ -172,14 +188,24 @@ public sealed class ObservationSubscription<T> : IDisposable
     private readonly ObservationLog<T> _log;
     private readonly int _queueLimit;
     private readonly object _sync = new();
-    private readonly Queue<(long Sequence, T Item)> _queue = new();
+    // Sized for the whole ring so replay can always be spooled without
+    // overflowing; live fan-out is bounded separately by _queueLimit.
+    private readonly Channel<(long Sequence, T Item)> _events;
     private bool _closed;
     private Exception? _error;
 
-    internal ObservationSubscription(ObservationLog<T> log, int queueLimit)
+    internal ObservationSubscription(ObservationLog<T> log, int queueLimit, int replayCapacity)
     {
         _log = log;
         _queueLimit = queueLimit;
+        _events = Channel.CreateBounded<(long Sequence, T Item)>(
+            new BoundedChannelOptions(Math.Max(queueLimit, replayCapacity))
+            {
+                SingleReader = false,
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.Wait,
+                AllowSynchronousContinuations = false,
+            });
     }
 
     /// <summary>Terminal cause: overflow error, or null for a healthy/closed stream.</summary>
@@ -198,7 +224,13 @@ public sealed class ObservationSubscription<T> : IDisposable
     {
         lock (_sync)
         {
+            if (_closed)
+            {
+                return;
+            }
+
             _closed = true;
+            _events.Writer.TryComplete();
         }
     }
 
@@ -210,29 +242,50 @@ public sealed class ObservationSubscription<T> : IDisposable
             {
                 return;
             }
-            // Replay is bounded by the ring capacity and must never overflow:
-            // a reconnect gap is spooled in full before live fan-out begins.
-            if (!replay && _queue.Count >= _queueLimit)
+            // Replay is bounded by the ring capacity (the channel is sized for
+            // it) and must never overflow: a reconnect gap is spooled in full
+            // before live fan-out begins.
+            if (!replay && _events.Reader.Count >= _queueLimit)
             {
-                _error = new SubscriptionOverflowException();
+                TerminateWithOverflow();
                 return;
             }
-            _queue.Enqueue(ev);
+
+            // TryWrite never blocks the emitter; a full bounded channel means
+            // the subscriber fell behind and must be terminated.
+            if (!_events.Writer.TryWrite(ev))
+            {
+                TerminateWithOverflow();
+            }
         }
+    }
+
+    private void TerminateWithOverflow()
+    {
+        _error = new SubscriptionOverflowException();
+        // Complete successfully (the terminal cause lives in _error): waiters
+        // wake up, buffered events drain in order, then EventsAsync throws the
+        // overflow error from the state check. No polling, no emitter blocking.
+        _events.Writer.TryComplete();
     }
 
     public bool TryRead(out (long Sequence, T Item) item)
     {
         lock (_sync)
         {
-            if (_queue.Count > 0)
+            return _events.Reader.TryRead(out item);
+        }
+    }
+
+    private (Exception? Error, bool Closed) State
+    {
+        get
+        {
+            lock (_sync)
             {
-                item = _queue.Dequeue();
-                return true;
+                return (_error, _closed);
             }
         }
-        item = default;
-        return false;
     }
 
     public async IAsyncEnumerable<(long Sequence, T Item)> EventsAsync(
@@ -247,32 +300,34 @@ public sealed class ObservationSubscription<T> : IDisposable
                 continue;
             }
 
-            var error = Error;
+            var (error, closed) = State;
             if (error is not null)
             {
                 throw error;
             }
 
-            bool closed;
-            lock (_sync)
-            {
-                closed = _closed;
-            }
             if (closed)
             {
                 yield break;
             }
 
-            await Task.Delay(1, token);
+            // A bounded channel supplies the wake-up: Publish, overflow and
+            // close all write to or complete it, so no polling delay is needed.
+            try
+            {
+                await _events.Reader.WaitToReadAsync(token);
+            }
+            catch (ChannelClosedException)
+            {
+                // Completed by overflow/close; the loop re-checks _error and
+                // _closed above and either throws or completes the stream.
+            }
         }
     }
 
     public void Dispose()
     {
-        lock (_sync)
-        {
-            _closed = true;
-        }
+        CloseFromLog();
         _log.Remove(this);
     }
 }

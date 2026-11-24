@@ -151,6 +151,7 @@ public sealed class SharedContractPackagingTests
                 <TargetFramework>net10.0</TargetFramework>
                 <ImplicitUsings>enable</ImplicitUsings>
                 <AssemblyName>Shared.Contracts</AssemblyName>
+                <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
               </PropertyGroup>
               <ItemGroup>
                 <Reference Include="Gocordis.Core"><HintPath>{root}/src/Gocordis.Core/bin/Debug/net10.0/Gocordis.Core.dll</HintPath></Reference>

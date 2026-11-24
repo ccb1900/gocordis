@@ -354,6 +354,14 @@ public class PlatformApplication : IAsyncDisposable
                 loaderKey += ":" + DeclarationFingerprint(
                     manifest.CapabilitiesOrEmpty, sharedAssemblies);
             }
+            // HMR may replace the payload at the same id/version/config. The
+            // loader key must therefore include the resolved source directory,
+            // otherwise Prepare stages a component while the old ALC is still
+            // loaded and ManagedPluginLoader rejects the duplicate identity.
+            if (!string.IsNullOrWhiteSpace(manifest.Source))
+            {
+                loaderKey += ":" + SourceFingerprint(manifest.Source);
+            }
             return Managed.CreateComponent(
                 loaderKey, assemblyPath, manifest.EntryType, manifest.SharedAssemblies, Capabilities);
         }
@@ -494,6 +502,15 @@ public class PlatformApplication : IAsyncDisposable
         };
         var bytes = System.Text.Encoding.UTF8.GetBytes(
             System.Text.Json.JsonSerializer.Serialize(canonical));
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..12].ToLowerInvariant();
+    }
+
+    /// <summary>Stable fingerprint of the payload root; HMR can replace bytes
+    /// without changing the declared version.</summary>
+    private static string SourceFingerprint(string source)
+    {
+        var normalized = Path.GetFullPath(source);
+        var bytes = System.Text.Encoding.UTF8.GetBytes(normalized);
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..12].ToLowerInvariant();
     }
 
@@ -715,34 +732,12 @@ public class PlatformApplication : IAsyncDisposable
         {
             // A remote HMR caller must not be able to point a plugin factory at
             // an arbitrary host path. Only payloads inside this host's store are
-            // valid replacement sources.
-            var fullSource = Path.GetFullPath(source);
-            // Resolve an in-store symlink to its real target before checking
-            // containment, so a link cannot escape the store.
-            FileSystemInfo candidate = new FileInfo(fullSource);
-            if (!candidate.Exists)
-            {
-                candidate = new DirectoryInfo(fullSource);
-            }
-
-            if (candidate.Exists && candidate.LinkTarget is not null &&
-                candidate.ResolveLinkTarget(returnFinalTarget: true) is { } target)
-            {
-                fullSource = Path.GetFullPath(target.FullName);
-            }
-
-            var storeRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_options.StorePath));
-            var relative = Path.GetRelativePath(storeRoot, fullSource);
-            var insideStore = !Path.IsPathRooted(relative) &&
-                              relative != ".." &&
-                              !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal);
-            if (!insideStore)
-            {
-                throw new InvalidOperationException(
-                    "HMR replacement source must be inside the configured plugin store");
-            }
-
-            source = fullSource;
+            // valid replacement sources. Resolve the store AND every existing
+            // segment of the source (Unix symlinks, Windows junctions/reparse
+            // points) before deciding containment: checking only the final
+            // entry lets store/plugins/external -> /outside look in-store while
+            // actually loading from outside.
+            source = ResolveHmrSource(source, ResolveRealPath(_options.StorePath));
         }
 
         var version = replacement?["version"]?.GetValue<string>();
@@ -765,6 +760,141 @@ public class PlatformApplication : IAsyncDisposable
                 return next;
             },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Validate twice: the filesystem may change between the containment
+    /// decision and the eventual open. A retargeted link or a vanished payload
+    /// must fail closed instead of being loaded under a stale decision. The
+    /// string-based plugin factory API has no openat-style handle to pin the
+    /// file, so the second observation and passing the RESOLVED path (not the
+    /// caller's lexical path) are the available mitigations.
+    /// </summary>
+    private static string ResolveHmrSource(string source, string realStoreRoot)
+    {
+        var realSource = ResolveRealPath(source);
+        EnsureInsideStore(realStoreRoot, realSource);
+
+        if (!File.Exists(realSource) && !Directory.Exists(realSource))
+        {
+            throw new InvalidOperationException("HMR replacement source does not exist");
+        }
+
+        var rechecked = ResolveRealPath(source);
+        EnsureInsideStore(realStoreRoot, rechecked);
+        if (!string.Equals(rechecked, realSource, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "HMR replacement source changed while it was being validated");
+        }
+
+        return rechecked;
+    }
+
+    private static void EnsureInsideStore(string realStoreRoot, string candidate)
+    {
+        var relative = Path.GetRelativePath(realStoreRoot, candidate);
+        var outside = Path.IsPathRooted(relative) ||
+                      relative == ".." ||
+                      relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+                      relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal);
+        if (outside)
+        {
+            throw new InvalidOperationException(
+                "HMR replacement source must be inside the configured plugin store");
+        }
+    }
+
+    /// <summary>
+    /// Canonicalize as the OS would: walk each segment and follow links when
+    /// they are encountered, so a later ".." applies to the link's target and
+    /// not to the lexical spelling. Path.GetFullPath alone never resolves links.
+    /// </summary>
+    private static string ResolveRealPath(string path, int depth = 0)
+    {
+        if (depth > 40)
+        {
+            throw new InvalidOperationException("HMR replacement source has a symlink cycle");
+        }
+
+        var full = Path.IsPathRooted(path)
+            ? path
+            : Path.Combine(System.Environment.CurrentDirectory, path);
+        var root = Path.GetPathRoot(full);
+        if (string.IsNullOrEmpty(root))
+        {
+            return Path.GetFullPath(full);
+        }
+
+        // Windows callers may spell paths with '/'; normalize before walking
+        // so no segment hides a separator (and a link) from the resolver.
+        var normalized = full.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+        var real = root;
+        foreach (var segment in normalized[root.Length..].Split(
+                     Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (segment == ".")
+            {
+                continue;
+            }
+
+            if (segment == "..")
+            {
+                real = Path.GetFullPath(Path.Combine(real, ".."));
+                continue;
+            }
+
+            var candidate = Path.Combine(real, segment);
+            var link = LinkTarget(candidate);
+            real = link is null ? candidate : ResolveFinalTarget(candidate, link, depth);
+        }
+
+        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(real));
+    }
+
+    /// <summary>
+    /// Read the link target even for a dangling link (Exists is false there)
+    /// and for Windows junctions, which are reparse points on directories.
+    /// </summary>
+    private static string? LinkTarget(string candidate)
+    {
+        try
+        {
+            return new FileInfo(candidate).LinkTarget ?? new DirectoryInfo(candidate).LinkTarget;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                   System.Security.SecurityException)
+        {
+            // Fail closed: an unreadable segment cannot be proven in-store.
+            throw new InvalidOperationException(
+                $"cannot inspect HMR path segment '{candidate}'", ex);
+        }
+    }
+
+    private static string ResolveFinalTarget(string linkPath, string target, int depth)
+    {
+        try
+        {
+            FileSystemInfo info = new FileInfo(linkPath);
+            info = info.LinkTarget is null ? new DirectoryInfo(linkPath) : info;
+            var final = info.ResolveLinkTarget(returnFinalTarget: true);
+            if (final is not null && !string.IsNullOrWhiteSpace(final.FullName))
+            {
+                return ResolveRealPath(final.FullName, depth + 1);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                   System.Security.SecurityException)
+        {
+            // A dangling link has no resolvable final target; fall back to its
+            // lexical target and resolve that segment by segment so a relative
+            // target or a linked parent directory cannot bypass containment.
+        }
+
+        var lexical = Path.IsPathRooted(target)
+            ? target
+            : Path.Combine(Path.GetDirectoryName(linkPath)!, target);
+        return ResolveRealPath(lexical, depth + 1);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)

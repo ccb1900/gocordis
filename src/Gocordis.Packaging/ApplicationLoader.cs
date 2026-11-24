@@ -71,12 +71,49 @@ public sealed record ApplicationManifest(
     }
 }
 
+/// <summary>An Include file is (transitively) including itself.</summary>
+public sealed class IncludeCycleException : InvalidOperationException
+{
+    public IncludeCycleException(IReadOnlyList<string> cycle)
+        : base($"application Include cycle: {string.Join(" -> ", cycle)}")
+    {
+        Cycle = cycle;
+    }
+
+    /// <summary>Normalized full paths from the repeated edge back to itself.</summary>
+    public IReadOnlyList<string> Cycle { get; }
+}
+
+/// <summary>Include nesting exceeded the loader's safety limit.</summary>
+public sealed class IncludeDepthLimitException : InvalidOperationException
+{
+    public IncludeDepthLimitException(int maxDepth, string path)
+        : base($"application Include depth exceeded {maxDepth} while loading '{path}'")
+    {
+        MaxDepth = maxDepth;
+        Path = path;
+    }
+
+    public int MaxDepth { get; }
+
+    public string Path { get; }
+}
+
 /// <summary>
 /// Turns an application declaration into PluginRegistry declarations. It does
 /// not own fibers and never writes runtime state directly.
 /// </summary>
 public sealed class ApplicationLoader
 {
+    /// <summary>Maximum nested Include depth; deeper trees fail explicitly
+    /// instead of recursing until the process stack overflows.</summary>
+    public const int MaxIncludeDepth = 32;
+
+    private static readonly StringComparer PathComparer =
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+
     private readonly PluginStore _store;
     private readonly PluginRegistry _registry;
 
@@ -105,26 +142,64 @@ public sealed class ApplicationLoader
     /// set Core consumes. Group nodes are structural (children carry the
     /// parent id); Include nodes graft an external JSON entry list. No component
     /// is instantiated here and no Runtime command is issued.
+    ///
+    /// Include paths are resolved against <see cref="ApplicationManifest.SourcePath"/>
+    /// and normalized with <see cref="Path.GetFullPath(string)"/> before use. A
+    /// path already on the current recursion stack is a cycle and fails with
+    /// <see cref="IncludeCycleException"/>; nesting past
+    /// <see cref="MaxIncludeDepth"/> fails with <see cref="IncludeDepthLimitException"/>.
+    /// A repeated Include outside the current stack is ignored: the first
+    /// expansion owns its declarations and parent linkage. Explicit flat
+    /// declarations still override entry-derived ones for the same id.
     /// </summary>
-    private static async Task<IReadOnlyList<ApplicationPlugin>> EffectivePluginsAsync(
-        ApplicationManifest application, CancellationToken cancellationToken)
+    public static async Task<IReadOnlyList<ApplicationPlugin>> EffectivePluginsAsync(
+        ApplicationManifest application, CancellationToken cancellationToken = default)
     {
         var result = new Dictionary<string, ApplicationPlugin>(StringComparer.Ordinal);
+        var includeStack = new List<string>();
+        var expandedIncludes = new HashSet<string>(PathComparer);
+        var basePath = Path.GetDirectoryName(application.SourcePath ?? string.Empty) ?? string.Empty;
 
         async Task AddNode(EntryNode node, string? parentId)
         {
             if (node.Include is { } include)
             {
-                var basePath = Path.GetDirectoryName(application.SourcePath ?? string.Empty) ?? string.Empty;
-                var includePath = Path.IsPathRooted(include)
+                var includePath = Path.GetFullPath(Path.IsPathRooted(include)
                     ? include
-                    : Path.Combine(basePath, include);
-                var json = await File.ReadAllTextAsync(includePath, cancellationToken);
-                var included = JsonSerializer.Deserialize<List<EntryNode>>(json, IncludeOptions) ?? [];
-                foreach (var child in included)
+                    : Path.Combine(basePath, include));
+                var stackIndex = includeStack.FindIndex(path => PathComparer.Equals(path, includePath));
+                if (stackIndex >= 0)
                 {
-                    await AddNode(child, parentId);
+                    // Report the concrete cycle chain, not a generic recursion
+                    // failure; callers can fix the offending manifest edge.
+                    var cycle = includeStack.Skip(stackIndex).Append(includePath).ToArray();
+                    throw new IncludeCycleException(cycle);
                 }
+
+                if (expandedIncludes.Add(includePath))
+                {
+                    includeStack.Add(includePath);
+                    try
+                    {
+                        if (includeStack.Count > MaxIncludeDepth)
+                        {
+                            throw new IncludeDepthLimitException(MaxIncludeDepth, includePath);
+                        }
+
+                        var json = await File.ReadAllTextAsync(includePath, cancellationToken);
+                        var included = JsonSerializer.Deserialize<List<EntryNode>>(json, IncludeOptions) ?? [];
+                        foreach (var child in included)
+                        {
+                            await AddNode(child, parentId);
+                        }
+                    }
+                    finally
+                    {
+                        includeStack.RemoveAt(includeStack.Count - 1);
+                    }
+                }
+                // Repeated include (already expanded on another branch): skip
+                // it; declaration priority follows the first occurrence.
             }
 
             foreach (var child in node.Children ?? [])

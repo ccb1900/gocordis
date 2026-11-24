@@ -61,7 +61,8 @@ public sealed class BrokerObserveGapTests
         Assert.Equal(6, log.LatestSequence);
         Assert.Throws<SequenceTooOldException>(() => log.Subscribe(1));
 
-        using var subscription = log.Subscribe(5);
+        // `from` is the last consumed sequence: replay starts strictly after it.
+        using var subscription = log.Subscribe(4);
         Assert.True(subscription.TryRead(out var first));
         Assert.Equal(5, first.Sequence);
         Assert.Equal(5, first.Item);

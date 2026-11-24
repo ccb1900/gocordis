@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Industrial.Contracts/Industrial.Contracts.csproj" />
+    <Project Path="src/Industrial.Core/Industrial.Core.csproj" />
+    <Project Path="src/Industrial.Elsa/Industrial.Elsa.csproj" />
+    <Project Path="src/Industrial.Host/Industrial.Host.csproj" />
+    <Project Path="src/Industrial.PackagedHost/Industrial.PackagedHost.csproj" />
+    <Project Path="src/Industrial.Persistence/Industrial.Persistence.csproj" />
+    <Project Path="src/Industrial.Plugins/Industrial.Plugins.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Industrial.Tests/Industrial.Tests.csproj" />
+  </Folder>
+</Solution>

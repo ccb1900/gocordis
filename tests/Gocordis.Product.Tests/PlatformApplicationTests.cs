@@ -248,6 +248,28 @@ public sealed class PlatformApplicationTests
     }
 
     [Fact]
+    public async Task RepeatedStartStopLeavesNoFiberOrListenerResidue()
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        var options = new PlatformHostOptions(manifestPath, temp.Path("store"),
+            Address: "http://127.0.0.1:0", HostVersion: "1.5.0");
+
+        for (var round = 0; round < 4; round++)
+        {
+            var app = new PlatformApplication(options);
+            await app.StartAsync();
+            Assert.NotEmpty(app.Runtime.Snapshot().Fibers);
+            Assert.NotNull(app.Address);
+
+            await app.StopAsync();
+            Assert.Empty(app.Runtime.Snapshot().Fibers);
+            await app.DisposeAsync();
+            Assert.Empty(app.Runtime.Snapshot().Fibers);
+        }
+    }
+
+    [Fact]
     public async Task RuntimeSnapshotQueryExposesInspectorFields()
     {
         using var temp = new TempDir();

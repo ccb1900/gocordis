@@ -188,3 +188,22 @@ public interface IRouteGuardService : IAsyncDisposable
     bool IsAllowed(string method, string path, string host, string? pattern = null);
     bool IsAllowed(RouteSnapshot route);
 }
+
+/// <summary>
+/// Mount-backed filesystem provider. Path arguments are already scoped by the
+/// service's mount table; each provider interprets them in its own namespace.
+/// </summary>
+public interface IFileSystemProvider : IAsyncDisposable
+{
+    string Scheme { get; }
+    Task<byte[]> ReadAsync(string path);
+    Task<byte[]> ReadRangeAsync(string path, long offset, int count);
+    Task WriteAsync(string path, byte[] content, FileWriteOptions options);
+    Task<bool> ExistsAsync(string path);
+    Task<IReadOnlyList<string>> ListAsync(string path);
+    Task MkdirAsync(string path, bool recursive);
+    Task RemoveAsync(string path, bool recursive);
+    Task CopyAsync(string source, string destination, FileCopyOptions options);
+    Task MoveAsync(string source, string destination);
+    IDisposable Watch(string path, Action<string> onChange);
+}

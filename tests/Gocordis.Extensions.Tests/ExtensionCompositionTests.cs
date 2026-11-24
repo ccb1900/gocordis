@@ -120,6 +120,42 @@ public sealed class ExtensionCompositionTests
     }
 
     [Fact]
+    public async Task MemoryProviderSupportsReadWriteWatchAndUnmount()
+    {
+        await using var fs = new FileSystemService();
+        fs.MountMemory("/mem");
+        await fs.WriteAllTextAsync("/mem/a.txt", "hello");
+        Assert.Equal("hello", await fs.ReadAllTextAsync("/mem/a.txt"));
+
+        var observed = 0;
+        using var watch = fs.Watch("/mem/a.txt", _ => observed++);
+        await fs.WriteAllTextAsync("/mem/a.txt", "world");
+        await WaitForAsync(() => Volatile.Read(ref observed) > 0);
+        Assert.True(observed > 0);
+
+        Assert.True(fs.Unmount("/mem"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fs.ReadAllTextAsync("/mem/a.txt"));
+    }
+
+    [Fact]
+    public async Task MountScopedHandlesAreIdentitySafeOnRemount()
+    {
+        using var temp = new TempDir();
+        var firstRoot = Path.Combine(temp.Root, "first");
+        var secondRoot = Path.Combine(temp.Root, "second");
+        Directory.CreateDirectory(firstRoot);
+        Directory.CreateDirectory(secondRoot);
+        await using var fs = new FileSystemService();
+        using var first = fs.MountScoped("/data", firstRoot);
+        using var second = fs.MountScoped("/data", secondRoot);
+        await fs.WriteAllTextAsync("/data/answer.txt", "second");
+
+        first.Dispose(); // must not unmount the newer registration
+        Assert.Equal("second", await fs.ReadAllTextAsync("/data/answer.txt"));
+        Assert.True(fs.Unmount("/data"));
+    }
+
+    [Fact]
     public async Task WatchOwnedAsyncUnwindsWithItsOwnerAndStopsCallbacks()
     {
         await using var runtime = new Runtime();

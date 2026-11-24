@@ -7,387 +7,210 @@ using System.Text;
 
 namespace Gocordis.Extensions;
 
-/// <summary>Mount-routed filesystem with path-escape guard and reversible watchers.</summary>
+/// <summary>
+/// Mount router over mount-owned filesystem providers. Path policy (longest
+/// prefix, boundary matching, case rules) stays in the service; each provider
+/// owns its resource semantics (local disk or in-memory tree).
+/// </summary>
 public sealed class FileSystemService : IAsyncDisposable, IFileSystemService
 {
-    private readonly Dictionary<string, string> _mounts = new(StringComparer.Ordinal);
-    private readonly List<FileSystemWatcher> _watchers = [];
-    private readonly object _mountsSync = new();
-    private readonly object _watchersSync = new();
+    private readonly object _sync = new();
+    private readonly Dictionary<string, MountEntry> _mounts = new(StringComparer.Ordinal);
 
-    public void Mount(string prefix, string root)
+    private sealed record MountEntry(IFileSystemProvider Provider, bool Owns, Guid Token);
+
+    public void Mount(string prefix, string root) =>
+        MountProvider(prefix, new LocalFileSystemProvider(root), owns: true);
+
+    /// <summary>Mounts a provider under a prefix; the service owns it when owns is true.</summary>
+    public void MountProvider(string prefix, IFileSystemProvider provider, bool owns = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prefix);
-        lock (_mountsSync)
+        ArgumentNullException.ThrowIfNull(provider);
+        lock (_sync)
         {
-            _mounts[prefix] = Path.GetFullPath(root);
+            if (_mounts.TryGetValue(prefix, out var existing) && existing.Owns)
+            {
+                existing.Provider.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+
+            _mounts[prefix] = new MountEntry(provider, owns, Guid.NewGuid());
         }
     }
 
-    /// <summary>Mounts a root and returns a handle that removes only this mount.</summary>
+    /// <summary>Mounts an in-memory tree; seeds are (path, bytes) pairs.</summary>
+    public void MountMemory(string prefix, IEnumerable<KeyValuePair<string, byte[]>>? seeds = null) =>
+        MountProvider(prefix, new MemoryFileSystemProvider(seeds), owns: true);
+
     public IDisposable MountScoped(string prefix, string root)
     {
         Mount(prefix, root);
-        return new Subscription(() => Unmount(prefix));
-    }
-
-    public bool Unmount(string prefix)
-    {
-        lock (_mountsSync)
+        Guid token;
+        lock (_sync)
         {
-            return _mounts.Remove(prefix);
+            token = _mounts[prefix].Token;
         }
+
+        return new Subscription(() => Unmount(prefix, token));
     }
 
-    // Mount prefixes must match on a path BOUNDARY, not as a raw string prefix:
-    // "data" must not capture "database/config". Windows paths are
-    // case-insensitive (P1-4).
+    public bool Unmount(string prefix) => Unmount(prefix, null);
+
+    private bool Unmount(string prefix, Guid? token)
+    {
+        MountEntry? removed = null;
+        lock (_sync)
+        {
+            if (_mounts.TryGetValue(prefix, out var entry) &&
+                (token is null || entry.Token == token.Value))
+            {
+                removed = entry;
+                _mounts.Remove(prefix);
+            }
+        }
+
+        if (removed is { Owns: true })
+        {
+            removed.Provider.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+
+        return removed is not null;
+    }
+
     private static bool PrefixMatches(string path, string prefix, StringComparison comparison) =>
         path.Equals(prefix, comparison) ||
         path.StartsWith(prefix + "/", comparison) ||
         path.StartsWith(prefix + "\\", comparison);
 
-    public Task WriteAsync(string path, byte[] content) =>
-        WriteAsync(path, content, new FileWriteOptions());
-
-    public async Task WriteAsync(string path, byte[] content, FileWriteOptions options)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        var resolved = Resolve(path);
-        var directory = Path.GetDirectoryName(resolved)!;
-        Directory.CreateDirectory(directory);
-
-        if (!options.Atomic)
-        {
-            var mode = options.Exclusive ? FileMode.CreateNew : FileMode.Create;
-            await using var file = new FileStream(resolved, mode, FileAccess.Write, FileShare.None,
-                4096, FileOptions.Asynchronous);
-            await file.WriteAsync(content);
-            return;
-        }
-
-        // Atomic writes stage in the destination directory, then publish with a
-        // same-volume move. Exclusive atomic writes use the non-overwriting move.
-        var temp = Path.Combine(directory,
-            $".{Path.GetFileName(resolved)}.gocordis-tmp-{Guid.NewGuid():N}");
-        try
-        {
-            await using (var staged = new FileStream(temp, FileMode.CreateNew, FileAccess.Write,
-                             FileShare.None, 4096, FileOptions.Asynchronous))
-            {
-                await staged.WriteAsync(content);
-            }
-
-            File.Move(temp, resolved, overwrite: !options.Exclusive);
-            temp = null!;
-        }
-        finally
-        {
-            if (temp is not null && File.Exists(temp))
-            {
-                File.Delete(temp);
-            }
-        }
-    }
-
-    public Task<byte[]> ReadAsync(string path) => File.ReadAllBytesAsync(Resolve(path));
-
-    /// <summary>Reads the entire file. Named after the BCL for discoverability.</summary>
-    public Task<byte[]> ReadAllBytesAsync(string path) => ReadAsync(path);
-
-    public async Task<string> ReadAllTextAsync(string path) => Encoding.UTF8.GetString(await ReadAsync(path));
-
-    public async Task WriteAllTextAsync(string path, string content) =>
-        await WriteAsync(path, Encoding.UTF8.GetBytes(content));
-
-    public async Task WriteAllTextAsync(string path, string content, FileWriteOptions options) =>
-        await WriteAsync(path, Encoding.UTF8.GetBytes(content), options);
-
-    /// <summary>
-    /// Reads at most <paramref name="count"/> bytes from <paramref name="offset"/>.
-    /// A negative count reads to end of file; an offset past EOF yields an empty result.
-    /// </summary>
-    public async Task<byte[]> ReadRangeAsync(string path, long offset, int count)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegative(offset);
-        var resolved = Resolve(path);
-        await using var file = new FileStream(resolved, FileMode.Open, FileAccess.Read, FileShare.Read,
-            4096, FileOptions.Asynchronous);
-        if (offset > 0)
-        {
-            file.Seek(offset, SeekOrigin.Begin);
-        }
-
-        using var collected = new MemoryStream();
-        var buffer = new byte[8192];
-        var remaining = count < 0 ? long.MaxValue : (long)count;
-        while (remaining > 0)
-        {
-            var wanted = (int)Math.Min(buffer.Length, remaining);
-            var read = await file.ReadAsync(buffer.AsMemory(0, wanted));
-            if (read == 0)
-            {
-                break;
-            }
-
-            await collected.WriteAsync(buffer.AsMemory(0, read));
-            remaining -= read;
-        }
-
-        return collected.ToArray();
-    }
-
-    /// <summary>Deletes a file or directory. Non-recursive deletion of a non-empty directory fails.</summary>
-    public Task RemoveAsync(string path, bool recursive = false)
-    {
-        var resolved = Resolve(path);
-        if (Directory.Exists(resolved))
-        {
-            Directory.Delete(resolved, recursive);
-        }
-        else if (File.Exists(resolved))
-        {
-            File.Delete(resolved);
-        }
-        else
-        {
-            throw new FileNotFoundException($"no such file or directory: '{path}'");
-        }
-
-        return Task.CompletedTask;
-    }
-
-    /// <summary>Creates a directory; with recursive: false a missing parent is an error.</summary>
-    public Task MkdirAsync(string path, bool recursive = false)
-    {
-        var resolved = Resolve(path);
-        if (!recursive)
-        {
-            var trimmed = resolved.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            var parent = Path.GetDirectoryName(trimmed);
-            if (parent is not null && !Directory.Exists(parent))
-            {
-                throw new DirectoryNotFoundException($"parent directory does not exist: '{path}'");
-            }
-        }
-
-        Directory.CreateDirectory(resolved);
-        return Task.CompletedTask;
-    }
-
-    /// <summary>Copies within the mounted namespace; an existing destination needs overwrite: true.</summary>
-    public Task CopyAsync(string source, string destination, bool overwrite = false) =>
-        CopyAsync(source, destination, new FileCopyOptions(Overwrite: overwrite));
-
-    public async Task CopyAsync(string source, string destination, FileCopyOptions options)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        var from = Resolve(source);
-        var to = Resolve(destination);
-        var directory = Path.GetDirectoryName(to)!;
-        Directory.CreateDirectory(directory);
-
-        if (!options.Atomic)
-        {
-            var mode = options.Exclusive || !options.Overwrite
-                ? FileMode.CreateNew
-                : FileMode.Create;
-            await using var input = new FileStream(from, FileMode.Open, FileAccess.Read, FileShare.Read,
-                4096, FileOptions.Asynchronous);
-            await using var output = new FileStream(to, mode, FileAccess.Write, FileShare.None,
-                4096, FileOptions.Asynchronous);
-            await input.CopyToAsync(output);
-            return;
-        }
-
-        var temp = Path.Combine(directory,
-            $".{Path.GetFileName(to)}.gocordis-tmp-{Guid.NewGuid():N}");
-        try
-        {
-            await using (var input = new FileStream(from, FileMode.Open, FileAccess.Read, FileShare.Read,
-                             4096, FileOptions.Asynchronous))
-            await using (var staged = new FileStream(temp, FileMode.CreateNew, FileAccess.Write,
-                             FileShare.None, 4096, FileOptions.Asynchronous))
-            {
-                await input.CopyToAsync(staged);
-            }
-
-            File.Move(temp, to, overwrite: options.Overwrite && !options.Exclusive);
-            temp = null!;
-        }
-        finally
-        {
-            if (temp is not null && File.Exists(temp))
-            {
-                File.Delete(temp);
-            }
-        }
-    }
-
-
-    /// <summary>Moves a file or directory within the mounted namespace.</summary>
-    public Task MoveAsync(string source, string destination)
-    {
-        var from = Resolve(source);
-        var to = Resolve(destination);
-        Directory.CreateDirectory(Path.GetDirectoryName(to)!);
-        if (Directory.Exists(from))
-        {
-            Directory.Move(from, to);
-        }
-        else
-        {
-            File.Move(from, to);
-        }
-
-        return Task.CompletedTask;
-    }
-
-    public Task<bool> ExistsAsync(string path)
-    {
-        var resolved = Resolve(path);
-        return Task.FromResult(File.Exists(resolved) || Directory.Exists(resolved));
-    }
-
-    public Task<IReadOnlyList<string>> ListAsync(string path)
-    {
-        var resolved = Resolve(path);
-        if (!Directory.Exists(resolved))
-        {
-            throw new DirectoryNotFoundException($"no such directory: '{path}'");
-        }
-
-        IReadOnlyList<string> names = Directory.GetFileSystemEntries(resolved)
-            .Select(entry => Path.GetFileName(entry))
-            .OrderBy(name => name, StringComparer.Ordinal)
-            .ToArray();
-        return Task.FromResult(names);
-    }
-
-    public IDisposable Watch(string path, Action<string> onChange)
-    {
-        var resolved = Resolve(path);
-        var directory = Directory.Exists(resolved) ? resolved : Path.GetDirectoryName(resolved)!;
-        var filter = Directory.Exists(resolved) ? "*" : Path.GetFileName(resolved);
-        var watcher = new FileSystemWatcher(directory, filter);
-        watcher.Changed += (_, args) => onChange(args.FullPath);
-        watcher.Created += (_, args) => onChange(args.FullPath);
-        watcher.EnableRaisingEvents = true;
-        lock (_watchersSync)
-        {
-            _watchers.Add(watcher);
-        }
-
-        return new Subscription(() =>
-        {
-            watcher.EnableRaisingEvents = false;
-            lock (_watchersSync)
-            {
-                _watchers.Remove(watcher);
-            }
-
-            watcher.Dispose();
-        });
-    }
-
-    private static void EnsureWithin(string root, string candidate)
-    {
-        var relative = Path.GetRelativePath(root, candidate);
-        if (relative == ".." ||
-            relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
-            Path.IsPathRooted(relative))
-        {
-            throw new InvalidOperationException("path escapes the mount root");
-        }
-    }
-
-    private string Resolve(string path)
+    private (IFileSystemProvider Provider, string Relative) Resolve(string path)
     {
         var comparison = OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
-        KeyValuePair<string, string> match;
-        lock (_mountsSync)
+        KeyValuePair<string, MountEntry> match;
+        lock (_sync)
         {
             match = _mounts
                 .Where(pair => PrefixMatches(path, pair.Key, comparison))
                 .OrderByDescending(pair => pair.Key.Length)
                 .FirstOrDefault();
         }
+
         if (match.Key is null)
         {
             throw new InvalidOperationException($"no mount matches '{path}'");
         }
 
-        var root = match.Value;
-        var relative = path[match.Key.Length..].TrimStart('/', '\\');
-        var resolved = Path.GetFullPath(Path.Combine(root, relative));
-        EnsureWithin(root, resolved);
+        return (match.Value.Provider, path[match.Key.Length..].TrimStart('/', '\\'));
+    }
 
-        // P1-4: resolve EVERY existing path segment, not just the final target.
-        // A symlink in an intermediate directory can escape the mount even
-        // when the final file does not exist yet (write-new-file case).
-        var cursor = root;
-        foreach (var segment in relative.Split('/', '\\', StringSplitOptions.RemoveEmptyEntries))
+    public Task WriteAsync(string path, byte[] content) =>
+        WriteAsync(path, content, new FileWriteOptions());
+
+    public Task WriteAsync(string path, byte[] content, FileWriteOptions options)
+    {
+        var (provider, relative) = Resolve(path);
+        return provider.WriteAsync(relative, content, options);
+    }
+
+    public Task<byte[]> ReadAsync(string path)
+    {
+        var (provider, relative) = Resolve(path);
+        return provider.ReadAsync(relative);
+    }
+
+    public Task<byte[]> ReadAllBytesAsync(string path) => ReadAsync(path);
+
+    public async Task<string> ReadAllTextAsync(string path) => Encoding.UTF8.GetString(await ReadAsync(path));
+
+    public Task WriteAllTextAsync(string path, string content) =>
+        WriteAsync(path, Encoding.UTF8.GetBytes(content));
+
+    public Task WriteAllTextAsync(string path, string content, FileWriteOptions options) =>
+        WriteAsync(path, Encoding.UTF8.GetBytes(content), options);
+
+    public Task<byte[]> ReadRangeAsync(string path, long offset, int count)
+    {
+        var (provider, relative) = Resolve(path);
+        return provider.ReadRangeAsync(relative, offset, count);
+    }
+
+    public Task RemoveAsync(string path, bool recursive = false)
+    {
+        var (provider, relative) = Resolve(path);
+        return provider.RemoveAsync(relative, recursive);
+    }
+
+    public Task MkdirAsync(string path, bool recursive = false)
+    {
+        var (provider, relative) = Resolve(path);
+        return provider.MkdirAsync(relative, recursive);
+    }
+
+    public Task CopyAsync(string source, string destination, bool overwrite = false) =>
+        CopyAsync(source, destination, new FileCopyOptions(Overwrite: overwrite));
+
+    public Task CopyAsync(string source, string destination, FileCopyOptions options)
+    {
+        var (fromProvider, fromRelative) = Resolve(source);
+        var (toProvider, toRelative) = Resolve(destination);
+        if (!ReferenceEquals(fromProvider, toProvider))
         {
-            cursor = Path.GetFullPath(Path.Combine(cursor, segment));
-            EnsureWithin(root, cursor);
-
-            FileSystemInfo? info = null;
-            if (Directory.Exists(cursor))
-            {
-                info = new DirectoryInfo(cursor);
-            }
-            else if (File.Exists(cursor))
-            {
-                info = new FileInfo(cursor);
-            }
-
-            if (info is null)
-            {
-                continue; // new leaf: no link to resolve yet
-            }
-
-            var target = info.ResolveLinkTarget(returnFinalTarget: true);
-            if (target is not null)
-            {
-                EnsureWithin(root, target.FullName);
-                cursor = target.FullName;
-            }
+            throw new InvalidOperationException("copy across different filesystem providers is not supported");
         }
 
-        return resolved;
+        return fromProvider.CopyAsync(fromRelative, toRelative, options);
+    }
+
+    public Task MoveAsync(string source, string destination)
+    {
+        var (fromProvider, fromRelative) = Resolve(source);
+        var (toProvider, toRelative) = Resolve(destination);
+        if (!ReferenceEquals(fromProvider, toProvider))
+        {
+            throw new InvalidOperationException("move across different filesystem providers is not supported");
+        }
+
+        return fromProvider.MoveAsync(fromRelative, toRelative);
+    }
+
+    public Task<bool> ExistsAsync(string path)
+    {
+        var (provider, relative) = Resolve(path);
+        return provider.ExistsAsync(relative);
+    }
+
+    public Task<IReadOnlyList<string>> ListAsync(string path)
+    {
+        var (provider, relative) = Resolve(path);
+        return provider.ListAsync(relative);
+    }
+
+    public IDisposable Watch(string path, Action<string> onChange)
+    {
+        var (provider, relative) = Resolve(path);
+        return provider.Watch(relative, onChange);
     }
 
     public async ValueTask DisposeAsync()
     {
-        FileSystemWatcher[] watchers;
-        lock (_watchersSync)
+        MountEntry[] entries;
+        lock (_sync)
         {
-            watchers = _watchers.ToArray();
-            _watchers.Clear();
-        }
-
-        foreach (var watcher in watchers)
-        {
-            watcher.EnableRaisingEvents = false;
-            watcher.Dispose();
-        }
-
-        lock (_mountsSync)
-        {
+            entries = _mounts.Values.ToArray();
             _mounts.Clear();
         }
 
-        await ValueTask.CompletedTask;
+        foreach (var entry in entries.Where(item => item.Owns))
+        {
+            await entry.Provider.DisposeAsync();
+        }
     }
 
     private sealed class Subscription : IDisposable
     {
         private Action? _action;
-
         public Subscription(Action action) => _action = action;
-
         public void Dispose() => Interlocked.Exchange(ref _action, null)?.Invoke();
     }
 }

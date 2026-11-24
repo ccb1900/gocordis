@@ -32,3 +32,6 @@ local-packages/
 
 # Uploaded review artifacts / Windows alternate data streams
 *:Zone.Identifier
+
+# Uploaded review artifacts (not source)
+docs/gocordis-paper-chapter-coverage-matrix.md

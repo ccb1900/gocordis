@@ -32,6 +32,9 @@ await registry.ApplyAsync([
         ["root"] = root,
         ["allowDevelopmentKey"] =
             Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_ALLOW_DEV_KEY") ?? "false",
+        ["seedResource"] = "true",
+        ["sourceRoot"] = Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_SOURCE_ROOT")
+                         ?? Path.Combine(root, "source"),
     }),
     Declaration("industrial.nodes"),
     Declaration("industrial.elsa"),

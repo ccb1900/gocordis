@@ -35,10 +35,14 @@ public sealed class IndustrialUiPluginTests
         var ui = Decl("industrial.ui");
         await registry.ApplyAsync([domain, nodes, ui]);
 
-        Assert.Equal(6, console.Ui.Pages().Count);
+        Assert.Equal(9, console.Ui.Pages().Count);
         Assert.Contains(console.Ui.Pages(), page => page.Id == "industrial.designer");
         Assert.NotNull(console.Api.Query("industrial/dashboard"));
         Assert.NotNull(console.Api.Query("industrial/nodes"));
+        Assert.NotNull(console.Api.Query("industrial/credentials"));
+        Assert.IsType<JsonArray>(console.Api.Query("industrial/dashboard-rows"));
+        var designer = Assert.Single(console.Ui.Pages(), page => page.Id == "industrial.designer");
+        Assert.True(designer.Views is JsonArray, "views must be a declarative block array");
         var catalog = runtime.RequireCapability(IndustrialKeys.NodeCatalog);
         Assert.Equal(10, (await catalog.ListAsync()).Count);
 
@@ -48,7 +52,7 @@ public sealed class IndustrialUiPluginTests
         Assert.Equal(10, (await catalog.ListAsync()).Count);
 
         await registry.ApplyAsync([domain, nodes, ui]);
-        Assert.Equal(6, console.Ui.Pages().Count);
+        Assert.Equal(9, console.Ui.Pages().Count);
         Assert.NotNull(console.Api.Query("industrial/dashboard"));
     }
 

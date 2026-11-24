@@ -1,5 +1,7 @@
 using Elsa.Extensions;
+using System.Text.Json.Nodes;
 using Gocordis.Core;
+using Gocordis.Plugins;
 using Elsa.Workflows;
 using Elsa.Workflows.Activities;
 using Elsa.Workflows.Models;
@@ -31,23 +33,72 @@ public sealed class IndustrialElsaComponent : Component
 
     public override string Name => "industrial-elsa";
     public override IReadOnlyList<ICapabilityKey> Inject() =>
-        [IndustrialKeys.NodeCatalog, IndustrialKeys.WorkflowValidator];
+        [IndustrialKeys.NodeCatalog, IndustrialKeys.WorkflowValidator,
+         IndustrialKeys.WorkflowRegistry, ApiGateway.Key];
     public override IReadOnlyList<ICapabilityKey> Provide() => [IndustrialKeys.ElsaActivityCatalog];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
         var nodes = context.Require(IndustrialKeys.NodeCatalog);
         var validator = context.Require(IndustrialKeys.WorkflowValidator);
+        var workflows = context.Require(IndustrialKeys.WorkflowRegistry);
+        var api = context.Require(ApiGateway.Key);
+        var owner = ContributionOwner.ForContext(context, "industrial", "elsa-publish");
+        // Built-in activity types are contributed by this plugin; descriptors
+        // added later by other plugins are registered on their own activation.
+        foreach (var type in IndustrialActivityTypes.All)
+        {
+            _catalog.Register(type);
+        }
+
         foreach (var descriptor in await nodes.ListAsync())
         {
             _catalog.Register(descriptor.ActivityType);
+        }
+
+        var previous = new ElsaActivityCatalog();
+        foreach (var type in _catalog.List())
+        {
+            previous.Register(type);
         }
 
         context.Provide(IndustrialKeys.ElsaActivityCatalog, _catalog);
         validator.UseActivityCatalog(_catalog);
         await context.EffectAsync(
             () => ValueTask.CompletedTask,
-            () => { validator.UseActivityCatalog(new ElsaActivityCatalog()); return ValueTask.CompletedTask; });
+            () =>
+            {
+                _catalog.Clear();
+                foreach (var type in previous.List())
+                {
+                    _catalog.Register(type);
+                }
+
+                validator.UseActivityCatalog(previous);
+                return ValueTask.CompletedTask;
+            });
+
+        await context.EffectAsync(
+            () =>
+            {
+                api.RegisterCommand("industrial/publish-workflow", payload =>
+                {
+                    var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+                    var id = body["workflowId"]?.GetValue<string>();
+                    if (string.IsNullOrWhiteSpace(id))
+                    {
+                        throw new InvalidOperationException("workflowId is required");
+                    }
+
+                    var definition = workflows.GetAsync(id).GetAwaiter().GetResult()
+                                     ?? throw new InvalidOperationException($"workflow '{id}' not found");
+                    var elsJson = new ElsaDefinitionConverter().ToElsaJson(definition);
+                    workflows.PublishAsync(id, elsJson).GetAwaiter().GetResult();
+                    return ValueTask.CompletedTask;
+                }, owner);
+                return ValueTask.CompletedTask;
+            },
+            () => { api.UnregisterAll(owner); return ValueTask.CompletedTask; });
         return null;
     }
 }
@@ -57,6 +108,8 @@ public sealed class IndustrialElsaComponent : Component
 public sealed class CollectFileActivity : CodeActivity
 {
     public string FileId { get; set; } = string.Empty;
+    public string ActivityType { get; set; } = string.Empty;
+    public string EdgeSummary { get; set; } = string.Empty;
     public static int ExecutionCount;
 
     protected override ValueTask ExecuteAsync(ActivityExecutionContext context)
@@ -76,14 +129,34 @@ public sealed class ElsaDefinitionConverter
         var sequence = new Sequence();
         foreach (var node in definition.Nodes.OrderBy(node => node.Type, StringComparer.Ordinal))
         {
-            sequence.Activities.Add(new CollectFileActivity { FileId = node.Id, Id = node.Id });
+            var edges = definition.Edges
+                .Where(edge => edge.Source == node.Id || edge.Target == node.Id)
+                .Select(edge => $"{edge.Source}:{edge.SourcePort}->{edge.Target}:{edge.TargetPort}");
+            sequence.Activities.Add(new CollectFileActivity
+            {
+                FileId = node.Id,
+                Id = node.Id,
+                Name = $"{node.Type} [{string.Join("|", edges)}]",
+                ActivityType = node.Type,
+                EdgeSummary = string.Join("|", edges),
+            });
         }
 
         var workflow = new Workflow(sequence)
         {
-            Identity = new WorkflowIdentity(definition.WorkflowId, definition.Version, definition.Name, null),
+            Identity = new WorkflowIdentity(
+                definition.WorkflowId,
+                definition.Version,
+                $"{definition.Name}|{string.Join(";", definition.Edges.Select(edge =>
+                    $"{edge.Source}:{edge.SourcePort}->{edge.Target}:{edge.TargetPort}"))}",
+                null),
         };
-        return System.Text.Json.JsonSerializer.Serialize(workflow);
+        var envelope = new JsonObject
+        {
+            ["elsa"] = System.Text.Json.JsonSerializer.SerializeToNode(workflow),
+            ["definition"] = System.Text.Json.JsonSerializer.SerializeToNode(definition),
+        };
+        return envelope.ToJsonString();
     }
 }
 

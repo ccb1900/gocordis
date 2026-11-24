@@ -1,6 +1,9 @@
+using System.Text.Json.Nodes;
 using Elsa.Workflows.Models;
 using Gocordis.Core;
 using Gocordis.Plugins;
+using Gocordis.Platform;
+using Gocordis.Console.WebUi;
 using Industrial.Contracts;
 using Industrial.Elsa;
 
@@ -25,7 +28,12 @@ public sealed class ElsaPocTests
     public async Task ElsaActivityCatalogIsACordisCapability()
     {
         await using var runtime = new Gocordis.Core.Runtime();
+        var console = new ConsoleHost(runtime);
         await using var registry = new PluginRegistry(runtime);
+        console.AttachRegistry(registry);
+        registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
+        registry.ExternalCapabilities.Add(ApiGateway.Key);
+        await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
         registry.RegisterComponentFactory("industrial.domain", manifest =>
             new Industrial.Plugins.IndustrialDomainComponent(manifest.Config));
         registry.RegisterComponentFactory("industrial.elsa", _ => new IndustrialElsaComponent());
@@ -40,6 +48,58 @@ public sealed class ElsaPocTests
         ]);
         var catalog = runtime.RequireCapability(IndustrialKeys.ElsaActivityCatalog);
         Assert.Contains(IndustrialActivityTypes.All[2], catalog.List(), StringComparer.Ordinal);
+    }
+
+    [Fact]
+    public async Task PublishCommandUsesElsaConverterInProductChain()
+    {
+        using var temp = new TempDir();
+        await using var runtime = new Gocordis.Core.Runtime();
+        var console = new ConsoleHost(runtime);
+        await using var registry = new PluginRegistry(runtime);
+        console.AttachRegistry(registry);
+        registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
+        registry.ExternalCapabilities.Add(ApiGateway.Key);
+        await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
+
+        registry.RegisterComponentFactory("domain", manifest =>
+            new Industrial.Plugins.IndustrialDomainComponent(manifest.Config));
+        registry.RegisterComponentFactory("nodes", _ => new Industrial.Plugins.IndustrialNodesComponent());
+        registry.RegisterComponentFactory("elsa", _ => new IndustrialElsaComponent());
+        await registry.ApplyAsync([
+            new PluginManifest("domain", "domain", true,
+                new Dictionary<string, object?> { ["allowDevelopmentKey"] = "true" }, [], []),
+            new PluginManifest("nodes", "nodes", true, new Dictionary<string, object?>(), [], []),
+            new PluginManifest("elsa", "elsa", true, new Dictionary<string, object?>(), [], []),
+        ]);
+
+        var workflows = runtime.RequireCapability(IndustrialKeys.WorkflowRegistry);
+        var catalog = runtime.RequireCapability(IndustrialKeys.NodeCatalog);
+        await catalog.RegisterAsync(new NodeDescriptor(
+            "n.source", "Source", "Source", "source", "Folder", "1.0.0",
+            [], [new NodePort("files", Industrial.Contracts.PortType.FileBatch, true)],
+            new Dictionary<string, object?>(), IndustrialActivityTypes.All[1], []));
+        await catalog.RegisterAsync(new NodeDescriptor(
+            "n.reader", "Reader", "Reader", "reader", "FileText", "1.0.0",
+            [new NodePort("input", Industrial.Contracts.PortType.FileBatch, true)],
+            [new NodePort("records", Industrial.Contracts.PortType.RecordSet, true)],
+            new Dictionary<string, object?>(), IndustrialActivityTypes.All[2], []));
+        await workflows.SaveDraftAsync(new WorkflowDefinition(
+            "publish-me", "Publish me", 1,
+            [
+                new WorkflowNode("source", "n.source", new Dictionary<string, object?>(), 0, 0),
+                new WorkflowNode("reader", "n.reader", new Dictionary<string, object?>(), 100, 0),
+            ],
+            [new WorkflowEdge("source", "files", "reader", "input")],
+            new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            [], new Dictionary<string, object?>()));
+
+        var executed = await console.Api.ExecuteAsync("industrial/publish-workflow", new JsonObject
+        {
+            ["workflowId"] = "publish-me",
+        });
+        Assert.True(executed);
+        Assert.NotNull(await workflows.GetPublishedAsync("publish-me"));
     }
 
     [Fact]
@@ -62,5 +122,13 @@ public sealed class ElsaPocTests
         Assert.Contains("daily", json, StringComparison.Ordinal);
         Assert.True(json.Length > 100);
         Assert.Contains("Identity", json, StringComparison.Ordinal);
+        Assert.Contains("Edges", json, StringComparison.Ordinal);
+        Assert.Contains("reader", json, StringComparison.Ordinal);
+    }
+    private sealed class TempDir : IDisposable
+    {
+        public TempDir() => Root = Path.Combine(Path.GetTempPath(), "industrial-elsa-" + Guid.NewGuid().ToString("N"));
+        public string Root { get; }
+        public void Dispose() { if (Directory.Exists(Root)) Directory.Delete(Root, true); }
     }
 }

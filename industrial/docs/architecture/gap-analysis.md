@@ -23,3 +23,46 @@ Status legend: implemented / partial / not implemented / not applicable.
 | Excel / MySQL / PostgreSQL / event trigger | not implemented | Phase 6 of collector; intentionally deferred |
 | Full Web UI pages (8) | partial | Six page contributions and five queries; no React-specific designer page yet |
 | E2E acceptance A–G | partial | A, B (resource sharing shape), C (API-driven creation), D (local→CSV→SQLite→archive), E (archive failure), F (historical range) have tests; G has UI lifecycle test |
+
+## Post-review organization verdict (multi-round, 2026-11-25)
+
+**Framework / paper semantics:** the layer organization is correct after fixes —
+no industrial code in Cordis Core, one Runtime/Registry, contracts separated,
+all business capabilities bound through `Key<T>`, UI pages/API registered as
+Fiber effects, product host uses real `.gocordis-plugin` packages, and
+`pack.sh` now declares `--provides` / `--dependency` so package dependencies
+are no longer collapsed into capability declarations. Contribution owners are
+bound to the actual Fiber/Activation, and the Elsa catalog inverse restores
+the previous catalog rather than replacing it with an empty one.
+
+**Collector spec:** still only **partially** conforming. Honest gaps:
+
+- No React/Ant Design/AntV G6 frontend source under `industrial/`. Pages now use
+  declaratively correct view-block arrays with matching columns and registered
+  `table` renderers with matching columns, dashboard rows use an array query,
+  default resource is seeded by the domain plugin, and page actions have configured defaults; the workflow
+  designer is still not a G6 canvas, so collector §7.2–7.5, §9.1–9.3 are not met.
+- Elsa is wired into the product publish chain (`industrial/publish-workflow`
+  command → `ElsaDefinitionConverter` → `WorkflowRegistry.PublishAsync`), the
+  published artifact retains definition/edge provenance, and an Activity really
+  executes in the PoC. The collection run command still invokes
+  `CollectionCoordinator` directly; Elsa does not execute the workflow graph in
+  production, so collector §7.8 is only PoC-level.
+- Plugin taxonomy is coarser than collector §5.1: `industrial.domain` provides
+  twelve capabilities in one Fiber; there are no separate persistence /
+  resource / credential / workflow / execution plugins.
+- `ConnectionLease` has no implementation; UNC shares reuse the local file
+  source, with no Windows SMB session/credential coordinator (§6.3–6.4).
+- One EF Core context owns all business tables; published versions replace the
+  previous published row instead of retaining history (§10, §7.8(4)).
+- Tests are one project without unit/integration/contract/E2E separation and
+  without browser/G6 tests (§12.4).
+- `ExcelDataReader`, `Npgsql`, `MySqlConnector` and OpenTelemetry are not used;
+  SQL Server sink is selectable via `GOCORDIS_INDUSTRIAL_SINK` /
+  `GOCORDIS_INDUSTRIAL_CONNECTION_STRING` (packaged managed loading uses the
+  parameterless constructor, so control-plane config edits are not delivered to
+  components) and has no live-server test (§4.1).
+
+These gaps are recorded, not claimed as complete. The organization is sound at
+the framework level; the full industrial product surface defined by the
+collector is larger than the delivered vertical slice.

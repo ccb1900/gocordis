@@ -22,6 +22,6 @@ framework was not modified; all files in `industrial/` are new.
 | Long downtime recovery across process restart | Partial | Ledger state is durable; restart replay runner not yet implemented |
 
 Latest verification: `dotnet build industrial/Industrial.slnx` 0 warning/0 error;
-`dotnet test industrial/tests/Industrial.Tests` 20 passed.
+`dotnet test industrial/tests/Industrial.Tests` 21 passed. A separate organization audit found the framework boundaries sound and the remaining collector-spec gaps listed in `gap-analysis.md`.
 Production `GOCORDIS_INDUSTRIAL_KEY` is mandatory; the local host opts into the
 documented development fallback only for evaluation.

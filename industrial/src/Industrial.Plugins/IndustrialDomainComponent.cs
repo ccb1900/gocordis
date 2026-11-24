@@ -23,7 +23,17 @@ public sealed class IndustrialDomainComponent : Component
                        ?? Path.Combine(Path.GetTempPath(), "gocordis-industrial"),
             ["allowDevelopmentKey"] =
                 Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_ALLOW_DEV_KEY") ?? "false",
+            ["sink"] = Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_SINK") ?? "sqlite",
+            ["connectionString"] =
+                Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_CONNECTION_STRING") ?? string.Empty,
+            ["seedResource"] = Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_SEED_RESOURCE") ?? "false",
+            ["sourceRoot"] = Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_SOURCE_ROOT")
+                             ?? Path.Combine(rootPath, "source"),
         };
+
+    private static string rootPath =>
+        Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_ROOT")
+        ?? Path.Combine(Path.GetTempPath(), "gocordis-industrial");
 
     public override string Name => "industrial-domain";
 
@@ -61,11 +71,28 @@ public sealed class IndustrialDomainComponent : Component
         IWorkflowValidator validator = new WorkflowValidator(catalog, resources, vault);
         IWorkflowRegistry workflows = new WorkflowRegistry(ledgerDb, validator);
         resources.BindWorkflows(workflows);
+        if (string.Equals(Setting(_config, "seedResource", "false"), "true", StringComparison.OrdinalIgnoreCase))
+        {
+            var id = Setting(_config, "resourceId", "source-1");
+            if (resources.GetAsync(id).GetAwaiter().GetResult() is null)
+            {
+                resources.RegisterAsync(new Industrial.Contracts.ResourceDefinition(
+                    id, "filesystem.local", "Default source", "local",
+                    new Dictionary<string, object?>
+                    {
+                        ["root"] = Setting(_config, "sourceRoot", Path.Combine(root, "source")),
+                    },
+                    null, 0, true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)
+                ).GetAwaiter().GetResult();
+            }
+        }
         ICollectionLedger ledger = new CollectionLedger(ledgerDb);
         IFileSource source = new LocalFileSource(resources);
         IHistoricalRangePlanner planner = new HistoricalRangePlanner();
         IRecordReader reader = new CsvRecordReader();
-        IRecordSink sink = new SqliteRecordSink(targetDb);
+        IRecordSink sink = string.Equals(Setting(_config, "sink", "sqlite"), "sqlserver", StringComparison.OrdinalIgnoreCase)
+            ? new SqlServerRecordSink(Setting(_config, "connectionString", string.Empty))
+            : new SqliteRecordSink(targetDb);
         IArchiveSink archive = new FileArchiveSink(Path.Combine(root, "archive"));
         ICollectionCoordinator coordinator = new CollectionCoordinator(resources, source, ledger, reader);
 

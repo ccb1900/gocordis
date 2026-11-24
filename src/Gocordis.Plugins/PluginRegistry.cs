@@ -365,7 +365,11 @@ public sealed class PluginRegistry : IAsyncDisposable
                 batchNewlyStaged.Add(component);
             }
 
-            var ordered = SortByTypedDependencies(staged);
+            // A disabled declaration still owns its capability names. Consumers
+            // of such a key must stay Pending when the provider is withdrawn,
+            // not turn a valid declaration batch into a Prepare error.
+            var inactiveCapabilities = DeclaredCapabilitiesOfDisabled(declarations);
+            var ordered = SortByTypedDependencies(staged, inactiveCapabilities);
             return new PreparedBatch(desired, staged, ordered, fingerprints, batchNewlyStaged);
         }
         catch
@@ -526,8 +530,74 @@ public sealed class PluginRegistry : IAsyncDisposable
         _entries.Remove(id);
     }
 
+    private sealed record InactiveCapabilities(
+        HashSet<ICapabilityKey> Typed,
+        HashSet<string> DeclaredNames);
+
+    /// <summary>Keys of providers that are declared but currently disabled. Core
+    /// keeps consumers of those keys Pending; Prepare must not reject the batch.
+    /// A previously loaded component gives the exact Key&lt;T&gt; identity. On a
+    /// cold disable there is no component yet, so package-declared names are
+    /// kept separately as declaration-level evidence only — never as a binding
+    /// (Core still matches by reference identity).</summary>
+    private InactiveCapabilities DeclaredCapabilitiesOfDisabled(
+        IReadOnlyList<PluginManifest> declarations)
+    {
+        var typed = new HashSet<ICapabilityKey>(ReferenceEqualityComparer.Instance);
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        var disabledIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var manifest in declarations)
+        {
+            if (manifest.Enabled)
+            {
+                continue;
+            }
+
+            disabledIds.Add(manifest.Id);
+            foreach (var name in manifest.Provides)
+            {
+                names.Add(name);
+            }
+
+            foreach (var wire in manifest.CapabilitiesOrEmpty)
+            {
+                var declaration = PluginManifest.ParseCapabilities([wire])[0];
+                if (declaration.Direction == CapabilityDirection.Provide)
+                {
+                    names.Add(declaration.Id.ToString());
+                }
+            }
+        }
+
+        foreach (var id in disabledIds)
+        {
+            if (_entries.TryGetValue(id, out var previous) && previous.Component is { } component)
+            {
+                foreach (var key in component.Provide())
+                {
+                    typed.Add(key);
+                }
+            }
+        }
+
+        return new InactiveCapabilities(typed, names);
+    }
+
+    private static bool IsDeclaredInactiveCapability(InactiveCapabilities inactive, ICapabilityKey key)
+    {
+        if (inactive.Typed.Contains(key) || inactive.DeclaredNames.Contains(key.Name))
+        {
+            return true;
+        }
+
+        // Package wires use namespace/name; typed keys use a dotted flat name.
+        var lastDot = key.Name.LastIndexOf('.');
+        return lastDot > 0 &&
+               inactive.DeclaredNames.Contains(key.Name[..lastDot] + "/" + key.Name[(lastDot + 1)..]);
+    }
+
     private IReadOnlyList<(string Id, Component Component)> SortByTypedDependencies(
-        IReadOnlyDictionary<string, Component> staged)
+        IReadOnlyDictionary<string, Component> staged, InactiveCapabilities inactiveCapabilities)
     {
         var keyOwner = new Dictionary<ICapabilityKey, string>(ReferenceEqualityComparer.Instance);
         var versionedOwners = new Dictionary<
@@ -594,7 +664,8 @@ public sealed class PluginRegistry : IAsyncDisposable
                         continue;
                     }
 
-                    if (!ExternalCapabilities.Contains(requiredVersion))
+                    if (!ExternalCapabilities.Contains(requiredVersion) &&
+                        !IsDeclaredInactiveCapability(inactiveCapabilities, requiredVersion))
                     {
                         throw new InvalidOperationException(
                             $"plugin '{id}' requires versioned capability '{requiredVersion.Name}' " +
@@ -615,7 +686,8 @@ public sealed class PluginRegistry : IAsyncDisposable
                     continue;
                 }
 
-                if (!ExternalCapabilities.Contains(key))
+                if (!ExternalCapabilities.Contains(key) &&
+                    !IsDeclaredInactiveCapability(inactiveCapabilities, key))
                 {
                     throw new InvalidOperationException(
                         $"plugin '{id}' requires capability '{key.Name}' with no provider");

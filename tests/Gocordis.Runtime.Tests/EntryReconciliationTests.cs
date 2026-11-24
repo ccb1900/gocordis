@@ -134,6 +134,31 @@ public sealed class EntryReconciliationTests
             incrementalRuntime.Snapshot().Fibers.Select(fiber => (fiber.Name, fiber.State)).OrderBy(item => item.Name));
     }
 
+    [Fact]
+    public async Task DisabledProviderDoesNotBindADifferentKeyInstanceWithTheSameName()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        var providerKey = new Key<string>("shadow/value");
+        var consumerKey = new Key<string>("shadow/value");
+        var consumer = new Consumer("consumer", consumerKey);
+        // No ExternalCapabilities registration: the ONLY thing that lets this
+        // cold-disabled declaration through Prepare is the disabled provider's
+        // package-level "provides" name. Core still gates by key identity.
+        registry.RegisterComponentFactory("provider", _ => new Provider("provider", providerKey, "provider"));
+        registry.RegisterComponentFactory("consumer", _ => consumer);
+
+        var provider = Manifest("provider", "provider", provides: [providerKey.Name]) with
+        {
+            Enabled = false,
+        };
+        var consumerManifest = Manifest("consumer", "consumer", requires: [consumerKey.Name]);
+        await registry.ApplyAsync([provider, consumerManifest]);
+
+        Assert.Equal(FiberState.Pending, registry.Entries["consumer"].Fiber!.State);
+        Assert.Null(consumer.LastValue);
+    }
+
     private static PluginManifest Manifest(
         string id,
         string type,

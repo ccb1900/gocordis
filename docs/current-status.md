@@ -27,6 +27,8 @@ It builds 5 projects + a real TSX frontend (`@gocordis/plugin-kit`), packs 4 rea
 
 The empty-directory developer loop (`bash samples/PluginDeveloperWorkflow/e2e.sh <out>`) was re-run green. It now packs a per-run SDK prerelease version: reusing `1.0.0` let NuGet's global cache serve an older Core and caused `MissingMethodException` at plugin activation. E2E test helpers pass `-nodeReuse:false` so reused MSBuild nodes cannot hold redirected stdout pipes open.
 
+The paper §5.3 case-study loop is `bash samples/KoishiShowcase/build-and-run.sh <out>` (add `--run` to start the host). It packs/installs four real `.gocordis-plugin` packages with one host-sealed shared contract, then composes vocabulary → database → adapter → feature. `KoishiPackagedProductTests` drives the real packages: all four fibers Active, disabling the database leaves adapter/feature Pending and withdraws their query, re-enabling restores them, and an independent console application (own Runtime/Registry/fibers, HTTP-only client) serves its own page and server query. The paper §5 behavior-by-behavior evidence matrix is `docs/paper/chapter-5-coverage.md`.
+
 ## Verification commands
 
 ```bash
@@ -37,13 +39,13 @@ dotnet test  Gocordis.sln --nologo --no-build -m:1
 bash docs/migration/verify-baseline.sh   # Go baseline drift check
 ```
 
-**Last locally verified** (2026-11-24, branch `dotnet`): C# **579 passed / 1 skipped / 0 failed** across 8 test assemblies (Core 48, Conformance 154, Runtime 170+1 skipped, Extensions 64, Packaging 79, UI 3, Client 2, Product 59; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **103** tests green, plugin-kit tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
+**Last locally verified** (2026-11-24, branch `dotnet`): C# **581 passed / 1 skipped / 0 failed** across 8 test assemblies (Core 48, Conformance 154, Runtime 171+1 skipped, Extensions 64, Packaging 79, UI 3, Client 2, Product 60; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **103** tests green plus production build, plugin-kit 2 tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
 
 Task 01 的有限校准基线见 `docs/migration/acceptance-baseline.md`；它区分三个验收域与 E0–E4 证据等级，P0-01…P0-04 均已关闭（真实 Process↔WASM 调用与包闭环由 `CrossBackendCapabilityTests`、`BackendDispatchProductTests` 覆盖）。
 
 Loopback HTTP tests now construct clients with `UseProxy = false`, so the full suite is reproducible with the ambient `HTTP_PROXY`/`HTTPS_PROXY` left set (verified 549/1 skipped/0 failed that way).
 
-**CI**: no confirmed public CI result for the current HEAD; do not reuse historical 443/443 or other round results as proof for this commit. The Go baseline verification is handled by `verify-baseline.sh`, with drift reported rather than silently accepted.
+**CI**: no confirmed public CI result for the current HEAD; do not reuse historical 443/443 or other round results as proof for this commit. The Go baseline verification is handled by `verify-baseline.sh`, with drift reported rather than silently accepted. That script currently reports one drifted frozen overlay file, `docs/guide/user-manual.md` (changed by the earlier contracts refactor `181c56e` without updating `docs/migration/baseline.sha256`); the Go commit pin and all other overlay files still verify. This is recorded here, not papered over by rewriting the frozen checksum.
 
 ## Dependency semantics (current, settled)
 

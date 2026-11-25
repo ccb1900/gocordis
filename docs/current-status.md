@@ -3,7 +3,7 @@
 This is the **only** place that records current branch/HEAD, entry commands, verified counts and known gaps. Everything under `docs/migration/` is a historical migration archive except `existence-audit.md`, which is maintained as the current per-capability classification; never read old branch names, SHAs or test counts from the archive as current state. `README.md` is the front door and points here.
 
 - **Branch**: `dotnet` (tracks `origin/dotnet`).
-- **Code HEAD**: `dbfd28af feat(architecture): close console, control plane and root group plan`; this ledger is updated in the following documentation commit. Always prefer `git rev-parse HEAD` over remembered SHAs.
+- **Code HEAD**: `1ee7e5f7 test(product): remove final full-suite flakiness` (architecture code `dbfd28af`); this ledger is updated in the following documentation commit. Always prefer `git rev-parse HEAD` over remembered SHAs.
 - **Engineering constitution**: `AGENTS.md` (root). Engineering manual: `docs/guide/csharp-developer-manual.md`. User manual: `docs/guide/user-manual.md`.
 
 ## Product entry
@@ -41,7 +41,7 @@ dotnet test  Gocordis.sln --nologo --no-build -m:1
 bash docs/migration/verify-baseline.sh   # Go baseline drift check
 ```
 
-**Last locally verified** (2026-11-25, branch `dotnet`, code HEAD `dbfd28af` after the final architecture plan): C# **679 passed / 1 skipped / 0 failed**, three consecutive full-suite runs (Core 53, Conformance 179, Runtime 205+1 skipped, Extensions 72, Packaging 88, UI 3, Client 2, Product 77; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **103** tests green plus production build, plugin-kit 2 tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
+**Last locally verified** (2026-11-25, branch `dotnet`, code HEAD `1ee7e5f7` after the final architecture plan): C# **679 passed / 1 skipped / 0 failed**, three consecutive full-suite runs (Core 53, Conformance 179, Runtime 205+1 skipped, Extensions 72, Packaging 88, UI 3, Client 2, Product 77; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **103** tests green plus production build, plugin-kit 2 tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
 
 Task 01 的有限校准基线见 `docs/migration/acceptance-baseline.md`；它区分三个验收域与 E0–E4 证据等级，P0-01…P0-04 均已关闭（真实 Process↔WASM 调用与包闭环由 `CrossBackendCapabilityTests`、`BackendDispatchProductTests` 覆盖）。
 

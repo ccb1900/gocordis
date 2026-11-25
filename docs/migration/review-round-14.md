@@ -1,6 +1,6 @@
 # Review Round 14 — Console, Control Plane and Root Group Architecture
 
-Code commit: `dbfd28af` (`dotnet`). This round implements the final architecture
+Code commit: `1ee7e5f7` (`dbfd28af` architecture plus final test determinism). This round implements the final architecture
 plan rather than discussing whether to introduce a Root Plugin or a second Runtime.
 
 ## Final boundaries

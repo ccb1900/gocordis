@@ -13,8 +13,8 @@ namespace Industrial.Plugins;
 public sealed class IndustrialClientModuleComponent : Component
 {
     private const string ModuleName = "industrial-designer";
-    private const string ModuleEntry = "index.html";
-    private const string ModuleUrl = "/client-modules/industrial-designer/index.html";
+    private const string ModuleEntry = "module.js";
+    private const string ModuleUrl = "/client-modules/industrial-designer/module.js";
     private const string PageId = "industrial.designer.g6";
     private const string PageRenderer = "industrial-designer";
 
@@ -37,7 +37,7 @@ public sealed class IndustrialClientModuleComponent : Component
         await context.RegisterUiClientModuleAsync(ui, owner, new UiClientModuleDefinition(
             ModuleName,
             ModuleUrl,
-            "0.1.0",
+            "0.1.1",
             ModuleEntry));
 
         await context.RegisterUiPageAsync(ui, owner, new UiPageDefinition(
@@ -47,6 +47,16 @@ public sealed class IndustrialClientModuleComponent : Component
             PageRenderer,
             Icon: "Branches",
             Description: "Industrial workflow designer supplied by the industrial-designer client module",
+            Views: new System.Text.Json.Nodes.JsonArray(new System.Text.Json.Nodes.JsonObject
+            {
+                ["kind"] = "table",
+                ["title"] = "Node catalog",
+                ["query"] = "industrial/nodes",
+                ["columns"] = new System.Text.Json.Nodes.JsonArray(
+                    new System.Text.Json.Nodes.JsonObject { ["key"] = "nodeTypeId", ["title"] = "Node type" },
+                    new System.Text.Json.Nodes.JsonObject { ["key"] = "name", ["title"] = "Name" },
+                    new System.Text.Json.Nodes.JsonObject { ["key"] = "category", ["title"] = "Category" }),
+            }),
             Order: 41,
             Group: "Industrial"));
 

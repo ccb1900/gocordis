@@ -44,12 +44,12 @@ public sealed class IndustrialUiPluginTests
         var designer = Assert.Single(console.Ui.Pages(), page => page.Id == "industrial.designer");
         Assert.True(designer.Views is JsonArray, "views must be a declarative block array");
         var catalog = runtime.RequireCapability(IndustrialKeys.NodeCatalog);
-        Assert.Equal(10, (await catalog.ListAsync()).Count);
+        Assert.Equal(12, (await catalog.ListAsync()).Count);
 
         await registry.ApplyAsync([domain, nodes, ui with { Enabled = false }]);
         Assert.DoesNotContain(console.Ui.Pages(), page => page.Owner.ComponentId == "industrial-ui");
         Assert.Null(console.Api.Query("industrial/dashboard"));
-        Assert.Equal(10, (await catalog.ListAsync()).Count);
+        Assert.Equal(12, (await catalog.ListAsync()).Count);
 
         await registry.ApplyAsync([domain, nodes, ui]);
         Assert.Equal(9, console.Ui.Pages().Count);
@@ -97,6 +97,69 @@ public sealed class IndustrialUiPluginTests
             ledgerDb.CollectionFiles.AsNoTracking());
         Assert.Single(files);
         Assert.Equal("Succeeded", files[0].Status);
+    }
+
+    [Fact]
+    public async Task ClientModuleContributionFollowsPluginLifecycle()
+    {
+        await using var runtime = new Gocordis.Core.Runtime();
+        var console = new ConsoleHost(runtime);
+        await using var registry = new PluginRegistry(runtime);
+        console.AttachRegistry(registry);
+        registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
+        registry.ExternalCapabilities.Add(ApiGateway.Key);
+        await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
+        registry.RegisterComponentFactory("clientmodule", _ => new IndustrialClientModuleComponent());
+        var declaration = Decl("clientmodule");
+
+        await registry.ApplyAsync([declaration]);
+        Assert.Contains(console.Ui.Pages(), page => page.Id == "industrial.designer.g6");
+        Assert.Contains(console.Ui.ClientModules(), module => module.Name == "industrial-designer");
+
+        await registry.ApplyAsync([declaration with { Enabled = false }]);
+        Assert.DoesNotContain(console.Ui.Pages(), page => page.Id == "industrial.designer.g6");
+        Assert.DoesNotContain(console.Ui.ClientModules(), module => module.Name == "industrial-designer");
+    }
+
+    [Fact]
+    public async Task SplitPluginsKeepReferencedResourceDeletionGuard()
+    {
+        using var temp = new TempDir();
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        registry.RegisterComponentFactory("resource", manifest =>
+            new IndustrialResourceComponent(manifest.Config));
+        registry.RegisterComponentFactory("credential", manifest =>
+            new IndustrialCredentialComponent(manifest.Config));
+        registry.RegisterComponentFactory("workflow", manifest =>
+            new IndustrialWorkflowComponent(manifest.Config));
+        await registry.ApplyAsync([
+            Decl("resource", new Dictionary<string, object?>
+            {
+                ["root"] = temp.Root,
+                ["allowDevelopmentKey"] = "true",
+            }),
+            Decl("credential", new Dictionary<string, object?> { ["allowDevelopmentKey"] = "true" }),
+            Decl("workflow", new Dictionary<string, object?> { ["root"] = temp.Root }),
+        ]);
+
+        var resources = runtime.RequireCapability(IndustrialKeys.ResourceRegistry);
+        var workflows = runtime.RequireCapability(IndustrialKeys.WorkflowRegistry);
+        var catalog = runtime.RequireCapability(IndustrialKeys.NodeCatalog);
+        await resources.RegisterAsync(new ResourceDefinition(
+            "guarded", "filesystem.local", "Guarded", "local",
+            new Dictionary<string, object?>(), null, 0, true,
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch));
+        await catalog.RegisterAsync(new NodeDescriptor(
+            "guarded.source", "Guarded", "Guarded", "source", "Folder", "1.0.0",
+            [], [], new Dictionary<string, object?>(), IndustrialActivityTypes.All[1], []));
+        await workflows.SaveDraftAsync(new WorkflowDefinition(
+            "guarded-flow", "Guarded flow", 1,
+            [new WorkflowNode("source", "guarded.source", new Dictionary<string, object?> { ["resourceId"] = "guarded" }, 0, 0)],
+            [], new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            ["guarded"], new Dictionary<string, object?>()));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => resources.RemoveAsync("guarded").AsTask());
     }
 
     private static PluginManifest Decl(string id, IReadOnlyDictionary<string, object?>? config = null) =>

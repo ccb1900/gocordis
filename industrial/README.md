@@ -10,7 +10,7 @@ Two launch paths:
 
 ```bash
 dotnet build industrial/Industrial.slnx --nologo -m:1
-dotnet test  industrial/tests/Industrial.Tests/Industrial.Tests.csproj --no-build --nologo -m:1
+dotnet test  industrial/Industrial.slnx --no-build --nologo -m:1
 bash industrial/build-and-run.sh /tmp/gocordis-industrial
 ```
 

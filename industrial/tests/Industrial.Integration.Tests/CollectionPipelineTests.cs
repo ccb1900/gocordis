@@ -12,6 +12,30 @@ namespace Industrial.Tests;
 public sealed class CollectionPipelineTests
 {
     [Fact]
+    public async Task CollectionEmitsOpenTelemetryActivity()
+    {
+        using var fixture = new Fixture();
+        await fixture.RegisterResourceAsync();
+        var seen = new List<string>();
+        using var listener = new System.Diagnostics.ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "Gocordis.Industrial.Collection",
+            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) =>
+                System.Diagnostics.ActivitySamplingResult.AllDataAndRecorded,
+            SampleUsingParentId = (ref System.Diagnostics.ActivityCreationOptions<string> _) =>
+                System.Diagnostics.ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStarted = activity => seen.Add(activity.OperationName),
+        };
+        System.Diagnostics.ActivitySource.AddActivityListener(listener);
+        Assert.True(IndustrialTelemetry.Source.HasListeners(), "telemetry listener was not registered");
+        var coordinator = new CollectionCoordinator(fixture.Resources, fixture.Source, fixture.Ledger);
+        await coordinator.RunAsync(
+            "telemetry", "source-1", new SourceDateRange(DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow),
+            new CsvRecordReader(), [new SqliteRecordSink(fixture.NewTargetDb)], null);
+        Assert.Contains("collection.run", seen);
+    }
+
+    [Fact]
     public async Task FullCollectionIsIdempotentAndLedgerTracksEachTarget()
     {
         using var fixture = new Fixture();

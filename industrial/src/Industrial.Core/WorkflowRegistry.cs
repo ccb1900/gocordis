@@ -87,16 +87,13 @@ public sealed class WorkflowRegistry : IWorkflowRegistry
         }
 
         await using var db = _db();
-        var previous = await db.Workflows.AsNoTracking()
-            .SingleOrDefaultAsync(x => x.WorkflowId == workflowId && x.Kind == "Published", ct);
+        var previous = await db.Workflows
+            .SingleOrDefaultAsync(x => x.WorkflowId == workflowId && x.IsPublished, ct);
         if (previous is not null)
         {
-            db.Workflows.Remove(new WorkflowEntity
-            {
-                WorkflowId = previous.WorkflowId,
-                Version = previous.Version,
-                Kind = "Published",
-            });
+            // Keep the previous published row as history; only its active flag
+            // moves, so the unique published index still admits exactly one row.
+            previous.IsPublished = false;
         }
 
         var publishedVersion = previous is null ? definition.Version : previous.Version + 1;
@@ -116,11 +113,40 @@ public sealed class WorkflowRegistry : IWorkflowRegistry
             workflowId, publishedVersion, definition, elsaDefinitionJson, published.PublishedAt!.Value);
     }
 
+    public async ValueTask<IReadOnlyList<PublishedWorkflow>> ListPublishedAsync(
+        string workflowId, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var rows = await db.Workflows.AsNoTracking()
+            .Where(row => row.WorkflowId == workflowId && row.ElsaDefinitionJson != null)
+            .OrderByDescending(row => row.Version)
+            .ToListAsync(ct);
+        return rows.Select(row => new PublishedWorkflow(
+            row.WorkflowId, row.Version,
+            JsonSerializer.Deserialize<WorkflowDefinition>(row.DefinitionJson, Json)!,
+            row.ElsaDefinitionJson!,
+            row.PublishedAt ?? DateTimeOffset.UnixEpoch)).ToArray();
+    }
+
+    public async ValueTask<IReadOnlyList<PublishedWorkflow>> ListAllPublishedAsync(CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var rows = await db.Workflows.AsNoTracking()
+            .Where(row => row.ElsaDefinitionJson != null)
+            .OrderByDescending(row => row.Version)
+            .ToListAsync(ct);
+        return rows.Select(row => new PublishedWorkflow(
+            row.WorkflowId, row.Version,
+            JsonSerializer.Deserialize<WorkflowDefinition>(row.DefinitionJson, Json)!,
+            row.ElsaDefinitionJson!,
+            row.PublishedAt ?? DateTimeOffset.UnixEpoch)).ToArray();
+    }
+
     public async ValueTask<PublishedWorkflow?> GetPublishedAsync(string workflowId, CancellationToken ct = default)
     {
         await using var db = _db();
         var row = await db.Workflows.AsNoTracking()
-            .SingleOrDefaultAsync(x => x.WorkflowId == workflowId && x.Kind == "Published", ct);
+            .SingleOrDefaultAsync(x => x.WorkflowId == workflowId && x.IsPublished, ct);
         return row?.ElsaDefinitionJson is null
             ? null
             : new PublishedWorkflow(

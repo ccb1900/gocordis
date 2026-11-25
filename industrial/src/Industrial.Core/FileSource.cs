@@ -57,7 +57,9 @@ public sealed class LocalFileSource : IFileSource
         }
 
         var result = new List<DiscoveredFile>();
-        foreach (var path in Directory.EnumerateFiles(root, "*.csv", SearchOption.AllDirectories))
+        var files = Directory.EnumerateFiles(root, "*.csv", SearchOption.AllDirectories)
+            .Concat(Directory.EnumerateFiles(root, "*.xlsx", SearchOption.AllDirectories));
+        foreach (var path in files)
         {
             ct.ThrowIfCancellationRequested();
             var identity = FileIdentityFactory.Create(path, root);

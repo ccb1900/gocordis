@@ -30,11 +30,16 @@ public sealed class ElsaActivityCatalog : IElsaActivityCatalog
 public sealed class IndustrialElsaComponent : Component
 {
     private readonly ElsaActivityCatalog _catalog = new();
+    private ElsaWorkflowExecutor.Result? _lastExecution;
+    private string? _lastError;
 
     public override string Name => "industrial-elsa";
     public override IReadOnlyList<ICapabilityKey> Inject() =>
         [IndustrialKeys.NodeCatalog, IndustrialKeys.WorkflowValidator,
-         IndustrialKeys.WorkflowRegistry, ApiGateway.Key];
+         IndustrialKeys.WorkflowRegistry, ApiGateway.Key,
+         IndustrialKeys.CollectionCoordinator, IndustrialKeys.ResourceRegistry,
+         IndustrialKeys.HistoricalRangePlanner, IndustrialKeys.RecordReader,
+         IndustrialKeys.RecordSink, IndustrialKeys.ArchiveSink];
     public override IReadOnlyList<ICapabilityKey> Provide() => [IndustrialKeys.ElsaActivityCatalog];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
@@ -43,6 +48,12 @@ public sealed class IndustrialElsaComponent : Component
         var validator = context.Require(IndustrialKeys.WorkflowValidator);
         var workflows = context.Require(IndustrialKeys.WorkflowRegistry);
         var api = context.Require(ApiGateway.Key);
+        var coordinator = context.Require(IndustrialKeys.CollectionCoordinator);
+        var resources = context.Require(IndustrialKeys.ResourceRegistry);
+        var planner = context.Require(IndustrialKeys.HistoricalRangePlanner);
+        var reader = context.Require(IndustrialKeys.RecordReader);
+        var sink = context.Require(IndustrialKeys.RecordSink);
+        var archive = context.Require(IndustrialKeys.ArchiveSink);
         var owner = ContributionOwner.ForContext(context, "industrial", "elsa-publish");
         // Built-in activity types are contributed by this plugin; descriptors
         // added later by other plugins are registered on their own activation.
@@ -81,6 +92,15 @@ public sealed class IndustrialElsaComponent : Component
         await context.EffectAsync(
             () =>
             {
+                api.RegisterCommand("industrial/save-workflow", async payload =>
+                {
+                    var body = payload as JsonObject
+                               ?? throw new InvalidOperationException("JSON definition required");
+                    var definition = System.Text.Json.JsonSerializer.Deserialize<WorkflowDefinition>(
+                        body.ToJsonString())
+                                     ?? throw new InvalidOperationException("invalid workflow definition");
+                    await workflows.SaveDraftAsync(definition);
+                }, owner);
                 api.RegisterCommand("industrial/publish-workflow", payload =>
                 {
                     var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
@@ -96,10 +116,79 @@ public sealed class IndustrialElsaComponent : Component
                     workflows.PublishAsync(id, elsJson).GetAwaiter().GetResult();
                     return ValueTask.CompletedTask;
                 }, owner);
+                api.RegisterCommand("industrial/run-workflow", async payload =>
+                {
+                    try
+                    {
+                        await RunWorkflowAsync(
+                            payload, workflows, coordinator, resources, planner, reader, sink, archive);
+                    }
+                    catch (Exception ex)
+                    {
+                        _lastError = ex.Message;
+                        throw;
+                    }
+                }, owner);
+                api.RegisterQuery("industrial/workflow-versions", () => new JsonArray(
+                    workflows.ListAllPublishedAsync().GetAwaiter().GetResult()
+                        .Select(version => (JsonNode?)new JsonObject
+                        {
+                            ["workflowId"] = version.WorkflowId,
+                            ["version"] = version.Version,
+                            ["publishedAt"] = version.PublishedAt.ToString("O"),
+                        }).ToArray()), owner);
+                api.RegisterQuery("industrial/execution", () => _lastExecution is null
+                    ? null
+                    : new JsonObject
+                    {
+                        ["status"] = _lastExecution.Status,
+                        ["error"] = _lastError is null ? null : JsonValue.Create(_lastError),
+                        ["executed"] = new JsonArray(_lastExecution.Executed
+                            .Select(step => (JsonNode?)JsonValue.Create(step)).ToArray()),
+                    }, owner);
                 return ValueTask.CompletedTask;
             },
             () => { api.UnregisterAll(owner); return ValueTask.CompletedTask; });
         return null;
+    }
+
+    private async ValueTask RunWorkflowAsync(
+        JsonNode? payload,
+        IWorkflowRegistry workflows,
+        ICollectionCoordinator coordinator,
+        IResourceRegistry resources,
+        IHistoricalRangePlanner planner,
+        IRecordReader reader,
+        IRecordSink sink,
+        IArchiveSink archive)
+    {
+        var body = payload as JsonObject ?? new JsonObject();
+        var id = body["workflowId"]?.GetValue<string>()
+                 ?? Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_WORKFLOW") ?? "daily-collection";
+        var resourceId = body["resourceId"]?.GetValue<string>()
+                         ?? Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_RESOURCE") ?? "source-1";
+        var definition = await workflows.GetAsync(id)
+                         ?? throw new InvalidOperationException($"workflow '{id}' not found");
+        if (await resources.GetAsync(resourceId) is null)
+        {
+            throw new InvalidOperationException($"resource '{resourceId}' not found");
+        }
+
+        var runner = new ElsaWorkflowExecutor();
+        _lastError = null;
+        _lastExecution = await runner.ExecuteAsync(definition, async (node, ct) =>
+        {
+            // Control flow belongs to Elsa. Data work is delegated to Cordis
+            // capabilities: the delivery node performs the collection through
+            // the one application-level coordinator.
+            if (node.Type.Contains("sink", StringComparison.OrdinalIgnoreCase) ||
+                node.Type.Contains("archive", StringComparison.OrdinalIgnoreCase))
+            {
+                await coordinator.RunAsync(
+                    id, resourceId, planner.Plan(DateTimeOffset.UtcNow, TimeSpan.FromDays(1)),
+                    reader, [sink], archive, ct);
+            }
+        });
     }
 }
 
@@ -162,6 +251,86 @@ public sealed class ElsaDefinitionConverter
 
 /// <summary>Small PoC verifier: prove a Cordis-contributed Activity can be
 /// executed by Elsa with a real service provider before committing to Elsa.</summary>
+/// <summary>Executes an industrial workflow graph through Elsa. Control flow
+/// (node order, activation, completion) is Elsa's responsibility; each node's
+/// data work is a delegate supplied by the Cordis plugin that owns the
+/// capability. No Cordis Fiber state is modified here.</summary>
+public sealed class ElsaWorkflowExecutor
+{
+    public sealed record Result(IReadOnlyList<string> Executed, string Status);
+
+    public async ValueTask<Result> ExecuteAsync(
+        WorkflowDefinition definition,
+        Func<WorkflowNode, CancellationToken, ValueTask> runNode,
+        CancellationToken ct = default)
+    {
+        var order = TopologicalOrder(definition);
+        var executed = new List<string>();
+        var services = new ServiceCollection();
+        services.AddElsa();
+        await using var provider = services.BuildServiceProvider();
+        var runner = provider.GetRequiredService<IWorkflowRunner>();
+        var sequence = new Sequence();
+        foreach (var node in order)
+        {
+            var current = node;
+            sequence.Activities.Add(new DelegatingActivity(async context =>
+            {
+                await runNode(current, context.CancellationToken);
+                executed.Add(current.Id);
+            }));
+        }
+
+        var workflow = new Workflow(sequence)
+        {
+            Identity = new WorkflowIdentity(definition.WorkflowId, definition.Version, definition.Name, null),
+        };
+        await runner.RunAsync(workflow, cancellationToken: ct);
+        return new Result(executed, "Completed");
+    }
+
+    private static IReadOnlyList<WorkflowNode> TopologicalOrder(WorkflowDefinition definition)
+    {
+        var byId = definition.Nodes.ToDictionary(node => node.Id, StringComparer.Ordinal);
+        var indegree = definition.Nodes.ToDictionary(node => node.Id, _ => 0, StringComparer.Ordinal);
+        foreach (var edge in definition.Edges)
+        {
+            if (byId.ContainsKey(edge.Source) && byId.ContainsKey(edge.Target))
+            {
+                indegree[edge.Target]++;
+            }
+        }
+
+        var queue = new Queue<string>(indegree.Where(pair => pair.Value == 0).Select(pair => pair.Key));
+        var order = new List<WorkflowNode>();
+        while (queue.Count > 0)
+        {
+            var id = queue.Dequeue();
+            order.Add(byId[id]);
+            foreach (var edge in definition.Edges.Where(edge => edge.Source == id))
+            {
+                if (!byId.ContainsKey(edge.Target)) continue;
+                if (--indegree[edge.Target] == 0) queue.Enqueue(edge.Target);
+            }
+        }
+
+        if (order.Count != definition.Nodes.Count)
+        {
+            throw new InvalidOperationException("workflow graph contains a cycle");
+        }
+
+        return order;
+    }
+
+    private sealed class DelegatingActivity : CodeActivity
+    {
+        private readonly Func<ActivityExecutionContext, ValueTask> _run;
+        public DelegatingActivity(Func<ActivityExecutionContext, ValueTask> run) => _run = run;
+
+        protected override ValueTask ExecuteAsync(ActivityExecutionContext context) => _run(context);
+    }
+}
+
 public static class ElsaPoC
 {
     public static async Task<string> ExecuteAsync(string fileId)

@@ -46,6 +46,10 @@ public sealed class IndustrialNodesComponent : Component
             [new NodePort("records", PortType.RecordSet, true)], [new NodePort("result", PortType.DeliveryResult, true)]);
         yield return Node("industrial.sink.sqlite", "SQLite", "Delivery", "sink", "Database", types[7],
             [new NodePort("records", PortType.RecordSet, true)], [new NodePort("result", PortType.DeliveryResult, true)]);
+        yield return Node("industrial.sink.postgresql", "PostgreSQL", "Delivery", "sink", "Database", types[9],
+            [new NodePort("records", PortType.RecordSet, true)], [new NodePort("result", PortType.DeliveryResult, true)]);
+        yield return Node("industrial.sink.mysql", "MySQL", "Delivery", "sink", "Database", types[10],
+            [new NodePort("records", PortType.RecordSet, true)], [new NodePort("result", PortType.DeliveryResult, true)]);
         yield return Node("industrial.sink.archive", "Archive", "Delivery", "sink", "Archive", types[8],
             [new NodePort("files", PortType.FileBatch, false)], [new NodePort("result", PortType.DeliveryResult, false)]);
     }

@@ -9,6 +9,9 @@ MANIFEST="$OUT/gocordis.app.json"
 mkdir -p "$OUT/packages" "$STORE"
 
 dotnet build "$ROOT/industrial/Industrial.slnx" --nologo -m:1 >/dev/null
+mkdir -p "$ROOT/industrial/src/Industrial.PackagedHost/bin/Debug/net10.0/client-modules/industrial-designer"
+cp -r "$ROOT"/industrial/web/dist/. \
+  "$ROOT/industrial/src/Industrial.PackagedHost/bin/Debug/net10.0/client-modules/industrial-designer/"
 dotnet build "$ROOT/tools/Gocordis.Cli/Gocordis.Cli.csproj" --nologo -v q
 CLI=(dotnet "$ROOT/tools/Gocordis.Cli/bin/Debug/net10.0/Gocordis.Cli.dll")
 
@@ -20,7 +23,9 @@ pack() {
   # The tests output contains the complete dependency closure (EF Core,
   # CsvHelper, SqlClient, Elsa...). Package it so a collectible ALC can resolve
   # every dependency without relying on the host's default context.
-  cp "$ROOT/industrial/tests/Industrial.Tests/bin/Debug/net10.0/"*.dll "$stage/"
+  cp "$ROOT/industrial/tests/Industrial.Integration.Tests/bin/Debug/net10.0/"*.dll "$stage/"
+  # Native assets are provided to the product host output, not to each package:
+  # copying all runtimes would exceed the package payload limit with Wasmtime.
   local package="$OUT/packages/$id-1.0.0.gocordis-plugin"
   "${CLI[@]}" plugin pack "$stage" "$package" \
     --id "$id" --version 1.0.0 --type "$id" --host-range '[1.0,)' \
@@ -29,16 +34,30 @@ pack() {
   "${CLI[@]}" plugin install "$package" --store "$STORE" --host-version 1.0.0
 }
 
-pack industrial.domain Industrial.Plugins.dll Industrial.Plugins.IndustrialDomainComponent \
-  --provides industrial.capabilities
+pack industrial.resource Industrial.Plugins.dll Industrial.Plugins.IndustrialResourceComponent \
+  --provides industrial.capabilities.resource
+pack industrial.credential Industrial.Plugins.dll Industrial.Plugins.IndustrialCredentialComponent \
+  --provides industrial.capabilities.credential
+pack industrial.workflow Industrial.Plugins.dll Industrial.Plugins.IndustrialWorkflowComponent \
+  --provides industrial.capabilities.workflow \
+  --dependency "industrial.resource@[1.0,2.0)" --dependency "industrial.credential@[1.0,2.0)"
+pack industrial.execution Industrial.Plugins.dll Industrial.Plugins.IndustrialExecutionComponent \
+  --provides industrial.capabilities.execution
+pack industrial.collection Industrial.Plugins.dll Industrial.Plugins.IndustrialCollectionComponent \
+  --provides industrial.capabilities.collection \
+  --dependency "industrial.resource@[1.0,2.0)" --dependency "industrial.execution@[1.0,2.0)"
 pack industrial.nodes Industrial.Plugins.dll Industrial.Plugins.IndustrialNodesComponent \
-  --provides industrial.nodes --dependency "industrial.domain@[1.0,2.0)"
+  --provides industrial.nodes --dependency "industrial.workflow@[1.0,2.0)"
 pack industrial.elsa Industrial.Elsa.dll Industrial.Elsa.IndustrialElsaComponent \
   --provides industrial.elsa.activities \
-  --dependency "industrial.domain@[1.0,2.0)" --dependency "industrial.nodes@[1.0,2.0)"
+  --dependency "industrial.workflow@[1.0,2.0)" --dependency "industrial.nodes@[1.0,2.0)" \
+  --dependency "industrial.collection@[1.0,2.0)"
+pack industrial.clientmodule Industrial.Plugins.dll Industrial.Plugins.IndustrialClientModuleComponent \
+  --provides industrial.ui.clientmodule
 pack industrial.ui Industrial.Plugins.dll Industrial.Plugins.IndustrialUiComponent \
   --provides industrial.ui \
-  --dependency "industrial.domain@[1.0,2.0)" --dependency "industrial.nodes@[1.0,2.0)" \
+  --dependency "industrial.resource@[1.0,2.0)" --dependency "industrial.workflow@[1.0,2.0)" \
+  --dependency "industrial.execution@[1.0,2.0)" --dependency "industrial.collection@[1.0,2.0)" \
   --dependency "industrial.elsa@[1.0,2.0)"
 
 python3 - "$MANIFEST" <<'PY'
@@ -46,11 +65,15 @@ import json, sys
 manifest = {
     "Id": "industrial-app", "Version": "1.0.0", "HostVersion": "1.0.0",
     "Plugins": [
-        {"Id": "industrial.domain", "VersionRange": "[1.0,2.0)", "Enabled": True,
-         "Config": {"allowDevelopmentKey": "true"}},
+        {"Id": "industrial.resource", "VersionRange": "[1.0,2.0)", "Enabled": True},
+        {"Id": "industrial.credential", "VersionRange": "[1.0,2.0)", "Enabled": True},
+        {"Id": "industrial.workflow", "VersionRange": "[1.0,2.0)", "Enabled": True},
+        {"Id": "industrial.execution", "VersionRange": "[1.0,2.0)", "Enabled": True},
+        {"Id": "industrial.collection", "VersionRange": "[1.0,2.0)", "Enabled": True},
         {"Id": "industrial.nodes", "VersionRange": "[1.0,2.0)", "Enabled": True},
         {"Id": "industrial.elsa", "VersionRange": "[1.0,2.0)", "Enabled": True},
         {"Id": "industrial.ui", "VersionRange": "[1.0,2.0)", "Enabled": True},
+        {"Id": "industrial.clientmodule", "VersionRange": "[1.0,2.0)", "Enabled": True},
     ],
 }
 with open(sys.argv[1], "w", encoding="utf-8") as handle:

@@ -39,6 +39,8 @@ public static class IndustrialActivityTypes
         "Industrial.Activities.Sink.SqlServer",
         "Industrial.Activities.Sink.Sqlite",
         "Industrial.Activities.Sink.Archive",
+        "Industrial.Activities.Sink.PostgreSql",
+        "Industrial.Activities.Sink.MySql",
     ];
 }
 
@@ -86,6 +88,8 @@ public interface IResourceRegistry
     ValueTask<ResourceDefinition?> GetAsync(string id, CancellationToken ct = default);
     ValueTask<IReadOnlyList<ResourceDefinition>> ListAsync(CancellationToken ct = default);
     ValueTask<bool> RemoveAsync(string id, CancellationToken ct = default);
+    void BindWorkflows(IWorkflowRegistry workflows);
+    void UnbindWorkflows();
 }
 
 /// <summary>Secret material is returned only to internal consumers through
@@ -187,6 +191,8 @@ public interface IWorkflowRegistry
     ValueTask<PublishedWorkflow?> PublishAsync(
         string workflowId, string elsaDefinitionJson, CancellationToken ct = default);
     ValueTask<PublishedWorkflow?> GetPublishedAsync(string workflowId, CancellationToken ct = default);
+    ValueTask<IReadOnlyList<PublishedWorkflow>> ListPublishedAsync(string workflowId, CancellationToken ct = default);
+    ValueTask<IReadOnlyList<PublishedWorkflow>> ListAllPublishedAsync(CancellationToken ct = default);
 }
 
 // ---- collection / delivery -------------------------------------------------

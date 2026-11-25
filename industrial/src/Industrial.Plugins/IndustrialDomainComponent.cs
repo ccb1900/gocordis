@@ -53,7 +53,7 @@ public sealed class IndustrialDomainComponent : Component
         IndustrialKeys.FileSource,
     ];
 
-    public override ValueTask<Cleanup?> ApplyAsync(Context context)
+    public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
         var root = Setting(_config, "root", Path.Combine(Path.GetTempPath(), "gocordis-industrial"));
         Directory.CreateDirectory(root);
@@ -87,12 +87,17 @@ public sealed class IndustrialDomainComponent : Component
             }
         }
         ICollectionLedger ledger = new CollectionLedger(ledgerDb);
-        IFileSource source = new LocalFileSource(resources);
+        IFileSource source = new RoutingFileSource(resources, vault);
         IHistoricalRangePlanner planner = new HistoricalRangePlanner();
-        IRecordReader reader = new CsvRecordReader();
-        IRecordSink sink = string.Equals(Setting(_config, "sink", "sqlite"), "sqlserver", StringComparison.OrdinalIgnoreCase)
-            ? new SqlServerRecordSink(Setting(_config, "connectionString", string.Empty))
-            : new SqliteRecordSink(targetDb);
+        IRecordReader reader = new RoutingRecordReader();
+        IRecordSink sink = Setting(_config, "sink", "sqlite").ToLowerInvariant() switch
+        {
+            "sqlserver" => new SqlServerRecordSink(Setting(_config, "connectionString", string.Empty)),
+            "postgresql" => new PostgreSqlRecordSink(Setting(_config, "connectionString", string.Empty)),
+            "mysql" => new MySqlRecordSink(Setting(_config, "connectionString", string.Empty)),
+            "excel" => new SqliteRecordSink(targetDb),
+            _ => new SqliteRecordSink(targetDb),
+        };
         IArchiveSink archive = new FileArchiveSink(Path.Combine(root, "archive"));
         ICollectionCoordinator coordinator = new CollectionCoordinator(resources, source, ledger, reader);
 
@@ -107,8 +112,11 @@ public sealed class IndustrialDomainComponent : Component
         context.Provide(IndustrialKeys.RecordReader, reader);
         context.Provide(IndustrialKeys.RecordSink, sink);
         context.Provide(IndustrialKeys.ArchiveSink, archive);
+        await context.EffectAsync(
+            () => ValueTask.CompletedTask,
+            async () => { if (source is IAsyncDisposable disposable) await disposable.DisposeAsync(); });
         context.Provide(IndustrialKeys.FileSource, source);
-        return ValueTask.FromResult<Cleanup?>(null);
+        return null;
     }
 
     private static string Setting(IReadOnlyDictionary<string, object?> config, string key, string fallback)

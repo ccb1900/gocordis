@@ -17,31 +17,54 @@ registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
 registry.ExternalCapabilities.Add(ApiGateway.Key);
 await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
 
-registry.RegisterComponentFactory("industrial.domain", manifest =>
-    new IndustrialDomainComponent(manifest.Config));
+registry.RegisterComponentFactory("industrial.resource", manifest =>
+    new IndustrialResourceComponent(manifest.Config));
+registry.RegisterComponentFactory("industrial.credential", manifest =>
+    new IndustrialCredentialComponent(manifest.Config));
+registry.RegisterComponentFactory("industrial.workflow", manifest =>
+    new IndustrialWorkflowComponent(manifest.Config));
+registry.RegisterComponentFactory("industrial.execution", manifest =>
+    new IndustrialExecutionComponent(manifest.Config));
+registry.RegisterComponentFactory("industrial.collection", manifest =>
+    new IndustrialCollectionComponent(manifest.Config));
 registry.RegisterComponentFactory("industrial.nodes", _ => new IndustrialNodesComponent());
 registry.RegisterComponentFactory("industrial.ui", _ => new IndustrialUiComponent());
+registry.RegisterComponentFactory("industrial.clientmodule", _ => new IndustrialClientModuleComponent());
 registry.RegisterComponentFactory("industrial.elsa", _ => new IndustrialElsaComponent());
 
 PluginManifest Declaration(string id, IReadOnlyDictionary<string, object?>? config = null) =>
     new(id, id, true, config ?? new Dictionary<string, object?>(), [], []);
 
 await registry.ApplyAsync([
-    Declaration("industrial.domain", new Dictionary<string, object?>
+    Declaration("industrial.resource", new Dictionary<string, object?>
     {
         ["root"] = root,
-        ["allowDevelopmentKey"] =
-            Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_ALLOW_DEV_KEY") ?? "false",
         ["seedResource"] = "true",
         ["sourceRoot"] = Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_SOURCE_ROOT")
                          ?? Path.Combine(root, "source"),
     }),
+    Declaration("industrial.credential", new Dictionary<string, object?>
+    {
+        ["root"] = root,
+        ["allowDevelopmentKey"] =
+            Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_ALLOW_DEV_KEY") ?? "false",
+    }),
+    Declaration("industrial.workflow", new Dictionary<string, object?> { ["root"] = root }),
+    Declaration("industrial.execution", new Dictionary<string, object?> { ["root"] = root }),
+    Declaration("industrial.collection", new Dictionary<string, object?> { ["root"] = root }),
     Declaration("industrial.nodes"),
     Declaration("industrial.elsa"),
     Declaration("industrial.ui"),
+    Declaration("industrial.clientmodule"),
 ]);
 
-await using var server = new WebUiServer(console, address, registry: registry);
+var webDist = Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_WEB_DIST")
+               ?? Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+                   "../../../../industrial/web/dist"));
+await using var server = new WebUiServer(
+    console, address, registry: registry,
+    clientModuleRootResolver: name =>
+        string.Equals(name, "industrial-designer", StringComparison.Ordinal) ? webDist : null);
 await server.StartAsync();
 Console.WriteLine($"Industrial console listening on {server.Address} (root={root})");
 Console.WriteLine("Press Ctrl+C to stop.");

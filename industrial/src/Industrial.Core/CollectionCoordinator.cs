@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Industrial.Contracts;
 
 namespace Industrial.Core;
@@ -35,6 +36,11 @@ public static class BoundedRetry
 
 /// <summary>One collection execution. Transforms are supplied by plugins as
 /// delegates so new nodes never require changing this coordinator.</summary>
+public static class IndustrialTelemetry
+{
+    public static readonly ActivitySource Source = new("Gocordis.Industrial.Collection");
+}
+
 public sealed class CollectionCoordinator : ICollectionCoordinator
 {
     private readonly IResourceRegistry _resources;
@@ -61,6 +67,9 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
         IArchiveSink? archive,
         CancellationToken ct = default)
     {
+        using var activity = IndustrialTelemetry.Source.StartActivity("collection.run");
+        activity?.SetTag("workflow.id", workflowId);
+        activity?.SetTag("resource.id", resourceId);
         if (await _resources.GetAsync(resourceId, ct) is null)
         {
             throw new InvalidOperationException($"resource '{resourceId}' not found");

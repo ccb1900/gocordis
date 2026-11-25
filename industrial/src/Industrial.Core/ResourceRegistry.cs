@@ -16,6 +16,7 @@ public sealed class ResourceRegistry : IResourceRegistry
     public ResourceRegistry(Func<IndustrialDbContext> db) => _db = db;
 
     public void BindWorkflows(IWorkflowRegistry workflows) => _workflows = workflows;
+    public void UnbindWorkflows() => _workflows = null;
 
     public async ValueTask<ResourceDefinition> RegisterAsync(
         ResourceDefinition resource, CancellationToken ct = default)

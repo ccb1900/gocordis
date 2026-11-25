@@ -241,11 +241,13 @@ public sealed class TransitiveContractProductTests
     private static async Task InstallAsync(
         string payloadDir, string store, string contract, string id, string entryType)
     {
-        var assembly = Path.GetFileName(Directory.GetFiles(payloadDir, "*.dll")
-            .First(p => Path.GetFileNameWithoutExtension(p).EndsWith("a", StringComparison.Ordinal) ||
-                        Path.GetFileNameWithoutExtension(p).EndsWith("b", StringComparison.Ordinal) ||
-                        Path.GetFileNameWithoutExtension(p).EndsWith("c", StringComparison.Ordinal)));
-        var executable = assembly;
+        // Pick the plugin assembly, never the shared contract DLL: a random
+        // contract name can itself end in a/b/c, which previously made the
+        // entry assembly nondeterministic.
+        var executable = entryType.Split('.', 2)[0] + ".dll";
+        Assert.True(File.Exists(Path.Combine(payloadDir, executable)),
+            $"missing plugin assembly '{executable}' in '{payloadDir}'");
+        var assembly = executable;
         var package = Path.Combine(store + ".packages", id + "-1.0.0.gocordis-plugin");
         await PluginPackageWriter.CreateAsync(payloadDir,
             new PluginPackageManifest(id, "1.0.0", id, "[1.0,)",

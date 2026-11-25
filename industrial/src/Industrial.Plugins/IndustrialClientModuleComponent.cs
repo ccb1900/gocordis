@@ -47,16 +47,6 @@ public sealed class IndustrialClientModuleComponent : Component
             PageRenderer,
             Icon: "Branches",
             Description: "Industrial workflow designer supplied by the industrial-designer client module",
-            Views: new System.Text.Json.Nodes.JsonArray(new System.Text.Json.Nodes.JsonObject
-            {
-                ["kind"] = "table",
-                ["title"] = "Node catalog",
-                ["query"] = "industrial/nodes",
-                ["columns"] = new System.Text.Json.Nodes.JsonArray(
-                    new System.Text.Json.Nodes.JsonObject { ["key"] = "nodeTypeId", ["title"] = "Node type" },
-                    new System.Text.Json.Nodes.JsonObject { ["key"] = "name", ["title"] = "Name" },
-                    new System.Text.Json.Nodes.JsonObject { ["key"] = "category", ["title"] = "Category" }),
-            }),
             Order: 41,
             Group: "Industrial"));
 

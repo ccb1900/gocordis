@@ -58,13 +58,7 @@ await registry.ApplyAsync([
     Declaration("industrial.clientmodule"),
 ]);
 
-var webDist = Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_WEB_DIST")
-               ?? Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-                   "../../../../industrial/web/dist"));
-await using var server = new WebUiServer(
-    console, address, registry: registry,
-    clientModuleRootResolver: name =>
-        string.Equals(name, "industrial-designer", StringComparison.Ordinal) ? webDist : null);
+await using var server = new WebUiServer(console, address, registry: registry);
 await server.StartAsync();
 Console.WriteLine($"Industrial console listening on {server.Address} (root={root})");
 Console.WriteLine("Press Ctrl+C to stop.");

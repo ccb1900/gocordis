@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import register from "./ui";
 import type { BuiltinFacade } from "./facade";
@@ -32,5 +34,18 @@ describe("builtin insight UI client module", () => {
       "framework-dashboard", "insight-graph", "runtime-inspector", "market-catalog",
     ]);
     expect(state.panels).toEqual([]);
+  });
+
+  it("does not leave an unresolved facade or ctx reference in product renderers", () => {
+    const root = fileURLToPath(new URL(".", import.meta.url));
+    for (const name of ["MarketCatalog", "FrameworkDashboard", "RuntimeInspector", "InsightGraphBlock"]) {
+      const source = readFileSync(new URL(`./views/${name}.tsx`, import.meta.url), "utf8");
+      expect(source).not.toMatch(/^\s*api$/m);
+      if (name === "MarketCatalog") {
+        expect(source).toContain("{ block, ctx }");
+        expect(source).toMatch(/facade\(\)\.api/);
+      }
+      expect(root).toContain("frontend");
+    }
   });
 });

@@ -32,8 +32,7 @@ function ConsoleOverview({ ctx }: { ctx: ViewContext }) {
   };
 
   return (
-    <div>
-      <Typography.Title level={3}>内置控制台插件</Typography.Title>
+    <Card title="内置控制台插件" style={{ maxWidth: 980 }}>
       <Typography.Paragraph type="secondary">
         这个页面只属于 Web Console 传输插件；其它内置页面由各自插件提供。
       </Typography.Paragraph>
@@ -54,7 +53,7 @@ function ConsoleOverview({ ctx }: { ctx: ViewContext }) {
           </Space>
         </Card>
       </Space>
-    </div>
+    </Card>
   );
 }
 

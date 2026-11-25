@@ -13,7 +13,6 @@ import type { TableColumnsType } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import { facade } from "../facade";
 import type { BlockRenderer } from "../types";
-import type { ViewBlock } from "../types";
 import {
   compareRows, filterRows, mapStoreEntry, storeRowKey,
   type CatalogFilter, type StoreRow,
@@ -23,7 +22,7 @@ function boolTag(v: boolean) {
   return <Tag color={v ? "success" : "default"}>{v ? "是" : "否"}</Tag>;
 }
 
-export const MarketCatalogBlock: BlockRenderer = ({ block }: { block: ViewBlock }) => {
+export const MarketCatalogBlock: BlockRenderer = ({ block, ctx }) => {
   const [rows, setRows] = useState<StoreRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -34,7 +33,7 @@ export const MarketCatalogBlock: BlockRenderer = ({ block }: { block: ViewBlock 
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    api
+    facade().api
       .storePlugins()
       .then((entries) => {
         if (alive) {

@@ -141,6 +141,93 @@ public sealed class CollectionPipelineTests
     }
 
     [Fact]
+    public async Task DatabaseDisconnectIsRecordedAndRetriedWithoutDuplicateWrites()
+    {
+        using var fixture = new Fixture();
+        await fixture.RegisterResourceAsync();
+        var offlineSink = new DelegateSink("database", (_, _, _, _) =>
+            throw new IOException("database offline"));
+        var coordinator = new CollectionCoordinator(
+            fixture.Resources, fixture.Source, fixture.Ledger, new CsvRecordReader());
+        await coordinator.RunAsync(
+            "workflow-1", "source-1", new SourceDateRange(DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow),
+            new CsvRecordReader(), [offlineSink], null);
+
+        using (var ledger = fixture.NewDb())
+        {
+            var failed = Assert.Single(ledger.FileDeliveries.AsNoTracking().ToList());
+            Assert.Equal("Failed", failed.Status);
+            // BoundedRetry exhausts its 3 in-process attempts; the ledger
+            // records one bounded failure episode that can be resumed later.
+            Assert.Equal(1, failed.Attempts);
+            Assert.Contains("database offline", failed.Error);
+            Assert.Equal(0, await CountTargetRows(fixture));
+        }
+
+        var restored = new SqliteRecordSink(fixture.NewTargetDb, "database");
+        Assert.Equal(1, await coordinator.RetryFailedAsync([restored], null));
+        using var after = fixture.NewDb();
+        Assert.All(after.FileDeliveries.AsNoTracking().ToList(), row =>
+            Assert.Equal("Succeeded", row.Status));
+        Assert.Equal(2, await CountTargetRows(fixture));
+    }
+
+    [Fact]
+    public async Task RestartedCoordinatorResumesFailedDeliveryFromLedger()
+    {
+        using var fixture = new Fixture();
+        await fixture.RegisterResourceAsync();
+        var offlineSink = new DelegateSink("database", (_, _, _, _) =>
+            throw new IOException("process died"));
+        var first = new CollectionCoordinator(
+            fixture.Resources, fixture.Source, fixture.Ledger, new CsvRecordReader());
+        await first.RunAsync(
+            "workflow-1", "source-1", new SourceDateRange(DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow),
+            new CsvRecordReader(), [offlineSink], null);
+
+        // A new process has no in-memory state; the ledger is the resume source.
+        var restartedLedger = new CollectionLedger(fixture.NewDb);
+        var restarted = new CollectionCoordinator(
+            fixture.Resources, fixture.Source, restartedLedger, new CsvRecordReader());
+        var restored = new SqliteRecordSink(fixture.NewTargetDb, "database");
+        Assert.Equal(1, await restarted.RetryFailedAsync([restored], null));
+        Assert.Equal(2, await CountTargetRows(fixture));
+    }
+
+    [Fact]
+    public async Task OfflineScanBackfillsMissedFilesWithoutDuplicatingBusinessData()
+    {
+        using var fixture = new Fixture();
+        await fixture.RegisterResourceAsync();
+        var late = Path.Combine(fixture.SourceRoot, "late.csv");
+        File.WriteAllText(late, "record_id,reading\nlate-1,99\n");
+        File.SetLastWriteTimeUtc(late, DateTimeOffset.UtcNow.AddDays(-3).UtcDateTime);
+
+        var planner = new HistoricalRangePlanner();
+        var onlineRange = planner.Plan(DateTimeOffset.UtcNow, TimeSpan.FromDays(1));
+        var backfillRange = planner.Plan(DateTimeOffset.UtcNow, TimeSpan.FromDays(7));
+        Assert.DoesNotContain(await fixture.Source.DiscoverAsync("source-1", onlineRange),
+            file => file.Identity.RelativePath == "late.csv");
+        Assert.Contains(await fixture.Source.DiscoverAsync("source-1", backfillRange),
+            file => file.Identity.RelativePath == "late.csv");
+
+        var coordinator = new CollectionCoordinator(
+            fixture.Resources, fixture.Source, fixture.Ledger, new CsvRecordReader());
+        var sink = new SqliteRecordSink(fixture.NewTargetDb);
+        await coordinator.RunAsync("offline", "source-1", backfillRange,
+            new CsvRecordReader(), [sink], null);
+        await coordinator.RunAsync("offline", "source-1", backfillRange,
+            new CsvRecordReader(), [sink], null);
+
+        Assert.Equal(1, await CountTargetRows(fixture));
+        using var ledger = fixture.NewDb();
+        Assert.Single(ledger.CollectionFiles.AsNoTracking().ToList(),
+            file => file.IdentityKey.Contains("late.csv"));
+        Assert.Single(ledger.FileDeliveries.AsNoTracking().ToList(),
+            delivery => delivery.IdempotencyKey.Contains("late.csv"));
+    }
+
+    [Fact]
     public async Task RecordTimeFromCsvReachesTheTarget()
     {
         using var fixture = new Fixture();
@@ -165,8 +252,10 @@ public sealed class CollectionPipelineTests
         using var fixture = new Fixture();
         await fixture.RegisterResourceAsync();
         var planner = new HistoricalRangePlanner();
-        var range = planner.Plan(DateTimeOffset.UtcNow, TimeSpan.FromDays(1));
-        Assert.Equal(DateTimeOffset.UnixEpoch, range.FromInclusive);
+        var now = DateTimeOffset.UtcNow;
+        var range = planner.Plan(now, TimeSpan.FromDays(400));
+        Assert.Equal(now.AddDays(-400), range.FromInclusive);
+        Assert.Equal(now, range.ToExclusive);
 
         var files = await fixture.Source.DiscoverAsync("source-1", range);
         Assert.Single(files);
@@ -240,6 +329,26 @@ public sealed class CollectionPipelineTests
         public DelegateReader(Func<DiscoveredFile, CancellationToken, IAsyncEnumerable<RecordEnvelope>> read) => _read = read;
         public IAsyncEnumerable<RecordEnvelope> ReadAsync(
             DiscoveredFile file, CancellationToken ct = default) => _read(file, ct);
+    }
+
+    private sealed class DelegateSink : IRecordSink
+    {
+        private readonly Func<string, IAsyncEnumerable<RecordEnvelope>, string, CancellationToken,
+            ValueTask<DeliveryResultRef>> _write;
+
+        public DelegateSink(string targetId, Func<string, IAsyncEnumerable<RecordEnvelope>, string,
+            CancellationToken, ValueTask<DeliveryResultRef>> write)
+        {
+            TargetId = targetId;
+            _write = write;
+        }
+
+        public string TargetId { get; }
+
+        public ValueTask<DeliveryResultRef> WriteAsync(
+            string collectionFileId, IAsyncEnumerable<RecordEnvelope> records,
+            string idempotencyKey, CancellationToken ct = default) =>
+            _write(collectionFileId, records, idempotencyKey, ct);
     }
 
     private sealed class ThrowingArchive : IArchiveSink

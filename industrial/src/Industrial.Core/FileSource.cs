@@ -4,6 +4,25 @@ using Industrial.Contracts;
 
 namespace Industrial.Core;
 
+/// <summary>File discovery is driven by the SAME reader broker that parses the
+/// files. A Reader plugin extending .json only registers a broker route; both
+/// discovery and parsing see it without a Core or designer edit.</summary>
+internal static class DiscoveredFilePatterns
+{
+    public static IReadOnlyList<string> Enumerate(
+        string root, Func<IReadOnlyList<string>>? extensions)
+    {
+        var patterns = (extensions?.Invoke() ?? [".csv", ".xlsx"])
+            .Select(extension => "*" + extension.TrimStart('.'))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return patterns
+            .SelectMany(pattern => Directory.EnumerateFiles(root, pattern, SearchOption.AllDirectories))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+}
+
 /// <summary>Stable technical file identity. Mapping rules and business date
 /// parsing never contribute to this key.</summary>
 public static class FileIdentityFactory
@@ -40,8 +59,13 @@ public static class FileIdentityFactory
 public sealed class LocalFileSource : IFileSource
 {
     private readonly IResourceRegistry _resources;
+    private readonly Func<IReadOnlyList<string>>? _extensions;
 
-    public LocalFileSource(IResourceRegistry resources) => _resources = resources;
+    public LocalFileSource(IResourceRegistry resources, Func<IReadOnlyList<string>>? extensions = null)
+    {
+        _resources = resources;
+        _extensions = extensions;
+    }
 
     public async ValueTask<IReadOnlyList<DiscoveredFile>> DiscoverAsync(
         string resourceId, SourceDateRange range, CancellationToken ct = default)
@@ -57,8 +81,7 @@ public sealed class LocalFileSource : IFileSource
         }
 
         var result = new List<DiscoveredFile>();
-        var files = Directory.EnumerateFiles(root, "*.csv", SearchOption.AllDirectories)
-            .Concat(Directory.EnumerateFiles(root, "*.xlsx", SearchOption.AllDirectories));
+        var files = DiscoveredFilePatterns.Enumerate(root, _extensions);
         foreach (var path in files)
         {
             ct.ThrowIfCancellationRequested();

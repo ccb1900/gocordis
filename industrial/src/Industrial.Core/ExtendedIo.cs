@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using ExcelDataReader;
+using Gocordis.Extensions;
 using Industrial.Contracts;
 using MySqlConnector;
 using Npgsql;
@@ -48,9 +49,13 @@ public sealed class PostgreSqlRecordSink : IRecordSink
 {
     private readonly string _connectionString;
 
-    public PostgreSqlRecordSink(string connectionString) => _connectionString = connectionString;
+    public PostgreSqlRecordSink(string connectionString, string? targetId = null)
+    {
+        _connectionString = connectionString;
+        TargetId = targetId ?? "postgresql";
+    }
 
-    public string TargetId => "postgresql";
+    public string TargetId { get; }
 
     public async ValueTask<DeliveryResultRef> WriteAsync(
         string collectionFileId, IAsyncEnumerable<RecordEnvelope> records,
@@ -92,9 +97,13 @@ public sealed class MySqlRecordSink : IRecordSink
 {
     private readonly string _connectionString;
 
-    public MySqlRecordSink(string connectionString) => _connectionString = connectionString;
+    public MySqlRecordSink(string connectionString, string? targetId = null)
+    {
+        _connectionString = connectionString;
+        TargetId = targetId ?? "mysql";
+    }
 
-    public string TargetId => "mysql";
+    public string TargetId { get; }
 
     public async ValueTask<DeliveryResultRef> WriteAsync(
         string collectionFileId, IAsyncEnumerable<RecordEnvelope> records,
@@ -153,14 +162,20 @@ public sealed class RoutingFileSource : IFileSource, IAsyncDisposable
     private readonly LocalFileSource _local;
     private readonly UncFileSource? _unc;
 
-    public RoutingFileSource(IResourceRegistry resources, ICredentialVault? vault = null)
+    public RoutingFileSource(
+        IResourceRegistry resources,
+        ICredentialVault? vault = null,
+        Broker<IRecordReaderProvider>? readers = null)
     {
         _resources = resources;
         _vault = vault;
-        _local = new LocalFileSource(resources);
+        Func<IReadOnlyList<string>> extensions = () =>
+            readers?.Providers.Select(provider => provider.FileExtension).ToArray()
+            ?? [".csv", ".xlsx"];
+        _local = new LocalFileSource(resources, extensions);
         if (OperatingSystem.IsWindows())
         {
-            _unc = new UncFileSource(resources, vault);
+            _unc = new UncFileSource(resources, vault, extensions);
         }
     }
 

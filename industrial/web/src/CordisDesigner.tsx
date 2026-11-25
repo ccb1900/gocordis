@@ -8,6 +8,7 @@ import { GraphCanvas } from "./GraphCanvas";
 import { NodePalette } from "./NodePalette";
 import { PropertyEditor } from "./PropertyEditor";
 import { parseNodeDescriptors, parseWorkflow, parseWorkflowSummaries, unwrapData } from "./dto";
+import { getFacade } from "./facade";
 import {
   addEdge, applyPositions, descriptorOf, emptyWorkflow, makeNode, nextNodeId,
   removeEdge, removeNode, resolveEdgePorts, setNodeConfig, validateWorkflow,
@@ -65,7 +66,11 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const run = useCallback(async (name: string, body: unknown, ok: string) => {
     setBusy(true);
     try {
-      await ctx.hubCommand(name, body);
+      // The shell's ViewContext.hubCommand converts transport failures into a
+      // page banner, so a block cannot distinguish them from success. The
+      // facade's api.hubCommand is the SAME hub channel but preserves the
+      // rejection, which is what this toolbar must report.
+      await (getFacade().api.hubCommand as (name: string, body: unknown) => Promise<void>)(name, body);
       messageApi.success(ok);
     } catch (error) {
       messageApi.error(`${name} failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -94,12 +99,14 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const dropNode = useCallback((type: string, x: number, y: number) => {
     const descriptor = descriptorOf(catalog, type);
     if (!descriptor) return;
+    const id = nextNodeId(definition.nodes);
     setDefinition((current) => ({
       ...current,
-      nodes: [...current.nodes, makeNode(descriptor, nextNodeId(current.nodes), x, y)],
+      nodes: [...current.nodes, makeNode(descriptor, id, x, y)],
     }));
+    setSelectedId(id);
     setIssues([]);
-  }, [catalog]);
+  }, [catalog, definition.nodes]);
 
   const createEdge = useCallback((source: string, target: string) => {
     const sourceNode = definition.nodes.find((node) => node.id === source);

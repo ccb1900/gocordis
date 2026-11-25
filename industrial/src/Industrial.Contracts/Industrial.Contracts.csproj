@@ -6,5 +6,8 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../../src/Gocordis.Core/Gocordis.Core.csproj" />
+    <!-- Broker<T> is the mature multi-implementation routing primitive; a
+         reader plugin must not create a second private registry. -->
+    <ProjectReference Include="../../../src/Gocordis.Extensions/Gocordis.Extensions.csproj" />
   </ItemGroup>
 </Project>

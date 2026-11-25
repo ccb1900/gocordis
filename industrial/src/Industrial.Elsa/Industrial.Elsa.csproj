@@ -8,6 +8,7 @@
     <PackageReference Include="Elsa" Version="3.10.2" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.9" />
     <ProjectReference Include="../Industrial.Contracts/Industrial.Contracts.csproj" />
+    <ProjectReference Include="../Industrial.Core/Industrial.Core.csproj" />
     <ProjectReference Include="../../../src/Gocordis.Core/Gocordis.Core.csproj" />
     <ProjectReference Include="../../../src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
   </ItemGroup>

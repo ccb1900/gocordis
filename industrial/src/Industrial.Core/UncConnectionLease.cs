@@ -79,11 +79,16 @@ public sealed class UncFileSource : IFileSource
     private static readonly ConcurrentDictionary<string, UncConnectionLease> Leases = new(StringComparer.Ordinal);
     private readonly IResourceRegistry _resources;
     private readonly ICredentialVault? _vault;
+    private readonly Func<IReadOnlyList<string>>? _extensions;
 
-    public UncFileSource(IResourceRegistry resources, ICredentialVault? vault = null)
+    public UncFileSource(
+        IResourceRegistry resources,
+        ICredentialVault? vault = null,
+        Func<IReadOnlyList<string>>? extensions = null)
     {
         _resources = resources;
         _vault = vault;
+        _extensions = extensions;
     }
 
     public async ValueTask<IReadOnlyList<DiscoveredFile>> DiscoverAsync(
@@ -109,8 +114,7 @@ public sealed class UncFileSource : IFileSource
         }
 
         var result = new List<DiscoveredFile>();
-        var files = Directory.EnumerateFiles(root, "*.csv", SearchOption.AllDirectories)
-            .Concat(Directory.EnumerateFiles(root, "*.xlsx", SearchOption.AllDirectories));
+        var files = DiscoveredFilePatterns.Enumerate(root, _extensions);
         foreach (var path in files)
         {
             ct.ThrowIfCancellationRequested();

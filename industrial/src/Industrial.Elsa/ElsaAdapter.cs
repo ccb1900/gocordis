@@ -1,11 +1,13 @@
 using Elsa.Extensions;
 using System.Text.Json.Nodes;
 using Gocordis.Core;
+using Gocordis.Extensions;
 using Gocordis.Plugins;
 using Elsa.Workflows;
 using Elsa.Workflows.Activities;
 using Elsa.Workflows.Models;
 using Industrial.Contracts;
+using Industrial.Core;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Industrial.Elsa;
@@ -23,6 +25,13 @@ public sealed class ElsaActivityCatalog : IElsaActivityCatalog
             _types.Add(activityType);
         }
     }
+    public void Unregister(string activityType)
+    {
+        if (!string.IsNullOrWhiteSpace(activityType))
+        {
+            _types.Remove(activityType);
+        }
+    }
     public IReadOnlyList<string> List() => _types.OrderBy(type => type, StringComparer.Ordinal).ToArray();
     internal void Clear() => _types.Clear();
 }
@@ -38,7 +47,8 @@ public sealed class IndustrialElsaComponent : Component
         [IndustrialKeys.NodeCatalog, IndustrialKeys.WorkflowValidator,
          IndustrialKeys.WorkflowRegistry, ApiGateway.Key,
          IndustrialKeys.CollectionCoordinator, IndustrialKeys.ResourceRegistry,
-         IndustrialKeys.HistoricalRangePlanner, IndustrialKeys.RecordReader,
+         IndustrialKeys.CredentialVault, IndustrialKeys.HistoricalRangePlanner,
+         IndustrialKeys.RecordReader, IndustrialKeys.RecordSinkFactories,
          IndustrialKeys.RecordSink, IndustrialKeys.ArchiveSink];
     public override IReadOnlyList<ICapabilityKey> Provide() => [IndustrialKeys.ElsaActivityCatalog];
 
@@ -50,8 +60,10 @@ public sealed class IndustrialElsaComponent : Component
         var api = context.Require(ApiGateway.Key);
         var coordinator = context.Require(IndustrialKeys.CollectionCoordinator);
         var resources = context.Require(IndustrialKeys.ResourceRegistry);
+        var vault = context.Require(IndustrialKeys.CredentialVault);
         var planner = context.Require(IndustrialKeys.HistoricalRangePlanner);
         var reader = context.Require(IndustrialKeys.RecordReader);
+        var sinkFactories = context.Require(IndustrialKeys.RecordSinkFactories);
         var sink = context.Require(IndustrialKeys.RecordSink);
         var archive = context.Require(IndustrialKeys.ArchiveSink);
         var owner = ContributionOwner.ForContext(context, "industrial", "elsa-publish");
@@ -121,7 +133,8 @@ public sealed class IndustrialElsaComponent : Component
                     try
                     {
                         await RunWorkflowAsync(
-                            payload, workflows, coordinator, resources, planner, reader, sink, archive);
+                            payload, workflows, coordinator, resources, vault, planner, reader,
+                            sinkFactories, sink, archive);
                     }
                     catch (Exception ex)
                     {
@@ -157,9 +170,11 @@ public sealed class IndustrialElsaComponent : Component
         IWorkflowRegistry workflows,
         ICollectionCoordinator coordinator,
         IResourceRegistry resources,
+        ICredentialVault vault,
         IHistoricalRangePlanner planner,
         IRecordReader reader,
-        IRecordSink sink,
+        Broker<IRecordSinkFactory> sinkFactories,
+        IRecordSink defaultSink,
         IArchiveSink archive)
     {
         var body = payload as JsonObject ?? new JsonObject();
@@ -174,6 +189,11 @@ public sealed class IndustrialElsaComponent : Component
             throw new InvalidOperationException($"resource '{resourceId}' not found");
         }
 
+        // Target resources decide the delivery implementation and supply its
+        // secret from the vault. A node carries only targetResourceId.
+        var sinks = await ResolveSinksAsync(
+            definition, resources, vault, sinkFactories, defaultSink);
+        var pipeline = ApplyTransforms(reader, definition);
         var runner = new ElsaWorkflowExecutor();
         _lastError = null;
         _lastExecution = await runner.ExecuteAsync(definition, async (node, ct) =>
@@ -186,9 +206,55 @@ public sealed class IndustrialElsaComponent : Component
             {
                 await coordinator.RunAsync(
                     id, resourceId, planner.Plan(DateTimeOffset.UtcNow, TimeSpan.FromDays(1)),
-                    reader, [sink], archive, ct);
+                    pipeline, sinks, archive, ct);
             }
         });
+    }
+
+    private static IRecordReader ApplyTransforms(
+        IRecordReader reader, WorkflowDefinition definition)
+    {
+        var mappings = definition.Nodes
+            .Where(node => node.Type.Contains("transform.mapping", StringComparison.OrdinalIgnoreCase))
+            .Select(node => node.Config).ToArray();
+        var validations = definition.Nodes
+            .Where(node => node.Type.Contains("transform.validate", StringComparison.OrdinalIgnoreCase))
+            .Select(node => node.Config).ToArray();
+        return mappings.Length == 0 && validations.Length == 0
+            ? reader
+            : new WorkflowTransformReader(reader, mappings, validations);
+    }
+
+    private static async ValueTask<IReadOnlyList<IRecordSink>> ResolveSinksAsync(
+        WorkflowDefinition definition,
+        IResourceRegistry resources,
+        ICredentialVault vault,
+        Broker<IRecordSinkFactory> factories,
+        IRecordSink defaultSink)
+    {
+        var sinks = new List<IRecordSink>();
+        foreach (var node in definition.Nodes.Where(node =>
+                     node.Type.Contains("sink", StringComparison.OrdinalIgnoreCase)))
+        {
+            var targetId = node.Config.TryGetValue("targetResourceId", out var value)
+                ? value?.ToString()
+                : null;
+            if (string.IsNullOrWhiteSpace(targetId))
+            {
+                sinks.Add(defaultSink);
+                continue;
+            }
+
+            var resource = await resources.GetAsync(targetId)
+                           ?? throw new InvalidOperationException(
+                               $"target resource '{targetId}' is not registered");
+            var factory = factories.Providers.FirstOrDefault(candidate =>
+                string.Equals(candidate.ResourceType, resource.Type, StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidOperationException(
+                    $"no sink factory is registered for resource type '{resource.Type}'");
+            sinks.Add(await factory.CreateAsync(resource, vault));
+        }
+        return sinks;
     }
 }
 

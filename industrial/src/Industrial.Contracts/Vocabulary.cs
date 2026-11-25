@@ -1,4 +1,5 @@
 using Gocordis.Core;
+using Gocordis.Extensions;
 
 namespace Industrial.Contracts;
 
@@ -19,9 +20,17 @@ public static class IndustrialKeys
     public static readonly Key<IHistoricalRangePlanner> HistoricalRangePlanner = new("industrial.collection.range-planner");
     public static readonly Key<IRecordSink> RecordSink = new("industrial.delivery.record-sink");
     public static readonly Key<IArchiveSink> ArchiveSink = new("industrial.delivery.archive-sink");
+    /// <summary>Target resources select a sink implementation by resource TYPE.
+    /// Credentials stay in the vault; node configuration only carries an id.</summary>
+    public static readonly Key<Broker<IRecordSinkFactory>> RecordSinkFactories =
+        new("industrial.delivery.sink-factories");
     public static readonly Key<IFileSource> FileSource = new("industrial.source.file");
     public static readonly Key<IElsaActivityCatalog> ElsaActivityCatalog = new("industrial.elsa.activity-catalog");
     public static readonly Key<IRecordReader> RecordReader = new("industrial.reader.record");
+    /// <summary>Multi-implementation reader routes. A new Reader plugin adds a
+    /// named file-extension route here; it never edits Core or the designer.</summary>
+    public static readonly Key<Broker<IRecordReaderProvider>> RecordReaderBroker =
+        new("industrial.reader.broker");
 }
 
 /// <summary>Canonical Activity type ids contributed by the built-in node
@@ -51,6 +60,7 @@ public interface IElsaActivityCatalog
     bool Contains(string activityType);
     IReadOnlyList<string> List();
     void Register(string activityType);
+    void Unregister(string activityType);
 }
 
 // ---- resource / credential -------------------------------------------------
@@ -255,6 +265,14 @@ public interface IRecordReader
     IAsyncEnumerable<RecordEnvelope> ReadAsync(DiscoveredFile file, CancellationToken ct = default);
 }
 
+/// <summary>One named route in the shared reader broker. The file extension is
+/// the routing key; the reader itself stays a pure capability.</summary>
+public interface IRecordReaderProvider
+{
+    string FileExtension { get; }
+    IRecordReader Reader { get; }
+}
+
 public interface IRecordSink
 {
     string TargetId { get; }
@@ -263,6 +281,15 @@ public interface IRecordSink
         IAsyncEnumerable<RecordEnvelope> records,
         string idempotencyKey,
         CancellationToken ct = default);
+}
+
+/// <summary>Creates a sink bound to one configured target Resource. The
+/// credential is revealed here from the vault, never from node configuration.</summary>
+public interface IRecordSinkFactory
+{
+    string ResourceType { get; }
+    ValueTask<IRecordSink> CreateAsync(
+        ResourceDefinition resource, ICredentialVault vault, CancellationToken ct = default);
 }
 
 public interface IArchiveSink
@@ -283,6 +310,7 @@ public interface ICollectionLedger
     ValueTask CompleteDeliveryAsync(string deliveryId, int records, CancellationToken ct = default);
     ValueTask FailDeliveryAsync(string deliveryId, string error, CancellationToken ct = default);
     ValueTask<IReadOnlyList<FileDelivery>> GetRetrableDeliveriesAsync(CancellationToken ct = default);
+    ValueTask<IReadOnlyList<FileDelivery>> ListAllDeliveriesAsync(CancellationToken ct = default);
     ValueTask<IReadOnlyList<CollectionFile>> ListFilesAsync(string collectionId, CancellationToken ct = default);
     ValueTask<IReadOnlyList<CollectionFile>> ListAllFilesAsync(CancellationToken ct = default);
 }

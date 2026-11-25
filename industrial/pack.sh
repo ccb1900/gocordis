@@ -30,7 +30,8 @@ pack() {
   "${CLI[@]}" plugin pack "$stage" "$package" \
     --id "$id" --version 1.0.0 --type "$id" --host-range '[1.0,)' \
     --backend managed --entry-assembly "$assembly" --entry-type "$type" \
-    --shared-assembly Industrial.Contracts "$@"
+    --shared-assembly Industrial.Contracts \
+    --shared-assembly Gocordis.Extensions "$@"
   "${CLI[@]}" plugin install "$package" --store "$STORE" --host-version 1.0.0
 }
 
@@ -52,8 +53,11 @@ pack industrial.elsa Industrial.Elsa.dll Industrial.Elsa.IndustrialElsaComponent
   --provides industrial.elsa.activities \
   --dependency "industrial.workflow@[1.0,2.0)" --dependency "industrial.nodes@[1.0,2.0)" \
   --dependency "industrial.collection@[1.0,2.0)"
-pack industrial.clientmodule Industrial.Plugins.dll Industrial.Plugins.IndustrialClientModuleComponent \
-  --provides industrial.ui.clientmodule
+pack industrial.reader.json Industrial.Plugins.dll Industrial.Plugins.IndustrialJsonReaderComponent \
+  --provides industrial.reader.json \
+  --dependency "industrial.elsa@[1.0,2.0)" --dependency "industrial.collection@[1.0,2.0)"
+# The browser module is NOT a second plugin identity: industrial.ui contributes
+# the page, its data and its client module together (Koishi plugin shape).
 pack industrial.ui Industrial.Plugins.dll Industrial.Plugins.IndustrialUiComponent \
   --provides industrial.ui \
   --dependency "industrial.resource@[1.0,2.0)" --dependency "industrial.workflow@[1.0,2.0)" \
@@ -72,8 +76,8 @@ manifest = {
         {"Id": "industrial.collection", "VersionRange": "[1.0,2.0)", "Enabled": True},
         {"Id": "industrial.nodes", "VersionRange": "[1.0,2.0)", "Enabled": True},
         {"Id": "industrial.elsa", "VersionRange": "[1.0,2.0)", "Enabled": True},
+        {"Id": "industrial.reader.json", "VersionRange": "[1.0,2.0)", "Enabled": True},
         {"Id": "industrial.ui", "VersionRange": "[1.0,2.0)", "Enabled": True},
-        {"Id": "industrial.clientmodule", "VersionRange": "[1.0,2.0)", "Enabled": True},
     ],
 }
 with open(sys.argv[1], "w", encoding="utf-8") as handle:

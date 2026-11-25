@@ -1,27 +1,33 @@
 # Industrial application — current state (new tree only)
 
-Baseline: `dotnet` branch, HEAD at the time of this work `d9043cf`. The Cordis
-framework was not modified; all files in `industrial/` are new.
+Baseline: current `dotnet` branch HEAD; this document intentionally records no
+SHA (a historical SHA would be stale after the next commit). The Cordis
+framework was not modified for industrial logic; all product code lives under
+`industrial/`.
 
 | Capability | State | Evidence |
 | --- | --- | --- |
-| Additive solution and mature dependencies | Implemented | `Industrial.slnx`; CsvHelper, EF Core/SQLite, Microsoft.Data.SqlClient, Elsa 3; patched transitive NU1902/NU1903 versions |
-| Resource registry (versioned, provider-disabled safe) | Implemented | `ResourceRegistry`, `CollectionPipelineTests` |
-| Credential vault (AES-GCM, rotate, views never leak secret) | Implemented (prod requires GOCORDIS_INDUSTRIAL_KEY; dev fallback opt-in) | `CredentialVault`, `CredentialVaultNeverExposesSecretsThroughViews` |
-| Workflow Definition single source + validation (13 gates) | Implemented | `WorkflowDefinition`, `WorkflowValidator`, `WorkflowValidationTests` |
-| Publish conversion to Elsa definition | Implemented (PoC) | `ElsaDefinitionConverter`, `ElsaPocTests.IndustrialDefinitionConvertsToElsaDefinition` |
-| Elsa 3 executes a plugin-contributed Activity | Implemented (PoC) | `CollectFileActivity`, `ElsaPocTests.ElsaExecutesAPluginContributedActivity` |
-| File identity, stability, historical range | Implemented | `FileIdentityFactory`, `LocalFileSource`, `HistoricalRangePlanner` |
-| File-level + target-level ledger, idempotent delivery | Implemented | `CollectionLedger`, `CollectionPipelineTests` |
-| Archive failure retried without database rewrite | Implemented | `ArchiveFailureIsRetriedWithoutRepeatingDatabaseDelivery` |
-| UI pages/queries/command via Cordis plugin effects | Implemented | `IndustrialUiComponent`, `IndustrialUiPluginTests` |
-| Adding a node without core changes | Implemented | `IndustrialNodesComponent`, `NewNodePluginIsDiscoveredWithoutChangingCore` |
-| UNC shared resource with explicit credentials | Partial | Resource shape and vault exist; Windows SMB session coordination not yet implemented on Linux host |
-| SQL Server / MySQL / PostgreSQL sinks | Partial | SQL Server sink implemented; MySQL/PostgreSQL deferred to Phase 6 |
-| Full G6 designer drag/connect UI | Not implemented | Node descriptors + API + plain page contributions exist; React designer not yet built |
-| Long downtime recovery across process restart | Partial | Ledger state is durable; restart replay runner not yet implemented |
+| Additive solution and mature dependencies | Implemented | `Industrial.slnx`; CsvHelper, EF Core/SQLite, Microsoft.Data.SqlClient, ExcelDataReader, Npgsql, MySqlConnector, Elsa 3, OpenTelemetry |
+| Resource registry / credential vault / connection lease | Implemented | `ResourceRegistry`, `CredentialVault`, `UncConnectionLease`, `CollectionPipelineTests` |
+| Workflow Definition single source + 13 validation gates | Implemented | `WorkflowDefinition`, `WorkflowValidator`, `WorkflowValidationTests` |
+| Publish conversion to Elsa definition + graph execution | Implemented | `ElsaDefinitionConverter`, `ElsaWorkflowExecutor`, `ElsaPocTests` |
+| Cordis-native G6 designer (console facade + block renderer) | Implemented | `industrial/web/src/module.ts` registers `industrial-workflow-canvas`; backend page declares declarative `views`; `designer-block.test.tsx` renders palette and drop interaction; no iframe/second app shell |
+| Reader plugin extension (scenario A) | Implemented | `IndustrialJsonReaderComponent` adds palette node + `.json` broker route; `IndustrialReaderPluginTests` saves/publishes/runs through product commands and withdraws the node on disable |
+| Shared resource/credential (scenario B) | Implemented | `IRecordSinkFactory` broker resolves target resources; `SqlServerSinkFactory.BuildConnectionStringAsync` reads the secret from the vault; `IndustrialResourceSharingTests` runs two workflows with no secret in workflow JSON |
+| Web UI workflow creation (scenario C) | Implemented | Drag/connect/configure/save/validate/publish/run are exercised by frontend block tests plus C# command tests; transforms run in the product reader pipeline |
+| CSV → mapping/validation → sink → archive (scenario D) | Implemented | `WorkflowTransformReader`, resource-aware sinks, `FileArchiveSink`; `industrial/deliveries` query exposes per-target status |
+| Failure, retry, restart recovery (scenario E) | Implemented | `BoundedRetry`, ledger-only failure rows, `RetryFailedAsync`; new coordinator instance resumes from ledger in tests |
+| Historical backfill (scenario F) | Implemented | Corrected `HistoricalRangePlanner` scans the last N days; ledger identity prevents duplicate business rows, covered by offline/backfill test |
+| UI plugin lifecycle incl. routes/navigation (scenario G) | Implemented | One `industrial.ui` plugin contributes page, views, route, navigation, client module and APIs; enable/disable withdraws all through Fiber effects |
+| Packaged product loop | Implemented | `industrial/pack.sh` builds real `.gocordis-plugin` packages, installs into a fresh store and starts `Industrial.PackagedHost` |
 
-Latest verification: `dotnet build industrial/Industrial.slnx` 0 warning/0 error;
-`dotnet test industrial/Industrial.slnx` 27 passed across Contract/Unit/Integration/E2E projects. `industrial/web`: 19 frontend tests + production build. Packaged product host smoke-tested with 11 UI pages and a 200 client-module response. Remaining environment limits are listed in `gap-analysis.md`.
-Production `GOCORDIS_INDUSTRIAL_KEY` is mandatory; the local host opts into the
+Verification: `dotnet build Gocordis.sln` 0 warning/0 error; full solution tests
+green; industrial C# tests (Contract 2, Unit 8, Integration 16, E2E 5) green;
+`industrial/web` 21 frontend tests + production build green. The last packaged
+host was verified through `/api/ui/pages` (declarative designer view),
+`/api/ui/client-modules`, `/api/query/industrial/nodes` (string port types) and
+the served client-module asset. Remaining environment limits are listed in
+`gap-analysis.md`.
+
+Production `GOCORDIS_INDUSTRIAL_KEY` is mandatory; local scripts opt into the
 documented development fallback only for evaluation.

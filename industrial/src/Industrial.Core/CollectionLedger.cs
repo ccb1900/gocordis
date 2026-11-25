@@ -134,6 +134,15 @@ public sealed class CollectionLedger : ICollectionLedger
         return rows.Select(ToContract).ToArray();
     }
 
+    public async ValueTask<IReadOnlyList<FileDelivery>> ListAllDeliveriesAsync(CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var rows = await db.FileDeliveries.AsNoTracking()
+            .OrderBy(delivery => delivery.TargetId)
+            .ToListAsync(ct);
+        return rows.Select(ToContract).ToArray();
+    }
+
     public async ValueTask<IReadOnlyList<CollectionFile>> ListFilesAsync(
         string collectionId, CancellationToken ct = default)
     {

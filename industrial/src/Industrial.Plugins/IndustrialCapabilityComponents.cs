@@ -1,4 +1,5 @@
 using Gocordis.Core;
+using Gocordis.Extensions;
 using Gocordis.Plugins;
 using Industrial.Contracts;
 using Industrial.Core;
@@ -160,14 +161,19 @@ public sealed class IndustrialCollectionComponent : IndustrialCapabilityComponen
          IndustrialKeys.CollectionLedger];
     public override IReadOnlyList<ICapabilityKey> Provide() =>
         [IndustrialKeys.CollectionCoordinator, IndustrialKeys.FileSource,
-         IndustrialKeys.RecordReader, IndustrialKeys.RecordSink, IndustrialKeys.ArchiveSink];
+         IndustrialKeys.RecordReader, IndustrialKeys.RecordReaderBroker,
+         IndustrialKeys.RecordSinkFactories,
+         IndustrialKeys.RecordSink, IndustrialKeys.ArchiveSink];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
         var resources = context.Require(IndustrialKeys.ResourceRegistry);
         var ledger = context.Require(IndustrialKeys.CollectionLedger);
-        var source = new RoutingFileSource(resources, context.Require(IndustrialKeys.CredentialVault));
-        var reader = new RoutingRecordReader();
+        var broker = new Broker<IRecordReaderProvider>();
+        var source = new RoutingFileSource(
+            resources, context.Require(IndustrialKeys.CredentialVault), broker);
+        var reader = new BrokerRecordReader(broker);
+        var routes = new List<IDisposable>();
         IRecordSink sink = Setting("sink", "sqlite").ToLowerInvariant() switch
         {
             "sqlserver" => new SqlServerRecordSink(Setting("connectionString", string.Empty)),
@@ -179,7 +185,39 @@ public sealed class IndustrialCollectionComponent : IndustrialCapabilityComponen
         await context.EffectAsync(
             () => ValueTask.CompletedTask,
             async () => { if (source is IAsyncDisposable disposable) await disposable.DisposeAsync(); });
+        await context.EffectAsync(
+            () =>
+            {
+                routes.Add(broker.Register(".csv", new RecordReaderProvider(".csv", new CsvRecordReader())));
+                routes.Add(broker.Register(".xlsx", new RecordReaderProvider(".xlsx", new ExcelRecordReader())));
+                return ValueTask.CompletedTask;
+            },
+            () =>
+            {
+                for (var i = routes.Count - 1; i >= 0; i--) routes[i].Dispose();
+                routes.Clear();
+                return ValueTask.CompletedTask;
+            });
+        var sinkFactories = new Broker<IRecordSinkFactory>();
+        var sinkRoutes = new List<IDisposable>();
+        await context.EffectAsync(
+            () =>
+            {
+                sinkRoutes.Add(sinkFactories.Register("sqlserver", new SqlServerSinkFactory()));
+                sinkRoutes.Add(sinkFactories.Register("postgresql", new PostgreSqlSinkFactory()));
+                sinkRoutes.Add(sinkFactories.Register("mysql", new MySqlSinkFactory()));
+                sinkRoutes.Add(sinkFactories.Register("sqlite", new SqliteSinkFactory(TargetDb)));
+                return ValueTask.CompletedTask;
+            },
+            () =>
+            {
+                for (var i = sinkRoutes.Count - 1; i >= 0; i--) sinkRoutes[i].Dispose();
+                sinkRoutes.Clear();
+                return ValueTask.CompletedTask;
+            });
         context.Provide(IndustrialKeys.FileSource, source);
+        context.Provide(IndustrialKeys.RecordReaderBroker, broker);
+        context.Provide(IndustrialKeys.RecordSinkFactories, sinkFactories);
         context.Provide(IndustrialKeys.RecordReader, reader);
         context.Provide(IndustrialKeys.RecordSink, sink);
         context.Provide(IndustrialKeys.ArchiveSink, archive);

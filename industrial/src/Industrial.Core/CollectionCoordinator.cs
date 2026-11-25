@@ -7,8 +7,11 @@ namespace Industrial.Core;
 /// the ledger decides which files are already delivered.</summary>
 public sealed class HistoricalRangePlanner : IHistoricalRangePlanner
 {
+    /// <summary>Offline backfill scans the last <paramref name="exclusiveLookback"/>
+    /// window, not "everything before the cutoff". The ledger (never an
+    /// in-memory last-success date) decides what is already delivered.</summary>
     public SourceDateRange Plan(DateTimeOffset now, TimeSpan exclusiveLookback) =>
-        new(DateTimeOffset.UnixEpoch, now - exclusiveLookback);
+        new(now - exclusiveLookback, now);
 }
 
 /// <summary>Bounded retry with exponential backoff. No infinite loops; the

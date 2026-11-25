@@ -37,6 +37,11 @@ public sealed class IndustrialUiPluginTests
 
         Assert.Equal(9, console.Ui.Pages().Count);
         Assert.Contains(console.Ui.Pages(), page => page.Id == "industrial.designer");
+        // One plugin identity owns the page, its data, navigation, route AND
+        // its client module; disabling it withdraws all of them together.
+        Assert.Contains(console.Ui.ClientModules(), module => module.Name == "industrial-designer");
+        Assert.Equal(9, console.Ui.Routes().Count(route => route.Owner.ComponentId == "industrial-ui"));
+        Assert.Equal(9, console.Ui.Navigations().Count(nav => nav.Owner.ComponentId == "industrial-ui"));
         Assert.NotNull(console.Api.Query("industrial/dashboard"));
         Assert.NotNull(console.Api.Query("industrial/nodes"));
         Assert.NotNull(console.Api.Query("industrial/workflow-definitions"));
@@ -54,6 +59,9 @@ public sealed class IndustrialUiPluginTests
 
         await registry.ApplyAsync([domain, nodes, ui with { Enabled = false }]);
         Assert.DoesNotContain(console.Ui.Pages(), page => page.Owner.ComponentId == "industrial-ui");
+        Assert.DoesNotContain(console.Ui.Routes(), route => route.Owner.ComponentId == "industrial-ui");
+        Assert.DoesNotContain(console.Ui.Navigations(), nav => nav.Owner.ComponentId == "industrial-ui");
+        Assert.DoesNotContain(console.Ui.ClientModules(), module => module.Name == "industrial-designer");
         Assert.Null(console.Api.Query("industrial/dashboard"));
         Assert.Equal(12, (await catalog.ListAsync()).Count);
 
@@ -66,9 +74,9 @@ public sealed class IndustrialUiPluginTests
     public async Task RunCollectionCommandUsesTheSameLedgerAsTheDomainPlugin()
     {
         using var temp = new TempDir();
-        var sample = Path.Combine(temp.SourceRoot, "20260101.csv");
+        var sample = Path.Combine(temp.SourceRoot, "recent.csv");
         File.WriteAllText(sample, "record_id,reading\n1,42\n");
-        File.SetLastWriteTimeUtc(sample, DateTimeOffset.UtcNow.AddDays(-2).UtcDateTime);
+        File.SetLastWriteTimeUtc(sample, DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
         await using var runtime = new Gocordis.Core.Runtime();
         var console = new ConsoleHost(runtime);
         await using var registry = new PluginRegistry(runtime);
@@ -103,29 +111,6 @@ public sealed class IndustrialUiPluginTests
             ledgerDb.CollectionFiles.AsNoTracking());
         Assert.Single(files);
         Assert.Equal("Succeeded", files[0].Status);
-    }
-
-    [Fact]
-    public async Task ClientModuleContributionFollowsPluginLifecycle()
-    {
-        await using var runtime = new Gocordis.Core.Runtime();
-        var console = new ConsoleHost(runtime);
-        await using var registry = new PluginRegistry(runtime);
-        console.AttachRegistry(registry);
-        registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
-        registry.ExternalCapabilities.Add(ApiGateway.Key);
-        await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
-        registry.RegisterComponentFactory("clientmodule", _ => new IndustrialClientModuleComponent());
-        var declaration = Decl("clientmodule");
-
-        await registry.ApplyAsync([declaration]);
-        // The client module contributes a renderer, NEVER a frontend page:
-        // pages are backend composition declarations owned by industrial.ui.
-        Assert.DoesNotContain(console.Ui.Pages(), page => page.Id == "industrial.designer.g6");
-        Assert.Contains(console.Ui.ClientModules(), module => module.Name == "industrial-designer");
-
-        await registry.ApplyAsync([declaration with { Enabled = false }]);
-        Assert.DoesNotContain(console.Ui.ClientModules(), module => module.Name == "industrial-designer");
     }
 
     [Fact]

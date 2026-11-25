@@ -108,10 +108,10 @@ public sealed class ElsaPocTests
     {
         using var temp = new TempDir();
         Directory.CreateDirectory(Path.Combine(temp.Root, "source"));
-        File.WriteAllText(Path.Combine(temp.Root, "source", "20260101.csv"),
+        File.WriteAllText(Path.Combine(temp.Root, "source", "recent.csv"),
             "record_id,reading\n9,99\n");
-        File.SetLastWriteTimeUtc(Path.Combine(temp.Root, "source", "20260101.csv"),
-            DateTimeOffset.UtcNow.AddDays(-2).UtcDateTime);
+        File.SetLastWriteTimeUtc(Path.Combine(temp.Root, "source", "recent.csv"),
+            DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
 
         await using var runtime = new Gocordis.Core.Runtime();
         var console = new ConsoleHost(runtime);

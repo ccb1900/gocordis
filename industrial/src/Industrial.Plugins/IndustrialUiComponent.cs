@@ -12,6 +12,13 @@ namespace Industrial.Plugins;
 /// through the owning Fiber's effect stack.</summary>
 public sealed class IndustrialUiComponent : Component
 {
+    // One plugin identity contributes BOTH the backend service/data and the
+    // frontend extension (Koishi shape). The page routes here are declarative;
+    // the browser module only registers a block renderer into the console.
+    private const string ClientModuleName = "industrial-designer";
+    private const string ClientModuleUrl = "/client-modules/industrial-designer/module.js";
+    private const string ClientModuleEntry = "module.js";
+
     private static readonly JsonSerializerOptions WireJson = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -71,7 +78,10 @@ public sealed class IndustrialUiComponent : Component
         var reader = context.Require(IndustrialKeys.RecordReader);
         var sink = context.Require(IndustrialKeys.RecordSink);
         var archive = context.Require(IndustrialKeys.ArchiveSink);
-        var owner = ContributionOwner.ForContext(context, "industrial", "ui");
+        var owner = ContributionOwner.ForContext(context, "industrial.ui", "industrial-ui");
+
+        await context.RegisterUiClientModuleAsync(ui, owner, new UiClientModuleDefinition(
+            ClientModuleName, ClientModuleUrl, "0.1.2", ClientModuleEntry));
 
         var pages = new[]
         {
@@ -100,9 +110,29 @@ public sealed class IndustrialUiComponent : Component
             Page("industrial.executions", "Execution Center", "/industrial/executions", "generic", "Activity",
                 "industrial/dashboard-rows", 50, "Industrial",
                 [("metric", "Metric"), ("value", "Value")]),
-            Page("industrial.collections", "Collection History", "/industrial/collections", "generic", "History",
-                "industrial/collections", 60, "Industrial",
-                [("id", "Id"), ("path", "Path"), ("sourceDate", "Source date"), ("status", "Status")]),
+            // File processing AND per-target delivery status are both visible.
+            new UiPageDefinition(
+                "industrial.collections", "Collection History", "/industrial/collections", "generic", "History",
+                "Industrial collection and delivery history",
+                new JsonArray(
+                    new JsonObject
+                    {
+                        ["kind"] = "table", ["title"] = "Files", ["query"] = "industrial/collections",
+                        ["columns"] = new JsonArray(
+                            (JsonNode?)new JsonObject { ["key"] = "path", ["title"] = "Path" },
+                            (JsonNode?)new JsonObject { ["key"] = "sourceDate", ["title"] = "Source date" },
+                            (JsonNode?)new JsonObject { ["key"] = "status", ["title"] = "Status" }),
+                    },
+                    new JsonObject
+                    {
+                        ["kind"] = "table", ["title"] = "Target deliveries", ["query"] = "industrial/deliveries",
+                        ["columns"] = new JsonArray(
+                            (JsonNode?)new JsonObject { ["key"] = "targetId", ["title"] = "Target" },
+                            (JsonNode?)new JsonObject { ["key"] = "status", ["title"] = "Status" },
+                            (JsonNode?)new JsonObject { ["key"] = "attempts", ["title"] = "Attempts" },
+                            (JsonNode?)new JsonObject { ["key"] = "error", ["title"] = "Error" }),
+                    }),
+                Order: 60, Group: "Industrial"),
             Page("industrial.machines", "Machine Management", "/industrial/machines", "generic", "Desktop",
                 "industrial/resources", 70, "Industrial",
                 [("id", "Id"), ("name", "Name"), ("type", "Type"), ("enabled", "Enabled")]),
@@ -116,6 +146,11 @@ public sealed class IndustrialUiComponent : Component
         foreach (var page in pages)
         {
             await context.RegisterUiPageAsync(ui, owner, page);
+            await context.RegisterUiRouteAsync(ui, owner, new UiRouteDefinition(
+                $"industrial.route.{page.Id}", page.Route, page.Id, Order: page.Order));
+            await context.RegisterUiNavigationAsync(ui, owner, new UiNavigationDefinition(
+                $"industrial.nav.{page.Id}", page.Title, page.Route, page.Icon, page.Group,
+                page.Id, page.Order));
         }
 
         var queries = new (string Name, Func<JsonNode?> Handler)[]
@@ -180,6 +215,17 @@ public sealed class IndustrialUiComponent : Component
                     ["path"] = file.Identity.RelativePath,
                     ["sourceDate"] = file.SourceDate.ToString("O"),
                     ["status"] = file.Status,
+                }).ToArray())),
+            ("industrial/deliveries", () => new JsonArray(ledger.ListAllDeliveriesAsync()
+                .GetAwaiter().GetResult()
+                .Select(delivery => (JsonNode?)new JsonObject
+                {
+                    ["id"] = delivery.Id,
+                    ["collectionFileId"] = delivery.CollectionFileId,
+                    ["targetId"] = delivery.TargetId,
+                    ["status"] = delivery.Status,
+                    ["attempts"] = delivery.Attempts,
+                    ["error"] = delivery.Error is null ? null : JsonValue.Create(delivery.Error),
                 }).ToArray())),
         };
         foreach (var (name, handler) in queries)

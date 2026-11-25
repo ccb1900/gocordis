@@ -2,69 +2,55 @@
 
 Status legend: implemented / partial / not implemented / not applicable.
 
-| Collector requirement | Status | Evidence or gap |
+| Collector requirement | Status | Evidence or honest limit |
 | --- | --- | --- |
-| Cordis framework unchanged | implemented | `git status` shows only new `industrial/` files; existing solution/projects untouched |
-| Five dependency layers distinguished | implemented | Contracts assembly + Cordis `Key<T>` keys; no plugin-to-plugin implementation references |
-| Plugin lifecycle owned by Cordis | implemented | Domain/nodes/UI are ordinary `Component`s; UI registrations use `Context.EffectAsync` |
-| Resource / Credential / Connection separated | implemented | `ResourceDefinition`, `CredentialVault`, `ConnectionLease` contract |
-| Windows UNC explicit credentials | partial | Need Windows-host SMB session coordinator; error 1219 case not reproduced on Linux |
-| Absence of secrets in workflow/API/log | implemented (dev key opt-in; production requires env key) | Workflow stores only `resourceId`; `CredentialView` has no secret; tests assert no leak |
-| Workflow Definition single editable source | implemented | `WorkflowDefinition` persisted in EF Core; Elsa JSON is a published derivative |
-| G6 editor with drag/connect | not implemented | Node descriptors and validation API ready; React designer still needed |
-| 13 validation gates with node/edge paths | implemented | `WorkflowValidator`; errors located to `nodes.*`, `edges[n]`, `resourceReferences.*` |
-| Elsa 3 PoC before full integration | implemented | Activity executes through Elsa; Activity catalog is a Cordis capability; Definition conversion verified; persistence/recovery still a gap |
-| Historical range + file-level backfill | implemented | `HistoricalRangePlanner`, ledger identity, tests |
-| source_date / record_time / collected_at | implemented | File name `yyyyMMdd`, `RecordEnvelope.RecordTime`, `CollectionFile.CollectedAt` |
-| Idempotent DB writes / no duplicate retry | implemented | Unique `record_id`, `SqliteRecordSink`, repeated-run test |
-| Multi-target independent delivery | implemented | `FileDelivery` per target, archive-only retry test |
-| Bounded retry | implemented | `BoundedRetry` with 3 attempts and exponential backoff |
-| Crash/restart recovery runner | partial | `RetryFailedAsync` retries only failed ledger targets; automatic resume-on-startup not yet wired |
-| Excel / MySQL / PostgreSQL / event trigger | not implemented | Phase 6 of collector; intentionally deferred |
-| Full Web UI pages (8) | partial | Six page contributions and five queries; no React-specific designer page yet |
-| E2E acceptance A–G | partial | A, B (resource sharing shape), C (API-driven creation), D (local→CSV→SQLite→archive), E (archive failure), F (historical range) have tests; G has UI lifecycle test |
+| Cordis framework unchanged | implemented | All product code is under `industrial/`; only additive project references were added |
+| Five dependency layers distinguished | implemented | shared `Industrial.Contracts`, reference-identity `Key<T>`, package `--provides/--dependency`; no plugin→plugin implementation imports |
+| Plugin lifecycle owned by Cordis | implemented | Every capability, UI page/view/route/navigation/client module and API is a Fiber effect; disabling withdraws in LIFO order |
+| Resource / Credential / Connection separated | implemented | `ResourceDefinition` stores ids and config; secrets live only in `CredentialVault`; `UncConnectionLease` keys sessions by share + credential hash |
+| Windows UNC explicit credentials | implemented (Windows runtime only) | `RoutingFileSource` + `UncConnectionLease`; Linux host cannot exercise SMB 1219, so no Windows integration test here |
+| Absence of secrets in workflow/API/log | implemented | Node config carries `targetResourceId`; `SqlServerSinkFactory` reveals from vault; test asserts workflow JSON and node config contain no secret |
+| Workflow Definition single editable source | implemented | JSON/Elsa derivative is published output only; the designer edits `WorkflowDefinition` |
+| G6 editor with drag/connect | implemented | `industrial/web` module registers `industrial-workflow-canvas`; palette drop, port validation, property panel, save/validate/publish/run toolbar |
+| 13 validation gates with node/edge paths | implemented | `WorkflowValidator`; located issues surfaced in the property panel |
+| Elsa 3 PoC before full integration | implemented | Elsa runs the graph from the real `industrial/run-workflow` command; prior versions are queryable |
+| Reader plugin extension | implemented | `.json` Reader plugin is packaged separately and appears in palette without Core/designer edits |
+| Historical range + file-level backfill | implemented | Planner scans last N days; ledger identity prevents duplicates across repeated backfill runs |
+| source_date / record_time / collected_at | implemented | filename/date parsing, `RecordEnvelope.RecordTime`, ledger `CollectedAt` |
+| Idempotent DB writes / no duplicate retry | implemented | unique `record_id`, per-target delivery idempotency key |
+| Multi-target independent delivery | implemented | `FileDelivery` per target, `industrial/deliveries` query, archive-only retry |
+| Bounded retry and restart resume | implemented | `BoundedRetry`, ledger failure rows, fresh coordinator resumes via `RetryFailedAsync`; automatic resume-on-startup is not wired (manual retry command remains) |
+| Excel / MySQL / PostgreSQL sinks | implemented (no live-server test) | Mature drivers (`ExcelDataReader`, `Npgsql`, `MySqlConnector`); SQLite is the executable target in CI |
+| Full Web UI pages and lifecycle | implemented | Nine page contributions, declarative views, routes, navigation and one client module, all owned by `industrial.ui` |
+| E2E acceptance A–G | implemented in executable tests | `IndustrialReaderPluginTests`, `IndustrialResourceSharingTests`, `IndustrialUiPluginTests`, `CollectionPipelineTests`, `designer-block.test.tsx` |
 
 ## Post-review organization verdict (2026-11-25, after closing gaps)
 
 **Framework / paper semantics: conforming.** One Runtime/Registry; no industrial
 logic in Core; contracts separated; every business capability bound through
-`Cordis Key<T>`; UI pages, client module, queries and commands registered as
-Fiber effects and withdrawn in LIFO order; product host uses real
-`.gocordis-plugin` packages with shared-contract sealing and declared
+`Cordis Key<T>`; UI pages, views, routes, navigation, client module, queries and
+commands registered as Fiber effects and withdrawn in LIFO order; product host
+uses real `.gocordis-plugin` packages with shared-contract sealing and declared
 `--provides` / `--dependency`. No ALC sandbox claim, no second lifecycle.
 
-**Collector spec: the implementation gaps were closed.**
-- New independent React + TypeScript + Ant Design + AntV G6 designer under
-  `industrial/web/` (19 frontend tests, production build) contributed as a
-  Cordis client module by `IndustrialClientModuleComponent`.
-- Elsa now executes the workflow graph from the product command
-  `industrial/run-workflow`, which the G6 designer calls; the designer saves
-  through `industrial/save-workflow`. Node data work is delegated to Cordis
-  capabilities, publish retains definition/edge provenance and prior versions
-  are queryable through `industrial/workflow-versions`, which the G6 designer
-  also displays.
-- Platform plugins are split into resource / credential / workflow / execution /
-  collection, plus nodes / elsa / ui / clientmodule, each independently packaged.
-- `UncConnectionLease` is integrated through `RoutingFileSource` with a
-  per-share session cache (password-aware key, effect-bound release) and real
-  CSV/XLSX discovery on the UNC path. `RoutingRecordReader` makes ExcelDataReader reachable
-  for `.xlsx`. Npgsql / MySqlConnector sinks select by configuration.
-  OpenTelemetry is instrumented with `ActivitySource` and covered by a listener
-  test.
-- Published workflow rows are retained as history (only the active flag moves)
-  and surfaced through a query.
-- Tests are split into Contract / Unit / Integration / E2E projects.
+**Collector spec: A–G have executable evidence.** The UI is a Cordis client
+module: the backend contributes the page and its declarative `views`; the
+browser module registers only the block renderer through the console facade and
+talks to the hub through `hubQuery`/`hubCommand`. There is no iframe, no second
+React/antd instance and no frontend-owned page registry.
 
-**Remaining honest limits (not implementation gaps):**
-- Managed plugin loading uses parameterless constructors, so packaged declaration
-  config is delivered through environment variables, not live control-plane
-  config edits.
+**Remaining honest limits (environment or operational, not hidden gaps):**
+- Managed packaged components use parameterless constructors, so declaration
+  config is delivered through environment variables in the packaged path.
 - UNC session lease is Windows-only and cannot be exercised on this Linux host.
 - SQL Server / PostgreSQL / MySQL sinks are implemented with mature drivers but
   have no live-server integration test; SQLite is the tested target.
-- The G6 designer has DTO/graph-model unit tests and a production build, not a
-  browser-driven E2E test.
+- The G6 designer has a jsdom integration test for facade registration, palette
+  rendering and drop interaction, but not a real-browser screenshot test.
+- Retry after restart is proven by a fresh coordinator reading the ledger; an
+  automatic startup sweep is intentionally not added (retry stays an explicit
+  command, avoiding a self-spinning loop).
 
-Verification at this point: `dotnet build industrial/Industrial.slnx` 0 warning/0 error;
-25 C# tests across four projects pass; `industrial/web` 19 tests + build pass;
-full packaged product re-verified via `pack.sh`.
+Verification: `dotnet build Gocordis.sln` 0 warning/0 error; full solution tests
+green; industrial C# 31 tests green; `industrial/web` 21 tests + build green;
+packaged host re-verified through the UI composition and query endpoints.

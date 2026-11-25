@@ -29,7 +29,7 @@ registry.RegisterComponentFactory("industrial.collection", manifest =>
     new IndustrialCollectionComponent(manifest.Config));
 registry.RegisterComponentFactory("industrial.nodes", _ => new IndustrialNodesComponent());
 registry.RegisterComponentFactory("industrial.ui", _ => new IndustrialUiComponent());
-registry.RegisterComponentFactory("industrial.clientmodule", _ => new IndustrialClientModuleComponent());
+registry.RegisterComponentFactory("industrial.reader.json", _ => new IndustrialJsonReaderComponent());
 registry.RegisterComponentFactory("industrial.elsa", _ => new IndustrialElsaComponent());
 
 PluginManifest Declaration(string id, IReadOnlyDictionary<string, object?>? config = null) =>
@@ -54,8 +54,8 @@ await registry.ApplyAsync([
     Declaration("industrial.collection", new Dictionary<string, object?> { ["root"] = root }),
     Declaration("industrial.nodes"),
     Declaration("industrial.elsa"),
+    Declaration("industrial.reader.json"),
     Declaration("industrial.ui"),
-    Declaration("industrial.clientmodule"),
 ]);
 
 await using var server = new WebUiServer(console, address, registry: registry);

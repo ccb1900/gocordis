@@ -13,9 +13,13 @@ public sealed class SqliteRecordSink : IRecordSink
 {
     private readonly Func<IndustrialTargetDbContext> _db;
 
-    public SqliteRecordSink(Func<IndustrialTargetDbContext> db) => _db = db;
+    public SqliteRecordSink(Func<IndustrialTargetDbContext> db, string? targetId = null)
+    {
+        _db = db;
+        TargetId = targetId ?? "sqlite";
+    }
 
-    public string TargetId => "sqlite";
+    public string TargetId { get; }
 
     public async ValueTask<DeliveryResultRef> WriteAsync(
         string collectionFileId,
@@ -56,13 +60,14 @@ public sealed class SqlServerRecordSink : IRecordSink
     private readonly string _connectionString;
     private readonly string _table;
 
-    public SqlServerRecordSink(string connectionString, string table = "IndustrialRecords")
+    public SqlServerRecordSink(string connectionString, string table = "IndustrialRecords", string? targetId = null)
     {
         _connectionString = connectionString;
         _table = table;
+        TargetId = targetId ?? "sqlserver";
     }
 
-    public string TargetId => "sqlserver";
+    public string TargetId { get; }
 
     public async ValueTask<DeliveryResultRef> WriteAsync(
         string collectionFileId,
@@ -112,9 +117,13 @@ public sealed class FileArchiveSink : IArchiveSink
 {
     private readonly string _archiveRoot;
 
-    public FileArchiveSink(string archiveRoot) => _archiveRoot = archiveRoot;
+    public FileArchiveSink(string archiveRoot, string? targetId = null)
+    {
+        _archiveRoot = archiveRoot;
+        TargetId = targetId ?? "archive";
+    }
 
-    public string TargetId => "archive";
+    public string TargetId { get; }
 
     public async ValueTask ArchiveAsync(
         DiscoveredFile file, string idempotencyKey, CancellationToken ct = default)

@@ -57,7 +57,7 @@ managed 插件的 ALC 以「版本+配置指纹」为 key 重新装载——所�
 
 ## Console 插件与宿主恢复
 
-`gocordis-console` 是产品内置插件（`src/Gocordis.Console.Plugin/`），不是 sample，也不是宿主写死的页面：它包含真实 managed `Component`、TSX 构建的 `ui.js` 和 `gocordis-ui.json`，通过同一控制面贡献 page / panel / route / navigation / extension / resource。`WebUiServer`、React/AntD 静态资源、控制 API 与最小恢复页属于宿主，不随它卸载：
+Web Console 是产品内置插件（`src/Gocordis.Builtin.WebConsole/`），不是 sample，也不是宿主子系统：真实 `WebConsoleComponent` 通过 `Inject()` 获取 UI / API / 控制面 / 恢复能力，HTTP 服务与前端资源随插件 Fiber 启停。`PlatformApplication` 只做 bootstrap，不再 `new WebUiServer`：
 
 ```bash
 BASE=http://127.0.0.1:8170
@@ -69,7 +69,7 @@ curl -s -o /dev/null -w "%{http_code}\n" $BASE/recover
 
 # 通过同一 HTTP 控制面恢复 last-known-good manifest / 重新安装 Console
 gocordis console restore --address $BASE
-gocordis console install --builtin console --address $BASE
+gocordis console restore --address $BASE
 curl -s $BASE/api/plugins/audit | python3 -m json.tool
 ```
 

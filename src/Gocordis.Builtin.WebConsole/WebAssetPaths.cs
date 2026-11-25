@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.StaticFiles;
 
-namespace Gocordis.Console.WebUi;
+namespace Gocordis.Builtin.WebConsole;
 
 /// <summary>
 /// Path guard shared by the React console assets and the plugin client modules.

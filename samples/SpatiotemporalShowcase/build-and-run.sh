@@ -90,15 +90,10 @@ pack_and_install() {
     dotnet "$CLI_DLL" plugin install "$package" --store "$STORE" --host-version 1.0.0
 }
 
-echo "==> installing the product's built-in Console plugin package"
-# The console is a product-owned REAL managed plugin, not a sample placeholder.
-# Its DLL, TSX ESM and UI declarations are packed by the product build script.
-# Host web transport / static assets / control API / /recover survive when the
-# package is disabled or uninstalled.
-bash "$ROOT/src/Gocordis.Console.Plugin/build-and-pack.sh" >/dev/null
-CONSOLE_PACKAGE="$ROOT/src/Gocordis.Console.Plugin/builtin/gocordis-console-1.0.0.gocordis-plugin"
-cp "$CONSOLE_PACKAGE" "$PACKAGES/"
-dotnet "$CLI_DLL" plugin install --builtin console --store "$STORE" --host-version 1.0.0
+echo "==> booting the product's built-in Web Console plugin"
+# Web Console is a protected builtin Fiber loaded by Platform bootstrap. It is
+# NOT an application declaration and NOT a sample package; the manifest below
+# contains only user-installed business plugins.
 
 echo "==> packing + installing managed plugin packages"
 # The --dependency/--provides flags populate the package manifest that the
@@ -120,7 +115,6 @@ cat > "$MANIFEST" <<'JSON'
   "Version": "1.0.0",
   "HostVersion": "1.0.0",
   "Plugins": [
-    { "Id": "gocordis-console",        "VersionRange": "[1.0,2.0)", "Enabled": true },
     { "Id": "showcase-store",          "VersionRange": "[1.0,2.0)", "Enabled": true,
       "Config": { "intervalMs": 1500, "label": "showcase", "verbose": false, "mode": "steady" } },
     { "Id": "showcase-worker",         "VersionRange": "[1.0,2.0)", "Enabled": true, "Config": null },

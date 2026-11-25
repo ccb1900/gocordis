@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Gocordis.Client;
-using Gocordis.Console.WebUi;
+using Gocordis.Builtin.WebConsole;
 using Gocordis.Core;
 using Gocordis.Packaging;
 using Gocordis.Platform;
@@ -326,13 +326,10 @@ public static class Program
             case "install":
             case "upgrade":
             {
-                var builtin = Option(rest, "--builtin");
-                var package = builtin is not null
-                    ? BuiltInPackages.Resolve(builtin)
-                    : Positional(rest, 0);
+                var package = Positional(rest, 0);
                 if (package is null)
                 {
-                    return Fail($"usage: plugin {command} <package|--builtin console> [--store] [--host-version]");
+                    return Fail($"usage: plugin {command} <package> [--store] [--host-version]");
                 }
 
                 PluginTrustPolicy trust;
@@ -1067,10 +1064,7 @@ public static class Program
             case "install":
             case "upgrade":
             {
-                var builtin = Option(rest, "--builtin");
-                var packagePath = command != "restore" && builtin is not null
-                    ? BuiltInPackages.Resolve(builtin)
-                    : Positional(rest, 0);
+                var packagePath = Positional(rest, 0);
                 if (packagePath is not null)
                 {
                     await using var stream = File.OpenRead(packagePath);
@@ -1447,7 +1441,7 @@ public static class Program
             "--store", "--host-version", "--address", "--id", "--name", "--version", "--type", "--host-range", "--source",
             "--output", "--out", "--key", "--public-key", "--backend", "--entry-assembly", "--entry-type",
             "--shared-assembly", "--allowed-host", "--host-version-range", "--provides", "--dependency", "--contract",
-            "--config-schema", "--capability", "--trust", "--public-key", "--builtin",
+            "--config-schema", "--capability", "--trust", "--public-key",
         };
         var flags = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -1503,10 +1497,10 @@ public static class Program
         gocordis plugin fetch <id> <versionRange> --source <url> [--output <path>] [--host-version]
         gocordis registry serve <directory> [--address] [--allow-remote]
         gocordis console restore [--address <url>]                       # last-known-good manifest via HTTP
-        gocordis console install|upgrade <package|--builtin console> [--address <url>]  # HTTP control plane
+        gocordis console install|upgrade <package> [--address <url>]  # HTTP control plane
         gocordis console uninstall|enable|disable <pluginId> [--address <url>]
         gocordis console list|audit [--address <url>]
-        gocordis plugin install|upgrade <package|--builtin console> [--store] [--host-version] [--trust development|trusted-only] [--public-key <pem> ...]
+        gocordis plugin install|upgrade <package> [--store] [--host-version] [--trust development|trusted-only] [--public-key <pem> ...]
         gocordis plugin uninstall <id> [--version] [--store] [--host-version]
         gocordis plugin list [--store] [--host-version]
         gocordis plugin resolve <id> <range> [--source] [--host-version]

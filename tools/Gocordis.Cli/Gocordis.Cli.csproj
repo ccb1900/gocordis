@@ -9,7 +9,7 @@
     <ProjectReference Include="../../src/Gocordis.Core/Gocordis.Core.csproj" />
     <ProjectReference Include="../../src/Gocordis.Packaging/Gocordis.Packaging.csproj" />
     <ProjectReference Include="../../src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
-    <ProjectReference Include="../../src/Gocordis.Console.WebUi/Gocordis.Console.WebUi.csproj" />
+    <ProjectReference Include="../../src/Gocordis.Builtin.WebConsole/Gocordis.Builtin.WebConsole.csproj" />
     <!-- Platform is an implementation dependency of `app run`; keep its
          backend namespaces out of CLI consumers' compile surface. -->
     <ProjectReference Include="../../src/Gocordis.Platform/Gocordis.Platform.csproj"

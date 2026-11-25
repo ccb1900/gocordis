@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.IO;
 using System.Text.Json.Nodes;
-using Gocordis.Console.WebUi;
+using Gocordis.Builtin.WebConsole;
 using Gocordis.Core;
 using Gocordis.Extensions;
 using Gocordis.Packaging;
@@ -27,7 +27,8 @@ public sealed class PlatformHostOptions
         IReadOnlyList<string>? AllowedHosts = null,
         bool ValidateOnly = false,
         PluginTrustPolicy? Trust = null,
-        ConsoleAccessPolicy? AccessPolicy = null)
+        ConsoleAccessPolicy? AccessPolicy = null,
+        bool WebConsoleEnabled = true)
     {
         if (string.IsNullOrWhiteSpace(ManifestPath))
         {
@@ -52,6 +53,8 @@ public sealed class PlatformHostOptions
         // No CLI flag fabricates an authentication decision. Remote writes stay
         // denied until an embedding host supplies an explicit policy here.
         this.AccessPolicy = AccessPolicy;
+        // degradation/test seam: starts only the minimal host recovery surface
+        this.WebConsoleEnabled = WebConsoleEnabled;
     }
 
     public string ManifestPath { get; }
@@ -78,6 +81,11 @@ public sealed class PlatformHostOptions
     /// never guesses an identity; an embedding host supplies the policy.
     /// </summary>
     public ConsoleAccessPolicy? AccessPolicy { get; }
+
+    /// <summary>Whether the builtin Web Console fiber may open its transport.
+    /// False yields a degraded host with only /recover; it is not a second
+    /// Console implementation.</summary>
+    public bool WebConsoleEnabled { get; }
 }
 
 /// <summary>One resolved declaration as seen by the product composition root.</summary>
@@ -95,6 +103,9 @@ public class PlatformApplication : IAsyncDisposable
     // WebUi needs the ASP.NET middleware surface, which is intentionally not
     // part of the public capability contract. The host knows the implementation.
     private ServerRouteGuard? _routeGuard;
+    private MinimalRecoveryHost? _recoveryHost;
+    private bool _recoveryDisposed;
+    private Exception? _webConsoleFailure;
     private ApplicationManifest? _manifest;
     private readonly List<PlatformResolvedPlugin> _resolved = [];
     private bool _started;
@@ -147,8 +158,18 @@ public class PlatformApplication : IAsyncDisposable
     public CapabilityCatalog Capabilities { get; }
     public PluginStore Store { get; }
     public IPluginControlPlane? Control { get; private set; }
-    public WebUiServer? WebUi { get; private set; }
-    public Uri? Address => WebUi?.Address is { } address ? new Uri(address) : null;
+    /// <summary>Read-only view of the builtin Web Console fiber's transport.
+    /// Platform never constructs or starts it.</summary>
+    public WebUiServer? WebUi =>
+        Runtime.TryRequireCapability(WebConsoleKeys.Service)?.Server;
+
+    public Uri? Address =>
+        WebUi?.Address is { } address ? new Uri(address)
+        : _recoveryHost?.Address is { } recovery ? new Uri(recovery) : null;
+
+    /// <summary>Non-null when the builtin Web Console failed to activate and the
+    /// host entered degraded recovery mode.</summary>
+    public Exception? WebConsoleFailure => _webConsoleFailure;
 
     /// <summary>The application declaration loaded by StartAsync (read-only).</summary>
     public ApplicationManifest? Manifest => _manifest;
@@ -180,6 +201,13 @@ public class PlatformApplication : IAsyncDisposable
             // validating an injected dependency at Prepare time.
             Registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
             Registry.ExternalCapabilities.Add(ApiGateway.Key);
+            Registry.ExternalCapabilities.Add(ConsoleHost.Key);
+            Registry.ExternalCapabilities.Add(PluginRegistry.Key);
+            Registry.ExternalCapabilities.Add(ControlPlaneKeys.Service);
+            Registry.ExternalCapabilities.Add(ControlPlaneKeys.Dependencies);
+            Registry.ExternalCapabilities.Add(ControlPlaneKeys.Recovery);
+            Registry.ExternalCapabilities.Add(WebConsoleKeys.Options);
+            Registry.ExternalCapabilities.Add(WebConsoleKeys.Service);
             await Runtime.LoadAsync(new ConsoleCapabilitiesComponent(Console));
 
             // Official extensions are ordinary provider fibers in the same
@@ -211,13 +239,40 @@ public class PlatformApplication : IAsyncDisposable
             _routeGuard = Runtime.RequireCapability(RouteGuardKeys.Service) as ServerRouteGuard
                 ?? throw new InvalidOperationException("route guard capability has no ASP.NET middleware implementation");
 
+            // Framework inputs become capabilities too. The control plane and
+            // builtin plugins resolve them from Context; the host never passes a
+            // concrete Console/WebUi object into their constructors.
+            Func<PluginManifest, Component> componentFactory = CreateComponent;
+            await Runtime.LoadAsync(new FrameworkCapabilitiesComponent(
+                Registry,
+                new ControlPlaneDependencies(
+                    _options.ManifestPath,
+                    Store,
+                    Registry,
+                    componentFactory,
+                    names => names.All(SharedAssemblyRegistry.IsApproved),
+                    ApplyDeclarationPlanAsync,
+                    () => string.Join("|", Capabilities.Declarations
+                        .Select(declaration => declaration.ToWireString())
+                        .OrderBy(value => value, StringComparer.Ordinal)),
+                    _options.Trust),
+                new HostRecovery((source, token) =>
+                    (Control ?? throw new InvalidOperationException("control plane is not loaded"))
+                        .RecoverManifestAsync(source, token)),
+                new WebConsoleOptions(
+                    _options.Address,
+                    _options.AllowRemote,
+                    _options.AccessPolicy,
+                    _routeGuard,
+                    HmrAsync,
+                    StartupDisabled: !_options.WebConsoleEnabled)));
+
             // Backend selection belongs to the composition root. The control
             // plane receives the same factory and registers it for every declared
             // type, decorating the result with UiPackageBinder so a package's
             // gocordis-ui.json is installed/undone with the plugin. Registering
             // factories HERE would bypass that wrapper, so we only resolve the
             // declaration report; ApplyAllAsync owns factory registration.
-            Func<PluginManifest, Component> componentFactory = CreateComponent;
             // Collect ALL candidate copies of every declared shared contract
             // from installed (checksum-verified) packages. The HOST seals one
             // identity before any plugin fiber activates — no plugin can decide
@@ -266,33 +321,30 @@ public class PlatformApplication : IAsyncDisposable
             // The control plane is a plugin contribution: load its fiber first,
             // then read its capability. Runtime.Close ends this fiber with all
             // the others, including on a partially failed start.
+            // The control plane is a plugin contribution: load its fiber first,
+            // then read its capability. Runtime.Close ends this fiber with all
+            // the others, including on a partially failed start.
             await Runtime.LoadAsync(new PluginControlPlaneComponent(
-                _options.ManifestPath, Store, Registry, Console.Ui, componentFactory,
-                names => names.All(SharedAssemblyRegistry.IsApproved),
-                ApplyDeclarationPlanAsync,
-                () => string.Join("|", Capabilities.Declarations
-                    .Select(declaration => declaration.ToWireString())
-                    .OrderBy(value => value, StringComparer.Ordinal)),
-                _options.Trust));
+                Runtime.RequireCapability(ControlPlaneKeys.Dependencies)));
             var control = Runtime.RequireCapability(ControlPlaneKeys.Service);
             Control = control;
 
-            await control.ApplyAllAsync(cancellationToken);
-            // Validate-only stops after the declaration set is genuinely active:
-            // no transport is opened, so a preflight cannot leave a listener behind.
+            // Web Console is an ordinary protected plugin entry in the SAME
+            // Registry/Fiber lifecycle. Platform registers its factory at the
+            // composition root only; the Component owns HTTP start and teardown.
             if (_options.Host == UiHostKind.Web && !_options.ValidateOnly)
             {
-                WebUi = new WebUiServer(
-                    Console,
-                    address: _options.Address,
-                    allowRemote: _options.AllowRemote,
-                    registry: Registry,
-                    control: control,
-                    accessPolicy: _options.AccessPolicy,
-                    routeGuard: _routeGuard,
-                    hmr: HmrAsync);
-                await WebUi.StartAsync(cancellationToken);
+                if (_options.WebConsoleEnabled)
+                {
+                    await LoadBuiltinWebConsoleAsync(cancellationToken);
+                }
+                else
+                {
+                    await StartRecoveryHostAsync(cancellationToken);
+                }
             }
+
+            await control.ApplyAllAsync(cancellationToken);
 
             _started = true;
         }
@@ -312,6 +364,50 @@ public class PlatformApplication : IAsyncDisposable
 
             throw;
         }
+    }
+
+    /// <summary>
+    /// Load the builtin Web Console through the one Registry. Its id is
+    /// protected by its own fiber; if activation fails the host degrades to the
+    /// minimal recovery surface instead of losing the restore path.
+    /// </summary>
+    private async Task LoadBuiltinWebConsoleAsync(CancellationToken cancellationToken)
+    {
+        Registry.RegisterComponentFactory(WebConsolePlugin.Type, _ => new WebConsoleComponent());
+        var declaration = new PluginManifest(
+            WebConsolePlugin.Id,
+            WebConsolePlugin.Type,
+            Enabled: true,
+            Config: new Dictionary<string, object?>(),
+            Requires: [],
+            Provides: [],
+            Version: WebConsolePlugin.Version,
+            Source: string.Empty,
+            Checksum: null,
+            Backend: "builtin");
+        try
+        {
+            await Registry.ApplyAsync([declaration]);
+        }
+        catch (Exception ex)
+        {
+            _webConsoleFailure = ex;
+            await StartRecoveryHostAsync(cancellationToken);
+        }
+    }
+
+    private async Task StartRecoveryHostAsync(CancellationToken cancellationToken)
+    {
+        if (_recoveryHost is not null || _options.ValidateOnly || _options.Host != UiHostKind.Web)
+        {
+            return;
+        }
+
+        _recoveryHost = new MinimalRecoveryHost(
+            _options.Address,
+            _options.AllowRemote,
+            Runtime.RequireCapability(ControlPlaneKeys.Recovery));
+        await _recoveryHost.StartAsync(cancellationToken);
     }
 
     /// <summary>
@@ -620,6 +716,14 @@ public class PlatformApplication : IAsyncDisposable
         var plugins = new List<PluginManifest>();
         foreach (var (id, entry) in Registry.Entries)
         {
+            // Protected framework plugins (control plane, builtin Web Console)
+            // are not application declarations and never participate in
+            // package/contract diagnostics.
+            if (Registry.ProtectedIds.Contains(id))
+            {
+                continue;
+            }
+
             live.TryGetValue(id, out var fiber);
             plugins.Add(entry.Manifest with
             {
@@ -650,7 +754,7 @@ public class PlatformApplication : IAsyncDisposable
         // that is installed yet not declared would otherwise look "satisfied"
         // to the package manager while having no runtime provider. Report it
         // explicitly (read-only diagnostic — activation stays declaration-led).
-        foreach (var entry in Registry.Entries.Values)
+        foreach (var entry in Registry.Entries.Values.Where(entry => !Registry.ProtectedIds.Contains(entry.Manifest.Id)))
         {
             foreach (var requirement in entry.Manifest.Requires.Distinct(StringComparer.Ordinal))
             {
@@ -711,10 +815,10 @@ public class PlatformApplication : IAsyncDisposable
 
     /// <summary>Test seams for disposal faults; production uses the real resources.</summary>
     protected virtual Task StopWebUiAsync(CancellationToken cancellationToken) =>
-        WebUi?.StopAsync(cancellationToken) ?? Task.CompletedTask;
+        _recoveryHost?.StopAsync(cancellationToken) ?? Task.CompletedTask;
 
     protected virtual ValueTask DisposeWebUiAsync() =>
-        WebUi?.DisposeAsync() ?? ValueTask.CompletedTask;
+        _recoveryHost?.DisposeAsync() ?? ValueTask.CompletedTask;
 
     protected virtual ValueTask DisposeRegistryAsync() => Registry.DisposeAsync();
 
@@ -930,15 +1034,19 @@ public class PlatformApplication : IAsyncDisposable
         }
 
         var errors = new List<Exception>();
-        await AttemptAsync(errors, "webui stop", async () => await StopWebUiAsync(cancellationToken));
-        await AttemptAsync(errors, "webui dispose", async () =>
+        // The Web Console transport stops as an Effect inverse when Registry is
+        // disposed. Only the degraded recovery host is owned directly here.
+        await AttemptAsync(errors, "recovery host stop", async () =>
+            await StopWebUiAsync(cancellationToken));
+        if (!_recoveryDisposed)
         {
-            if (WebUi is not null)
+            await AttemptAsync(errors, "recovery host dispose", async () =>
             {
                 await DisposeWebUiAsync();
-                WebUi = null;
-            }
-        });
+                _recoveryDisposed = true;
+                _recoveryHost = null;
+            });
+        }
         await AttemptAsync(errors, "registry", async () => await DisposeRegistryAsync());
         await AttemptAsync(errors, "managed host", async () => await DisposeManagedAsync());
         await AttemptAsync(errors, "runtime", async () => await DisposeRuntimeAsync());

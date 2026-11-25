@@ -524,6 +524,10 @@ public sealed class ApiGateway
 /// <summary>Composes the contribution surfaces; produce a runtime snapshot as a query.</summary>
 public sealed class ConsoleHost
 {
+    /// <summary>Framework capability key. The Web Console plugin consumes this
+    /// read model instead of receiving a host-constructed instance.</summary>
+    public static readonly Key<ConsoleHost> Key = new("console-host");
+
     public ConsoleHost(Gocordis.Core.Runtime runtime)
     {
         Runtime = runtime;

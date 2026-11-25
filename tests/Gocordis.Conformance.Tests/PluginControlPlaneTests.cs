@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json.Nodes;
-using Gocordis.Console.WebUi;
+using Gocordis.Builtin.WebConsole;
 using Gocordis.Core;
 using Gocordis.Packaging;
 using Gocordis.Plugins;

@@ -148,9 +148,34 @@ public interface IPluginControlPlane
         string source = "api");
 }
 
+/// <summary>
+/// Host-supplied construction inputs of the control-plane component. They are
+/// framework capabilities, not console-specific objects: the component resolves
+/// them through Context so the host no longer constructs it with a concrete UI.
+/// </summary>
+public sealed record ControlPlaneDependencies(
+    string ManifestPath,
+    PluginStore Store,
+    PluginRegistry Registry,
+    Func<PluginManifest, Component>? ComponentFactory = null,
+    Func<IReadOnlyList<string>, bool>? SharedAssemblyApproval = null,
+    Func<IReadOnlyList<string>, Task<IDeclarationTransaction>>? DeclarationPlan = null,
+    Func<string>? DeclarationFingerprint = null,
+    PluginTrustPolicy? Trust = null);
+
+/// <summary>
+/// Minimal host recovery capability. The Web Console transport maps it to
+/// /api/host/recover; a degraded host can serve the same operation without the
+/// full Console plugin, so process recovery never depends on Console health.
+/// </summary>
+public sealed record HostRecovery(
+    Func<string, CancellationToken, Task<PluginMutationResult>> RecoverAsync);
+
 public static class ControlPlaneKeys
 {
     public static readonly Key<IPluginControlPlane> Service = new("plugin-control-plane");
+    public static readonly Key<ControlPlaneDependencies> Dependencies = new("control-plane-dependencies");
+    public static readonly Key<HostRecovery> Recovery = new("host-recovery");
 }
 
 /// <summary>

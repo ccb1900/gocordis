@@ -12,7 +12,7 @@ dotnet run --project src/Gocordis.Platform -- \
 
 Console 通过 UI 安装、配置、启停、升级、卸载插件，并查看依赖与运行状态；loopback 默认开放，`--allow-remote` 只放宽监听，没有宿主提供的 `AccessPolicy` 时所有远程 API scope 都被拒绝（query 查询除外）。`--host` 只接受 `web`；WinForms/Avalonia 是延期的 render-plan profile，不是可运行宿主。`src/Gocordis.Platform` 才是产品宿主；`samples/PlatformHost` 只是示例。
 
-`gocordis-console` 是产品内置插件包（`src/Gocordis.Console.Plugin`）：真实 managed Component + TSX 构建的 `ui.js` + `gocordis-ui.json`，可经 `gocordis plugin install --builtin console` 或运行中的 HTTP 控制面安装；宿主只提供 web 基础设施与 `/recover`，不把 Console UI 写死在宿主代码里。
+Web Console 是产品内置插件（`src/Gocordis.Builtin.WebConsole`）：`WebConsoleComponent` 通过 `Inject()` 获取 UI/API/控制面/恢复能力，自己的 Fiber 启动 ASP.NET Core HTTP、SSE、React 前端与插件 ESM，撤销时严格 LIFO 停止；Platform 只 bootstrap Runtime 和受保护内置插件，不再构造或持有 WebUiServer。宿主另外保留一个最小化恢复入口，Web Console 故障时仍可恢复 manifest。
 
 ## 从此处开始
 

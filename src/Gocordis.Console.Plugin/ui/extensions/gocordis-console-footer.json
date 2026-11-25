@@ -1,9 +1,0 @@
-{
-  "id": "gocordis-console-footer",
-  "slot": "shell.footer",
-  "renderer": "host-status",
-  "pageId": "gocordis-console-page",
-  "props": {
-    "source": "builtin-console-plugin"
-  }
-}

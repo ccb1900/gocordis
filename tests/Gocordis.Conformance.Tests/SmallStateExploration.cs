@@ -507,16 +507,20 @@ public sealed class SmallStateExplorationTests
 
         public override async ValueTask<Cleanup?> ApplyAsync(Context context)
         {
-            _gate.Enter();
-            lock (_journalGate)
-            {
-                _journal.Add($"install:{Name}");
-            }
-
-            // Register the inverse BEFORE the gate wait: a Dispose submitted
-            // while this step is in flight must still unwind the landed effect.
+            // Register the inverse BEFORE publishing gate entry: a Dispose
+            // submitted after BothEntered must see a fully landed effect. The
+            // previous order announced entry between the journal write and
+            // EffectAsync, letting unwind race ahead of inverse registration.
             await context.EffectAsync(
-                () => ValueTask.CompletedTask,
+                () =>
+                {
+                    lock (_journalGate)
+                    {
+                        _journal.Add($"install:{Name}");
+                    }
+
+                    return ValueTask.CompletedTask;
+                },
                 () =>
                 {
                     lock (_journalGate)
@@ -526,6 +530,7 @@ public sealed class SmallStateExplorationTests
 
                     return ValueTask.CompletedTask;
                 });
+            _gate.Enter();
             await _release.Task;
             return null;
         }

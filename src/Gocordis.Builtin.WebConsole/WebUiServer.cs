@@ -11,7 +11,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Gocordis.Console.WebUi;
+namespace Gocordis.Builtin.WebConsole;
 
 /// <summary>The console capability a request wants to exercise. A policy sees
 /// the scope, never the raw request, so read-only and narrow write policies
@@ -55,6 +55,7 @@ public sealed class WebUiServer : IAsyncDisposable
     private readonly bool _allowRemote;
     private readonly IPluginControlPlane? _control;
     private readonly Func<HmrRequest, JsonObject?, CancellationToken, Task<HmrPlan>>? _hmr;
+    private readonly HostRecovery? _recovery;
     private readonly ConsoleAccessPolicy? _accessPolicy;
     private readonly Func<string, string?> _clientModuleRoot;
     private readonly string? _reactDist;
@@ -69,12 +70,14 @@ public sealed class WebUiServer : IAsyncDisposable
         IPluginControlPlane? control = null,
         ConsoleAccessPolicy? accessPolicy = null,
         ServerRouteGuard? routeGuard = null,
-        Func<HmrRequest, JsonObject?, CancellationToken, Task<HmrPlan>>? hmr = null)
+        Func<HmrRequest, JsonObject?, CancellationToken, Task<HmrPlan>>? hmr = null,
+        HostRecovery? recovery = null)
     {
         _host = host;
         _allowRemote = allowRemote;
         _control = control;
         _hmr = hmr;
+        _recovery = recovery;
         _accessPolicy = accessPolicy;
         _clientModuleRoot = clientModuleRootResolver ?? DefaultClientModuleRoot;
         _reactDist = FindReactDist(webDistPath);
@@ -187,12 +190,13 @@ public sealed class WebUiServer : IAsyncDisposable
         });
 
         // Recover writes declarations only (last-known-good manifest). It is a
-        // host transport endpoint, not a console plugin contribution.
+        // host-owned capability mapped by this transport, never full Console
+        // business logic: the minimal fallback host can map the same operation.
         _app.MapPost("/api/host/recover", async (HttpContext context) =>
         {
             var denial = Deny(ConsoleAccessScope.Package);
             if (denial is not null) return denial;
-            if (_control is null)
+            if (_recovery is null && _control is null)
             {
                 return Unavailable("plugin control service is not configured");
             }
@@ -208,7 +212,10 @@ public sealed class WebUiServer : IAsyncDisposable
             }
 
             var source = SourceOf(payload as JsonObject, "http");
-            return MutationResult(await _control.RecoverManifestAsync(source, context.RequestAborted));
+            var mutation = _recovery is not null
+                ? await _recovery.RecoverAsync(source, context.RequestAborted)
+                : await _control!.RecoverManifestAsync(source, context.RequestAborted);
+            return MutationResult(mutation);
         });
 
         _app.MapGet("/api/fleet", () => ApiResults.Data(new JsonObject
@@ -1442,7 +1449,7 @@ internal static class WebResources
     public static string Read(string name)
     {
         using var stream = typeof(WebUiServer).Assembly
-            .GetManifestResourceStream($"Gocordis.Console.WebUi.{name}") ??
+            .GetManifestResourceStream($"Gocordis.Builtin.WebConsole.{name}") ??
             throw new InvalidOperationException($"embedded resource '{name}' is missing");
         using var reader = new StreamReader(stream);
         return reader.ReadToEnd();

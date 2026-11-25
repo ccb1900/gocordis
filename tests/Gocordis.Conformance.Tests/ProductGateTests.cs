@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Gocordis.Console.WebUi;
+using Gocordis.Builtin.WebConsole;
 using Gocordis.Core;
 using Gocordis.Plugins;
 using Xunit;

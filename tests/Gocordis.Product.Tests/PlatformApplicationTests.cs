@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Gocordis.Console.WebUi;
+using Gocordis.Builtin.WebConsole;
 using Gocordis.Core;
 using Gocordis.Packaging;
 using Gocordis.Platform;
@@ -414,7 +414,7 @@ public sealed class PlatformApplicationTests
     }
 
     [Theory]
-    [InlineData("webui", "webui dispose")]
+    [InlineData("webui", "recovery host dispose")]
     [InlineData("registry", "registry cleanup")]
     [InlineData("runtime", "runtime cleanup")]
     [InlineData("routeGuard", "route guard cleanup")]

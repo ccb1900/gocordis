@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <EmbeddedResource Include="wwwroot/index.html" LogicalName="Gocordis.Builtin.WebConsole.index.html" />
+    <EmbeddedResource Include="wwwroot/app.js" LogicalName="Gocordis.Builtin.WebConsole.app.js" />
+    <EmbeddedResource Include="wwwroot/app.css" LogicalName="Gocordis.Builtin.WebConsole.app.css" />
+    <EmbeddedResource Include="wwwroot/recover.html" LogicalName="Gocordis.Builtin.WebConsole.recover.html" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Both frontends belong to this builtin plugin, not to Platform: the
+         console shell from web/console/dist and the plugin-owned ESM module. -->
+    <Content Include="../../web/console/dist/**/*"
+             Link="web-dist/%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="wwwroot/client-modules/**/*"
+             Link="client-modules/%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../Gocordis.Core/Gocordis.Core.csproj" />
+    <ProjectReference Include="../Gocordis.Extensions/Gocordis.Extensions.csproj" />
+    <ProjectReference Include="../Gocordis.Plugins/Gocordis.Plugins.csproj" />
+    <ProjectReference Include="../Gocordis.Packaging/Gocordis.Packaging.csproj" />
+  </ItemGroup>
+</Project>

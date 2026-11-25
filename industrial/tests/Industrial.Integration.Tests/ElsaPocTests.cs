@@ -4,7 +4,7 @@ using Elsa.Workflows.Models;
 using Gocordis.Core;
 using Gocordis.Plugins;
 using Gocordis.Platform;
-using Gocordis.Console.WebUi;
+using Gocordis.Builtin.WebConsole;
 using Industrial.Contracts;
 using Industrial.Elsa;
 

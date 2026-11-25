@@ -6,7 +6,10 @@ namespace Gocordis.Packaging;
 /// <summary>
 /// The control plane as a first-class plugin contribution. One Core fiber owns
 /// its reversible effects: providing the typed service and, when the host has a
-/// UI, one stable page. No second registry and no host-managed lifetime.
+/// UI, one stable page. Its construction inputs and UI registry are resolved as
+/// capabilities, so neither the host nor this component hands a concrete
+/// Console instance to the other. No second registry and no host-managed
+/// lifetime.
 /// </summary>
 public sealed class PluginControlPlaneComponent : Component
 {
@@ -15,67 +18,47 @@ public sealed class PluginControlPlaneComponent : Component
     /// </summary>
     public const string ControlPlaneComponentId = "plugin-control-plane";
 
-    private readonly string _manifestPath;
-    private readonly PluginStore _store;
-    private readonly PluginRegistry _registry;
-    private readonly UiContributionRegistry? _ui;
-    private readonly Func<IReadOnlyList<string>, bool>? _sharedAssemblyApproval;
-    private readonly Func<IReadOnlyList<string>, Task<IDeclarationTransaction>>? _declarationPlan;
-    private readonly Func<string>? _declarationFingerprint;
-    private readonly PluginTrustPolicy _trust;
+    private readonly ControlPlaneDependencies _dependencies;
 
-    public PluginControlPlaneComponent(
-        string ManifestPath,
-        PluginStore Store,
-        PluginRegistry Registry,
-        UiContributionRegistry? Ui = null,
-        Func<PluginManifest, Component>? ComponentFactory = null,
-        Func<IReadOnlyList<string>, bool>? SharedAssemblyApproval = null,
-        Func<IReadOnlyList<string>, Task<IDeclarationTransaction>>? DeclarationPlan = null,
-        Func<string>? DeclarationFingerprint = null,
-        PluginTrustPolicy? Trust = null)
-    {
-        _manifestPath = ManifestPath ?? throw new ArgumentNullException(nameof(ManifestPath));
-        _store = Store ?? throw new ArgumentNullException(nameof(Store));
-        _registry = Registry ?? throw new ArgumentNullException(nameof(Registry));
-        _ui = Ui;
-        _componentFactory = ComponentFactory;
-        _sharedAssemblyApproval = SharedAssemblyApproval;
-        _declarationPlan = DeclarationPlan;
-        _declarationFingerprint = DeclarationFingerprint;
-        _trust = Trust ?? PluginTrustPolicy.Development;
-    }
-
-    private readonly Func<PluginManifest, Component>? _componentFactory;
+    public PluginControlPlaneComponent(ControlPlaneDependencies dependencies) =>
+        _dependencies = dependencies ?? throw new ArgumentNullException(nameof(dependencies));
 
     public override string Name => ControlPlaneComponentId;
+
+    public override IReadOnlyList<ICapabilityKey> Inject() =>
+        [ControlPlaneKeys.Dependencies, UiContributionRegistry.Key];
 
     public override IReadOnlyList<ICapabilityKey> Provide() => [ControlPlaneKeys.Service];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
+        var dependencies = context.Require(ControlPlaneKeys.Dependencies);
+        var ui = context.Require(UiContributionRegistry.Key);
+
         // Protection is part of loading the contribution, not an accident of
         // finding its id in the application manifest.
-        _registry.ProtectedIds.Add(ControlPlaneComponentId);
+        dependencies.Registry.ProtectedIds.Add(ControlPlaneComponentId);
         var service = new PluginControlService(
-            _manifestPath, _store, _registry, _ui, _componentFactory, _sharedAssemblyApproval,
-            _declarationPlan)
+            dependencies.ManifestPath,
+            dependencies.Store,
+            dependencies.Registry,
+            ui,
+            dependencies.ComponentFactory,
+            dependencies.SharedAssemblyApproval,
+            dependencies.DeclarationPlan)
         {
-            DeclarationFingerprint = _declarationFingerprint,
-            Trust = _trust,
+            DeclarationFingerprint = dependencies.DeclarationFingerprint,
+            Trust = dependencies.Trust ?? PluginTrustPolicy.Development,
         };
         // Context.Provide installs its own LIFO inverse; no cleanup stack here.
         context.Provide(ControlPlaneKeys.Service, service);
 
-        if (_ui is not null)
-        {
-            await context.RegisterUiPageAsync(
-                _ui,
-                ContributionOwner.ForContext(context, "plugin-control-plane", Name),
-                new UiPageDefinition(
-                    "plugin-control-plane", "Plugin control plane", "/plugins/control-plane", "plugin-explorer",
-                    Description: "Plugin declarations, packages and lifecycle control"));
-        }
+        await context.RegisterUiPageAsync(
+            ui,
+            ContributionOwner.ForContext(context, "plugin-control-plane", Name),
+            new UiPageDefinition(
+                "plugin-control-plane", "Plugin control plane", "/plugins/control-plane", "plugin-explorer",
+                Description: "Plugin declarations, packages and lifecycle control"));
 
         return null;
     }

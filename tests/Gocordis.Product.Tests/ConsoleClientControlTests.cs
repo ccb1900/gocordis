@@ -42,8 +42,10 @@ public sealed class ConsoleClientControlTests
         using var client = new ConsoleClient(app.Address!);
 
         var contributions = await client.GetUiContributionsAsync();
-        Assert.Equal("/client", Assert.Single(contributions.Routes).Path);
-        Assert.Equal("Client", Assert.Single(contributions.Navigation).Label);
+        var clientRoute = Assert.Single(contributions.Routes, route => route.Id == "client-route");
+        var clientNav = Assert.Single(contributions.Navigation, nav => nav.Id == "client-nav");
+        Assert.Equal("/client", clientRoute.Path);
+        Assert.Equal("Client", clientNav.Label);
 
         await using var stream = File.OpenRead(package);
         var upload = await client.UploadPackageAsync(stream, "client-demo-1.0.0.gocordis-plugin", "client-test");

@@ -1,4 +1,4 @@
-using Gocordis.Console.WebUi;
+using Gocordis.Builtin.WebConsole;
 using KoishiCase;
 
 namespace PlatformHost;

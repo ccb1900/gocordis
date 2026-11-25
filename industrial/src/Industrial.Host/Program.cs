@@ -1,4 +1,4 @@
-using Gocordis.Console.WebUi;
+using Gocordis.Builtin.WebConsole;
 using Gocordis.Core;
 using Gocordis.Platform;
 using Gocordis.Plugins;

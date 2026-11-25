@@ -51,6 +51,10 @@ public sealed class DeclarationVersionConflictException : InvalidOperationExcept
 /// </summary>
 public sealed class PluginRegistry : IAsyncDisposable
 {
+    /// <summary>Framework capability key. Consumers read declarations through
+    /// this instead of receiving a host-owned concrete registry.</summary>
+    public static readonly Key<PluginRegistry> Key = new("plugin-registry");
+
     private readonly Runtime _runtime;
     private readonly SemaphoreSlim _gate = new(1, 1);
     // All factories are normalized to the manifest-aware shape; the legacy

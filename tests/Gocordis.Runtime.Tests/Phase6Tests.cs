@@ -1,6 +1,6 @@
 using System.Net;
 using System.Text.Json.Nodes;
-using Gocordis.Console.WebUi;
+using Gocordis.Builtin.WebConsole;
 using Gocordis.Core;
 using Gocordis.Plugins;
 using Gocordis.Runtime.Contracts;

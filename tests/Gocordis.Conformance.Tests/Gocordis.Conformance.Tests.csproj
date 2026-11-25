@@ -5,6 +5,10 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Paper matrices share process-global timing/provider state; serialize them. -->
+    <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../../src/Gocordis.Core/Gocordis.Core.csproj" />
     <ProjectReference Include="../../src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
     <ProjectReference Include="../../samples/KoishiCase/KoishiCase.csproj" />

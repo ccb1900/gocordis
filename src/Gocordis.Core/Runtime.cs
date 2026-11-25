@@ -451,6 +451,27 @@ public sealed class Runtime : IAsyncDisposable
         }
     }
 
+    /// <summary>Nullable capability read for host bootstrap views. It has the
+    /// same active/committed semantics as RequireCapability without throwing
+    /// when an optional builtin plugin is absent or failed to activate.</summary>
+    public T? TryRequireCapability<T>(Key<T> key) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        lock (_stateLock)
+        {
+            var provider = FindProvider(Realm.Default, key);
+            if (provider is null ||
+                provider.State != FiberState.Active ||
+                provider.CurrentActivation?.Phase != ActivationPhase.Committed ||
+                !provider.Provided.TryGetValue(key, out var value))
+            {
+                return null;
+            }
+
+            return value as T;
+        }
+    }
+
     /// <summary>
     /// Read-only binding probe for unwind-order tests and diagnostics. Unlike
     /// <see cref="RequireCapability{T}"/> it ignores fiber state, so a caller

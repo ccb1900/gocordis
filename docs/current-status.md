@@ -25,9 +25,9 @@ bash samples/SpatiotemporalShowcase/build-and-run.sh /tmp/gocordis-showcase
 # add --run to start the platform; see samples/SpatiotemporalShowcase/README.md for verification steps
 ```
 
-It builds 5 showcase projects + two real TSX frontends (`@gocordis/plugin-kit`), packs 4 business `.gocordis-plugin` packages (`--shared-assembly`, `--provides`, `--dependency`) and installs them alongside the **product-owned built-in Console package** from `src/Gocordis.Console.Plugin`, then writes the declaration. Last run on port `8199` verified: all 5 plugin fibers Active, `gocordis-console/status` query and the Console's own `ui.js` served, `disable` withdrew the query/module while `/recover` and `/api/meta` stayed 200, and `enable` restored them. The Console is no longer a `samples/` declaration-only placeholder.
+It builds 5 showcase projects + one real TSX frontend (`@gocordis/plugin-kit`), packs 4 business `.gocordis-plugin` packages (`--shared-assembly`, `--provides`, `--dependency`) and installs them. The application declaration contains ONLY those user plugins: Web Console is loaded by Platform bootstrap as a protected builtin Fiber, not as a sample package and not as a manifest entry.
 
-`gocordis-console` contains a real managed `Component`, its own TSX-built ESM and all page/panel/route/navigation/extension/resource declarations. Install it with `gocordis plugin install --builtin console` or `gocordis console install --builtin console`; `GOCORDIS_BUILTIN_PACKAGES` can point a deployment at its own package directory. Host startup does not force-install it, so the Console remains an ordinary replaceable plugin.
+`src/Gocordis.Builtin.WebConsole` is a real `Component`. It injects UI/API/control-plane/recovery/route-guard capabilities, starts ASP.NET Core inside a reversible Effect, serves the tracked `web/console/dist` shell plus its own `gocordis-console-ui` ESM, and registers page/panel/route/navigation/extension/resource contributions with owner-bound inverses. `PlatformApplication` no longer constructs `WebUiServer`; its only direct HTTP ownership is the minimal degraded recovery host used when Web Console is unavailable. `BuiltInWebConsoleTests` proves the protected Fiber, own assets, rejected uninstall/disable, boundary source rules, and degraded recovery path.
 
 The empty-directory developer loop (`bash samples/PluginDeveloperWorkflow/e2e.sh <out>`) was re-run green. It now packs a per-run SDK prerelease version: reusing `1.0.0` let NuGet's global cache serve an older Core and caused `MissingMethodException` at plugin activation. E2E test helpers pass `-nodeReuse:false` so reused MSBuild nodes cannot hold redirected stdout pipes open.
 
@@ -38,12 +38,13 @@ The paper §5.3 case-study loop is `bash samples/KoishiShowcase/build-and-run.sh
 ```bash
 dotnet build Gocordis.sln --nologo -m:1
 dotnet test  Gocordis.sln --nologo --no-build -m:1
+dotnet build industrial/Industrial.slnx --nologo -m:1 && dotnet test industrial/Industrial.slnx --nologo --no-build -m:1
 (cd web/console    && npm ci && npm test && npm run build)
 (cd web/plugin-kit && npm test)
 bash docs/migration/verify-baseline.sh   # Go baseline drift check
 ```
 
-**Last locally verified** (2026-11-25, branch `dotnet`, built-in Console worktree): C# **682 passed / 1 skipped / 0 failed**, three consecutive full-suite runs (Core 53, Conformance 179, Runtime 206+1 skipped, Extensions 72, Packaging 88, UI 3, Client 2, Product 79; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **103** tests green plus production build, plugin-kit **3** tests green, solution build 0 warning/0 error. Go baseline verification reports the known frozen `docs/guide/user-manual.md` checksum drift and is recorded, not hidden. No CI result was queried. These counts are a record of that run, not a claim about any earlier SHA.
+**Last locally verified** (2026-11-25, branch `dotnet`, builtin Web Console worktree): C# **683 passed / 1 skipped / 0 failed**, three consecutive full-suite runs (Core 53, Conformance 179, Runtime 206+1 skipped, Extensions 72, Packaging 88, UI 3, Client 2, Product 80; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), industrial solution **27 passed / 0 failed**, frontend **103** tests green plus production build, plugin-kit **3** tests green, solution build 0 warning/0 error. Conformance matrices are serialized and the gated-interleaving fixture now publishes its barrier only after the inverse is registered. Go baseline verification reports the known frozen `docs/guide/user-manual.md` checksum drift and is recorded, not hidden. No CI result was queried. These counts are a record of that run, not a claim about any earlier SHA.
 
 Task 01 的有限校准基线见 `docs/migration/acceptance-baseline.md`；它区分三个验收域与 E0–E4 证据等级，P0-01…P0-04 均已关闭（真实 Process↔WASM 调用与包闭环由 `CrossBackendCapabilityTests`、`BackendDispatchProductTests` 覆盖）。
 

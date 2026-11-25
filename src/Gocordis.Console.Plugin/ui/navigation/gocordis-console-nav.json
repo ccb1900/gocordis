@@ -1,9 +1,0 @@
-{
-  "id": "gocordis-console-nav",
-  "label": "内置控制台",
-  "route": "/console",
-  "pageId": "gocordis-console-page",
-  "icon": "dashboard",
-  "group": "Gocordis/Console",
-  "order": -100
-}

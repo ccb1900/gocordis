@@ -38,7 +38,7 @@ PlatformApplication (组合根)
     Committed + 已有 provided value；不绑定依赖、不安装 effect、不改状态
 - `src/Gocordis.Platform/PlatformApplication.cs`
   - 不再直接构造控制服务；`Control` 是解析得到的 `IPluginControlPlane?`
-- `src/Gocordis.Console.WebUi/WebUiServer.cs`
+- `src/Gocordis.Builtin.WebConsole/WebUiServer.cs`
   - 只依赖 `IPluginControlPlane?`，HTTP 路径和 DTO 完全不变
 
 ## 2. 为什么这不是第二套插件系统

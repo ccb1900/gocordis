@@ -18,12 +18,13 @@ public sealed class ConsoleCapabilitiesComponent : Component
     public override string Name => "console-capabilities";
 
     public override IReadOnlyList<ICapabilityKey> Provide() =>
-        [UiContributionRegistry.Key, ApiGateway.Key];
+        [UiContributionRegistry.Key, ApiGateway.Key, ConsoleHost.Key];
 
     public override ValueTask<Cleanup?> ApplyAsync(Context context)
     {
         context.Provide(UiContributionRegistry.Key, _console.Ui);
         context.Provide(ApiGateway.Key, _console.Api);
+        context.Provide(ConsoleHost.Key, _console);
         return ValueTask.FromResult<Cleanup?>(null);
     }
 }

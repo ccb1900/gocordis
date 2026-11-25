@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.IO;
 using System.Text.Json.Nodes;
+using Gocordis.Builtin.ControlPlaneUi;
+using Gocordis.Builtin.InsightUi;
 using Gocordis.Builtin.WebConsole;
 using Gocordis.Core;
 using Gocordis.Extensions;
@@ -329,15 +331,15 @@ public class PlatformApplication : IAsyncDisposable
             var control = Runtime.RequireCapability(ControlPlaneKeys.Service);
             Control = control;
 
-            // Web Console is an ordinary protected plugin entry in the SAME
-            // Registry/Fiber lifecycle. Platform registers its factory at the
-            // composition root only; the Component owns HTTP start and teardown.
+            // Builtin UI features are ordinary protected plugin entries in the
+            // SAME Registry/Fiber lifecycle. Each owns its page declarations,
+            // client module and teardown; Platform only registers factories.
             if (!_options.ValidateOnly)
             {
-                // The builtin UI is host-profile independent; only the HTTP
+                // Builtin UI is host-profile independent; only the HTTP
                 // transport is Web-specific. Native render profiles still get
                 // the same product pages and control surface.
-                await LoadBuiltinWebConsoleAsync(cancellationToken);
+                await LoadBuiltinPluginsAsync(cancellationToken);
                 if (_options.Host == UiHostKind.Web && !_options.WebConsoleEnabled)
                 {
                     await StartRecoveryHostAsync(cancellationToken);
@@ -367,27 +369,25 @@ public class PlatformApplication : IAsyncDisposable
     }
 
     /// <summary>
-    /// Load the builtin Web Console through the one Registry. Its id is
-    /// protected by its own fiber; if activation fails the host degrades to the
-    /// minimal recovery surface instead of losing the restore path.
+    /// Load every builtin UI feature as its own protected Fiber. Failure of
+    /// the Web Console transport degrades the host to the minimal recovery
+    /// surface; UI-only builtins can still be inspected through render plans.
     /// </summary>
-    private async Task LoadBuiltinWebConsoleAsync(CancellationToken cancellationToken)
+    private async Task LoadBuiltinPluginsAsync(CancellationToken cancellationToken)
     {
         Registry.RegisterComponentFactory(WebConsolePlugin.Type, _ => new WebConsoleComponent());
-        var declaration = new PluginManifest(
-            WebConsolePlugin.Id,
-            WebConsolePlugin.Type,
-            Enabled: true,
-            Config: new Dictionary<string, object?>(),
-            Requires: [],
-            Provides: [],
-            Version: WebConsolePlugin.Version,
-            Source: string.Empty,
-            Checksum: null,
-            Backend: "builtin");
+        Registry.RegisterComponentFactory(ControlPlaneUiPlugin.Type, _ => new ControlPlaneUiComponent());
+        Registry.RegisterComponentFactory(InsightUiPlugin.Type, _ => new InsightUiComponent());
+
+        var declarations = new[]
+        {
+            BuiltinDeclaration(WebConsolePlugin.Id, WebConsolePlugin.Type, WebConsolePlugin.Version),
+            BuiltinDeclaration(ControlPlaneUiPlugin.Id, ControlPlaneUiPlugin.Type, ControlPlaneUiPlugin.Version),
+            BuiltinDeclaration(InsightUiPlugin.Id, InsightUiPlugin.Type, InsightUiPlugin.Version),
+        };
         try
         {
-            await Registry.ApplyAsync([declaration]);
+            await Registry.ApplyAsync(declarations);
         }
         catch (Exception ex)
         {
@@ -395,6 +395,10 @@ public class PlatformApplication : IAsyncDisposable
             await StartRecoveryHostAsync(cancellationToken);
         }
     }
+
+    private static PluginManifest BuiltinDeclaration(string id, string type, string version) =>
+        new(id, type, true, new Dictionary<string, object?>(), [], [], version,
+            string.Empty, null, "builtin");
 
     private async Task StartRecoveryHostAsync(CancellationToken cancellationToken)
     {

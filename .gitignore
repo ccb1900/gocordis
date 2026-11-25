@@ -6,8 +6,10 @@ build/
 web/console/node_modules/
 web/console-runtime/node_modules/
 web/builtin-console/node_modules/
+web/builtin-control-plane/node_modules/
+web/builtin-insight/node_modules/
 # plugin-kit emits it next to the bundle; pages are declared in C#.
-src/Gocordis.Builtin.WebConsole/wwwroot/client-modules/**/gocordis-ui.json
+src/Gocordis.Builtin.*/wwwroot/client-modules/**/gocordis-ui.json
 # web/console/dist is tracked: `dotnet run` from a fresh checkout must serve
 # the real React console without requiring a separate npm build step.
 

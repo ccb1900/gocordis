@@ -1,28 +1,11 @@
-// Builtin Web Console frontend module. All product renderers live here; the
-// shell only owns extension points. The C# WebConsoleComponent declares the
-// pages/routes/navigation and this module supplies their renderers.
+// Client module of the protected builtin Web Console transport plugin. It
+// owns only its overview page, status panel and its own small UI extensions.
+// Dashboard/graph/inspector/control-plane renderers belong to their own
+// protected builtin plugins, not to this module.
 import React, { useEffect, useState } from "react";
 import { Alert, Button, Card, Descriptions, Space, Statistic, Tag, Typography } from "antd";
 import { bindFacade, facade, type BuiltinFacade } from "./facade";
-import type { BlockRenderer, PageRenderer, PanelRenderer, ViewBlock, ViewContext } from "./types";
-import { FrameworkDashboardBlock } from "./views/FrameworkDashboard";
-import { InsightGraphBlock } from "./views/InsightGraphBlock";
-import { RuntimeInspectorBlock } from "./views/RuntimeInspector";
-import { MarketCatalogBlock } from "./views/MarketCatalog";
-import { PluginExplorer } from "./components/Explorer";
-import { EventFeed } from "./components/EventFeed";
-
-function blockPage(
-  Block: BlockRenderer,
-  kind: string,
-  query: string,
-  params?: Record<string, string>,
-): PageRenderer {
-  return function ProductBlockPage({ page, ctx }) {
-    const block: ViewBlock = { kind, title: page.title, query, params };
-    return <Block block={block} ctx={ctx} />;
-  };
-}
+import type { BlockRenderer, PageRenderer, PanelRenderer, ViewContext } from "./types";
 
 function ConsoleOverview({ ctx }: { ctx: ViewContext }) {
   const [status, setStatus] = useState<Record<string, unknown> | null>(null);
@@ -52,7 +35,7 @@ function ConsoleOverview({ ctx }: { ctx: ViewContext }) {
     <div>
       <Typography.Title level={3}>内置控制台插件</Typography.Title>
       <Typography.Paragraph type="secondary">
-        页面、前端模块与后端查询都随产品内置的 Web Console 插件交付；宿主只提供扩展点。
+        这个页面只属于 Web Console 传输插件；其它内置页面由各自插件提供。
       </Typography.Paragraph>
       {error ? <Alert type="error" message={error} /> : null}
       <Space direction="vertical" style={{ width: "100%" }}>
@@ -76,7 +59,7 @@ function ConsoleOverview({ ctx }: { ctx: ViewContext }) {
 }
 
 function ConsoleStatus() {
-  return <Card size="small">Console 状态面板由插件自带 ESM 注册，随插件卸载而撤销。</Card>;
+  return <Card size="small">Console 状态面板由 Web Console 插件自带 ESM 注册。</Card>;
 }
 
 function ConsoleCallout({ block }: { block: { title?: string; text?: string } }) {
@@ -88,44 +71,22 @@ function ConsoleBadge({ params }: { params?: Record<string, string> }) {
 }
 
 const OverviewPage: PageRenderer = ({ ctx }) => <ConsoleOverview ctx={ctx} />;
-const ExplorerPage: PageRenderer = ({ ctx }) => <PluginExplorer ctx={ctx} />;
-const EventFeedPanel: PanelRenderer = ({ generation }) => <EventFeed generation={generation} />;
+const StatusPanel: PanelRenderer = () => <ConsoleStatus />;
 
 export default function register(api: BuiltinFacade) {
   bindFacade(api);
   const disposers: Array<() => void> = [];
-  const page = (name: string, component: PageRenderer) =>
-    disposers.push(api.pages.register({ name, component }) as never);
-  const block = (kind: string, component: BlockRenderer) =>
-    disposers.push(api.blocks.register(kind, component) as never);
-
-  page("gocordis-console-overview", OverviewPage);
-  // Stable renderer name declared by the builtin control-plane page.
-  page("plugin-explorer", ExplorerPage);
-  page("plugin-control-plane", ExplorerPage);
-  page("framework-dashboard", blockPage(
-    FrameworkDashboardBlock as BlockRenderer, "framework-dashboard", "framework/dashboard",
-    { inspectorRoute: "/console/inspector" }));
-  page("insight-graph", blockPage(InsightGraphBlock as BlockRenderer, "insight-graph", "insight/graph"));
-  page("runtime-inspector", blockPage(RuntimeInspectorBlock as BlockRenderer, "runtime-inspector", "runtime/snapshot"));
-
-  block("framework-dashboard", FrameworkDashboardBlock as BlockRenderer);
-  block("insight-graph", InsightGraphBlock as BlockRenderer);
-  block("runtime-inspector", RuntimeInspectorBlock as BlockRenderer);
-  block("market-catalog", MarketCatalogBlock as BlockRenderer);
-  block("gocordis-console-callout", ConsoleCallout as BlockRenderer);
-
-  disposers.push(api.panels.register({ name: "gocordis-console-status", component: ConsoleStatus }) as never);
-  disposers.push(api.panels.register({ name: "event-feed", component: EventFeedPanel }) as never);
+  disposers.push(api.pages.register({ name: "gocordis-console-overview", component: OverviewPage }) as never);
+  disposers.push(api.panels.register({ name: "gocordis-console-status", component: StatusPanel }) as never);
+  disposers.push(api.blocks.register("gocordis-console-callout", ConsoleCallout as BlockRenderer) as never);
   disposers.push(api.widgets.register("gocordis-console-badge", ConsoleBadge) as never);
   disposers.push(api.actions.register({
     id: "gocordis-console.ping",
     title: "Console Ping",
-    run: (cx: unknown) => facade().api.hubCommand("gocordis-console/ping", { source: "action" }),
+    run: () => facade().api.hubCommand("gocordis-console/ping", { source: "action" }),
   }) as never);
   disposers.push(api.settings.register(({ pluginId }: { pluginId: string }) => (
     <Typography.Text>内置控制台设置 · {pluginId}</Typography.Text>
   )) as never);
-
   return () => { for (const dispose of disposers.reverse()) dispose(); };
 }

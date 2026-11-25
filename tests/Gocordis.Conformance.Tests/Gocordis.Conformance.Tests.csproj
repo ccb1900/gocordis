@@ -11,6 +11,9 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Gocordis.Core/Gocordis.Core.csproj" />
     <ProjectReference Include="../../src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
+    <ProjectReference Include="../../src/Gocordis.Builtin.WebConsole/Gocordis.Builtin.WebConsole.csproj" />
+    <ProjectReference Include="../../src/Gocordis.Builtin.ControlPlaneUi/Gocordis.Builtin.ControlPlaneUi.csproj" />
+    <ProjectReference Include="../../src/Gocordis.Builtin.InsightUi/Gocordis.Builtin.InsightUi.csproj" />
     <ProjectReference Include="../../samples/KoishiCase/KoishiCase.csproj" />
   </ItemGroup>
 </Project>

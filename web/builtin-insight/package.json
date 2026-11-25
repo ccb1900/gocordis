@@ -1,0 +1,27 @@
+{
+  "name": "@gocordis/builtin-insight-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Client module of the protected builtin insight UI plugin.",
+  "scripts": {
+    "build": "node ../plugin-kit/bin/gocordis-plugin-build.mjs src/ui.tsx -o ../../src/Gocordis.Builtin.InsightUi/wwwroot/client-modules/gocordis-insight-ui/ui.js --ui-config ui.config.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@antv/g6": "^5.1.1",
+    "@gocordis/console-runtime": "file:../console-runtime",
+    "antd": "^6.6.3",
+    "dayjs": "^1.11.10",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@gocordis/plugin-kit": "file:../plugin-kit",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "esbuild": "^0.23.0",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  }
+}

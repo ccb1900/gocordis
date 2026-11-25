@@ -4,18 +4,10 @@ import type { BuiltinFacade } from "./facade";
 
 function fakeApi() {
   const state = {
-    pages: [] as string[],
-    panels: [] as string[],
-    blocks: [] as string[],
-    widgets: [] as string[],
-    actions: [] as string[],
-    settings: 0,
-    dispose: [] as Array<() => void>,
+    pages: [] as string[], panels: [] as string[], blocks: [] as string[],
+    widgets: [] as string[], actions: [] as string[], settings: 0,
   };
-  const track = () => {
-    const dispose = () => { state.dispose.push(() => undefined); };
-    return dispose;
-  };
+  const track = () => () => undefined;
   const api = {
     api: {} as never,
     pages: { register: (def: { name: string }) => { state.pages.push(def.name); return track(); } },
@@ -32,24 +24,13 @@ function fakeApi() {
   return { api: api as unknown as BuiltinFacade, state };
 }
 
-describe("builtin console client module", () => {
-  it("registers every product renderer through the facade", () => {
+describe("Web Console transport client module", () => {
+  it("registers only its own overview and extensions", () => {
     const { api, state } = fakeApi();
     register(api);
-
-    expect(state.pages).toEqual([
-      "gocordis-console-overview",
-      "plugin-explorer",
-      "plugin-control-plane",
-      "framework-dashboard",
-      "insight-graph",
-      "runtime-inspector",
-    ]);
-    expect(state.panels).toEqual(["gocordis-console-status", "event-feed"]);
-    expect(state.blocks).toEqual([
-      "framework-dashboard", "insight-graph", "runtime-inspector",
-      "market-catalog", "gocordis-console-callout",
-    ]);
+    expect(state.pages).toEqual(["gocordis-console-overview"]);
+    expect(state.panels).toEqual(["gocordis-console-status"]);
+    expect(state.blocks).toEqual(["gocordis-console-callout"]);
     expect(state.widgets).toEqual(["gocordis-console-badge"]);
     expect(state.actions).toEqual(["gocordis-console.ping"]);
     expect(state.settings).toBe(1);

@@ -8,30 +8,20 @@ using Gocordis.Plugins;
 namespace Gocordis.Builtin.WebConsole;
 
 /// <summary>
-/// The Web Console as a real builtin plugin. Every transport, API, UI
-/// contribution and frontend asset belongs to this fiber. The host only
-/// supplies framework capabilities; it neither constructs nor starts the HTTP
-/// server. Start/stop are one reversible Effect, so Runtime owns the lifecycle
-/// and unwind is strict LIFO like every other plugin.
+/// The Web Console transport plugin. It owns only its own Fiber: the HTTP
+/// server, its overview page/status panel and its ESM. Other product UI
+/// features are separate protected builtin plugins, not contributions stuffed
+/// into this one. Start/stop are one reversible Effect under Runtime.
 /// </summary>
 public sealed class WebConsoleComponent : Component
 {
     public const string ModuleId = "gocordis-console-ui";
     private const string StatusQuery = "gocordis-console/status";
     private const string PingCommand = "gocordis-console/ping";
+    private const string PageId = "gocordis-console-page";
 
     private WebUiServer? _server;
     private int _pings;
-
-    private static readonly (string Id, string Title, string Route, string Renderer, string Icon, int Order)[]
-        BuiltinPages =
-        [
-            ("gocordis-console-page", "内置控制台", "/console", "gocordis-console-overview", "dashboard", -100),
-            ("gocordis-framework", "框架概览", "/console/framework", "framework-dashboard", "appstore", -90),
-            ("gocordis-dependencies", "依赖与运行图", "/console/dependencies", "insight-graph", "block", -80),
-            ("gocordis-runtime", "运行时检视", "/console/inspector", "runtime-inspector", "profile", -70),
-            ("plugin-control-plane", "插件控制面", "/plugins/control-plane", "plugin-explorer", "setting", -60),
-        ];
 
     public override string Name => WebConsolePlugin.Id;
 
@@ -54,8 +44,6 @@ public sealed class WebConsoleComponent : Component
         var options = context.Require(WebConsoleKeys.Options);
         context.Provide(WebConsoleKeys.Service, new WebConsoleHandle(() => _server));
 
-        // UI/API contributions belong to the builtin plugin even when the HTTP
-        // transport is disabled (native render profiles, degraded recovery).
         var host = context.Require(ConsoleHost.Key);
         var ui = context.Require(UiContributionRegistry.Key);
         var api = context.Require(ApiGateway.Key);
@@ -134,45 +122,22 @@ public sealed class WebConsoleComponent : Component
     private static async ValueTask RegisterUiContributionsAsync(
         Context context, UiContributionRegistry ui, ContributionOwner owner)
     {
-        foreach (var (id, title, route, renderer, icon, order) in BuiltinPages)
-        {
-            await context.RegisterUiPageAsync(ui, owner, new UiPageDefinition(
-                id, title, route, renderer,
-                Icon: icon,
-                Description: "Web Console 内置插件提供的产品页面",
-                Order: order,
-                Group: "Gocordis/Console"));
-            await context.RegisterUiRouteAsync(ui, owner, new UiRouteDefinition(
-                id + "-route", route, id, "shell", order));
-            await context.RegisterUiNavigationAsync(ui, owner, new UiNavigationDefinition(
-                id + "-nav", title, route, icon, "Gocordis/Console", id, order));
-        }
-
+        await context.RegisterUiPageAsync(ui, owner, new UiPageDefinition(
+            PageId, "内置控制台", "/console", "gocordis-console-overview",
+            Icon: "dashboard", Description: "Web Console 传输插件自身的页面",
+            Order: -100, Group: "Gocordis/Console"));
+        await context.RegisterUiRouteAsync(ui, owner, new UiRouteDefinition(
+            PageId + "-route", "/console", PageId, "shell", -100));
+        await context.RegisterUiNavigationAsync(ui, owner, new UiNavigationDefinition(
+            PageId + "-nav", "内置控制台", "/console", "dashboard",
+            "Gocordis/Console", PageId, -100));
         await context.RegisterUiPanelAsync(ui, owner, new UiPanelDefinition(
             "gocordis-console-status", "Console 插件状态", "bottom", "gocordis-console-status",
-            Pages: [BuiltinPages[0].Id],
-            Views: null));
-        await context.RegisterUiPanelAsync(ui, owner, new UiPanelDefinition(
-            "gocordis-event-feed", "观察事件流", "bottom", "event-feed",
-            Pages: BuiltinPages.Select(page => page.Id).ToArray()));
+            Pages: [PageId]));
         await context.RegisterUiExtensionAsync(ui, owner, new UiExtensionDefinition(
-            "gocordis-console-footer", "shell.footer", "host-status", BuiltinPages[0].Id));
+            "gocordis-console-footer", "shell.footer", "host-status", PageId));
         await context.RegisterUiResourceAsync(ui, owner, new UiResourceDefinition(
             "gocordis-console-assets", "assets", "/assets/", "text/javascript"));
-
-        var source = Path.Combine(AppContext.BaseDirectory, "client-modules", ModuleId);
-        var entry = Path.Combine(source, "ui.js");
-        var hash = File.Exists(entry)
-            ? Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(entry)))[..12].ToLowerInvariant()
-            : "unavailable";
-        await context.RegisterUiClientModuleAsync(ui, owner, new UiClientModuleDefinition(
-            ModuleId,
-            $"/client-modules/{ModuleId}/ui.js",
-            hash,
-            "ui.js",
-            source,
-            WebConsolePlugin.Id,
-            WebConsolePlugin.Version,
-            hash));
+        await BuiltinUiModule.RegisterAsync(context, ui, owner, ModuleId, WebConsolePlugin.Id, WebConsolePlugin.Version);
     }
 }

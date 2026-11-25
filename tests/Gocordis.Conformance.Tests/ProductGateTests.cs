@@ -153,8 +153,8 @@ public sealed class ProductGateTests
         // Product renderers now arrive from the builtin Console client module,
         // not from the shell bundle. Both halves of that boundary are asserted.
         var modulePath = Path.Combine(
-            AppContext.BaseDirectory, "client-modules", "gocordis-console-ui", "ui.js");
-        Assert.True(File.Exists(modulePath), "builtin console client module must ship with the product host");
+            AppContext.BaseDirectory, "client-modules", "gocordis-control-plane-ui", "ui.js");
+        Assert.True(File.Exists(modulePath), "builtin control-plane client module must ship with the product host");
         var module = await File.ReadAllTextAsync(modulePath);
         Assert.Contains("plugin-explorer", module, StringComparison.Ordinal);
         Assert.DoesNotContain("plugin-explorer", bundle, StringComparison.Ordinal);

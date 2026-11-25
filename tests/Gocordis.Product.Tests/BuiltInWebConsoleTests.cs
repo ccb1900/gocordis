@@ -52,7 +52,27 @@ public sealed class BuiltInWebConsoleTests
         Assert.Equal(WebConsolePlugin.Id, status["data"]!["plugin"]!.GetValue<string>());
         Assert.True(status["data"]!["installed"]!.GetValue<bool>());
 
-        Assert.Contains(app.Console.Ui.ClientModules(), module => module.Name == "gocordis-console-ui");
+        // Each builtin UI feature is its OWN protected plugin with its own
+        // client module and owner-bound contributions.
+        foreach (var (moduleName, packageId) in new[]
+                 {
+                     ("gocordis-console-ui", "gocordis-web-console"),
+                     ("gocordis-control-plane-ui", "gocordis-control-plane-ui"),
+                     ("gocordis-insight-ui", "gocordis-insight-ui"),
+                 })
+        {
+            var module = Assert.Single(app.Console.Ui.ClientModules(), item => item.Name == moduleName);
+            Assert.Equal(packageId, module.PackageId);
+        }
+
+        string OwnerOf(string pageId) =>
+            Assert.Single(app.Console.Ui.Pages(), page => page.Id == pageId).Owner.PluginId;
+        Assert.Equal("gocordis-web-console", OwnerOf("gocordis-console-page"));
+        Assert.Equal("gocordis-control-plane-ui", OwnerOf("plugin-control-plane"));
+        Assert.Equal("gocordis-insight-ui", OwnerOf("gocordis-framework"));
+        Assert.Equal("gocordis-insight-ui", OwnerOf("gocordis-dependencies"));
+        Assert.Equal("gocordis-insight-ui", OwnerOf("gocordis-runtime"));
+
         foreach (var pageId in new[]
                  {
                      "gocordis-console-page", "gocordis-framework", "gocordis-dependencies",
@@ -149,6 +169,12 @@ public sealed class BuiltInWebConsoleTests
         {
             Assert.DoesNotContain("Gocordis.Platform", File.ReadAllText(source), StringComparison.Ordinal);
         }
+
+        // The transport plugin no longer owns other builtin UI features.
+        var webConsole = File.ReadAllText(System.IO.Path.Combine(pluginDir, "WebConsoleComponent.cs"));
+        Assert.DoesNotContain("framework-dashboard", webConsole, StringComparison.Ordinal);
+        Assert.DoesNotContain("insight-graph", webConsole, StringComparison.Ordinal);
+        Assert.DoesNotContain("plugin-explorer", webConsole, StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot()

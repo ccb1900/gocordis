@@ -48,7 +48,7 @@ Actual `ProjectReference` graph (enforced where noted by `BoundaryTests.cs` / PC
 | Backend contracts | `Gocordis.Runtime.Contracts` | Core | Physical home of `IPluginBackend`, `BackendProtocol`, `CoreBackendContext`, `GenerationTracker`. No backend implementation. |
 | Backends | `Runtime.Managed` / `Runtime.Process` / `Runtime.Wasm` | Core, Plugins, Runtime.Contracts | Execution backends behind one Core contract. **Process/WASM MUST NOT reference Managed.** Backend selection belongs to the composition root. |
 | Packaging | `Gocordis.Packaging` | Core, Extensions, Plugins | `.gocordis-plugin` format, store, control plane, `gocordis-ui.json`, `UiPackageBinder`. |
-| Builtin Web Console | `Gocordis.Builtin.WebConsole` | Core, Extensions, Plugins, Packaging, ASP.NET Core | A real Component/plugin: HTTP/SSE hub, SPA hosting, client-module serving, console UI contributions. Platform only bootstraps it; it must not reference Platform. |
+| Builtin UI plugins | `Gocordis.Builtin.WebConsole` / `Gocordis.Builtin.ControlPlaneUi` / `Gocordis.Builtin.InsightUi` | Core, Plugins, Packaging (WebConsole also Extensions + ASP.NET Core) | Each is a real protected Component owning only its own page/route/nav/panel/client-module contributions. Platform only bootstraps factories; none may reference Platform. |
 | UI profiles | `Gocordis.UI.Hosts` | Core, Plugins | Web/WinForms/Avalonia render plans only. |
 | SDK | `Gocordis.Client` | none | Typed console client; does not enter the runtime graph. |
 | Product host | `Gocordis.Platform` | all of the above (not Client) | One Runtime, one Registry, control plane, package store, UI host. **MUST NOT** bypass `UiPackageBinder` by pre-registering raw factories. |

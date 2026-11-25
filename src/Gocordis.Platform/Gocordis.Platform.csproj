@@ -13,6 +13,8 @@
     <ProjectReference Include="../Gocordis.Runtime.Process/Gocordis.Runtime.Process.csproj" />
     <ProjectReference Include="../Gocordis.Runtime.Wasm/Gocordis.Runtime.Wasm.csproj" />
     <ProjectReference Include="../Gocordis.Builtin.WebConsole/Gocordis.Builtin.WebConsole.csproj" />
+    <ProjectReference Include="../Gocordis.Builtin.ControlPlaneUi/Gocordis.Builtin.ControlPlaneUi.csproj" />
+    <ProjectReference Include="../Gocordis.Builtin.InsightUi/Gocordis.Builtin.InsightUi.csproj" />
     <ProjectReference Include="../Gocordis.UI.Hosts/Gocordis.UI.Hosts.csproj" />
   </ItemGroup>
 </Project>

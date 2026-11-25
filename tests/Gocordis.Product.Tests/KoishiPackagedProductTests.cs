@@ -30,8 +30,8 @@ public sealed class KoishiPackagedProductTests
             Address: "http://127.0.0.1:0", Host: UiHostKind.Web, HostVersion: "1.0.0"));
         await Stage(app.StartAsync(), "start platform");
 
-        // Four user packages plus the protected builtin Web Console fiber.
-        Assert.Equal(5, app.Registry.Entries.Count);
+        // Four user packages plus three protected builtin UI/transport fibers.
+        Assert.Equal(7, app.Registry.Entries.Count);
         Assert.All(app.Registry.Entries.Values, entry => Assert.Equal(FiberState.Active, entry.Fiber!.State));
         // The query invokes the registered command, which calls the adapter,
         // which calls the database — a real typed capability chain across the

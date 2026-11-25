@@ -53,8 +53,25 @@ public sealed class BuiltInWebConsoleTests
         Assert.True(status["data"]!["installed"]!.GetValue<bool>());
 
         Assert.Contains(app.Console.Ui.ClientModules(), module => module.Name == "gocordis-console-ui");
-        Assert.Contains(app.Console.Ui.Pages(), page => page.Id == "gocordis-console-page");
-        Assert.Contains(app.Console.Ui.Routes(), route => route.Id == "gocordis-console-route");
+        foreach (var pageId in new[]
+                 {
+                     "gocordis-console-page", "gocordis-framework", "gocordis-dependencies",
+                     "gocordis-runtime", "plugin-control-plane",
+                 })
+        {
+            Assert.Contains(app.Console.Ui.Pages(), page => page.Id == pageId);
+            Assert.Contains(app.Console.Ui.Routes(), route => route.PageId == pageId);
+            Assert.Contains(app.Console.Ui.Navigations(), nav => nav.PageId == pageId);
+        }
+
+        Assert.Equal("framework-dashboard",
+            Assert.Single(app.Console.Ui.Pages(), page => page.Id == "gocordis-framework").Renderer);
+        Assert.Equal("insight-graph",
+            Assert.Single(app.Console.Ui.Pages(), page => page.Id == "gocordis-dependencies").Renderer);
+        Assert.Equal("runtime-inspector",
+            Assert.Single(app.Console.Ui.Pages(), page => page.Id == "gocordis-runtime").Renderer);
+        Assert.Equal("plugin-explorer",
+            Assert.Single(app.Console.Ui.Pages(), page => page.Id == "plugin-control-plane").Renderer);
 
         var uninstall = await app.Control!.UninstallAsync(WebConsolePlugin.Id, source: "test");
         Assert.False(uninstall.Accepted);
@@ -92,6 +109,25 @@ public sealed class BuiltInWebConsoleTests
     }
 
     [Fact]
+    public async Task BuiltinUiContributionsExistInNativeRenderProfilesWithoutHttp()
+    {
+        using var temp = new TempDir();
+        var manifestPath = temp.File("gocordis.app.json");
+        await new ApplicationManifest("native-render-app", "1.0.0", HostVersion, [])
+            .SaveAsync(manifestPath);
+
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, temp.Path("store"), Host: UiHostKind.WinForms, HostVersion: HostVersion));
+        await app.StartAsync();
+
+        Assert.Null(app.WebUi);
+        Assert.Null(app.Address);
+        Assert.Contains(app.Console.Ui.Pages(), page => page.Id == "gocordis-dependencies");
+        Assert.Contains(app.Console.Ui.Pages(), page => page.Id == "plugin-control-plane");
+        Assert.Contains(app.RenderPlan().Rendered, rendered => rendered.Id == "plugin-control-plane");
+    }
+
+    [Fact]
     public void PlatformDoesNotOwnWebConsoleConstructionAndBuiltinDoesNotReferencePlatform()
     {
         var root = FindRepositoryRoot();
@@ -104,6 +140,7 @@ public sealed class BuiltInWebConsoleTests
         Assert.Contains("ControlPlaneKeys.Dependencies", controlPlane);
         Assert.Contains("UiContributionRegistry.Key", controlPlane);
         Assert.DoesNotContain("UiContributionRegistry? Ui", controlPlane);
+        Assert.DoesNotContain("RegisterUiPageAsync", controlPlane);
 
         var pluginDir = System.IO.Path.Combine(root, "src", "Gocordis.Builtin.WebConsole");
         var project = File.ReadAllText(System.IO.Path.Combine(pluginDir, "Gocordis.Builtin.WebConsole.csproj"));

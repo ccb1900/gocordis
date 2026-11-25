@@ -265,7 +265,7 @@ public class PlatformApplication : IAsyncDisposable
                     _options.AccessPolicy,
                     _routeGuard,
                     HmrAsync,
-                    StartupDisabled: !_options.WebConsoleEnabled)));
+                    StartupDisabled: _options.Host != UiHostKind.Web || !_options.WebConsoleEnabled)));
 
             // Backend selection belongs to the composition root. The control
             // plane receives the same factory and registers it for every declared
@@ -332,13 +332,13 @@ public class PlatformApplication : IAsyncDisposable
             // Web Console is an ordinary protected plugin entry in the SAME
             // Registry/Fiber lifecycle. Platform registers its factory at the
             // composition root only; the Component owns HTTP start and teardown.
-            if (_options.Host == UiHostKind.Web && !_options.ValidateOnly)
+            if (!_options.ValidateOnly)
             {
-                if (_options.WebConsoleEnabled)
-                {
-                    await LoadBuiltinWebConsoleAsync(cancellationToken);
-                }
-                else
+                // The builtin UI is host-profile independent; only the HTTP
+                // transport is Web-specific. Native render profiles still get
+                // the same product pages and control surface.
+                await LoadBuiltinWebConsoleAsync(cancellationToken);
+                if (_options.Host == UiHostKind.Web && !_options.WebConsoleEnabled)
                 {
                     await StartRecoveryHostAsync(cancellationToken);
                 }

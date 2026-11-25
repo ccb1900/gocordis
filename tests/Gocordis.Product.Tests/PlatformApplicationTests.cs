@@ -593,8 +593,14 @@ public sealed class PlatformApplicationTests
             manifestPath, store, Host: UiHostKind.WinForms, HostVersion: "1.5.0"));
         await app.StartAsync();
 
-        // No auto-assembly: only the declared consumer has an entry/fiber.
-        Assert.Single(app.Registry.Entries);
+        // No auto-assembly: only the declared USER plugin has an entry/fiber;
+        // the protected builtin Web Console is framework bootstrap, not an
+        // application declaration.
+        var userEntries = app.Registry.Entries
+            .Where(entry => !app.Registry.ProtectedIds.Contains(entry.Key))
+            .ToArray();
+        Assert.Single(userEntries);
+        Assert.Equal("consumer", userEntries[0].Key);
         Assert.True(app.Registry.Entries.ContainsKey("consumer"));
         Assert.False(app.Registry.Entries.ContainsKey("provider"));
 
@@ -895,7 +901,8 @@ public sealed class PlatformApplicationTests
         Assert.Equal("forbidden", reconfigured.Code);
 
         Assert.Equal(manifestBefore, await File.ReadAllTextAsync(manifestPath));
-        Assert.Empty(app.Registry.Entries);
+        Assert.DoesNotContain(app.Registry.Entries,
+            entry => !app.Registry.ProtectedIds.Contains(entry.Key));
         Assert.NotNull(app.Runtime.RequireCapability(ControlPlaneKeys.Service));
     }
 

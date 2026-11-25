@@ -248,6 +248,23 @@ public sealed class Runtime : IAsyncDisposable
         return reply.Task;
     }
 
+    /// <summary>State transition under the decision loop's lock. Waiters must
+    /// be released at the transition itself, not only when someone happens to
+    /// take a Snapshot afterwards.</summary>
+    private void SetFiberState(Fiber fiber, FiberState state)
+    {
+        fiber.State = state;
+        for (var i = _stateWaiters.Count - 1; i >= 0; i--)
+        {
+            var (id, expected, waiter) = _stateWaiters[i];
+            if (id == fiber.Id && expected == state)
+            {
+                _stateWaiters.RemoveAt(i);
+                waiter.TrySetResult();
+            }
+        }
+    }
+
     /// <summary>
     /// Paper C34: reassign a fiber to a realm as a revision composite. The old
     /// fiber is retired and deactivated, its records are removed, then a NEW
@@ -687,7 +704,7 @@ public sealed class Runtime : IAsyncDisposable
         if (activation is null || activation.Phase == ActivationPhase.Unwound ||
             fiber.State is FiberState.Gone or FiberState.Failed or FiberState.Pending)
         {
-            fiber.State = FiberState.Gone;
+            SetFiberState(fiber, FiberState.Gone);
             _fibers.Remove(fiber.Id);
             fiber.Parent?.RemoveChild(fiber);
             fiber.SignalGone();
@@ -724,7 +741,7 @@ public sealed class Runtime : IAsyncDisposable
             var activation = fiber.CurrentActivation;
             if (activation is null || activation.Phase == ActivationPhase.Unwound)
             {
-                fiber.State = FiberState.Gone;
+                SetFiberState(fiber, FiberState.Gone);
                 _fibers.Remove(fiber.Id);
                 fiber.Parent?.RemoveChild(fiber);
                 fiber.SignalGone();
@@ -1035,7 +1052,7 @@ public sealed class Runtime : IAsyncDisposable
         _justCommitted.Add(activation.Id);
         activation.Dependencies = [.. activation.Fiber.Committed.Values];
         activation.Phase = ActivationPhase.Committed;
-        activation.Fiber.State = FiberState.Active;
+        SetFiberState(activation.Fiber, FiberState.Active);
         _bindingsChanged = true;
         Events.Append(nameof(RuntimeEventType.ActivationActive), activation.Fiber.Id, activation.Id);
     }
@@ -1099,7 +1116,7 @@ public sealed class Runtime : IAsyncDisposable
             new { State = fiber.State.ToString() });
         if (fiber.Intent == LifecycleIntent.Retired || _closing)
         {
-            fiber.State = FiberState.Gone;
+            SetFiberState(fiber, FiberState.Gone);
             _fibers.Remove(fiber.Id);
             fiber.Parent?.RemoveChild(fiber);
             fiber.SignalGone();
@@ -1112,18 +1129,18 @@ public sealed class Runtime : IAsyncDisposable
             // failed during an in-flight divert is already recorded on the
             // fiber, so it must take the same terminal path even when the
             // later LIFO unwind had no slot left to run.
-            fiber.State = FiberState.Failed;
+            SetFiberState(fiber, FiberState.Failed);
             fiber.Failure = cleanupError ??
                             fiber.Failure ??
                             new CleanupIncompleteException(fiber.CleanupFailures);
         }
         else if (fiber.Failure is not null)
         {
-            fiber.State = FiberState.Failed;
+            SetFiberState(fiber, FiberState.Failed);
         }
         else
         {
-            fiber.State = FiberState.Pending;
+            SetFiberState(fiber, FiberState.Pending);
         }
 
         if (_pendingRehomes.Remove(fiber.Id, out var rehome))
@@ -1395,7 +1412,7 @@ public sealed class Runtime : IAsyncDisposable
         fiber.Generation++;
         fiber.CurrentActivation = activation;
         fiber.Failure = null;
-        fiber.State = FiberState.Loading;
+        SetFiberState(fiber, FiberState.Loading);
         activation.Phase = ActivationPhase.Installing;
         _activations[id] = activation;
         _applying.Add(id);
@@ -1588,7 +1605,7 @@ public sealed class Runtime : IAsyncDisposable
     private void RetireActivationlessChild(Fiber child)
     {
         child.Intent = LifecycleIntent.Retired;
-        child.State = FiberState.Gone;
+        SetFiberState(child, FiberState.Gone);
         _fibers.Remove(child.Id);
         child.Parent?.RemoveChild(child);
         child.SignalGone();
@@ -1605,7 +1622,7 @@ public sealed class Runtime : IAsyncDisposable
         }
 
         activation.Phase = ActivationPhase.Unwinding;
-        activation.Fiber.State = FiberState.Unloading;
+        SetFiberState(activation.Fiber, FiberState.Unloading);
         _unwinding.Add(activation.Id);
         Events.Append(nameof(RuntimeEventType.ActivationUnloading), activation.Fiber.Id, activation.Id);
         _ = Task.Run(() => RunUnwindAsync(activation));

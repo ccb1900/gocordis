@@ -94,8 +94,10 @@ public sealed class MixedBackendProductE2ETests
             Assert.True((await app.Control!.SetEnabledAsync(id, false)).Accepted);
         }
 
-        Assert.All(app.Registry.Entries.Values,
-            entry => Assert.Equal(FiberState.Gone, entry.Fiber?.State ?? FiberState.Gone));
+        // Protected builtin Web Console stays Active; only application plugins
+        // retire on declaration disable.
+        Assert.All(app.Registry.Entries.Where(entry => !app.Registry.ProtectedIds.Contains(entry.Key)),
+            entry => Assert.Equal(FiberState.Gone, entry.Value.Fiber?.State ?? FiberState.Gone));
         Assert.False(IsAlive(childId));
 
         foreach (var id in new[] { "mixed-p", "mixed-a", "mixed-b" })

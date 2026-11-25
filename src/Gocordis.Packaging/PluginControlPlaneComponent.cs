@@ -5,11 +5,10 @@ namespace Gocordis.Packaging;
 
 /// <summary>
 /// The control plane as a first-class plugin contribution. One Core fiber owns
-/// its reversible effects: providing the typed service and, when the host has a
-/// UI, one stable page. Its construction inputs and UI registry are resolved as
-/// capabilities, so neither the host nor this component hands a concrete
-/// Console instance to the other. No second registry and no host-managed
-/// lifetime.
+/// its reversible effects: providing the typed service. Its construction inputs
+/// and UI registry are resolved as capabilities; the human-facing control page
+/// belongs to the builtin Web Console UI, not to the service component. No
+/// second registry and no host-managed lifetime.
 /// </summary>
 public sealed class PluginControlPlaneComponent : Component
 {
@@ -18,10 +17,10 @@ public sealed class PluginControlPlaneComponent : Component
     /// </summary>
     public const string ControlPlaneComponentId = "plugin-control-plane";
 
-    private readonly ControlPlaneDependencies _dependencies;
-
     public PluginControlPlaneComponent(ControlPlaneDependencies dependencies) =>
         _dependencies = dependencies ?? throw new ArgumentNullException(nameof(dependencies));
+
+    private readonly ControlPlaneDependencies _dependencies;
 
     public override string Name => ControlPlaneComponentId;
 
@@ -30,7 +29,7 @@ public sealed class PluginControlPlaneComponent : Component
 
     public override IReadOnlyList<ICapabilityKey> Provide() => [ControlPlaneKeys.Service];
 
-    public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+    public override ValueTask<Cleanup?> ApplyAsync(Context context)
     {
         var dependencies = context.Require(ControlPlaneKeys.Dependencies);
         var ui = context.Require(UiContributionRegistry.Key);
@@ -52,14 +51,6 @@ public sealed class PluginControlPlaneComponent : Component
         };
         // Context.Provide installs its own LIFO inverse; no cleanup stack here.
         context.Provide(ControlPlaneKeys.Service, service);
-
-        await context.RegisterUiPageAsync(
-            ui,
-            ContributionOwner.ForContext(context, "plugin-control-plane", Name),
-            new UiPageDefinition(
-                "plugin-control-plane", "Plugin control plane", "/plugins/control-plane", "plugin-explorer",
-                Description: "Plugin declarations, packages and lifecycle control"));
-
-        return null;
+        return ValueTask.FromResult<Cleanup?>(null);
     }
 }

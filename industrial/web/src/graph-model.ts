@@ -1,9 +1,11 @@
 // Pure WorkflowDefinition → AntV G6 data projection. G6 data is disposable:
 // every refresh rebuilds it from the domain model and calls graph.setData +
-// render on the SAME graph instance (never destroy/recreate — that regression
+// draw on the SAME graph instance (never destroy/recreate — that regression
 // produced an infinite re-render loop in the previous designer).
 
 import type { NodeDescriptor, WorkflowDefinition } from "./types";
+
+export type DesignerMode = "select" | "connect" | "pan";
 
 export interface G6Node {
   id: string;
@@ -16,7 +18,6 @@ export interface G6Edge {
   id: string;
   source: string;
   target: string;
-  /** G6 port keys: `out:<declared name>` / `in:<declared name>`. */
   sourcePort?: string;
   targetPort?: string;
   data: Record<string, unknown>;
@@ -47,8 +48,7 @@ const CATEGORY_COLOR: Record<string, string> = {
 const colorOf = (category: string): string =>
   CATEGORY_COLOR[category] ?? CATEGORY_COLOR[category.split(".")[0]] ?? "#4d6bfe";
 
-/** Stable edge identity: derived from the four domain fields, never from an
- * array index (an index changes when an unrelated edge is removed). */
+/** Stable edge identity from the four domain fields, never from an array index. */
 export function edgeId(edge: {
   source: string; sourcePort: string; target: string; targetPort: string;
 }): string {
@@ -72,8 +72,6 @@ export function workflowToG6(
           nodeTypeId: node.type,
           category,
           icon: descriptor?.icon ?? "AppstoreOutlined",
-          // Domain config travels with the node so selection can edit it
-          // without a second lookup; it is never written back from G6.
           config: { ...node.config },
         },
         style: {
@@ -82,23 +80,21 @@ export function workflowToG6(
           fill: colorOf(category),
           stroke: selected ? "#111111" : colorOf(category),
           lineWidth: selected ? 3 : 1.5,
-          radius: 8,
-          // Typed anchors: the user can see which side accepts which port,
-          // and G6 binds edges to these keys instead of node centers.
+          radius: 10,
           port: true,
           ports: [
             ...(descriptor?.inputs ?? []).map((port, index, all) => ({
               key: `in:${port.name}`,
               placement: [0, (index + 1) / (all.length + 1)] as [number, number],
-              r: 4,
+              r: 5,
               stroke: port.required ? "#fa541c" : "#8a93a6",
               fill: "#fff",
             })),
             ...(descriptor?.outputs ?? []).map((port, index, all) => ({
               key: `out:${port.name}`,
               placement: [1, (index + 1) / (all.length + 1)] as [number, number],
-              r: 4,
-              stroke: "#1677ff",
+              r: 5,
+              stroke: port.type === "Control" ? "#52c41a" : "#1677ff",
               fill: "#fff",
             })),
           ],
@@ -121,25 +117,25 @@ export function workflowToG6(
   };
 }
 
-/** Read positions back from the graph data after a node drag. Only domain
- * node ids are accepted; G6-internal ids never enter WorkflowDefinition. */
+/** Read positions back from G6. `onlyIds` limits a node drag to the nodes G6
+ * actually moved; passing all ids used to commit the whole layout. */
 export function positionsFromG6(
-  data: G6GraphData, allowedIds: ReadonlySet<string>
+  data: G6GraphData,
+  allowedIds: ReadonlySet<string>,
+  onlyIds?: readonly string[],
 ): Record<string, { x: number; y: number }> {
+  const moved = onlyIds && onlyIds.length > 0 ? new Set(onlyIds) : null;
   const positions: Record<string, { x: number; y: number }> = {};
   for (const node of data.nodes) {
     if (!allowedIds.has(node.id)) continue;
+    if (moved && !moved.has(node.id)) continue;
     const x = node.style.x;
     const y = node.style.y;
-    if (typeof x === "number" && typeof y === "number") {
-      positions[node.id] = { x, y };
-    }
+    if (typeof x === "number" && typeof y === "number") positions[node.id] = { x, y };
   }
   return positions;
 }
 
-/** Graph options factory kept pure so a unit test can lock the container
- * requirement: G6's default container id 'container' crashes canvas init. */
 export function graphOptions(data: G6GraphData, container: string | HTMLElement) {
   return {
     container,
@@ -150,9 +146,9 @@ export function graphOptions(data: G6GraphData, container: string | HTMLElement)
       style: {
         labelText: (datum: { data?: { label?: string } }) => datum?.data?.label ?? "",
         labelPlacement: "bottom" as const,
-        size: [140, 42] as [number, number],
-        radius: 8,
-        fill: "#e6f0ff",
+        size: [148, 46] as [number, number],
+        radius: 10,
+        fill: "#f8fbff",
         stroke: "#4d6bfe",
         lineWidth: 1.5,
         labelFill: "#1f1f1f",
@@ -173,43 +169,55 @@ export function graphOptions(data: G6GraphData, container: string | HTMLElement)
 
 export interface GraphBehaviorHandlers {
   graph?: { getNodeData(): Array<{ id?: unknown; data?: unknown; style?: unknown }> };
-  onSelect?: (id: string | null) => void;
-  onDropNode?: (type: string, x: number, y: number) => void;
-  /** Returns the resolved domain port pair, or null when incompatible. */
-  onCreateEdge?: (source: string, target: string) => { sourcePort: string; targetPort: string } | null;
+  /** Exactly one gesture owns the pointer at a time. */
+  mode?: () => DesignerMode;
   onPositions?: (positions: Record<string, { x: number; y: number }>) => void;
   allowedIds?: () => ReadonlySet<string>;
-  /** The two drag gestures share the same pointer; exactly one is enabled. */
-  connectMode?: () => boolean;
+  onCreateEdge?: (source: string, target: string) => { sourcePort: string; targetPort: string } | null;
 }
 
-/** One place owns the G6 behavior wiring. The component and the interaction
- * test use the SAME configuration — a test that hand-builds different
- * behaviors would prove nothing about the shipped designer. */
+// G6 v5 treats these state names as "selected nodes to move together". Use
+// private names so the designer's React selection never causes group drags.
+const DRAG_STATE = "__industrial_drag_target__";
+const CONNECT_STATE = "__industrial_connect_source__";
+
+/** G6 behaviors wired from the domain: canvas pan only in pan mode, node move
+ * only in select mode, edge creation only in connect mode. */
 export function graphBehaviors(handlers: GraphBehaviorHandlers = {}): any[] {
+  const mode = () => handlers.mode?.() ?? "select";
   return [
-    "drag-canvas",
     "zoom-canvas",
     {
+      type: "drag-canvas",
+      enable: (event: { targetType?: string }) =>
+        mode() === "pan" && event.targetType === "canvas",
+      range: 0.9,
+    },
+    {
       type: "drag-element",
-      enable: () => !(handlers.connectMode?.() ?? false),
-      onFinish: () => {
+      state: DRAG_STATE,
+      enable: (event: { targetType?: string }) =>
+        mode() === "select" && (event.targetType === "node" || event.targetType === "combo"),
+      onFinish: (ids?: string[] | string) => {
         const graph = handlers.graph;
         if (!graph) return;
+        const moved = Array.isArray(ids) ? ids : ids ? [String(ids)] : undefined;
         const nodes = graph.getNodeData().map((node: any) => ({
           id: String(node.id),
           data: (node.data ?? {}) as Record<string, unknown>,
           style: (node.style ?? {}) as Record<string, unknown> & { x?: number; y?: number },
         }));
         handlers.onPositions?.(positionsFromG6(
-          { nodes, edges: [] }, handlers.allowedIds?.() ?? new Set<string>()));
+          { nodes, edges: [] }, handlers.allowedIds?.() ?? new Set<string>(), moved));
       },
     },
     {
       type: "create-edge",
       trigger: "drag",
-      enable: () => handlers.connectMode?.() ?? false,
+      state: CONNECT_STATE,
+      enable: () => mode() === "connect",
       onCreate: (edge: { source?: unknown; target?: unknown; [key: string]: unknown }) => {
+        if (mode() !== "connect") return undefined;
         const source = String(edge.source ?? "");
         const target = String(edge.target ?? "");
         if (!source || !target || source === target) return undefined;

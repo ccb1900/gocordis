@@ -43,7 +43,7 @@ const definition = (): WorkflowDefinition => ({
 });
 
 async function makeGraph(options: {
-  connectMode: boolean;
+  mode: "select" | "connect" | "pan";
   initial: WorkflowDefinition;
   onCreateEdge: (source: string, target: string) => { sourcePort: string; targetPort: string } | null;
 }) {
@@ -61,7 +61,7 @@ async function makeGraph(options: {
     behaviors: graphBehaviors({
       graph: { getNodeData: () => graph?.getNodeData() ?? [] },
       allowedIds: () => new Set(current.nodes.map((node) => node.id)),
-      connectMode: () => options.connectMode,
+      mode: () => options.mode,
       onCreateEdge: options.onCreateEdge,
     }),
   } as any);
@@ -95,7 +95,7 @@ describe("G6 interactive connection", () => {
   it("drag-create-edge writes a port-validated edge into the workflow domain", async () => {
     let current = definition();
     const onCreateEdge = vi.fn(domainConnect(() => current, (next) => { current = next; }));
-    const state = await makeGraph({ connectMode: true, initial: current, onCreateEdge });
+    const state = await makeGraph({ mode: "connect", initial: current, onCreateEdge });
     drag(state.graph, "a", "b");
     expect(onCreateEdge).toHaveBeenCalledWith("a", "b");
     expect(current.edges).toEqual([
@@ -107,7 +107,7 @@ describe("G6 interactive connection", () => {
   it("rejects incompatible ports instead of creating a phantom edge", async () => {
     let current = definition();
     const onCreateEdge = vi.fn(domainConnect(() => current, (next) => { current = next; }));
-    const state = await makeGraph({ connectMode: true, initial: current, onCreateEdge });
+    const state = await makeGraph({ mode: "connect", initial: current, onCreateEdge });
     drag(state.graph, "a", "c"); // FileBatch -> RecordSet
     expect(onCreateEdge).toHaveBeenCalledWith("a", "c");
     expect(current.edges).toHaveLength(0);
@@ -116,7 +116,7 @@ describe("G6 interactive connection", () => {
 
   it("does not create edges when connect mode is off (drag moves the node)", async () => {
     const onCreateEdge = vi.fn(() => ({ sourcePort: "files", targetPort: "input" }));
-    const state = await makeGraph({ connectMode: false, initial: definition(), onCreateEdge });
+    const state = await makeGraph({ mode: "select", initial: definition(), onCreateEdge });
     drag(state.graph, "a", "b");
     expect(onCreateEdge).not.toHaveBeenCalled();
     state.graph.destroy();

@@ -167,7 +167,7 @@ export function PropertyEditor(props: PropertyEditorProps) {
       )}
       <Divider plain style={{ margin: "16px 0 8px" }}>连线 ({edges.length})</Divider>
       {edges.length === 0
-        ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>开启“连线模式”，从节点拖到另一个节点。</Typography.Text>
+        ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>切换到“连线”模式，从节点拖到另一个节点；也可以在这里编辑端口。</Typography.Text>
         : <Table size="small" columns={edgeColumns} dataSource={edgeRows} pagination={false} />}
       {issues.length > 0 && (
         <>

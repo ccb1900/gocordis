@@ -15,7 +15,9 @@ describe("industrial console client module", () => {
       },
     };
 
-    expect(register(api)).toBe(dispose);
+    const unregister = register(api);
+    expect(typeof unregister).toBe("function");
+    unregister();
     expect(registrations).toEqual([
       { kind: "industrial-workflow-canvas", component: expect.any(Function) },
     ]);

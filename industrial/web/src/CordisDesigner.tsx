@@ -9,6 +9,7 @@ import { NodePalette } from "./NodePalette";
 import { PropertyEditor } from "./PropertyEditor";
 import { parseNodeDescriptors, parseWorkflow, parseWorkflowSummaries, unwrapData } from "./dto";
 import { getFacade } from "./facade";
+import type { DesignerMode } from "./graph-model";
 import {
   addEdge, applyPositions, descriptorOf, emptyWorkflow, makeNode,
   removeEdge, removeNode, resolveEdgePorts, setNodeConfig, validateWorkflow,
@@ -30,6 +31,12 @@ interface ExecutionState {
   executed?: string[];
 }
 
+const MODE_LABEL: Record<DesignerMode, string> = {
+  select: "选择",
+  connect: "连线",
+  pan: "平移",
+};
+
 export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const [messageApi, contextHolder] = message.useMessage();
   const [descriptors, setDescriptors] = useState<NodeDescriptor[]>([]);
@@ -42,7 +49,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const [busy, setBusy] = useState(false);
-  const [connectMode, setConnectMode] = useState(false);
+  const [mode, setMode] = useState<DesignerMode>("select");
   const [dirty, setDirty] = useState(false);
   const [execution, setExecution] = useState<ExecutionState | null>(null);
   const idRef = useRef(1);
@@ -83,9 +90,8 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const command = useCallback(async (name: string, body: unknown, ok: string) => {
     setBusy(true);
     try {
-      // The shell's ViewContext.hubCommand converts transport failures into a
-      // page banner, so a block cannot distinguish them from success. The
-      // facade's api.hubCommand is the SAME hub channel but preserves errors.
+      // The shell's ViewContext.hubCommand hides transport errors; the facade
+      // hub channel preserves them. Rejections are surfaced, never swallowed.
       await (getFacade().api.hubCommand as (name: string, body: unknown) => Promise<void>)(name, body);
       messageApi.success(ok);
       return true;
@@ -105,13 +111,11 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
         const candidate = row as { workflowId?: string };
         return String(candidate?.workflowId ?? "") === workflowId;
       });
-      if (found === undefined) {
-        setDefinition({ ...emptyWorkflow(workflowId), name: workflowId });
-        return;
-      }
-      setDefinition(parseWorkflow(found));
-      const used = parseWorkflow(found).nodes.map((node) => node.id);
-      const last = used.map((id) => /^n(\d+)$/.exec(id)).filter(Boolean)
+      const parsed = found === undefined
+        ? { ...emptyWorkflow(workflowId), name: workflowId }
+        : parseWorkflow(found);
+      setDefinition(parsed);
+      const last = parsed.nodes.map((node) => /^n(\d+)$/.exec(node.id)).filter(Boolean)
         .reduce((max, match) => Math.max(max, Number(match![1])), 0);
       idRef.current = last + 1;
       setSelectedId(null);
@@ -171,23 +175,36 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
     setDirty(true);
   }, [catalog]);
 
-  const createEdge = useCallback((source: string, target: string) => {
-    const sourceNode = definition.nodes.find((node) => node.id === source);
-    const targetNode = definition.nodes.find((node) => node.id === target);
-    if (!sourceNode || !targetNode) {
+  const createEdge = useCallback((from: string, to: string) => {
+    const first = definition.nodes.find((node) => node.id === from);
+    const second = definition.nodes.find((node) => node.id === to);
+    if (!first || !second) {
       messageApi.warning("连线失败：端点不在画布上");
       return null;
     }
-    const sourceDescriptor = descriptorOf(catalog, sourceNode.type);
-    const targetDescriptor = descriptorOf(catalog, targetNode.type);
-    if (!sourceDescriptor || !targetDescriptor) return null;
-    const ports = resolveEdgePorts(sourceDescriptor, targetDescriptor);
+
+    // A user may drag from an output port OR from an input port. Resolve both
+    // directions and keep the domain edge output→input regardless of gesture.
+    const firstDescriptor = descriptorOf(catalog, first.type);
+    const secondDescriptor = descriptorOf(catalog, second.type);
+    if (!firstDescriptor || !secondDescriptor) return null;
+    let source = first;
+    let target = second;
+    let ports = resolveEdgePorts(firstDescriptor, secondDescriptor);
     if (!ports) {
-      messageApi.warning(`端口类型不兼容：${sourceDescriptor.name} → ${targetDescriptor.name}`);
-      return null;
+      const reversed = resolveEdgePorts(secondDescriptor, firstDescriptor);
+      if (!reversed) {
+        messageApi.warning(`端口类型不兼容：${firstDescriptor.name} → ${secondDescriptor.name}`);
+        return null;
+      }
+      source = second;
+      target = first;
+      ports = reversed;
     }
+
     const result = addEdge(definition, {
-      source, sourcePort: ports.sourcePort, target, targetPort: ports.targetPort,
+      source: source.id, sourcePort: ports.sourcePort,
+      target: target.id, targetPort: ports.targetPort,
     }, catalog);
     if (result.issue) {
       messageApi.warning(`${result.issue.code}: ${result.issue.message}`);
@@ -221,60 +238,76 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   if (loading) return <Spin tip="加载节点描述与资源…" />;
 
   return (
-    <Layout style={{ minHeight: 520, border: "1px solid #f0f0f0" }}>
+    <div className="industrial-designer">
       {contextHolder}
-      <Header style={{ background: "#001529", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <Typography.Text strong style={{ color: "#fff" }}>Industrial Designer</Typography.Text>
-        <Tag color="blue">Cordis block renderer</Tag>
-        {dirty && <Tag color="orange">未保存</Tag>}
-        <Space>
-          <Button type={connectMode ? "primary" : "default"} onClick={() => setConnectMode((on) => !on)}>
-            {connectMode ? "退出连线" : "连线模式"}
-          </Button>
-          <Button loading={busy} onClick={() => void save()}>保存</Button>
-          <Button onClick={validate}>校验</Button>
-          <Button loading={busy} onClick={() => void publish()}>发布</Button>
-          <Button type="primary" loading={busy} onClick={() => void run()}>运行</Button>
+      <Header className="industrial-header">
+        <div className="industrial-title">
+          <Typography.Text strong>Industrial Workflow</Typography.Text>
+          <Typography.Text type="secondary">{definition.name || definition.workflowId}</Typography.Text>
+          {dirty && <Tag color="orange">未保存</Tag>}
+          {execution && <Tag color={execution.error ? "error" : "success"}>{execution.status}</Tag>}
+        </div>
+        <div className="industrial-toolbar">
+          <Space size={4}>
+            {(["select", "connect", "pan"] as DesignerMode[]).map((item) => (
+              <Button
+                key={item}
+                type={mode === item ? "primary" : "default"}
+                onClick={() => setMode(item)}
+              >
+                {MODE_LABEL[item]}
+              </Button>
+            ))}
+          </Space>
+          <span className="industrial-toolbar-divider" />
+          <Space size={4}>
+            <Button loading={busy} onClick={() => void save()}>保存</Button>
+            <Button onClick={validate}>校验</Button>
+            <Button loading={busy} onClick={() => void publish()}>发布</Button>
+            <Button type="primary" loading={busy} onClick={() => void run()}>运行</Button>
+          </Space>
           <Select
-            style={{ width: 180 }}
+            className="industrial-resource-select"
             value={resourceId}
             onChange={setResourceId}
+            placeholder="运行资源"
             options={resourceIds.map((id) => ({ value: id, label: id }))}
           />
-        </Space>
-      </Header>
-      <Content style={{ display: "grid", gridTemplateColumns: "220px 1fr 300px", gap: 12, padding: 12 }}>
-        <div style={{ borderRight: "1px solid #f0f0f0", paddingRight: 12 }}>
-          <NodePalette descriptors={descriptors} loading={false} />
         </div>
-        <GraphCanvas
-          definition={definition}
-          catalog={catalog}
-          selectedId={selectedId}
-          connectMode={connectMode}
-          onSelect={setSelectedId}
-          onDropNode={dropNode}
-          onCreateEdge={createEdge}
-          onPositions={(positions) => {
-            setDefinition((current) => applyPositions(current, positions));
-            setDirty(true);
-          }}
-        />
-        <div style={{ borderLeft: "1px solid #f0f0f0", paddingLeft: 12 }}>
-          {loadErrors.length > 0 && (
-            <Alert type="warning" showIcon style={{ marginBottom: 12 }}
-              message="部分设计器数据未加载"
-              description={loadErrors.join("；")} />
-          )}
+      </Header>
+      <Content className="industrial-body">
+        <aside className="industrial-palette">
           {summaries.length > 0 && (
             <Select
-              style={{ width: "100%", marginBottom: 12 }}
+              className="industrial-workflow-select"
               value={definition.workflowId}
               placeholder="选择工作流"
               onChange={(id: string) => void loadWorkflow(id)}
               options={summaries.map((item) => ({ value: item.workflowId, label: item.name }))}
             />
           )}
+          <NodePalette descriptors={descriptors} loading={false} />
+        </aside>
+        <section className="industrial-center">
+          {loadErrors.length > 0 && (
+            <Alert type="warning" showIcon style={{ marginBottom: 10 }}
+              message="部分设计器数据未加载" description={loadErrors.join("；")} />
+          )}
+          <GraphCanvas
+            definition={definition}
+            catalog={catalog}
+            selectedId={selectedId}
+            mode={mode}
+            onSelect={setSelectedId}
+            onDropNode={dropNode}
+            onCreateEdge={createEdge}
+            onPositions={(positions) => {
+              setDefinition((current) => applyPositions(current, positions));
+              setDirty(true);
+            }}
+          />
+        </section>
+        <aside className="industrial-properties">
           {execution && (
             <Alert
               style={{ marginBottom: 12 }}
@@ -309,8 +342,8 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
             onUpdateEdge={updateEdge}
             onSelectNode={setSelectedId}
           />
-        </div>
+        </aside>
       </Content>
-    </Layout>
+    </div>
   );
 }

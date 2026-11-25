@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build the additive industrial solution and start its Web UI host.
 set -euo pipefail
+export DOTNET_ROLL_FORWARD="${DOTNET_ROLL_FORWARD:-LatestMajor}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-/tmp/gocordis-industrial}"
 mkdir -p "$OUT"

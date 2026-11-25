@@ -1,22 +1,22 @@
 // AntV G6 canvas. THE graph instance is created exactly once and kept stable:
 // every refresh goes through `graph.setData(data); graph.draw()` on that same
-// instance. Destroy only on unmount. The previous designer recreated the graph
-// on every data change, which produced an infinite render loop.
+// instance. Destroy only on unmount. Pointer ownership is exclusive: select
+// moves nodes, connect creates typed edges, pan moves the viewport.
 
 import type { Graph } from "@antv/g6";
 import { useEffect, useMemo, useRef, type DragEvent } from "react";
-import { graphBehaviors, graphOptions, workflowToG6 } from "./graph-model";
+import {
+  graphBehaviors, graphOptions, workflowToG6, type DesignerMode,
+} from "./graph-model";
 import type { NodeDescriptor, WorkflowDefinition } from "./types";
 
 export interface GraphCanvasProps {
   definition: WorkflowDefinition;
   catalog: ReadonlyMap<string, NodeDescriptor>;
   selectedId: string | null;
-  /** Drag-to-connect and drag-to-move share the pointer: exactly one at a time. */
-  connectMode: boolean;
+  mode: DesignerMode;
   onSelect: (id: string | null) => void;
   onDropNode: (nodeTypeId: string, x: number, y: number) => void;
-  /** Returns the resolved domain port pair, or null when incompatible. */
   onCreateEdge: (source: string, target: string) => { sourcePort: string; targetPort: string } | null;
   onPositions: (positions: Record<string, { x: number; y: number }>) => void;
 }
@@ -33,16 +33,20 @@ const nodeIdOf = (event: unknown): string | undefined => {
   return e?.targetType === "node" ? e.target?.id : undefined;
 };
 
+const MODE_HINT: Record<DesignerMode, string> = {
+  select: "选择：拖动节点改变位置，点击节点编辑属性",
+  connect: "连线：从节点拖到另一个节点，自动匹配兼容端口",
+  pan: "平移：拖动画布移动视口（不移动节点）",
+};
+
 export function GraphCanvas(props: GraphCanvasProps) {
-  const { definition, catalog, selectedId, connectMode,
+  const { definition, catalog, selectedId, mode,
     onSelect, onDropNode, onCreateEdge, onPositions } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
   const readyRef = useRef(false);
-  const connectRef = useRef(connectMode);
-  connectRef.current = connectMode;
-  // Refs keep the one-shot G6 event handlers current without re-creating the
-  // graph when a parent re-render produces a new callback identity.
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   const callbacks = useRef<Callbacks>({ onSelect, onDropNode, onCreateEdge, onPositions });
   callbacks.current = { onSelect, onDropNode, onCreateEdge, onPositions };
 
@@ -64,24 +68,21 @@ export function GraphCanvas(props: GraphCanvasProps) {
       const graph = new G6Graph({
         ...base,
         behaviors: graphBehaviors({
-          graph: {
-            getNodeData: () => graphRef.current?.getNodeData() ?? [],
-          },
+          graph: { getNodeData: () => graphRef.current?.getNodeData() ?? [] },
+          mode: () => modeRef.current,
           allowedIds: () => allowedRef.current,
-          connectMode: () => connectRef.current,
-          onSelect: (id) => callbacks.current.onSelect(id),
-          onDropNode: (type, x, y) => callbacks.current.onDropNode(type, x, y),
-          onCreateEdge: (source, target) => callbacks.current.onCreateEdge(source, target),
           onPositions: (positions) => callbacks.current.onPositions(positions),
+          onCreateEdge: (source, target) => callbacks.current.onCreateEdge(source, target),
         }),
       } as ConstructorParameters<typeof G6Graph>[0]);
       graph.on("node:click", (event: unknown) => {
         const id = nodeIdOf(event);
-        if (id && !connectRef.current) callbacks.current.onSelect(id);
+        if (id && modeRef.current === "select") callbacks.current.onSelect(id);
       });
-      graph.on("edge:click", (event: unknown) => {
-        const e = event as { target?: { id?: string } };
-        if (e?.target?.id) callbacks.current.onSelect(e.target.id);
+      graph.on("edge:click", () => {
+        // Edge details are edited in the edge table; selecting an edge as a
+        // node used to leave the property panel in an impossible state.
+        callbacks.current.onSelect(null);
       });
       graph.on("canvas:click", () => callbacks.current.onSelect(null));
       graphRef.current = graph;
@@ -89,11 +90,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
       void graph.render();
     });
     return () => { disposed = true; };
-    // One-shot creation: data changes are handled by the effect below.
   }, []);
 
-  // Apply each domain refresh to the EXISTING graph instance. `draw` does not
-  // re-run layout, so node positions from the domain stay authoritative.
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph || !readyRef.current) return;
@@ -109,6 +107,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
 
   const drop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
+    if (modeRef.current !== "select") return;
     const typeId = event.dataTransfer.getData("application/x-industrial-node") ||
       event.dataTransfer.getData("text/plain");
     if (!typeId) return;
@@ -116,7 +115,6 @@ export function GraphCanvas(props: GraphCanvasProps) {
     const container = containerRef.current;
     if (!graph || !container) return;
     const rect = container.getBoundingClientRect();
-    // G6 Point is a [x, y] tuple, not an object.
     const point = graph.getCanvasByViewport([
       event.clientX - rect.left,
       event.clientY - rect.top,
@@ -125,25 +123,17 @@ export function GraphCanvas(props: GraphCanvasProps) {
   };
 
   return (
-    <div style={{ position: "relative", height: "100%", minHeight: 360 }}>
-      <div
-        ref={containerRef}
-        className="industrial-graph"
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={drop}
-        data-testid="industrial-graph"
-        style={{
-          height: "100%", minHeight: 360, border: connectMode ? "1px dashed #1677ff" : "1px solid transparent",
-          cursor: connectMode ? "crosshair" : "default",
-        }}
-      />
-      {connectMode && (
-        <div style={{ position: "absolute", left: 8, top: 8, pointerEvents: "none" }}>
-          <span style={{ background: "#1677ff", color: "#fff", borderRadius: 4, padding: "2px 8px", fontSize: 12 }}>
-            连线模式：从一个节点拖到另一个节点
-          </span>
-        </div>
-      )}
+    <div className="industrial-canvas-wrap">
+      <div className={`industrial-graph industrial-graph--${mode}`}>
+        <div
+          ref={containerRef}
+          className="industrial-graph-host"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={drop}
+          data-testid="industrial-graph"
+        />
+        <div className="industrial-graph-hint">{MODE_HINT[mode]}</div>
+      </div>
     </div>
   );
 }

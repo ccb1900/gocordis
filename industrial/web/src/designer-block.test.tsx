@@ -71,7 +71,7 @@ describe("industrial-workflow-canvas inside the console shell", () => {
     const { container } = render(React.createElement(canvas, { ctx }));
     expect(container.querySelector("iframe")).toBeNull();
     await waitFor(() => expect(screen.getByText("JSON Reader")).toBeTruthy());
-    expect(screen.getByText("Industrial Designer")).toBeTruthy();
+    expect(screen.getByText("Industrial Workflow")).toBeTruthy();
 
     // Drop a palette node onto the canvas; the property panel must bind to it.
     fireEvent.click(screen.getByTestId("drop-node"));

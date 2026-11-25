@@ -25,33 +25,39 @@ public sealed class IndustrialNodesComponent : Component
         return null;
     }
 
+    // Control flow is typed exactly like data flow. Every non-trigger node
+    // accepts an optional Control input so a Manual Trigger can start it
+    // without pretending that the trigger produces a FileBatch.
+    private static IReadOnlyList<NodePort> WithControl(params NodePort[] dataInputs) =>
+        [.. dataInputs, new NodePort("control", PortType.Control, false)];
+
     private static IEnumerable<NodeDescriptor> Descriptors()
     {
         var types = IndustrialActivityTypes.All;
         yield return Node("industrial.trigger.manual", "Manual Trigger", "Trigger", "trigger", "Play", types[0],
             [], [new NodePort("control", PortType.Control, false)]);
         yield return Node("industrial.filesystem.local", "Local Files", "Filesystem", "source", "Folder", types[1],
-            [], [new NodePort("files", PortType.FileBatch, true)]);
+            WithControl(), [new NodePort("files", PortType.FileBatch, true)]);
         yield return Node("industrial.filesystem.unc", "UNC Share", "Filesystem", "source", "Cloud", types[1],
-            [], [new NodePort("files", PortType.FileBatch, true)]);
+            WithControl(), [new NodePort("files", PortType.FileBatch, true)]);
         yield return Node("industrial.reader.csv", "CSV Reader", "Parsing", "reader", "FileText", types[2],
-            [new NodePort("input", PortType.FileBatch, true)], [new NodePort("records", PortType.RecordSet, true)]);
+            WithControl(new NodePort("input", PortType.FileBatch, true)), [new NodePort("records", PortType.RecordSet, true)]);
         yield return Node("industrial.reader.excel", "Excel Reader", "Parsing", "reader", "FileExcel", types[3],
-            [new NodePort("input", PortType.FileBatch, true)], [new NodePort("records", PortType.RecordSet, true)]);
+            WithControl(new NodePort("input", PortType.FileBatch, true)), [new NodePort("records", PortType.RecordSet, true)]);
         yield return Node("industrial.transform.mapping", "Field Mapping", "Transform", "transform", "Swap", types[4],
-            [new NodePort("input", PortType.RecordSet, true)], [new NodePort("output", PortType.RecordSet, true)]);
+            WithControl(new NodePort("input", PortType.RecordSet, true)), [new NodePort("output", PortType.RecordSet, true)]);
         yield return Node("industrial.transform.validate", "Validation", "Transform", "transform", "CheckCircle", types[5],
-            [new NodePort("input", PortType.RecordSet, true)], [new NodePort("output", PortType.RecordSet, true)]);
+            WithControl(new NodePort("input", PortType.RecordSet, true)), [new NodePort("output", PortType.RecordSet, true)]);
         yield return Node("industrial.sink.sqlserver", "SQL Server", "Delivery", "sink", "Database", types[6],
-            [new NodePort("records", PortType.RecordSet, true)], [new NodePort("result", PortType.DeliveryResult, true)]);
+            WithControl(new NodePort("records", PortType.RecordSet, true)), [new NodePort("result", PortType.DeliveryResult, true)]);
         yield return Node("industrial.sink.sqlite", "SQLite", "Delivery", "sink", "Database", types[7],
-            [new NodePort("records", PortType.RecordSet, true)], [new NodePort("result", PortType.DeliveryResult, true)]);
+            WithControl(new NodePort("records", PortType.RecordSet, true)), [new NodePort("result", PortType.DeliveryResult, true)]);
         yield return Node("industrial.sink.postgresql", "PostgreSQL", "Delivery", "sink", "Database", types[9],
-            [new NodePort("records", PortType.RecordSet, true)], [new NodePort("result", PortType.DeliveryResult, true)]);
+            WithControl(new NodePort("records", PortType.RecordSet, true)), [new NodePort("result", PortType.DeliveryResult, true)]);
         yield return Node("industrial.sink.mysql", "MySQL", "Delivery", "sink", "Database", types[10],
-            [new NodePort("records", PortType.RecordSet, true)], [new NodePort("result", PortType.DeliveryResult, true)]);
+            WithControl(new NodePort("records", PortType.RecordSet, true)), [new NodePort("result", PortType.DeliveryResult, true)]);
         yield return Node("industrial.sink.archive", "Archive", "Delivery", "sink", "Archive", types[8],
-            [new NodePort("files", PortType.FileBatch, false)], [new NodePort("result", PortType.DeliveryResult, false)]);
+            WithControl(new NodePort("files", PortType.FileBatch, false)), [new NodePort("result", PortType.DeliveryResult, false)]);
     }
 
     private static NodeDescriptor Node(

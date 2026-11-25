@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { edgeId, graphOptions, positionsFromG6, workflowToG6 } from "./graph-model";
+import {
+  edgeId, graphBehaviors, graphOptions, positionsFromG6, workflowToG6,
+} from "./graph-model";
 import type { NodeDescriptor, WorkflowDefinition } from "./types";
 
 const catalog = new Map<string, NodeDescriptor>([
@@ -70,6 +72,12 @@ describe("WorkflowDefinition → G6 projection", () => {
     graph.nodes.push({ id: "foreign", data: {}, style: { x: 1, y: 2 } });
     expect(positionsFromG6(graph, new Set(["src"]))).toEqual({ src: { x: 40, y: 60 } });
   });
+
+  it("commits only the nodes G6 actually moved", () => {
+    const graph = workflowToG6(definition, catalog);
+    expect(positionsFromG6(graph, new Set(["src", "rd"]), ["rd"]))
+      .toEqual({ rd: { x: 240, y: 60 } });
+  });
 });
 
 describe("G6 render options", () => {
@@ -78,8 +86,33 @@ describe("G6 render options", () => {
     const options = graphOptions({ nodes: [], edges: [] }, container);
     expect(options.container).toBe(container);
     expect(options.container).not.toBe("container");
-    expect(options.behaviors).toContain("drag-canvas");
-    expect(JSON.stringify(options.behaviors)).toContain("create-edge");
-    expect(JSON.stringify(options.behaviors)).toContain("drag-element");
+    expect(options.behaviors).toContain("zoom-canvas");
+    const types = options.behaviors
+      .map((item: unknown) => (item as { type?: string })?.type)
+      .filter(Boolean);
+    expect(types).toContain("drag-canvas");
+    expect(types).toContain("create-edge");
+    expect(types).toContain("drag-element");
+  });
+
+  it("owns the pointer exclusively: pan only in pan mode, connect only in connect mode", () => {
+    let mode: any = "select";
+    const behaviors: any[] = graphBehaviors({ mode: () => mode });
+    const canvasPan = behaviors.find((item) => item?.type === "drag-canvas");
+    const dragElement = behaviors.find((item) => item?.type === "drag-element");
+    const createEdge = behaviors.find((item) => item?.type === "create-edge");
+    expect(canvasPan.enable({ targetType: "canvas" })).toBe(false);
+    expect(dragElement.enable({ targetType: "node" })).toBe(true);
+    expect(createEdge.enable()).toBe(false);
+
+    mode = "pan";
+    expect(canvasPan.enable({ targetType: "canvas" })).toBe(true);
+    expect(canvasPan.enable({ targetType: "node" })).toBe(false);
+    expect(dragElement.enable({ targetType: "node" })).toBe(false);
+
+    mode = "connect";
+    expect(createEdge.enable()).toBe(true);
+    expect(dragElement.enable({ targetType: "node" })).toBe(false);
+    expect(canvasPan.enable({ targetType: "canvas" })).toBe(false);
   });
 });

@@ -212,8 +212,10 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
       return null;
     }
     if (result.definition === definition) {
+      // Returning ports would let G6 add its temporary edge even though the
+      // domain rejected the duplicate; returning null discards that phantom.
       messageApi.info("这条连线已经存在");
-      return ports;
+      return null;
     }
     setDefinition(result.definition);
     setDirty(true);

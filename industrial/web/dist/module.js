@@ -905,20 +905,20 @@ function $t({ ctx: e }) {
       return t.warning("连线失败：端点不在画布上"), null;
     const P = K(L, E.type), D = K(L, k.type);
     if (!P || !D) return null;
-    let B = E, O = k, te = Se(P, D);
-    if (!te) {
+    let B = E, O = k, ne = Se(P, D);
+    if (!ne) {
       const J = Se(D, P);
       if (!J)
         return t.warning(`端口类型不兼容：${P.name} → ${D.name}`), null;
-      B = k, O = E, te = J;
+      B = k, O = E, ne = J;
     }
-    const ne = xt(x, {
+    const te = xt(x, {
       source: B.id,
-      sourcePort: te.sourcePort,
+      sourcePort: ne.sourcePort,
       target: O.id,
-      targetPort: te.targetPort
+      targetPort: ne.targetPort
     }, L);
-    return ne.issue ? (t.warning(`${ne.issue.code}: ${ne.issue.message}`), G((J) => [...J, ne.issue]), null) : ne.definition === x ? (t.info("这条连线已经存在"), te) : (j(ne.definition), Y(!0), te);
+    return te.issue ? (t.warning(`${te.issue.code}: ${te.issue.message}`), G((J) => [...J, te.issue]), null) : te.definition === x ? (t.info("这条连线已经存在"), null) : (j(te.definition), Y(!0), ne);
   }, [L, x, t]), Me = q(() => {
     const c = St(x, L, new Set(o));
     G(c), c.length === 0 ? t.success("本地校验通过（发布时服务端仍会复核）") : t.warning(`发现 ${c.length} 个问题，见右侧定位列表`);

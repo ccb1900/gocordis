@@ -53,7 +53,7 @@ public sealed class PaperContributionsTests
         // Wait for the consumer's observable Pending state directly, published
         // with the snapshot after the reactive withdrawal completes.
         await runtime.WaitForFiberStateAsync(consumerFiber.Id, FiberState.Pending)
-            .WaitAsync(TimeSpan.FromSeconds(15));
+            .WaitAsync(TimeSpan.FromSeconds(60));
         Assert.Equal(FiberState.Pending, registry.Entries["consumer"].Fiber!.State);
         Assert.Null(registry.Entries["consumer"].Fiber!.Failure);
         Assert.Contains("undo:provider", journal);

@@ -125,7 +125,9 @@ export default function App() {
   // 返回，首页即 pages[0]）。replace 不留历史项——回退键不会把用户送回
   // 无意义的根地址。
   useEffect(() => {
-    if (pages.length && path === "/") replace(pages[0].route);
+    if (pages.length && path === "/") {
+      replace((pages.find((page) => page.home) ?? pages[0]).route);
+    }
   }, [pages, path]);
 
   // Command dispatch: mark busy, accept, then let observations invalidate.
@@ -145,6 +147,7 @@ export default function App() {
     () => ({
       hubQuery: api.hubQuery,
       hubCommand,
+      navigate,
       focus,
       onFocus: (sourceId, date) => {
         const next = { sourceId, date };
@@ -272,7 +275,7 @@ export default function App() {
           )}
           <ActionBar ctx={ctx} page={active ?? null} />
           {active ? (
-            renderPage(active)
+            <div key={path} className="route-enter">{renderPage(active)}</div>
           ) : pages.length ? (
             <NotFound route={path} />
           ) : (

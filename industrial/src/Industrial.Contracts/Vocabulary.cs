@@ -32,6 +32,8 @@ public static class IndustrialKeys
     /// named file-extension route here; it never edits Core or the designer.</summary>
     public static readonly Key<Broker<IRecordReaderProvider>> RecordReaderBroker =
         new("industrial.reader.broker");
+    public static readonly Key<IStageOutputStore> StageOutputStore =
+        new("industrial.execution.stage-output-store");
 }
 
 /// <summary>Canonical Activity type ids contributed by the built-in node
@@ -229,6 +231,23 @@ public interface IWorkflowRegistry
 
 // ---- collection / delivery -------------------------------------------------
 
+public static class CollectionStatus
+{
+    public const string Created = "Created";
+    public const string Running = "Running";
+    public const string Succeeded = "Succeeded";
+    public const string PartialFailure = "PartialFailure";
+    public const string Failed = "Failed";
+    public const string Cancelled = "Cancelled";
+    public const string Interrupted = "Interrupted";
+
+    public const string Pending = "Pending";
+    public const string InProgress = "InProgress";
+
+    public static bool IsTerminal(string status) =>
+        status is Succeeded or PartialFailure or Failed or Cancelled;
+}
+
 public sealed record FileIdentity(
     string Key,
     string RelativePath,
@@ -250,7 +269,49 @@ public sealed record RecordEnvelope(
     FileIdentity Source,
     DateTimeOffset RecordTime);
 
-public sealed record DeliveryResultRef(string Id, string TargetId, int Records);
+public sealed record BatchFileRef(
+    string CollectionFileId, string ResourceId, string IdentityKey,
+    string RelativePath, string ContentHash, DateTimeOffset SourceDate);
+
+public sealed record FileBatchRef(
+    string Id, string InstanceId, string NodeId, string Fingerprint,
+    IReadOnlyList<BatchFileRef> Files);
+
+public sealed record DatasetRef(
+    string Id, string InstanceId, string NodeId, string Fingerprint,
+    string SpoolPath, int RecordCount, string SourceBatchRefId);
+
+public sealed record TransformResultRef(
+    string Id, string InstanceId, string NodeId, string Fingerprint,
+    DatasetRef Dataset, int Accepted, int Rejected);
+
+public sealed record DeliveryResultRef(
+    string Id, string TargetId, int Records,
+    string? IdempotencyKey = null, string? DeliveryId = null, string? DatasetRefId = null);
+
+public sealed record RejectedRecord(string RecordId, string Code, string Message);
+
+public sealed record ProcessingResult(
+    int Accepted,
+    int Rejected,
+    int Warnings,
+    IReadOnlyList<RejectedRecord> RejectedSamples,
+    IReadOnlyDictionary<string, object?> Statistics);
+
+public sealed record StageOutputView(
+    string InstanceId, string NodeId, string Kind, string Fingerprint, string RefId);
+
+public interface IStageOutputStore
+{
+    ValueTask<T?> TryGetAsync<T>(string instanceId, string nodeId, string fingerprint,
+        CancellationToken ct = default) where T : class;
+    ValueTask<T> CommitAsync<T>(string instanceId, string nodeId, string fingerprint,
+        T value, CancellationToken ct = default) where T : class;
+    ValueTask<DatasetRef> SpoolAsync(string instanceId, string nodeId, string fingerprint,
+        IAsyncEnumerable<RecordEnvelope> records, CancellationToken ct = default);
+    IAsyncEnumerable<RecordEnvelope> ReadAsync(DatasetRef dataset, CancellationToken ct = default);
+    ValueTask<IReadOnlyList<StageOutputView>> ListAsync(string instanceId, CancellationToken ct = default);
+}
 
 public sealed record CollectionRun(
     string Id,
@@ -278,7 +339,26 @@ public sealed record FileDelivery(
     string IdempotencyKey,
     int Records = 0,
     string TargetKind = "record",
-    DateTimeOffset? ClaimedAt = null);
+    DateTimeOffset? ClaimedAt = null,
+    string? ClaimToken = null,
+    DateTimeOffset? LeaseExpiresAt = null,
+    string? LastError = null,
+    int Accepted = 0,
+    int Rejected = 0,
+    int Warnings = 0,
+    string? StatisticsJson = null);
+
+public sealed record DeliveryClaim(
+    string DeliveryId,
+    string ClaimToken,
+    DateTimeOffset LeaseExpiresAt,
+    int Attempts);
+
+public sealed record DeliveryOutcome(bool Accepted, string Reason)
+{
+    public static DeliveryOutcome Ok() => new(true, string.Empty);
+    public static DeliveryOutcome Rejected(string reason) => new(false, reason);
+}
 
 public interface IFileSource
 {
@@ -328,8 +408,14 @@ public interface IArchiveSink
 public interface ICollectionLedger
 {
     ValueTask<CollectionRun> StartAsync(string workflowId, CancellationToken ct = default);
+    ValueTask<CollectionRun> BeginRunAsync(string runId, CancellationToken ct = default);
     ValueTask<CollectionRun> CompleteRunAsync(
         string runId, string status, string? error, CancellationToken ct = default);
+    ValueTask<CollectionRun> FinalizeRunAsync(string runId, CancellationToken ct = default);
+    ValueTask<CollectionRun> CancelRunAsync(string runId, string reason, CancellationToken ct = default);
+    ValueTask<int> RecoverExpiredLeasesAsync(DateTimeOffset now, CancellationToken ct = default);
+    ValueTask MarkDeliveryContestedAsync(
+        string runId, string deliveryId, string reason, CancellationToken ct = default);
     ValueTask<CollectionRun?> GetRunAsync(string runId, CancellationToken ct = default);
     ValueTask<IReadOnlyList<CollectionRun>> ListRunsAsync(CancellationToken ct = default);
     ValueTask<CollectionFile> DiscoverAsync(string collectionId, DiscoveredFile file, CancellationToken ct = default);
@@ -340,9 +426,17 @@ public interface ICollectionLedger
     ValueTask MarkFileAsync(string fileId, string status, CancellationToken ct = default);
     ValueTask<FileDelivery> StartDeliveryAsync(
         string collectionFileId, string targetId, string idempotencyKey,
-        string targetKind = "record", CancellationToken ct = default);
+        string targetKind = "record", string? runId = null, CancellationToken ct = default);
+    ValueTask<DeliveryClaim?> TryClaimDeliveryAsync(
+        string runId, string deliveryId, TimeSpan lease, CancellationToken ct = default);
     ValueTask<bool> TryClaimDeliveryAsync(string deliveryId, CancellationToken ct = default);
+    ValueTask<DeliveryOutcome> CompleteDeliveryAsync(
+        string deliveryId, string claimToken, int records, CancellationToken ct = default);
+    ValueTask<DeliveryOutcome> CompleteDeliveryAsync(
+        string deliveryId, string claimToken, ProcessingResult result, CancellationToken ct = default);
     ValueTask CompleteDeliveryAsync(string deliveryId, int records, CancellationToken ct = default);
+    ValueTask<DeliveryOutcome> FailDeliveryAsync(
+        string deliveryId, string claimToken, string error, CancellationToken ct = default);
     ValueTask FailDeliveryAsync(string deliveryId, string error, CancellationToken ct = default);
     ValueTask<IReadOnlyList<FileDelivery>> GetRetrableDeliveriesAsync(CancellationToken ct = default);
     ValueTask<IReadOnlyList<FileDelivery>> GetRetriableDeliveriesAsync(

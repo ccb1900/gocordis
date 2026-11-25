@@ -220,8 +220,7 @@ export function PropertyEditor(props: PropertyEditorProps) {
   ];
 
   return (
-    <aside className="industrial-properties">
-      <Typography.Title level={5} style={{ marginTop: 0 }}>节点属性</Typography.Title>
+    <div className="industrial-properties-body">
       {!node && <Empty description="在画布中选中节点以编辑配置" style={{ marginTop: 24 }} />}
       {node && (
         <>
@@ -263,7 +262,7 @@ export function PropertyEditor(props: PropertyEditorProps) {
       )}
       <Divider plain style={{ margin: "16px 0 8px" }}>连线 ({edges.length})</Divider>
       {edges.length === 0
-        ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>切换到“连线”模式，从节点拖到另一个节点；也可以在这里编辑端口。</Typography.Text>
+        ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>从节点端口拖到另一个节点即可连线；也可以在这里编辑端口。</Typography.Text>
         : <Table size="small" columns={edgeColumns} dataSource={edgeRows} pagination={false} />}
       {issues.length > 0 && (
         <>
@@ -284,6 +283,6 @@ export function PropertyEditor(props: PropertyEditorProps) {
           ))}
         </>
       )}
-    </aside>
+    </div>
   );
 }

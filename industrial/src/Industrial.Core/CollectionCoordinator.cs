@@ -79,6 +79,7 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
         }
 
         var run = await _ledger.StartAsync(workflowId, ct);
+        await _ledger.BeginRunAsync(run.Id, ct);
         try
         {
             var files = await _source.DiscoverAsync(resourceId, range, ct);
@@ -104,15 +105,17 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
                 {
                     var key = $"{file.Identity.Key}->{sink.TargetId}";
                     var delivery = await _ledger.StartDeliveryAsync(
-                        ledgerFile.Id, sink.TargetId, key, "record", ct);
+                        ledgerFile.Id, sink.TargetId, key, "record", run.Id, ct);
                     if (delivery.Status == "Succeeded")
                     {
                         fileSucceeded = true;
                         continue;
                     }
 
-                    if (!await _ledger.TryClaimDeliveryAsync(delivery.Id, ct))
+                    var claim = await _ledger.TryClaimDeliveryAsync(run.Id, delivery.Id, TimeSpan.FromMinutes(5), ct);
+                    if (claim is null)
                     {
+                        await _ledger.MarkDeliveryContestedAsync(run.Id, delivery.Id, "delivery is held by another run", ct);
                         continue;
                     }
 
@@ -123,13 +126,13 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
                             async (_, token) => await sink.WriteAsync(
                                 ledgerFile.Id, reader.ReadAsync(file, token), key, token),
                             ct);
-                        await _ledger.CompleteDeliveryAsync(delivery.Id, result.Records, ct);
+                        await _ledger.CompleteDeliveryAsync(delivery.Id, claim.ClaimToken, result.Records, ct);
                         fileSucceeded = true;
                     }
                     catch (Exception ex)
                     {
                         fileFailed = true;
-                        await _ledger.FailDeliveryAsync(delivery.Id, ex.Message, ct);
+                        await _ledger.FailDeliveryAsync(delivery.Id, claim.ClaimToken, ex.Message, ct);
                     }
                 }
 
@@ -137,12 +140,12 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
                 {
                     var key = $"{file.Identity.Key}->{archive.TargetId}";
                     var delivery = await _ledger.StartDeliveryAsync(
-                        ledgerFile.Id, archive.TargetId, key, "archive", ct);
+                        ledgerFile.Id, archive.TargetId, key, "archive", run.Id, ct);
                     if (delivery.Status == "Succeeded")
                     {
                         fileSucceeded = true;
                     }
-                    else if (await _ledger.TryClaimDeliveryAsync(delivery.Id, ct))
+                    else if (await _ledger.TryClaimDeliveryAsync(run.Id, delivery.Id, TimeSpan.FromMinutes(5), ct) is { } archiveClaim)
                     {
                         try
                         {
@@ -154,30 +157,32 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
                                     return true;
                                 },
                                 ct);
-                            await _ledger.CompleteDeliveryAsync(delivery.Id, 1, ct);
+                            await _ledger.CompleteDeliveryAsync(delivery.Id, archiveClaim.ClaimToken, 1, ct);
                             fileSucceeded = true;
                         }
                         catch (Exception ex)
                         {
                             fileFailed = true;
-                            await _ledger.FailDeliveryAsync(delivery.Id, ex.Message, ct);
+                            await _ledger.FailDeliveryAsync(delivery.Id, archiveClaim.ClaimToken, ex.Message, ct);
                         }
                     }
                 }
 
-                await _ledger.MarkFileAsync(
-                    ledgerFile.Id, fileFailed ? "PartialFailure" : "Succeeded", ct);
                 anySuccess |= fileSucceeded;
                 anyFailure |= fileFailed;
             }
 
-            var status = anyFailure ? anySuccess ? "PartialFailure" : "Failed" : "Succeeded";
-            await _ledger.CompleteRunAsync(run.Id, status, null, ct);
+            await _ledger.FinalizeRunAsync(run.Id, ct);
             return run.Id;
+        }
+        catch (OperationCanceledException ex)
+        {
+            await _ledger.CancelRunAsync(run.Id, ex.Message, CancellationToken.None);
+            throw;
         }
         catch (Exception ex)
         {
-            await _ledger.CompleteRunAsync(run.Id, "Failed", ex.Message, ct);
+            await _ledger.CompleteRunAsync(run.Id, CollectionStatus.Interrupted, ex.Message, CancellationToken.None);
             throw;
         }
     }
@@ -192,76 +197,94 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
         IArchiveSink? archive,
         CancellationToken ct = default)
     {
+        var run = await _ledger.StartAsync("retry", ct);
+        await _ledger.BeginRunAsync(run.Id, ct);
         var retried = 0;
-        foreach (var delivery in await _ledger.GetRetriableDeliveriesAsync(targetId, ct))
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            if (!await _ledger.TryClaimDeliveryAsync(delivery.Id, ct))
+            foreach (var delivery in await _ledger.GetRetriableDeliveriesAsync(targetId, ct))
             {
-                continue;
-            }
-
-            var file = await _ledger.GetFileAsync(delivery.CollectionFileId, ct);
-            if (file is null)
-            {
-                await _ledger.FailDeliveryAsync(delivery.Id, "ledger file no longer exists", ct);
-                continue;
-            }
-
-            var discovered = await LocateAsync(file, ct);
-            if (discovered is null)
-            {
-                await _ledger.FailDeliveryAsync(delivery.Id, "source file no longer exists", ct);
-                continue;
-            }
-
-            try
-            {
-                if (delivery.TargetKind == "archive" ||
-                    (archive is not null &&
-                     string.Equals(delivery.TargetId, archive.TargetId, StringComparison.Ordinal)))
+                ct.ThrowIfCancellationRequested();
+                var claim = await _ledger.TryClaimDeliveryAsync(run.Id, delivery.Id, TimeSpan.FromMinutes(5), ct);
+                if (claim is null)
                 {
-                    if (archive is null)
-                    {
-                        throw new InvalidOperationException(
-                            $"no archive capability is registered for target '{delivery.TargetId}'");
-                    }
+                    await _ledger.MarkDeliveryContestedAsync(run.Id, delivery.Id, "delivery is held by another run", ct);
+                    continue;
+                }
 
-                    await BoundedRetry.RunAsync(
-                        3,
-                        async (_, token) =>
+                var file = await _ledger.GetFileAsync(delivery.CollectionFileId, ct);
+                if (file is null)
+                {
+                    await _ledger.FailDeliveryAsync(delivery.Id, claim.ClaimToken, "ledger file no longer exists", ct);
+                    continue;
+                }
+
+                var discovered = await LocateAsync(file, ct);
+                if (discovered is null)
+                {
+                    await _ledger.FailDeliveryAsync(delivery.Id, claim.ClaimToken, "source file no longer exists", ct);
+                    continue;
+                }
+
+                try
+                {
+                    if (delivery.TargetKind == "archive" ||
+                        (archive is not null &&
+                         string.Equals(delivery.TargetId, archive.TargetId, StringComparison.Ordinal)))
+                    {
+                        if (archive is null)
                         {
-                            await archive.ArchiveAsync(discovered, delivery.IdempotencyKey, token);
-                            return true;
-                        },
-                        ct);
-                    await _ledger.CompleteDeliveryAsync(delivery.Id, 1, ct);
-                }
-                else
-                {
-                    var sink = sinks.FirstOrDefault(candidate =>
-                        string.Equals(candidate.TargetId, delivery.TargetId, StringComparison.Ordinal));
-                    if (sink is null || _reader is null)
+                            throw new InvalidOperationException(
+                                $"no archive capability is registered for target '{delivery.TargetId}'");
+                        }
+
+                        await BoundedRetry.RunAsync(
+                            3,
+                            async (_, token) =>
+                            {
+                                await archive.ArchiveAsync(discovered, delivery.IdempotencyKey, token);
+                                return true;
+                            },
+                            ct);
+                        await _ledger.CompleteDeliveryAsync(delivery.Id, claim.ClaimToken, 1, ct);
+                    }
+                    else
                     {
-                        throw new InvalidOperationException(
-                            $"no reader/sink capability is registered for target '{delivery.TargetId}'");
+                        var sink = sinks.FirstOrDefault(candidate =>
+                            string.Equals(candidate.TargetId, delivery.TargetId, StringComparison.Ordinal));
+                        if (sink is null || _reader is null)
+                        {
+                            throw new InvalidOperationException(
+                                $"no reader/sink capability is registered for target '{delivery.TargetId}'");
+                        }
+
+                        var result = await BoundedRetry.RunAsync(
+                            3,
+                            async (_, token) => await sink.WriteAsync(
+                                file.Id, _reader.ReadAsync(discovered, token),
+                                delivery.IdempotencyKey, token),
+                            ct);
+                        await _ledger.CompleteDeliveryAsync(delivery.Id, claim.ClaimToken, result.Records, ct);
                     }
 
-                    var result = await BoundedRetry.RunAsync(
-                        3,
-                        async (_, token) => await sink.WriteAsync(
-                            file.Id, _reader.ReadAsync(discovered, token),
-                            delivery.IdempotencyKey, token),
-                        ct);
-                    await _ledger.CompleteDeliveryAsync(delivery.Id, result.Records, ct);
+                    retried++;
                 }
-
-                retried++;
+                catch (Exception ex)
+                {
+                    await _ledger.FailDeliveryAsync(delivery.Id, claim.ClaimToken, ex.Message, ct);
+                }
             }
-            catch (Exception ex)
-            {
-                await _ledger.FailDeliveryAsync(delivery.Id, ex.Message, ct);
-            }
+            await _ledger.FinalizeRunAsync(run.Id, ct);
+        }
+        catch (OperationCanceledException ex)
+        {
+            await _ledger.CancelRunAsync(run.Id, ex.Message, CancellationToken.None);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await _ledger.CompleteRunAsync(run.Id, CollectionStatus.Interrupted, ex.Message, CancellationToken.None);
+            throw;
         }
 
         return retried;

@@ -8,7 +8,7 @@ export interface ViewBlock {
   title?: string;
   query?: string;
   params?: Record<string, string>;
-  columns?: Array<{ key: string; title: string; format?: string }>;
+  columns?: Array<{ key: string; title: string; format?: string; href?: string }>;
   rowActions?: Array<{ label: string; command: string; args?: Record<string, string> }>;
   items?: Array<{
     label: string;

@@ -43,7 +43,6 @@ const definition = (): WorkflowDefinition => ({
 });
 
 async function makeGraph(options: {
-  mode: "select" | "connect" | "pan";
   initial: WorkflowDefinition;
   onCreateEdge: (source: string, target: string) => { sourcePort: string; targetPort: string } | null;
 }) {
@@ -59,9 +58,11 @@ async function makeGraph(options: {
     data: workflowToG6(current, catalog),
     node: { type: "rect", style: { size: [140, 42], labelText: (d: any) => d?.data?.label ?? "" } },
     behaviors: graphBehaviors({
-      graph: { getNodeData: () => graph?.getNodeData() ?? [] },
+      graph: {
+        getNodeData: () => graph?.getNodeData() ?? [],
+        getCanvasByClient: (point: [number, number]) => point,
+      },
       allowedIds: () => new Set(current.nodes.map((node) => node.id)),
-      mode: () => options.mode,
       onCreateEdge: options.onCreateEdge,
     }),
   } as any);
@@ -91,12 +92,19 @@ const drag = (graph: Graph, source: string, target: string) => {
   graph.emit("pointerup", { target: { id: target }, targetType: "node", client: { x: 250, y: 80 } });
 };
 
+/** Start on the right-edge port of the source node (NODE_WIDTH / 2 = 74). */
+const dragPort = (graph: Graph, source: string, target: string, sourceX: number) => {
+  graph.emit("node:dragstart", { target: { id: source }, targetType: "node", client: { x: sourceX + 74, y: 0 } });
+  graph.emit("pointermove", { client: { x: sourceX + 150, y: 30 } });
+  graph.emit("pointerup", { target: { id: target }, targetType: "node", client: { x: sourceX + 200, y: 40 } });
+};
+
 describe("G6 interactive connection", () => {
   it("drag-create-edge writes a port-validated edge into the workflow domain", async () => {
     let current = definition();
     const onCreateEdge = vi.fn(domainConnect(() => current, (next) => { current = next; }));
-    const state = await makeGraph({ mode: "connect", initial: current, onCreateEdge });
-    drag(state.graph, "a", "b");
+    const state = await makeGraph({ initial: current, onCreateEdge });
+    dragPort(state.graph, "a", "b", 0);
     expect(onCreateEdge).toHaveBeenCalledWith("a", "b");
     expect(current.edges).toEqual([
       { source: "a", sourcePort: "files", target: "b", targetPort: "input" },
@@ -107,16 +115,16 @@ describe("G6 interactive connection", () => {
   it("rejects incompatible ports instead of creating a phantom edge", async () => {
     let current = definition();
     const onCreateEdge = vi.fn(domainConnect(() => current, (next) => { current = next; }));
-    const state = await makeGraph({ mode: "connect", initial: current, onCreateEdge });
-    drag(state.graph, "a", "c"); // FileBatch -> RecordSet
+    const state = await makeGraph({ initial: current, onCreateEdge });
+    dragPort(state.graph, "a", "c", 0); // FileBatch -> RecordSet
     expect(onCreateEdge).toHaveBeenCalledWith("a", "c");
     expect(current.edges).toHaveLength(0);
     state.graph.destroy();
   });
 
-  it("does not create edges when connect mode is off (drag moves the node)", async () => {
+  it("dragging the node body moves it but never creates an edge", async () => {
     const onCreateEdge = vi.fn(() => ({ sourcePort: "files", targetPort: "input" }));
-    const state = await makeGraph({ mode: "select", initial: definition(), onCreateEdge });
+    const state = await makeGraph({ initial: definition(), onCreateEdge });
     drag(state.graph, "a", "b");
     expect(onCreateEdge).not.toHaveBeenCalled();
     state.graph.destroy();

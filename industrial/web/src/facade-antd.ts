@@ -14,6 +14,7 @@ const component = (name: string) => {
 export const Alert = component("Alert");
 export const Button = component("Button");
 export const Divider = component("Divider");
+export const Drawer = component("Drawer");
 export const Empty = component("Empty");
 export const Form = Object.assign(component("Form"), {
   Item: component("Form.Item"),

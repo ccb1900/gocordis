@@ -1,4 +1,7 @@
+using System.Security.Cryptography;
+using System.Text;
 using Elsa.Extensions;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Gocordis.Core;
 using Gocordis.Extensions;
@@ -50,7 +53,8 @@ public interface IIndustrialNodeExecutor
 {
     IReadOnlyList<string> Executed { get; }
     ValueTask ExecuteAsync(
-        string nodeId, string activityType, string nodeType, CancellationToken cancellationToken);
+        string instanceId, string nodeId, string activityType, string nodeType,
+        CancellationToken cancellationToken);
 }
 
 public sealed class IndustrialElsaComponent : Component
@@ -86,6 +90,7 @@ public sealed class IndustrialElsaComponent : Component
          IndustrialKeys.ResourceRegistry, IndustrialKeys.CredentialVault,
          IndustrialKeys.HistoricalRangePlanner, IndustrialKeys.FileSource,
          IndustrialKeys.RecordReader, IndustrialKeys.RecordSinkFactories,
+         IndustrialKeys.StageOutputStore,
          IndustrialKeys.RecordSink, IndustrialKeys.ArchiveSink];
     public override IReadOnlyList<ICapabilityKey> Provide() => [IndustrialKeys.ElsaActivityCatalog];
 
@@ -102,6 +107,7 @@ public sealed class IndustrialElsaComponent : Component
         var planner = context.Require(IndustrialKeys.HistoricalRangePlanner);
         var source = context.Require(IndustrialKeys.FileSource);
         var reader = context.Require(IndustrialKeys.RecordReader);
+        var stage = context.Require(IndustrialKeys.StageOutputStore);
         var sinkFactories = context.Require(IndustrialKeys.RecordSinkFactories);
         var sink = context.Require(IndustrialKeys.RecordSink);
         var archive = context.Require(IndustrialKeys.ArchiveSink);
@@ -174,7 +180,7 @@ public sealed class IndustrialElsaComponent : Component
                     {
                         await RunWorkflowAsync(
                             payload, workflows, coordinator, ledger, resources, vault, planner,
-                            source, reader, sinkFactories, sink, archive, ElsaDbPath);
+                            source, reader, stage, sinkFactories, sink, archive, ElsaDbPath);
                     }
                     catch (Exception ex)
                     {
@@ -237,7 +243,7 @@ public sealed class IndustrialElsaComponent : Component
                             ["version"] = match.Version,
                             ["resourceId"] = resourceId,
                         }, workflows, coordinator, ledger, resources, vault, planner, source, reader,
-                            sinkFactories, sink, archive, ElsaDbPath);
+                            stage, sinkFactories, sink, archive, ElsaDbPath);
                     }
                 }, owner);
                 api.RegisterQuery("industrial/instance", () => _lastInstanceId is null
@@ -282,6 +288,7 @@ public sealed class IndustrialElsaComponent : Component
         IHistoricalRangePlanner planner,
         IFileSource source,
         IRecordReader reader,
+        IStageOutputStore stage,
         Broker<IRecordSinkFactory> sinkFactories,
         IRecordSink defaultSink,
         IArchiveSink archive,
@@ -314,7 +321,7 @@ public sealed class IndustrialElsaComponent : Component
         var definition = published.Definition;
         var executor = new PublishedNodeExecutor(
             id, resourceId, definition, coordinator, ledger, resources, vault,
-            planner, source, reader, sinkFactories, defaultSink, archive);
+            planner, source, reader, stage, sinkFactories, defaultSink, archive);
         var instanceId = body["instanceId"]?.GetValue<string>();
         var resume = body["resume"] is JsonValue flag && flag.TryGetValue<bool>(out var shouldResume) && shouldResume;
         _lastError = null;
@@ -342,6 +349,7 @@ public sealed class IndustrialElsaComponent : Component
         private readonly IHistoricalRangePlanner _planner;
         private readonly IFileSource _source;
         private readonly IRecordReader _reader;
+        private readonly IStageOutputStore _stage;
         private readonly Broker<IRecordSinkFactory> _factories;
         private readonly IRecordSink _defaultSink;
         private readonly IArchiveSink _archive;
@@ -350,6 +358,7 @@ public sealed class IndustrialElsaComponent : Component
         private readonly Dictionary<string, CollectionFile> _ledgerFiles = new(StringComparer.Ordinal);
         private readonly List<string> _executed = [];
         private string? _runId;
+        private string _instanceId = string.Empty;
         private int _remainingConsequences;
         private int _anyFailure;
 
@@ -358,7 +367,8 @@ public sealed class IndustrialElsaComponent : Component
             ICollectionCoordinator coordinator, ICollectionLedger ledger,
             IResourceRegistry resources, ICredentialVault vault,
             IHistoricalRangePlanner planner, IFileSource source, IRecordReader reader,
-            Broker<IRecordSinkFactory> factories, IRecordSink defaultSink, IArchiveSink archive)
+            IStageOutputStore stage, Broker<IRecordSinkFactory> factories,
+            IRecordSink defaultSink, IArchiveSink archive)
         {
             _workflowId = workflowId;
             _resourceId = resourceId;
@@ -369,6 +379,7 @@ public sealed class IndustrialElsaComponent : Component
             _planner = planner;
             _source = source;
             _reader = reader;
+            _stage = stage;
             _factories = factories;
             _defaultSink = defaultSink;
             _archive = archive;
@@ -433,8 +444,10 @@ public sealed class IndustrialElsaComponent : Component
         }
 
         public async ValueTask ExecuteAsync(
-            string nodeId, string activityType, string nodeType, CancellationToken cancellationToken)
+            string instanceId, string nodeId, string activityType, string nodeType,
+            CancellationToken cancellationToken)
         {
+            _instanceId = instanceId;
             _executed.Add(nodeId);
             var node = _definition.Nodes.SingleOrDefault(item => item.Id == nodeId)
                        ?? throw new InvalidOperationException($"published node '{nodeId}' is missing");
@@ -449,21 +462,11 @@ public sealed class IndustrialElsaComponent : Component
             }
             else if (nodeType.Contains("mapping", StringComparison.OrdinalIgnoreCase))
             {
-                var transform = new MappingTransform(node.Config);
-                _records[node.Id] = RecordsFrom(node.Id).Select(transform.Apply).ToList();
+                await ExecuteMappingAsync(node, cancellationToken);
             }
             else if (nodeType.Contains("validate", StringComparison.OrdinalIgnoreCase))
             {
-                var transform = new ValidationTransform(node.Config);
-                var valid = new List<RecordEnvelope>();
-                foreach (var record in RecordsFrom(node.Id))
-                {
-                    if (transform.TryApply(record, out var applied, out _) && applied is not null)
-                    {
-                        valid.Add(applied);
-                    }
-                }
-                _records[node.Id] = valid;
+                await ExecuteValidationAsync(node, cancellationToken);
             }
             else if (nodeType.Contains("archive", StringComparison.OrdinalIgnoreCase))
             {
@@ -475,29 +478,89 @@ public sealed class IndustrialElsaComponent : Component
             }
         }
 
+
+        private string Fingerprint(WorkflowNode node)
+        {
+            var material = string.Join("|",
+                $"{_workflowId}:{_definition.Version}", node.Id, node.Type,
+                JsonSerializer.Serialize(node.Config));
+            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material)));
+        }
+
+        private ValueTask<T?> CachedAsync<T>(WorkflowNode node, CancellationToken ct) where T : class =>
+            _stage.TryGetAsync<T>(_instanceId, node.Id, Fingerprint(node), ct);
+
+        private async ValueTask<DiscoveredFile> RelocateAsync(BatchFileRef file, CancellationToken ct)
+        {
+            var resource = await _resources.GetAsync(file.ResourceId, ct)
+                           ?? throw new InvalidOperationException($"resource '{file.ResourceId}' is no longer registered");
+            var root = resource.Configuration.TryGetValue("root", out var value) ? value?.ToString() : null;
+            if (string.IsNullOrWhiteSpace(root)) throw new InvalidOperationException("resource has no root");
+            return new DiscoveredFile(
+                new FileIdentity(file.IdentityKey, file.RelativePath, 0,
+                    file.SourceDate == default ? DateTimeOffset.UnixEpoch : file.SourceDate,
+                    file.ContentHash, file.ResourceId),
+                Path.Combine(root!, file.RelativePath), file.SourceDate, file.ResourceId);
+        }
+
         private async ValueTask ExecuteSourceAsync(WorkflowNode node, CancellationToken ct)
         {
-            _runId ??= (await _ledger.StartAsync(_workflowId, ct)).Id;
+            if (_runId is null)
+            {
+                _runId = (await _ledger.StartAsync(_workflowId, ct)).Id;
+                await _ledger.BeginRunAsync(_runId, ct);
+            }
+
+            var cached = await CachedAsync<FileBatchRef>(node, ct);
+            if (cached is not null)
+            {
+                var files = new List<DiscoveredFile>();
+                foreach (var refFile in cached.Files)
+                {
+                    var ledgerFile = await _ledger.GetFileAsync(refFile.CollectionFileId, ct);
+                    if (ledgerFile is null) continue;
+                    _ledgerFiles[ledgerFile.Identity.Key] = ledgerFile;
+                    files.Add(await RelocateAsync(refFile, ct));
+                }
+                _files[node.Id] = files;
+                return;
+            }
+
             var resourceId = node.Config.TryGetValue("resourceId", out var configured)
                              && configured is not null && !string.IsNullOrWhiteSpace(configured.ToString())
                 ? configured.ToString()!
                 : _resourceId;
             var discovered = await _source.DiscoverAsync(
                 resourceId, _planner.Plan(DateTimeOffset.UtcNow, Lookback()), ct);
-            var files = new List<DiscoveredFile>();
+            var discoveredFiles = new List<DiscoveredFile>();
+            var batchFiles = new List<BatchFileRef>();
             foreach (var file in discovered)
             {
                 if (!await _source.IsStableAsync(file, TimeSpan.FromMilliseconds(200), ct)) continue;
                 var known = await _ledger.GetFileByIdentityAsync(file.ResourceId, file.Identity.Key, ct);
                 var ledgerFile = known ?? await _ledger.DiscoverAsync(_runId!, file, ct);
                 _ledgerFiles[file.Identity.Key] = ledgerFile;
-                files.Add(file);
+                discoveredFiles.Add(file);
+                batchFiles.Add(new BatchFileRef(ledgerFile.Id, file.ResourceId, file.Identity.Key,
+                    file.Identity.RelativePath, file.Identity.ContentHash, file.SourceDate));
             }
-            _files[node.Id] = files;
+            _files[node.Id] = discoveredFiles;
+            await _stage.CommitAsync(_instanceId, node.Id, Fingerprint(node),
+                new FileBatchRef($"batch-{Guid.NewGuid():N}", _instanceId, node.Id,
+                    Fingerprint(node), batchFiles), ct);
         }
 
         private async ValueTask ExecuteReaderAsync(WorkflowNode node, CancellationToken ct)
         {
+            var cached = await CachedAsync<DatasetRef>(node, ct);
+            if (cached is not null)
+            {
+                var restored = new List<RecordEnvelope>();
+                await foreach (var record in _stage.ReadAsync(cached, ct)) restored.Add(record);
+                _records[node.Id] = restored;
+                return;
+            }
+
             var records = new List<RecordEnvelope>();
             foreach (var file in FilesFrom(node.Id))
             {
@@ -507,6 +570,79 @@ public sealed class IndustrialElsaComponent : Component
                 }
             }
             _records[node.Id] = records;
+            await _stage.SpoolAsync(_instanceId, node.Id, Fingerprint(node), Stream(records), ct);
+        }
+
+
+        private async ValueTask ExecuteMappingAsync(WorkflowNode node, CancellationToken ct)
+        {
+            var cached = await CachedAsync<TransformResultRef>(node, ct);
+            if (cached is not null)
+            {
+                var records = new List<RecordEnvelope>();
+                await foreach (var record in _stage.ReadAsync(cached.Dataset, ct)) records.Add(record);
+                _records[node.Id] = records;
+                return;
+            }
+            var transform = new MappingTransform(node.Config);
+            var mapped = RecordsFrom(node.Id).Select(transform.Apply).ToList();
+            _records[node.Id] = mapped;
+            var dataset = await _stage.SpoolAsync(_instanceId, node.Id + "-dataset", Fingerprint(node), Stream(mapped), ct);
+            await _stage.CommitAsync(_instanceId, node.Id, Fingerprint(node),
+                new TransformResultRef($"transform-{Guid.NewGuid():N}", _instanceId, node.Id,
+                    Fingerprint(node), dataset, mapped.Count, 0), ct);
+        }
+
+        private async ValueTask ExecuteValidationAsync(WorkflowNode node, CancellationToken ct)
+        {
+            var cached = await CachedAsync<TransformResultRef>(node, ct);
+            if (cached is not null)
+            {
+                var restored = new List<RecordEnvelope>();
+                await foreach (var record in _stage.ReadAsync(cached.Dataset, ct)) restored.Add(record);
+                _records[node.Id] = restored;
+                return;
+            }
+
+            var transform = new ValidationTransform(node.Config);
+            var valid = new List<RecordEnvelope>();
+            var rejectedRecords = new List<RecordEnvelope>();
+            var rejected = 0;
+            var warnings = 0;
+            foreach (var record in RecordsFrom(node.Id))
+            {
+                if (transform.TryApply(record, out var applied, out var reason) && applied is not null)
+                {
+                    valid.Add(applied);
+                    continue;
+                }
+
+                rejected++;
+                var strategy = transform.OnInvalid;
+                if (strategy == "fail")
+                {
+                    throw new InvalidOperationException(
+                        $"validation failed for {record.Source.Key}: {reason}");
+                }
+                if (strategy == "warn")
+                {
+                    warnings++;
+                    valid.Add(record);
+                    continue;
+                }
+                if (strategy == "quarantine") rejectedRecords.Add(record);
+            }
+
+            _records[node.Id] = valid;
+            var dataset = await _stage.SpoolAsync(_instanceId, node.Id + "-dataset", Fingerprint(node), Stream(valid), ct);
+            if (rejectedRecords.Count > 0)
+            {
+                await _stage.SpoolAsync(_instanceId, node.Id + "-quarantine", Fingerprint(node),
+                    Stream(rejectedRecords), ct);
+            }
+            await _stage.CommitAsync(_instanceId, node.Id, Fingerprint(node),
+                new TransformResultRef($"transform-{Guid.NewGuid():N}", _instanceId, node.Id,
+                    Fingerprint(node), dataset, valid.Count, rejected), ct);
         }
 
         private async ValueTask<IRecordSink> ResolveSinkAsync(WorkflowNode node, CancellationToken ct)
@@ -526,7 +662,14 @@ public sealed class IndustrialElsaComponent : Component
 
         private async ValueTask ExecuteSinkAsync(WorkflowNode node, CancellationToken ct)
         {
+            if (await CachedAsync<DeliveryResultRef>(node, ct) is not null)
+            {
+                await FinishRunIfComplete(ct);
+                return;
+            }
             var sink = await ResolveSinkAsync(node, ct);
+            var delivered = 0;
+            var stageComplete = true;
             var byFile = RecordsFrom(node.Id)
                 .GroupBy(record => record.Source.Key, StringComparer.Ordinal)
                 .ToArray();
@@ -534,43 +677,80 @@ public sealed class IndustrialElsaComponent : Component
             {
                 if (!_ledgerFiles.TryGetValue(group.Key, out var ledgerFile)) continue;
                 var key = $"{group.Key}->{sink.TargetId}";
-                var delivery = await _ledger.StartDeliveryAsync(ledgerFile.Id, sink.TargetId, key, "record", ct);
-                if (delivery.Status == "Succeeded" ||
-                    !await _ledger.TryClaimDeliveryAsync(delivery.Id, ct)) continue;
+                var delivery = await _ledger.StartDeliveryAsync(
+                    ledgerFile.Id, sink.TargetId, key, "record", _runId, ct);
+                if (delivery.Status == "Succeeded") continue;
+                var claim = await _ledger.TryClaimDeliveryAsync(
+                    _runId!, delivery.Id, TimeSpan.FromMinutes(5), ct);
+                if (claim is null)
+                {
+                    await _ledger.MarkDeliveryContestedAsync(
+                        _runId!, delivery.Id, "delivery is held by another run", ct);
+                    stageComplete = false;
+                    continue;
+                }
                 try
                 {
                     var result = await sink.WriteAsync(ledgerFile.Id, Stream(group), key, ct);
-                    await _ledger.CompleteDeliveryAsync(delivery.Id, result.Records, ct);
+                    await _ledger.CompleteDeliveryAsync(delivery.Id, claim.ClaimToken, result.Records, ct);
+                    delivered += result.Records;
                 }
                 catch (Exception ex)
                 {
                     Interlocked.Exchange(ref _anyFailure, 1);
-                    await _ledger.FailDeliveryAsync(delivery.Id, ex.Message, ct);
+                    stageComplete = false;
+                    await _ledger.FailDeliveryAsync(delivery.Id, claim.ClaimToken, ex.Message, ct);
                 }
             }
-            FinishRunIfComplete();
+            if (stageComplete)
+            {
+                await _stage.CommitAsync(_instanceId, node.Id, Fingerprint(node),
+                    new DeliveryResultRef($"delivery-stage-{Guid.NewGuid():N}", sink.TargetId, delivered,
+                        IdempotencyKey: string.Empty), ct);
+            }
+            await FinishRunIfComplete(ct);
         }
 
         private async ValueTask ExecuteArchiveAsync(WorkflowNode node, CancellationToken ct)
         {
+            if (await CachedAsync<DeliveryResultRef>(node, ct) is not null) return;
+            var archived = 0;
+            var stageComplete = true;
             foreach (var file in FilesFrom(node.Id))
             {
                 if (!_ledgerFiles.TryGetValue(file.Identity.Key, out var ledgerFile)) continue;
                 var key = $"{file.Identity.Key}->{_archive.TargetId}";
                 var delivery = await _ledger.StartDeliveryAsync(
-                    ledgerFile.Id, _archive.TargetId, key, "archive", ct);
-                if (delivery.Status == "Succeeded" ||
-                    !await _ledger.TryClaimDeliveryAsync(delivery.Id, ct)) continue;
+                    ledgerFile.Id, _archive.TargetId, key, "archive", _runId, ct);
+                if (delivery.Status == "Succeeded") continue;
+                var claim = await _ledger.TryClaimDeliveryAsync(
+                    _runId!, delivery.Id, TimeSpan.FromMinutes(5), ct);
+                if (claim is null)
+                {
+                    await _ledger.MarkDeliveryContestedAsync(
+                        _runId!, delivery.Id, "delivery is held by another run", ct);
+                    stageComplete = false;
+                    continue;
+                }
                 try
                 {
                     await _archive.ArchiveAsync(file, key, ct);
-                    await _ledger.CompleteDeliveryAsync(delivery.Id, 1, ct);
+                    await _ledger.CompleteDeliveryAsync(delivery.Id, claim.ClaimToken, 1, ct);
+                    archived++;
                 }
                 catch (Exception ex)
                 {
                     Interlocked.Exchange(ref _anyFailure, 1);
-                    await _ledger.FailDeliveryAsync(delivery.Id, ex.Message, ct);
+                    stageComplete = false;
+                    await _ledger.FailDeliveryAsync(delivery.Id, claim.ClaimToken, ex.Message, ct);
+                    stageComplete = false;
                 }
+            }
+            if (stageComplete)
+            {
+                await _stage.CommitAsync(_instanceId, node.Id, Fingerprint(node),
+                    new DeliveryResultRef($"archive-stage-{Guid.NewGuid():N}", _archive.TargetId, archived,
+                        IdempotencyKey: string.Empty), ct);
             }
         }
 
@@ -583,11 +763,10 @@ public sealed class IndustrialElsaComponent : Component
             }
         }
 
-        private void FinishRunIfComplete()
+        private async ValueTask FinishRunIfComplete(CancellationToken ct)
         {
             if (_runId is null || Interlocked.Decrement(ref _remainingConsequences) != 0) return;
-            var status = Volatile.Read(ref _anyFailure) == 0 ? "Succeeded" : "PartialFailure";
-            _ledger.CompleteRunAsync(_runId, status, null).GetAwaiter().GetResult();
+            await _ledger.FinalizeRunAsync(_runId, ct);
         }
     }
 }

@@ -17,6 +17,11 @@ describe("thin console shell", () => {
     }
   });
 
+  it("animates route content changes without owning product pages", () => {
+    const source = readFileSync(app, "utf8");
+    expect(source).toContain('key={path} className="route-enter"');
+  });
+
   it("registers no renderers at module load", () => {
     const source = readFileSync(app, "utf8");
     expect(source).not.toContain("registerPageRenderer(");

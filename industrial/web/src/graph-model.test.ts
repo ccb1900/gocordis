@@ -95,24 +95,27 @@ describe("G6 render options", () => {
     expect(types).toContain("drag-element");
   });
 
-  it("owns the pointer exclusively: pan only in pan mode, connect only in connect mode", () => {
-    let mode: any = "select";
-    const behaviors: any[] = graphBehaviors({ mode: () => mode });
+  it("routes direct gestures: background pans, node body moves, port drags connect", () => {
+    let panModifier = false;
+    const behaviors: any[] = graphBehaviors({
+      graph: {
+        getNodeData: () => [{ id: "a", style: { x: 0, y: 0 } }],
+        getCanvasByClient: (point: [number, number]) => point,
+      },
+      isPanModifier: () => panModifier,
+    });
     const canvasPan = behaviors.find((item) => item?.type === "drag-canvas");
     const dragElement = behaviors.find((item) => item?.type === "drag-element");
     const createEdge = behaviors.find((item) => item?.type === "create-edge");
-    expect(canvasPan.enable({ targetType: "canvas" })).toBe(false);
-    expect(dragElement.enable({ targetType: "node" })).toBe(true);
-    expect(createEdge.enable()).toBe(false);
 
-    mode = "pan";
     expect(canvasPan.enable({ targetType: "canvas" })).toBe(true);
-    expect(canvasPan.enable({ targetType: "node" })).toBe(false);
-    expect(dragElement.enable({ targetType: "node" })).toBe(false);
+    expect(dragElement.enable({ targetType: "node", client: { x: 10, y: 0 } })).toBe(true);
+    expect(createEdge.enable({ targetType: "node", target: { id: "a" }, client: { x: 74, y: 0 } })).toBe(true);
+    expect(dragElement.enable({ targetType: "node", target: { id: "a" }, client: { x: 74, y: 0 } })).toBe(false);
 
-    mode = "connect";
-    expect(createEdge.enable()).toBe(true);
-    expect(dragElement.enable({ targetType: "node" })).toBe(false);
-    expect(canvasPan.enable({ targetType: "canvas" })).toBe(false);
+    panModifier = true;
+    expect(canvasPan.enable({ targetType: "node", client: { x: 10, y: 0 } })).toBe(true);
+    expect(dragElement.enable({ targetType: "node", client: { x: 10, y: 0 } })).toBe(false);
+    expect(createEdge.enable({ targetType: "node", client: { x: 74, y: 0 } })).toBe(false);
   });
 });

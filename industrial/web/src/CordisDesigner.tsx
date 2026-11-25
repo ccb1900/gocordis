@@ -3,7 +3,7 @@
 // facade. WorkflowDefinition is the single editable source of truth.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Button, InputNumber, Layout, Select, Space, Spin, Tag, Typography, message } from "antd";
+import { Alert, Button, Drawer, InputNumber, Layout, Select, Space, Spin, Tag, Typography, message } from "antd";
 import { GraphCanvas } from "./GraphCanvas";
 import { NodePalette } from "./NodePalette";
 import { PropertyEditor } from "./PropertyEditor";
@@ -11,7 +11,6 @@ import {
   parseNodeDescriptors, parseResourceOptions, parseWorkflow, parseWorkflowSummaries, unwrapData,
 } from "./dto";
 import { getFacade } from "./facade";
-import type { DesignerMode } from "./graph-model";
 import {
   addEdge, applyPositions, descriptorOf, emptyWorkflow, makeNode,
   removeEdge, removeNode, resolveEdgePorts, setNodeConfig, validateWorkflow,
@@ -33,12 +32,6 @@ interface ExecutionState {
   executed?: string[];
 }
 
-const MODE_LABEL: Record<DesignerMode, string> = {
-  select: "选择",
-  connect: "连线",
-  pan: "平移",
-};
-
 export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const [messageApi, contextHolder] = message.useMessage();
   const [descriptors, setDescriptors] = useState<NodeDescriptor[]>([]);
@@ -53,7 +46,8 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState<DesignerMode>("select");
+  const [libraryOpen, setLibraryOpen] = useState(true);
+  const [propertiesOpen, setPropertiesOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [execution, setExecution] = useState<ExecutionState | null>(null);
   const idRef = useRef(1);
@@ -72,7 +66,11 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
       if (workflows.status === "fulfilled") {
         const list = parseWorkflowSummaries(workflows.value);
         setSummaries(list);
-        if (list.length > 0) void loadWorkflow(list[0].workflowId);
+        const requested = new URLSearchParams(window.location.search).get("workflowId");
+        const target = requested && list.some((item) => item.workflowId === requested)
+          ? requested
+          : list[0]?.workflowId;
+        if (target) void loadWorkflow(target);
       } else errors.push(`工作流: ${String(workflows.reason)}`);
       if (resources.status === "fulfilled") {
         const parsed = parseResourceOptions(resources.value);
@@ -125,6 +123,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
         .reduce((max, match) => Math.max(max, Number(match![1])), 0);
       idRef.current = last + 1;
       setSelectedId(null);
+      setPropertiesOpen(false);
       setIssues([]);
       setDirty(false);
     } catch (error) {
@@ -184,6 +183,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
       nodes: [...current.nodes, makeNode(descriptor, id, x, y)],
     }));
     setSelectedId(id);
+    setPropertiesOpen(true);
     setIssues([]);
     setDirty(true);
   }, [catalog]);
@@ -239,7 +239,10 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
     const found = validateWorkflow(definition, catalog, new Set(resourceIds));
     setIssues(found);
     if (found.length === 0) messageApi.success("本地校验通过（发布时服务端仍会复核）");
-    else messageApi.warning(`发现 ${found.length} 个问题，见右侧定位列表`);
+    else {
+      messageApi.warning(`发现 ${found.length} 个问题，见属性抽屉定位列表`);
+      setPropertiesOpen(true);
+    }
   }, [definition, catalog, resourceIds, messageApi]);
 
   const updateEdge = useCallback((index: number, edge: WorkflowEdge) => {
@@ -263,26 +266,26 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
           {execution && <Tag color={execution.error ? "error" : "success"}>{execution.status}</Tag>}
         </div>
         <div className="industrial-toolbar">
-          <Space size={4}>
-            {(["select", "connect", "pan"] as DesignerMode[]).map((item) => (
-              <Button
-                key={item}
-                type={mode === item ? "primary" : "default"}
-                onClick={() => setMode(item)}
-              >
-                {MODE_LABEL[item]}
-              </Button>
-            ))}
-          </Space>
+          <Button
+            size="small"
+            data-testid="toggle-library"
+            aria-expanded={libraryOpen}
+            onClick={() => setLibraryOpen((open) => !open)}
+          >
+            {libraryOpen ? "收起节点库" : "节点库"}
+          </Button>
+          <Button size="small" data-testid="toggle-properties"
+            onClick={() => setPropertiesOpen((open) => !open)}>属性</Button>
           <span className="industrial-toolbar-divider" />
           <Space size={4}>
-            <Button loading={busy} onClick={() => void save()}>保存</Button>
-            <Button onClick={validate}>校验</Button>
-            <Button loading={busy} onClick={() => void publish()}>发布</Button>
-            <Button type="primary" loading={busy} onClick={() => void run()}>运行</Button>
+            <Button size="small" loading={busy} onClick={() => void save()}>保存</Button>
+            <Button size="small" onClick={validate}>校验</Button>
+            <Button size="small" loading={busy} onClick={() => void publish()}>发布</Button>
+            <Button size="small" type="primary" loading={busy} onClick={() => void run()}>运行</Button>
           </Space>
           <Select
             className="industrial-resource-select"
+            size="small"
             value={resourceId}
             onChange={setResourceId}
             placeholder="运行资源"
@@ -290,6 +293,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
           />
           <InputNumber
             className="industrial-backfill-input"
+            size="small"
             min={1}
             max={365}
             value={backfillDays}
@@ -297,34 +301,43 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
               setBackfillDays(Number(value) || 1);
               setDirty(true);
             }}
-            addonBefore="补采天数"
+            addonBefore="补采"
           />
         </div>
       </Header>
-      <Content className="industrial-body">
-        <aside className="industrial-palette">
-          {summaries.length > 0 && (
-            <Select
-              className="industrial-workflow-select"
-              value={definition.workflowId}
-              placeholder="选择工作流"
-              onChange={(id: string) => void loadWorkflow(id)}
-              options={summaries.map((item) => ({ value: item.workflowId, label: item.name }))}
-            />
-          )}
-          <NodePalette descriptors={descriptors} loading={false} />
-        </aside>
+      <Content className={`industrial-body${libraryOpen ? "" : " industrial-body--collapsed"}`}>
+        {libraryOpen ? (
+          <aside className="industrial-palette">
+            {summaries.length > 0 && (
+              <Select
+                className="industrial-workflow-select"
+                size="small"
+                value={definition.workflowId}
+                placeholder="选择工作流"
+                onChange={(id: string) => void loadWorkflow(id)}
+                options={summaries.map((item) => ({ value: item.workflowId, label: item.name }))}
+              />
+            )}
+            <NodePalette descriptors={descriptors} loading={false} />
+          </aside>
+        ) : (
+          <div className="industrial-palette-rail">
+            <Button type="text" size="small" onClick={() => setLibraryOpen(true)}>节点库</Button>
+          </div>
+        )}
         <section className="industrial-center">
           {loadErrors.length > 0 && (
-            <Alert type="warning" showIcon style={{ marginBottom: 10 }}
+            <Alert type="warning" showIcon style={{ marginBottom: 8 }}
               message="部分设计器数据未加载" description={loadErrors.join("；")} />
           )}
           <GraphCanvas
             definition={definition}
             catalog={catalog}
             selectedId={selectedId}
-            mode={mode}
-            onSelect={setSelectedId}
+            onSelect={(id) => {
+              setSelectedId(id);
+              if (id) setPropertiesOpen(true);
+            }}
             onDropNode={dropNode}
             onCreateEdge={createEdge}
             onPositions={(positions) => {
@@ -333,44 +346,56 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
             }}
           />
         </section>
-        <aside className="industrial-properties">
-          {execution && (
-            <Alert
-              style={{ marginBottom: 12 }}
-              type={execution.error ? "error" : "success"}
-              showIcon
-              message={`执行状态: ${execution.status}`}
-              description={execution.error ?? (execution.executed?.length
-                ? `已执行节点: ${execution.executed.join(", ")}` : undefined)}
-            />
-          )}
-          <PropertyEditor
-            node={selectedNode}
-            descriptor={selectedNode ? descriptorOf(catalog, selectedNode.type) ?? null : null}
-            edges={definition.edges}
-            catalog={catalog}
-            resources={resources}
-            issues={issues}
-            onApplyConfig={(config) => {
-              if (selectedId) {
-                setDefinition((current) => setNodeConfig(current, selectedId, config));
-                setDirty(true);
-              }
-            }}
-            onDeleteNode={() => {
-              setDefinition((current) => removeNode(current, selectedId ?? ""));
-              setSelectedId(null);
-              setDirty(true);
-            }}
-            onDeleteEdge={(index) => {
-              setDefinition((current) => removeEdge(current, index));
-              setDirty(true);
-            }}
-            onUpdateEdge={updateEdge}
-            onSelectNode={setSelectedId}
-          />
-        </aside>
       </Content>
+      <Drawer
+        className="industrial-properties-drawer"
+        title="节点属性"
+        placement="right"
+        width={420}
+        open={propertiesOpen}
+        mask={false}
+        getContainer={false}
+        onClose={() => setPropertiesOpen(false)}
+      >
+        {execution && (
+          <Alert
+            style={{ marginBottom: 12 }}
+            type={execution.error ? "error" : "success"}
+            showIcon
+            message={`执行状态: ${execution.status}`}
+            description={execution.error ?? (execution.executed?.length
+              ? `已执行节点: ${execution.executed.join(", ")}` : undefined)}
+          />
+        )}
+        <PropertyEditor
+          node={selectedNode}
+          descriptor={selectedNode ? descriptorOf(catalog, selectedNode.type) ?? null : null}
+          edges={definition.edges}
+          catalog={catalog}
+          resources={resources}
+          issues={issues}
+          onApplyConfig={(config) => {
+            if (selectedId) {
+              setDefinition((current) => setNodeConfig(current, selectedId, config));
+              setDirty(true);
+            }
+          }}
+          onDeleteNode={() => {
+            setDefinition((current) => removeNode(current, selectedId ?? ""));
+            setSelectedId(null);
+            setDirty(true);
+          }}
+          onDeleteEdge={(index) => {
+            setDefinition((current) => removeEdge(current, index));
+            setDirty(true);
+          }}
+          onUpdateEdge={updateEdge}
+          onSelectNode={(id) => {
+            setSelectedId(id);
+            setPropertiesOpen(true);
+          }}
+        />
+      </Drawer>
     </div>
   );
 }

@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Industrial.Contracts;
 
 namespace Industrial.Core;
@@ -6,6 +8,9 @@ namespace Industrial.Core;
 /// located to a node id, edge index or workflow-level path.</summary>
 public sealed class WorkflowValidator : IWorkflowValidator
 {
+    private static readonly string[] FORBIDDEN_CONFIG_KEYS =
+        ["connectionstring", "password", "user", "username", "server", "host", "database", "secret"];
+
     private readonly INodeCatalog _catalog;
     private readonly IResourceRegistry _resources;
     private readonly ICredentialVault _credentials;
@@ -111,6 +116,45 @@ public sealed class WorkflowValidator : IWorkflowValidator
                 if (value is null || (value is string text && string.IsNullOrWhiteSpace(text)))
                 {
                     errors.Add(new($"nodes.{node.Id}.config.{key}", "EMPTY_CONFIG", $"configuration '{key}' is empty"));
+                }
+            }
+
+            var configReader = new NodeConfigReader(node.Config);
+            var schemaObject = JsonSerializer.SerializeToNode(descriptor.ConfigurationSchema) as JsonObject;
+            var properties = schemaObject?["properties"] as JsonObject;
+            foreach (var key in node.Config.Keys)
+            {
+                if (FORBIDDEN_CONFIG_KEYS.Contains(key, StringComparer.OrdinalIgnoreCase))
+                {
+                    errors.Add(new($"nodes.{node.Id}.config.{key}", "FORBIDDEN_CONFIG",
+                        $"configuration '{key}' must be stored in a resource or credential"));
+                }
+
+                var spec = properties?[key] as JsonObject;
+                var type = spec?["type"]?.GetValue<string>();
+                if (type == "boolean" && !bool.TryParse(configReader.GetString(key), out _))
+                {
+                    errors.Add(new($"nodes.{node.Id}.config.{key}", "CONFIG_TYPE_MISMATCH",
+                        $"configuration '{key}' must be boolean"));
+                }
+                if (type == "integer" && !int.TryParse(configReader.GetString(key), out _))
+                {
+                    errors.Add(new($"nodes.{node.Id}.config.{key}", "CONFIG_TYPE_MISMATCH",
+                        $"configuration '{key}' must be an integer"));
+                }
+                if (spec?["enum"] is JsonArray allowed)
+                {
+                    var current = configReader.GetString(key);
+                    if (!allowed.Any(item => string.Equals(item?.GetValue<string>(), current, StringComparison.Ordinal)))
+                    {
+                        errors.Add(new($"nodes.{node.Id}.config.{key}", "CONFIG_ENUM_INVALID",
+                            $"configuration '{key}' must be one of {allowed.ToJsonString()}"));
+                    }
+                }
+                if (key == "delimiter" && configReader.GetString(key).Length != 1)
+                {
+                    errors.Add(new($"nodes.{node.Id}.config.{key}", "INVALID_DELIMITER",
+                        "CSV delimiter must be exactly one character"));
                 }
             }
 

@@ -48,7 +48,7 @@ public sealed class LedgerCorrectnessTests
     }
 
     [Fact]
-    public async Task RunFailureIsRecordedWithFinishedAt()
+    public async Task RunFailureIsRecordedAsInterruptedForRecovery()
     {
         using var fixture = new Fixture();
         await fixture.RegisterResourceAsync("source-1", fixture.SourceRoot);
@@ -70,9 +70,9 @@ public sealed class LedgerCorrectnessTests
 
         var run = await fixture.Ledger.GetRunAsync(runId);
         Assert.NotNull(run);
-        Assert.Equal("Failed", run!.Status);
+        Assert.Equal("Interrupted", run!.Status);
         Assert.Contains("discovery failed", run.Error);
-        Assert.NotNull(run.FinishedAt);
+        Assert.Null(run.FinishedAt);
     }
 
     [Fact]

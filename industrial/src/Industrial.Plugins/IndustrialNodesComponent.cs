@@ -43,9 +43,32 @@ public sealed class IndustrialNodesComponent : Component
             WithControl(), [new NodePort("files", PortType.FileBatch, true)],
             ResourceSchema("resourceId", "Source resource", "filesystem.unc"));
         yield return Node("industrial.reader.csv", "CSV Reader", "Parsing", "reader", "FileText", types[2],
-            WithControl(new NodePort("input", PortType.FileBatch, true)), [new NodePort("records", PortType.RecordSet, true)]);
+            WithControl(new NodePort("input", PortType.FileBatch, true)), [new NodePort("records", PortType.RecordSet, true)],
+            new Dictionary<string, object?>
+            {
+                ["type"] = "object",
+                ["properties"] = new Dictionary<string, object?>
+                {
+                    ["delimiter"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "分隔符", ["default"] = "," },
+                    ["hasHeaderRecord"] = new Dictionary<string, object?> { ["type"] = "boolean", ["title"] = "包含表头", ["default"] = true },
+                    ["encoding"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "编码", ["default"] = "utf-8" },
+                    ["recordIdColumn"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "记录 ID 列" },
+                    ["recordTimeColumn"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "记录时间列" },
+                    ["onBadData"] = EnumField("坏数据处理", ["drop", "warn", "fail"], "drop"),
+                },
+            });
         yield return Node("industrial.reader.excel", "Excel Reader", "Parsing", "reader", "FileExcel", types[3],
-            WithControl(new NodePort("input", PortType.FileBatch, true)), [new NodePort("records", PortType.RecordSet, true)]);
+            WithControl(new NodePort("input", PortType.FileBatch, true)), [new NodePort("records", PortType.RecordSet, true)],
+            new Dictionary<string, object?>
+            {
+                ["type"] = "object",
+                ["properties"] = new Dictionary<string, object?>
+                {
+                    ["sheet"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "工作表" },
+                    ["headerRow"] = new Dictionary<string, object?> { ["type"] = "integer", ["title"] = "表头行", ["default"] = 1 },
+                    ["onBadData"] = EnumField("坏数据处理", ["drop", "warn", "fail"], "drop"),
+                },
+            });
         yield return Node("industrial.transform.mapping", "Field Mapping", "Transform", "transform", "Swap", types[4],
             WithControl(new NodePort("input", PortType.RecordSet, true)), [new NodePort("output", PortType.RecordSet, true)],
             new Dictionary<string, object?>
@@ -60,6 +83,7 @@ public sealed class IndustrialNodesComponent : Component
                         ["additionalProperties"] = new Dictionary<string, object?> { ["type"] = "string" },
                         ["default"] = new Dictionary<string, object?>(),
                     },
+                    ["dropUnmapped"] = new Dictionary<string, object?> { ["type"] = "boolean", ["title"] = "丢弃未映射字段", ["default"] = true },
                 },
             });
         yield return Node("industrial.transform.validate", "Validation", "Transform", "transform", "CheckCircle", types[5],
@@ -87,6 +111,7 @@ public sealed class IndustrialNodesComponent : Component
                         },
                         ["default"] = new Dictionary<string, object?>(),
                     },
+                    ["onInvalid"] = EnumField("无效记录策略", ["drop", "warn", "fail", "quarantine"], "drop"),
                 },
             });
         yield return Node("industrial.sink.sqlserver", "SQL Server", "Delivery", "sink", "Database", types[6],
@@ -102,7 +127,17 @@ public sealed class IndustrialNodesComponent : Component
             WithControl(new NodePort("records", PortType.RecordSet, true)), [new NodePort("result", PortType.DeliveryResult, true)],
             TargetSchema("mysql"));
         yield return Node("industrial.sink.archive", "Archive", "Delivery", "sink", "Archive", types[8],
-            WithControl(new NodePort("files", PortType.FileBatch, false)), [new NodePort("result", PortType.DeliveryResult, false)]);
+            WithControl(new NodePort("files", PortType.FileBatch, false)), [new NodePort("result", PortType.DeliveryResult, false)],
+            new Dictionary<string, object?>
+            {
+                ["type"] = "object",
+                ["properties"] = new Dictionary<string, object?>
+                {
+                    ["targetResourceId"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "归档目标", ["format"] = "resource" },
+                    ["directoryPattern"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "目录模板", ["default"] = "{yyyyMMdd}" },
+                    ["conflictPolicy"] = EnumField("冲突策略", ["rename", "overwrite", "fail"], "rename"),
+                },
+            });
     }
 
     private static IReadOnlyDictionary<string, object?> ResourceSchema(
@@ -125,8 +160,20 @@ public sealed class IndustrialNodesComponent : Component
         return schema;
     }
 
-    private static IReadOnlyDictionary<string, object?> TargetSchema(string resourceType) =>
-        ResourceSchema("targetResourceId", "Target resource", resourceType);
+    private static IReadOnlyDictionary<string, object?> EnumField(string title, string[] values, string fallback) =>
+        new Dictionary<string, object?>
+        {
+            ["type"] = "string", ["title"] = title, ["enum"] = values, ["default"] = fallback,
+        };
+
+    private static IReadOnlyDictionary<string, object?> TargetSchema(string resourceType)
+    {
+        var schema = ResourceSchema("targetResourceId", "Target resource", resourceType);
+        var properties = (Dictionary<string, object?>)schema["properties"]!;
+        properties["writeMode"] = EnumField("写入模式", ["append", "upsert", "replace"], "append");
+        properties["businessKey"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "业务键" };
+        return schema;
+    }
 
     private static NodeDescriptor Node(
         string id, string name, string category, string group, string icon, string activityType,

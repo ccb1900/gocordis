@@ -1,0 +1,173 @@
+using Industrial.Contracts;
+using Industrial.Core;
+using Industrial.Persistence;
+using Microsoft.EntityFrameworkCore;
+
+namespace Industrial.Tests;
+
+/// <summary>Phase 1 gates: delivery claims are atomic, fenced by token/lease,
+/// and run status is derived from run-scoped delivery outcomes.</summary>
+public sealed class DeliveryLeaseTests
+{
+    [Fact]
+    public async Task ConcurrentClaimsProduceExactlyOneValidToken()
+    {
+        using var fixture = new Fixture();
+        var run = await fixture.Ledger.StartAsync("workflow");
+        await fixture.Ledger.BeginRunAsync(run.Id);
+        var delivery = await SeedDeliveryAsync(fixture, run.Id);
+
+        var a = new CollectionLedger(fixture.NewDb);
+        var b = new CollectionLedger(fixture.NewDb);
+        var winnerA = await a.TryClaimDeliveryAsync(run.Id, delivery.Id, TimeSpan.FromMinutes(1));
+        var winnerB = await b.TryClaimDeliveryAsync(run.Id, delivery.Id, TimeSpan.FromMinutes(1));
+
+        Assert.True((winnerA is null) != (winnerB is null));
+        var winner = winnerA ?? winnerB;
+        Assert.NotNull(winner);
+        await using var db = fixture.NewDb();
+        var row = await db.FileDeliveries.SingleAsync(x => x.Id == delivery.Id);
+        Assert.Equal(CollectionStatus.InProgress, row.Status);
+        Assert.Equal(winner!.ClaimToken, row.ClaimToken);
+        Assert.Equal(1, row.Attempts);
+    }
+
+    [Fact]
+    public async Task CompleteAndFailRequireMatchingTokenAndInProgressState()
+    {
+        using var fixture = new Fixture();
+        var run = await fixture.Ledger.StartAsync("workflow");
+        await fixture.Ledger.BeginRunAsync(run.Id);
+        var delivery = await SeedDeliveryAsync(fixture, run.Id);
+        var claim = await fixture.Ledger.TryClaimDeliveryAsync(run.Id, delivery.Id, TimeSpan.FromMinutes(1));
+        Assert.NotNull(claim);
+
+        Assert.False((await fixture.Ledger.CompleteDeliveryAsync(delivery.Id, "wrong-token", 1)).Accepted);
+        Assert.False((await fixture.Ledger.FailDeliveryAsync(delivery.Id, "wrong-token", "bad")).Accepted);
+        Assert.True((await fixture.Ledger.CompleteDeliveryAsync(delivery.Id, claim!.ClaimToken, 3)).Accepted);
+        Assert.False((await fixture.Ledger.CompleteDeliveryAsync(delivery.Id, claim.ClaimToken, 3)).Accepted);
+        Assert.False((await fixture.Ledger.FailDeliveryAsync(delivery.Id, claim.ClaimToken, "late")).Accepted);
+
+        await using var db = fixture.NewDb();
+        var row = await db.FileDeliveries.SingleAsync(x => x.Id == delivery.Id);
+        Assert.Equal(CollectionStatus.Succeeded, row.Status);
+        Assert.Equal(3, row.Records);
+        Assert.Null(row.ClaimToken);
+        Assert.Equal(1, row.Attempts);
+    }
+
+    [Fact]
+    public async Task ExpiredLeaseIsReclaimableAndOldTokenIsRejected()
+    {
+        using var fixture = new Fixture();
+        var run = await fixture.Ledger.StartAsync("workflow");
+        await fixture.Ledger.BeginRunAsync(run.Id);
+        var delivery = await SeedDeliveryAsync(fixture, run.Id);
+        var first = await fixture.Ledger.TryClaimDeliveryAsync(run.Id, delivery.Id, TimeSpan.FromMilliseconds(1));
+        Assert.NotNull(first);
+
+        await using (var db = fixture.NewDb())
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                "UPDATE FileDeliveries SET LeaseExpiresAtUnixMs = 1 WHERE Id = {0}", delivery.Id);
+        }
+
+        var second = await fixture.Ledger.TryClaimDeliveryAsync(run.Id, delivery.Id, TimeSpan.FromMinutes(1));
+        Assert.NotNull(second);
+        Assert.NotEqual(first!.ClaimToken, second!.ClaimToken);
+        Assert.False((await fixture.Ledger.CompleteDeliveryAsync(delivery.Id, first.ClaimToken, 1)).Accepted);
+        Assert.True((await fixture.Ledger.CompleteDeliveryAsync(delivery.Id, second.ClaimToken, 1)).Accepted);
+
+        await using var finalDb = fixture.NewDb();
+        Assert.Equal(2, await finalDb.FileDeliveries.AsNoTracking()
+            .Where(x => x.Id == delivery.Id).Select(x => x.Attempts).SingleAsync());
+    }
+
+    [Fact]
+    public async Task RecoverExpiredLeasesMarksDeliveryAndRunInterrupted()
+    {
+        using var fixture = new Fixture();
+        var run = await fixture.Ledger.StartAsync("workflow");
+        await fixture.Ledger.BeginRunAsync(run.Id);
+        var delivery = await SeedDeliveryAsync(fixture, run.Id);
+        var claim = await fixture.Ledger.TryClaimDeliveryAsync(run.Id, delivery.Id, TimeSpan.FromMilliseconds(1));
+        Assert.NotNull(claim);
+
+        await using (var db = fixture.NewDb())
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                "UPDATE FileDeliveries SET LeaseExpiresAtUnixMs = 1 WHERE Id = {0}", delivery.Id);
+        }
+
+        Assert.Equal(1, await fixture.Ledger.RecoverExpiredLeasesAsync(DateTimeOffset.UtcNow));
+        var recovered = await fixture.Ledger.GetRunAsync(run.Id);
+        Assert.Equal(CollectionStatus.Interrupted, recovered!.Status);
+        Assert.Null(recovered.FinishedAt);
+        await using var db2 = fixture.NewDb();
+        var row = await db2.FileDeliveries.SingleAsync(x => x.Id == delivery.Id);
+        Assert.Equal(CollectionStatus.Interrupted, row.Status);
+        Assert.Contains("lease expired", row.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunStateMachineIsGuardedAndDerivesStatusFromItsOwnDeliveries()
+    {
+        using var fixture = new Fixture();
+        var run = await fixture.Ledger.StartAsync("workflow");
+        Assert.Equal(CollectionStatus.Created, run.Status);
+        run = await fixture.Ledger.BeginRunAsync(run.Id);
+        Assert.Equal(CollectionStatus.Running, run.Status);
+
+        var firstDelivery = await SeedDeliveryAsync(fixture, run.Id);
+        var claim = await fixture.Ledger.TryClaimDeliveryAsync(run.Id, firstDelivery.Id, TimeSpan.FromMinutes(1));
+        await fixture.Ledger.CompleteDeliveryAsync(firstDelivery.Id, claim!.ClaimToken, 1);
+
+        var finalized = await fixture.Ledger.FinalizeRunAsync(run.Id);
+        Assert.Equal(CollectionStatus.Succeeded, finalized.Status);
+        Assert.NotNull(finalized.FinishedAt);
+        var replay = await fixture.Ledger.FinalizeRunAsync(run.Id);
+        Assert.Equal(CollectionStatus.Succeeded, replay.Status);
+        var illegal = await fixture.Ledger.BeginRunAsync(run.Id);
+        Assert.Equal(CollectionStatus.Succeeded, illegal.Status);
+
+        var laterRun = await fixture.Ledger.StartAsync("workflow");
+        await fixture.Ledger.BeginRunAsync(laterRun.Id);
+        var skipped = await fixture.Ledger.StartDeliveryAsync(
+            firstDelivery.CollectionFileId, firstDelivery.TargetId,
+            firstDelivery.IdempotencyKey, "record", laterRun.Id);
+        Assert.Equal(CollectionStatus.Succeeded, skipped.Status);
+        Assert.Equal(CollectionStatus.Succeeded, (await fixture.Ledger.FinalizeRunAsync(laterRun.Id)).Status);
+        Assert.Equal(CollectionStatus.Succeeded, (await fixture.Ledger.GetRunAsync(run.Id))!.Status);
+    }
+
+    private static async ValueTask<FileDelivery> SeedDeliveryAsync(Fixture fixture, string runId)
+    {
+        var identity = FileIdentityFactory.Create(
+            Path.Combine(fixture.Root, "recent.csv"), fixture.Root, "source-1");
+        var file = await fixture.Ledger.DiscoverAsync(runId, new DiscoveredFile(
+            identity, Path.Combine(fixture.Root, "recent.csv"), DateTimeOffset.UtcNow, "source-1"));
+        return await fixture.Ledger.StartDeliveryAsync(file.Id, "target", "key-1", "record", runId);
+    }
+
+    private sealed class Fixture : IDisposable
+    {
+        public Fixture()
+        {
+            Root = Path.Combine(Path.GetTempPath(), "industrial-lease-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Root);
+            File.WriteAllText(Path.Combine(Root, "recent.csv"), "record_id,reading\n1,42\n");
+            LedgerPath = Path.Combine(Root, "ledger.db");
+            Ledger = new CollectionLedger(NewDb);
+        }
+
+        public string Root { get; }
+        public string LedgerPath { get; }
+        public CollectionLedger Ledger { get; }
+        public IndustrialDbContext NewDb() => IndustrialStore.Create(LedgerPath);
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Root)) Directory.Delete(Root, true);
+        }
+    }
+}

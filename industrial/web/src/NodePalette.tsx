@@ -27,7 +27,7 @@ export function NodePalette({ descriptors, loading, error }: NodePaletteProps) {
   };
 
   return (
-    <aside className="industrial-palette">
+    <div className="industrial-palette-content">
       <Typography.Title level={5} style={{ marginTop: 0 }}>节点面板</Typography.Title>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
         拖入画布 · 连线按端口类型校验
@@ -65,6 +65,6 @@ export function NodePalette({ descriptors, loading, error }: NodePaletteProps) {
           ))}
         </section>
       ))}
-    </aside>
+    </div>
   );
 }

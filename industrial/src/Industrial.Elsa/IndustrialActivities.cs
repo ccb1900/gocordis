@@ -18,6 +18,9 @@ public abstract class IndustrialNodeActivityBase : CodeActivity
     {
         var executor = context.GetRequiredService<IIndustrialNodeExecutor>();
         var nodeId = context.Activity.Id;
+        var instanceId = context.WorkflowExecutionContext.Properties.TryGetValue("industrial.instanceId", out var value)
+            ? value?.ToString() ?? string.Empty
+            : string.Empty;
         var nodeType = GetType().Name switch
         {
             nameof(ManualTriggerActivity) => "trigger",
@@ -28,7 +31,7 @@ public abstract class IndustrialNodeActivityBase : CodeActivity
             nameof(ArchiveSinkActivity) => "archive",
             _ => "sink",
         };
-        return executor.ExecuteAsync(nodeId, nodeType, nodeType, context.CancellationToken);
+        return executor.ExecuteAsync(instanceId, nodeId, nodeType, nodeType, context.CancellationToken);
     }
 }
 

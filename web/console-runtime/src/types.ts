@@ -27,6 +27,8 @@ export interface UIPage {
   group?: string;
   /** Menu sort hint (lower first); groups inherit the min child order. */
   order?: number;
+  /** A plugin may declare its preferred landing page. */
+  home?: boolean;
   description?: string;
   view?: unknown;
   views?: ViewBlock[];

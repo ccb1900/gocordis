@@ -5,7 +5,8 @@
 
 import type { NodeDescriptor, WorkflowDefinition } from "./types";
 
-export type DesignerMode = "select" | "connect" | "pan";
+const NODE_WIDTH = 148;
+const NODE_HEIGHT = 46;
 
 export interface G6Node {
   id: string;
@@ -146,7 +147,7 @@ export function graphOptions(data: G6GraphData, container: string | HTMLElement)
       style: {
         labelText: (datum: { data?: { label?: string } }) => datum?.data?.label ?? "",
         labelPlacement: "bottom" as const,
-        size: [148, 46] as [number, number],
+        size: [NODE_WIDTH, NODE_HEIGHT] as [number, number],
         radius: 10,
         fill: "#f8fbff",
         stroke: "#4d6bfe",
@@ -167,10 +168,24 @@ export function graphOptions(data: G6GraphData, container: string | HTMLElement)
   };
 }
 
+interface GestureEvent {
+  targetType?: string;
+  target?: { id?: string };
+  client?: { x: number; y: number };
+  canvas?: { x: number; y: number };
+  button?: number;
+  buttons?: number;
+}
+
 export interface GraphBehaviorHandlers {
-  graph?: { getNodeData(): Array<{ id?: unknown; data?: unknown; style?: unknown }> };
-  /** Exactly one gesture owns the pointer at a time. */
-  mode?: () => DesignerMode;
+  graph?: {
+    getNodeData(): Array<{ id?: unknown; data?: unknown; style?: unknown }>;
+    getCanvasByClient(point: [number, number]): [number, number];
+  };
+  /** Space held or middle button: pan even when the pointer is over a node. */
+  isPanModifier?: () => boolean;
+  /** Shared arm state so a port-origin drag remains a connect gesture until pointerup. */
+  connectionState?: { armed: boolean };
   onPositions?: (positions: Record<string, { x: number; y: number }>) => void;
   allowedIds?: () => ReadonlySet<string>;
   onCreateEdge?: (source: string, target: string) => { sourcePort: string; targetPort: string } | null;
@@ -181,23 +196,44 @@ export interface GraphBehaviorHandlers {
 const DRAG_STATE = "__industrial_drag_target__";
 const CONNECT_STATE = "__industrial_connect_source__";
 
-/** G6 behaviors wired from the domain: canvas pan only in pan mode, node move
- * only in select mode, edge creation only in connect mode. */
+const isPanGesture = (handlers: GraphBehaviorHandlers, event: GestureEvent): boolean =>
+  (handlers.isPanModifier?.() ?? false) || event.button === 1 || event.buttons === 4;
+
+/** A draw.io-like hit test: ports are the small circles on the left/right
+ * edges of a node. G6 reports port hits as node-scoped events, so geometry is
+ * the most reliable signal across renderer versions. */
+const isPortGesture = (handlers: GraphBehaviorHandlers, event: GestureEvent): boolean => {
+  if (event.targetType !== "node" || !event.target?.id) return false;
+  const point = event.client ?? event.canvas;
+  if (!point || !handlers.graph) return false;
+  const nodeId = String(event.target.id);
+  const node = handlers.graph.getNodeData().find((item) => String(item.id) === nodeId);
+  const style = node?.style as { x?: number; y?: number } | undefined;
+  if (typeof style?.x !== "number" || typeof style.y !== "number") return false;
+  const [x, y] = handlers.graph.getCanvasByClient([point.x, point.y]);
+  const dx = Math.abs(x - style.x);
+  const dy = Math.abs(y - style.y);
+  return Math.abs(dx - NODE_WIDTH / 2) <= 14 && dy <= NODE_HEIGHT / 2 + 10;
+};
+
+/** One canvas, direct gestures: drag a node to move it, drag from its port to
+ * connect, drag the background (or Space/middle button) to pan. No modes. */
 export function graphBehaviors(handlers: GraphBehaviorHandlers = {}): any[] {
-  const mode = () => handlers.mode?.() ?? "select";
+  const connection = handlers.connectionState ?? { armed: false };
   return [
     "zoom-canvas",
     {
       type: "drag-canvas",
-      enable: (event: { targetType?: string }) =>
-        mode() === "pan" && event.targetType === "canvas",
+      enable: (event: GestureEvent) =>
+        event.targetType === "canvas" || isPanGesture(handlers, event),
       range: 0.9,
     },
     {
       type: "drag-element",
       state: DRAG_STATE,
-      enable: (event: { targetType?: string }) =>
-        mode() === "select" && (event.targetType === "node" || event.targetType === "combo"),
+      enable: (event: GestureEvent) =>
+        (event.targetType === "node" || event.targetType === "combo") &&
+        !isPortGesture(handlers, event) && !isPanGesture(handlers, event),
       onFinish: (ids?: string[] | string) => {
         const graph = handlers.graph;
         if (!graph) return;
@@ -215,9 +251,20 @@ export function graphBehaviors(handlers: GraphBehaviorHandlers = {}): any[] {
       type: "create-edge",
       trigger: "drag",
       state: CONNECT_STATE,
-      enable: () => mode() === "connect",
+      enable: (event: GestureEvent) => {
+        if (isPanGesture(handlers, event)) {
+          connection.armed = false;
+          return false;
+        }
+        if (connection.armed) return event.targetType === "node" || event.targetType === "combo";
+        if (isPortGesture(handlers, event)) {
+          connection.armed = true;
+          return true;
+        }
+        return false;
+      },
       onCreate: (edge: { source?: unknown; target?: unknown; [key: string]: unknown }) => {
-        if (mode() !== "connect") return undefined;
+        connection.armed = false;
         const source = String(edge.source ?? "");
         const target = String(edge.target ?? "");
         if (!source || !target || source === target) return undefined;

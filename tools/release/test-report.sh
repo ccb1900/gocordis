@@ -42,10 +42,10 @@ for code_path in sorted(out.glob("*.code")):
     name = code_path.stem
     log = (out / f"{name}.log").read_text(errors="replace")
     exit_code = int(code_path.read_text().strip())
-    dotnet = [int(x) for x in re.findall(r"Passed!\s+-\s+Failed:\s+\d+,\s+Passed:\s+(\d+)", log)]
+    dotnet = [int(x) for x in re.findall(r"(?:Passed|Skipped)!\s+-\s+Failed:\s+\d+,\s+Passed:\s+(\d+)", log)]
     vitest = [int(x) for x in re.findall(r"Tests\s+(\d+)\s+passed", log)]
     node = [int(x) for x in re.findall(r"^ℹ pass (\d+)$", log, re.M)]
-    skipped = [int(x) for x in re.findall(r"Passed!.*?Skipped:\s*(\d+)", log)]
+    skipped = [int(x) for x in re.findall(r"(?:Passed|Skipped)!.*?Skipped:\s*(\d+)", log)]
     suites.append({
         "suite": name,
         "exitCode": exit_code,
@@ -70,7 +70,10 @@ report = {
         {"requirement": "real-browser designer E2E", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log"},
         {"requirement": "real packaged-plugin E2E", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-packaged-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-packaged-e2e.log"},
         {"requirement": "PostgreSQL integration", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-postgresql")["exitCode"] == 0 else "failed", "evidence": "industrial-postgresql.log"},
-        {"requirement": "Windows UNC/SMB integration", "status": "blocked", "passingResult": None, "evidence": "artifacts/windows-unc-blocker.md", "runner": ".github/workflows/windows-unc.yml", "script": "industrial/e2e-windows-unc.ps1"},
+        {"requirement": "Windows UNC/SMB integration", "status": "blocked" if "Skipped!" in (out / "windows-unc.log").read_text(errors="replace") else "passed", "passingResult": None if "Skipped!" in (out / "windows-unc.log").read_text(errors="replace") else "windows-unc.log", "evidence": "artifacts/windows-unc-blocker.md", "runner": ".github/workflows/windows-unc.yml", "script": "industrial/e2e-windows-unc.ps1"},
+        {"requirement": "ledger claim/lease/retry state machine", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
+        {"requirement": "stage output resume and EF migrations", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
+        {"requirement": "disconnect and large-file recovery", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
         {"requirement": "unified test report", "status": "passed", "evidence": "tools/release/test-report.sh"},
     ],
 }

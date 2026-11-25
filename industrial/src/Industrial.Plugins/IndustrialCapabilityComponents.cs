@@ -155,12 +155,15 @@ public sealed class IndustrialExecutionComponent : IndustrialCapabilityComponent
 
     public override string Name => "industrial-execution";
     public override IReadOnlyList<ICapabilityKey> Provide() =>
-        [IndustrialKeys.CollectionLedger, IndustrialKeys.HistoricalRangePlanner];
+        [IndustrialKeys.CollectionLedger, IndustrialKeys.HistoricalRangePlanner,
+         IndustrialKeys.StageOutputStore];
 
     public override ValueTask<Cleanup?> ApplyAsync(Context context)
     {
         context.Provide(IndustrialKeys.CollectionLedger, new CollectionLedger(LedgerDb));
         context.Provide(IndustrialKeys.HistoricalRangePlanner, new HistoricalRangePlanner());
+        context.Provide(IndustrialKeys.StageOutputStore,
+            new StageOutputStore(() => IndustrialStore.CreateStages(Root), Root));
         return ValueTask.FromResult<Cleanup?>(null);
     }
 }

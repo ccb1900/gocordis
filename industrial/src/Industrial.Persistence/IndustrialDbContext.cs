@@ -16,6 +16,7 @@ public sealed class IndustrialDbContext : DbContext
     public DbSet<CollectionRunEntity> CollectionRuns => Set<CollectionRunEntity>();
     public DbSet<CollectionFileEntity> CollectionFiles => Set<CollectionFileEntity>();
     public DbSet<FileDeliveryEntity> FileDeliveries => Set<FileDeliveryEntity>();
+    public DbSet<CollectionRunDeliveryEntity> CollectionRunDeliveries => Set<CollectionRunDeliveryEntity>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -68,7 +69,15 @@ public sealed class IndustrialDbContext : DbContext
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.CollectionFileId, x.TargetId }).IsUnique();
             entity.HasIndex(x => x.IdempotencyKey);
+            entity.HasIndex(x => new { x.Status, x.LeaseExpiresAtUnixMs });
+            entity.HasIndex(x => x.ClaimToken).IsUnique();
             entity.Property(x => x.Version).IsConcurrencyToken();
+        });
+
+        model.Entity<CollectionRunDeliveryEntity>(entity =>
+        {
+            entity.HasKey(x => new { x.RunId, x.DeliveryId });
+            entity.HasIndex(x => x.DeliveryId);
         });
     }
 }
@@ -159,12 +168,56 @@ public sealed class FileDeliveryEntity
     public int Records { get; set; }
     public string? Error { get; set; }
     public DateTimeOffset? ClaimedAt { get; set; }
+    public string? ClaimToken { get; set; }
+    public DateTimeOffset? LeaseExpiresAt { get; set; }
+    public long LeaseExpiresAtUnixMs { get; set; }
     public string IdempotencyKey { get; set; } = string.Empty;
+    public int Accepted { get; set; }
+    public int Rejected { get; set; }
+    public int Warnings { get; set; }
+    public string? StatisticsJson { get; set; }
     public long Version { get; set; }
+}
+
+public sealed class CollectionRunDeliveryEntity
+{
+    public string RunId { get; set; } = string.Empty;
+    public string DeliveryId { get; set; } = string.Empty;
+    public string Status { get; set; } = "Considered";
+    public string? ClaimToken { get; set; }
+    public string? LastError { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
 }
 
 /// <summary>Delivery target database. Kept separate from the collection ledger
 /// so business rows and processing state have different authorities.</summary>
+public sealed class StageOutputEntity
+{
+    public string Id { get; set; } = string.Empty;
+    public string InstanceId { get; set; } = string.Empty;
+    public string NodeId { get; set; } = string.Empty;
+    public string Kind { get; set; } = string.Empty;
+    public string Fingerprint { get; set; } = string.Empty;
+    public string PayloadJson { get; set; } = string.Empty;
+    public DateTimeOffset CommittedAt { get; set; }
+}
+
+public sealed class IndustrialStageDbContext : DbContext
+{
+    public IndustrialStageDbContext(DbContextOptions<IndustrialStageDbContext> options) : base(options) { }
+
+    public DbSet<StageOutputEntity> StageOutputs => Set<StageOutputEntity>();
+
+    protected override void OnModelCreating(ModelBuilder model)
+    {
+        model.Entity<StageOutputEntity>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.InstanceId, x.NodeId }).IsUnique();
+        });
+    }
+}
+
 public sealed class IndustrialTargetDbContext : DbContext
 {
     public IndustrialTargetDbContext(DbContextOptions<IndustrialTargetDbContext> options) : base(options) { }
@@ -201,11 +254,76 @@ public static class IndustrialStore
             Directory.CreateDirectory(directory);
         }
 
+        var existed = File.Exists(path);
         var options = new DbContextOptionsBuilder<IndustrialDbContext>()
-            .UseSqlite($"Data Source={path}")
+            .UseSqlite($"Data Source={path}", sql => sql.MigrationsAssembly("Industrial.Persistence"))
             .Options;
         var context = new IndustrialDbContext(options);
-        context.Database.EnsureCreated();
+        if (existed)
+        {
+            context.Database.EnsureCreated();
+            UpgradeLedgerSchema(context);
+        }
+        else
+        {
+            context.Database.Migrate();
+        }
+        return context;
+    }
+
+    private static void UpgradeLedgerSchema(IndustrialDbContext context)
+    {
+        // EnsureCreated never alters an existing SQLite file. Keep the ledger
+        // upgrade idempotent so older local databases keep working.
+        Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN ClaimToken TEXT NULL;");
+        Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN LeaseExpiresAt TEXT NULL;");
+        Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN LeaseExpiresAtUnixMs INTEGER NOT NULL DEFAULT 0;");
+        Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN Accepted INTEGER NOT NULL DEFAULT 0;");
+        Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN Rejected INTEGER NOT NULL DEFAULT 0;");
+        Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN Warnings INTEGER NOT NULL DEFAULT 0;");
+        Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN StatisticsJson TEXT NULL;");
+        Execute(context, """
+            CREATE TABLE IF NOT EXISTS CollectionRunDeliveries (
+                RunId TEXT NOT NULL,
+                DeliveryId TEXT NOT NULL,
+                Status TEXT NOT NULL,
+                ClaimToken TEXT NULL,
+                LastError TEXT NULL,
+                CreatedAt TEXT NOT NULL,
+                PRIMARY KEY (RunId, DeliveryId));
+            """);
+        Execute(context,
+            "CREATE UNIQUE INDEX IF NOT EXISTS IX_FileDeliveries_ClaimToken ON FileDeliveries(ClaimToken) WHERE ClaimToken IS NOT NULL;");
+        Execute(context,
+            "CREATE INDEX IF NOT EXISTS IX_FileDeliveries_Status_Lease ON FileDeliveries(Status, LeaseExpiresAtUnixMs);");
+        Execute(context,
+            "CREATE INDEX IF NOT EXISTS IX_CollectionRunDeliveries_DeliveryId ON CollectionRunDeliveries(DeliveryId);");
+    }
+
+    private static void Execute(IndustrialDbContext context, string sql)
+    {
+        try
+        {
+            context.Database.ExecuteSqlRaw(sql);
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException ex) when (
+            ex.SqliteErrorCode == 1 &&
+            (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase) ||
+             ex.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase)))
+        {
+            // Idempotent upgrade: column/index already present.
+        }
+    }
+
+    public static IndustrialStageDbContext CreateStages(string root)
+    {
+        var path = Path.GetFullPath(Path.Combine(root, "industrial-stages.db"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var options = new DbContextOptionsBuilder<IndustrialStageDbContext>()
+            .UseSqlite($"Data Source={path}", sql => sql.MigrationsAssembly("Industrial.Persistence"))
+            .Options;
+        var context = new IndustrialStageDbContext(options);
+        context.Database.Migrate();
         return context;
     }
 
@@ -219,10 +337,10 @@ public static class IndustrialStore
         }
 
         var options = new DbContextOptionsBuilder<IndustrialTargetDbContext>()
-            .UseSqlite($"Data Source={path}")
+            .UseSqlite($"Data Source={path}", sql => sql.MigrationsAssembly("Industrial.Persistence"))
             .Options;
         var context = new IndustrialTargetDbContext(options);
-        context.Database.EnsureCreated();
+        context.Database.Migrate();
         return context;
     }
 }

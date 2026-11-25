@@ -1,28 +1,25 @@
 # Completion audit
 
-Objective: finish the industrial execution/reliability chain and P1 test/release quality, then backfill passing evidence into the unified test report.
+Objective: harden the industrial execution/reliability chain, then close P1 test/release quality with a unified fact source.
 
 | Requirement | Evidence | Status |
 |---|---|---|
-| P0-01 run published version, not draft | `industrial/tests/Industrial.Integration.Tests/ElsaPocTests.cs`: publish v1, save broken v2 draft, run still uses v1; version-specific query test | Pass |
-| P0-01 real Elsa Flowchart from published artifact, no custom topological executor | `ElsaDefinitionConverter.ToElsaJson` persists graph+connections; `BuildWorkflow` creates `Flowchart` + `Connection`; no `TopologicalOrder`/`PersistedOrder` remains | Pass |
-| P0-01 distinct real Elsa Activity per node type | `IndustrialActivities.cs` defines 12 concrete activity classes + factory; `ElsaPocTests.IndustrialDefinitionConvertsToElsaDefinition` asserts persisted `elsaActivity` and distinct types | Pass |
-| P0-01 plugin-contributed work and per-edge data flow | `PublishedNodeExecutor` reads predecessor outputs along published edges; source/reader/mapping/validation/sink/archive each perform their own work; no centralized `ApplyTransforms` | Pass |
-| P0-01 persisted Elsa execution instance recoverable after restart | `ElsaPersistedExecution.cs` uses Elsa EF Core/SQLite + runner; `ElsaRestoresPinnedVersionAfterProcessRestart` inspects instance in a fresh process | Pass |
-| P0-02 resource-scoped file identity | `FileIdentity.SourceResourceId`, `(ResourceId, IdentityKey)` unique index; `IdenticalFilesInTwoResourcesHaveIndependentLedgerEntries` | Pass |
-| P0-02 target-level skip / new target backfill | `RunAsync` has no file-level skip; `NewlyConfiguredTargetReceivesAlreadySucceededHistoricalFile` | Pass |
-| P0-02 CollectionRun state machine + FinishedAt | `CompleteRunAsync`, `ListRunsAsync`, terminal status assertions | Pass |
-| P0-02 TargetId retry, claim guard, failure semantics | `RetryFailedAsync(targetId, ...)`, atomic `TryClaimDeliveryAsync`, retry tests | Pass |
-| P0-03 per-node schemas + structured Mapping/Validation editors | `IndustrialNodesComponent.cs`; `KeyValueEditor.tsx`, `StringListEditor.tsx`, `config-editor-model.ts` and tests | Pass |
-| P1 product management APIs | Resource/Credential CRUD + rotation, Machine registry, execution center, event trigger, backfill policy | Pass |
-| P1 real browser designer E2E | `bash industrial/e2e-browser.sh` → `industrial-browser-e2e.log` | Pass |
-| P1 real packaged-plugin E2E | `bash industrial/e2e-packaged.sh` → `industrial-packaged-e2e.log` | Pass |
-| P1 non-SQLite real database integration | `bash industrial/e2e-database.sh` → `industrial-postgresql.log` (real PostgreSQL) | Pass |
-| P1 unified test report fact source | `bash tools/release/test-report.sh` → `artifacts/test-report/report.json` / `report.md` | Pass |
-| P1 Windows UNC/SMB real integration | `WindowsUncIntegrationTests` prepared; `windows-unc.yml` + `e2e-windows-unc.ps1` configured; current host cannot run Windows `net use` | **Blocked / incomplete** |
+| Published Elsa Flowchart execution, pinned versions, restart-inspectable instance | `ElsaPocTests` + `ElsaPersistedExecution.cs` | Pass |
+| Per-node real Elsa activities and graph-edge data flow | `IndustrialActivities.cs`, `PublishedNodeExecutor` | Pass |
+| Atomic delivery claims with token, lease and conditional completion/failure | `CollectionLedger.cs`, `DeliveryLeaseTests.cs` | Pass |
+| Expired lease recovery and guarded run state machine | `RecoverExpiredLeasesAsync`, `FinalizeRunAsync`, `DeliveryLeaseTests.cs` | Pass |
+| Cross-run delivery semantics and TargetId retry | `CollectionRunDeliveryEntity`, `CollectionCoordinator.RetryFailedAsync` | Pass |
+| Resource-scoped file identity and retry relocation | `FileIdentityFactory`, `LocateAsync` | Pass |
+| Persisted stage data plane (FileBatchRef/DatasetRef/TransformResultRef) | `StageOutputStore.cs`, `StageOutputStoreTests.cs` | Pass |
+| Sink/archive stage cache only after successful delivery | `PublishedNodeExecutor.ExecuteSinkAsync/ExecuteArchiveAsync` | Pass |
+| Node configuration schemas and typed validation | `IndustrialNodesComponent.cs`, `WorkflowValidator.cs`, `NodeConfigReader.cs` | Pass |
+| Validation strategies and ProcessingResult statistics | `ValidationTransform.cs`, `ProcessingResult`, ledger statistics columns | Pass |
+| Ref-counted WNet UNC leases (native seam) | `UncConnectionLease.cs`, `UncLeaseTests.cs` | Pass (unit); Windows real share still blocked |
+| EF migrations for all industrial stores | `Migrations/Ledger`, `Migrations/Target`, `Migrations/Stages`, design-time factories | Pass |
+| Disconnect/large-file recovery tests | `RecoveryTests.cs` | Pass |
+| Unified test report fact source | `tools/release/test-report.sh`, `report.json`, `report.md` | Pass |
+| Windows UNC/SMB real-share acceptance | `.github/workflows/windows-unc.yml`, `e2e-windows-unc.ps1`, blocker evidence | Blocked on this macOS host; no passing result |
 
-Unified report result: 871 passed, 2 explicitly skipped, 0 failed suites. Windows UNC is recorded as `blocked` with `passingResult: null`; no passing result exists.
+Unified report: 883 passed, 3 explicitly skipped, 0 failed suites. Windows UNC remains `blocked` with `passingResult: null`.
 
 Blocker details: `artifacts/windows-unc-blocker.md`.
-
-Conclusion: objective not complete. A Windows runner with a real SMB share and `GOCORDIS_UNC_*` secrets must execute `WindowsUncIntegrationTests` and a passing log must be added to the unified report before this objective can be considered complete.

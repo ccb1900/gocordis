@@ -1,82 +1,149 @@
-using System.Text.Json;
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Text;
+using System.Text.Json;
 using Industrial.Contracts;
 
 namespace Industrial.Core;
 
-/// <summary>
-/// Windows SMB session for a UNC resource. The lease owns the session so
-/// multiple workflows share one connection per resource, avoiding error 1219
-/// (same server, different credentials) in one logon session. It deliberately
-/// uses the Windows SMB client rather than reimplementing SMB.
-/// </summary>
+/// <summary>Windows SMB session backed by WNetAddConnection2 rather than a
+/// password-bearing command line. The native call is isolated behind a seam so
+/// lease/refcount logic is testable on non-Windows hosts.</summary>
+public interface INativeNetworkConnection
+{
+    int Add(string remote, string userName, string password);
+    int Cancel(string remote);
+}
+
+/// <summary>One shared SMB session per UNC share and credential.</summary>
 public sealed class UncConnectionLease : IAsyncDisposable
 {
-    private readonly string _uncPath;
-    private bool _disposed;
+    private static readonly ConcurrentDictionary<string, UncConnectionLease> Sessions = new(StringComparer.Ordinal);
+    private static readonly object Gate = new();
+    private readonly string _remote;
+    private readonly INativeNetworkConnection _native;
+    private int _references;
 
-    public UncConnectionLease(string uncPath, string userName, string password, string? domain = null)
+    public UncConnectionLease(string uncPath, string userName, string password,
+        string? domain = null, INativeNetworkConnection? native = null)
+    {
+        if (!uncPath.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            throw new ArgumentException("UNC path must start with \\\\server\\share", nameof(uncPath));
+        }
+
+        _remote = uncPath;
+        _native = native ?? new WindowsNetworkConnection();
+        var account = string.IsNullOrWhiteSpace(domain) ? userName : $"{domain}\\{userName}";
+        var result = _native.Add(uncPath, account, password);
+        // 2250 means another handle in this logon session already mapped it.
+        if (result is not (0 or 2250))
+        {
+            throw new InvalidOperationException(
+                result == 1219
+                    ? "SMB credential conflict for the same server (error 1219)"
+                    : $"WNetAddConnection2 failed with {result}");
+        }
+    }
+
+    public static string LocalPath(string uncPath, string relativePath) =>
+        Path.Combine(uncPath, relativePath);
+
+    public static UncConnectionLease Acquire(string key, string uncPath, string userName,
+        string password, string? domain = null, INativeNetworkConnection? native = null)
+    {
+        lock (Gate)
+        {
+            if (Sessions.TryGetValue(key, out var existing))
+            {
+                existing._references++;
+                return existing;
+            }
+
+            var created = new UncConnectionLease(uncPath, userName, password, domain, native);
+            created._references = 1;
+            Sessions[key] = created;
+            return created;
+        }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        lock (Gate)
+        {
+            if (--_references > 0) return ValueTask.CompletedTask;
+            Sessions.TryRemove(KeyOf(_remote), out _);
+        }
+        _native.Cancel(_remote);
+        return ValueTask.CompletedTask;
+    }
+
+    public static void ReleaseAll()
+    {
+        lock (Gate)
+        {
+            foreach (var lease in Sessions.Values) lease._native.Cancel(lease._remote);
+            Sessions.Clear();
+        }
+    }
+
+    private static string KeyOf(string remote) => Convert.ToHexString(
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(remote)));
+}
+
+public sealed class WindowsNetworkConnection : INativeNetworkConnection
+{
+    public int Add(string remote, string userName, string password)
     {
         if (!OperatingSystem.IsWindows())
         {
             throw new PlatformNotSupportedException("UNC session leases require the Windows SMB client");
         }
 
-        if (!uncPath.StartsWith(@"\\", StringComparison.Ordinal))
+        var resource = new NETRESOURCEW
         {
-            throw new ArgumentException("UNC path must start with \\\\server\\share", nameof(uncPath));
-        }
-
-        _uncPath = uncPath;
-        var account = string.IsNullOrWhiteSpace(domain) ? userName : $"{domain}\\{userName}";
-        RunNetUse($"\"{uncPath}\"", "/user:", $"\"{account}\"", $"\"{password}\"");
-    }
-
-    public static string LocalPath(string uncPath, string relativePath) =>
-        Path.Combine(uncPath, relativePath);
-
-    private static void RunNetUse(params string[] arguments)
-    {
-        var start = new ProcessStartInfo("net")
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.Unicode,
+            dwType = RESOURCETYPE_DISK,
+            lpRemoteName = remote,
         };
-        start.ArgumentList.Add("use");
-        foreach (var argument in arguments)
-        {
-            start.ArgumentList.Add(argument);
-        }
-
-        using var process = Process.Start(start)
-                            ?? throw new InvalidOperationException("cannot start net use");
-        var output = process.StandardOutput.ReadToEnd();
-        process.WaitForExit();
-        if (process.ExitCode != 0)
-        {
-            throw new InvalidOperationException($"net use failed: {output}");
-        }
+        return WNetAddConnection2W(ref resource, password, userName, CONNECT_TEMPORARY);
     }
 
-    public ValueTask DisposeAsync()
+    public int Cancel(string remote)
     {
-        if (_disposed) return ValueTask.CompletedTask;
-        _disposed = true;
-        RunNetUse($"\"{_uncPath}\"", "/delete", "/y");
-        return ValueTask.CompletedTask;
+        if (!OperatingSystem.IsWindows()) return 0;
+        return WNetCancelConnection2W(remote, 0, true);
     }
+
+    private const int RESOURCETYPE_DISK = 1;
+    private const uint CONNECT_TEMPORARY = 0x00000004;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct NETRESOURCEW
+    {
+        public int dwScope;
+        public int dwType;
+        public int dwDisplayType;
+        public int dwUsage;
+        [MarshalAs(UnmanagedType.LPWStr)] public string? lpLocalName;
+        [MarshalAs(UnmanagedType.LPWStr)] public string? lpRemoteName;
+        [MarshalAs(UnmanagedType.LPWStr)] public string? lpComment;
+        [MarshalAs(UnmanagedType.LPWStr)] public string? lpProvider;
+    }
+
+    [DllImport("mpr.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int WNetAddConnection2W(
+        ref NETRESOURCEW netResource,
+        string password,
+        string username,
+        uint flags);
+
+    [DllImport("mpr.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int WNetCancelConnection2W(string name, uint flags, bool force);
 }
 
 /// <summary>Caches one SMB session per UNC share and credential, so several
 /// workflows never establish conflicting sessions with the same server.</summary>
 public sealed class UncFileSource : IFileSource
 {
-    private static readonly ConcurrentDictionary<string, UncConnectionLease> Leases = new(StringComparer.Ordinal);
     private readonly IResourceRegistry _resources;
     private readonly ICredentialVault? _vault;
     private readonly Func<IReadOnlyList<string>>? _extensions;
@@ -106,40 +173,35 @@ public sealed class UncFileSource : IFileSource
             ? null
             : await _vault!.RevealAsync(resource.CredentialId, ct);
         var (user, password, domain) = ParseCredential(secret);
+        UncConnectionLease? lease = null;
         if (!string.IsNullOrWhiteSpace(user))
         {
             var key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
                 System.Text.Encoding.UTF8.GetBytes($"{root}|{user}|{domain}|{password}")));
-            Leases.GetOrAdd(key, _ => new UncConnectionLease(root, user, password!, domain));
+            lease = UncConnectionLease.Acquire(key, root!, user, password!, domain);
         }
 
-        var result = new List<DiscoveredFile>();
-        var files = DiscoveredFilePatterns.Enumerate(root, _extensions);
-        foreach (var path in files)
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            var identity = FileIdentityFactory.Create(path, root, resource.Id);
-            var sourceDate = FileIdentityFactory.ParseSourceDate(Path.GetFileName(path)) ?? identity.LastWriteUtc;
-            if (sourceDate < range.FromInclusive || sourceDate >= range.ToExclusive)
+            var result = new List<DiscoveredFile>();
+            var files = DiscoveredFilePatterns.Enumerate(root!, _extensions);
+            foreach (var path in files)
             {
-                continue;
+                ct.ThrowIfCancellationRequested();
+                var identity = FileIdentityFactory.Create(path, root!, resource.Id);
+                var sourceDate = FileIdentityFactory.ParseSourceDate(Path.GetFileName(path)) ?? identity.LastWriteUtc;
+                if (sourceDate < range.FromInclusive || sourceDate >= range.ToExclusive) continue;
+                result.Add(new DiscoveredFile(identity, path, sourceDate, resource.Id));
             }
-
-            result.Add(new DiscoveredFile(identity, path, sourceDate, resource.Id));
+            return result.OrderBy(file => file.SourceDate).ToArray();
         }
-
-        return result.OrderBy(file => file.SourceDate).ToArray();
-    }
-
-    public static void ReleaseAll()
-    {
-        foreach (var lease in Leases.Values)
+        finally
         {
-            lease.DisposeAsync().GetAwaiter().GetResult();
+            if (lease is not null) await lease.DisposeAsync();
         }
-
-        Leases.Clear();
     }
+
+    public static void ReleaseAll() => UncConnectionLease.ReleaseAll();
 
     public ValueTask<bool> IsStableAsync(
         DiscoveredFile file, TimeSpan quietPeriod, CancellationToken ct = default) =>
@@ -147,11 +209,7 @@ public sealed class UncFileSource : IFileSource
 
     private static (string? User, string? Password, string? Domain) ParseCredential(string? secret)
     {
-        if (string.IsNullOrWhiteSpace(secret))
-        {
-            return (null, null, null);
-        }
-
+        if (string.IsNullOrWhiteSpace(secret)) return (null, null, null);
         try
         {
             using var document = JsonDocument.Parse(secret);

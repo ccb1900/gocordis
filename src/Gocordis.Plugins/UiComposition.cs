@@ -14,7 +14,8 @@ public sealed record UiPageDefinition(
     JsonNode? Views = null,
     IReadOnlyList<UiPageAction>? Actions = null,
     int Order = 0,
-    string? Group = null);
+    string? Group = null,
+    bool Home = false);
 
 public sealed record UiPageAction(string Label, string Command, bool DatePicker = false);
 
@@ -107,7 +108,8 @@ public sealed record UiPage(
     IReadOnlyList<UiPageAction> Actions,
     int Order,
     ContributionOwner Owner,
-    string? Group = null);
+    string? Group = null,
+    bool Home = false);
 
 /// <summary>Stable UI panel contribution contract (Go registry.PanelDefinition equivalent).</summary>
 public sealed record UiPanelDefinition(

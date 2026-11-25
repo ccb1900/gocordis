@@ -95,7 +95,10 @@ public sealed class IndustrialUiComponent : Component
                 [("id", "Id"), ("name", "Name"), ("type", "Type"), ("provider", "Provider"), ("enabled", "Enabled")]),
             Page("industrial.workflows", "Workflows", "/industrial/workflows", "generic", "Apartment",
                 "industrial/workflows", 30, "Industrial",
-                [("workflowId", "Workflow"), ("version", "Version"), ("name", "Name")]),
+                [("workflowId", "Workflow"), ("version", "Version"), ("name", "Name")],
+                linkColumnKey: "workflowId",
+                linkHref: "/industrial/designer?workflowId={workflowId}",
+                home: true),
             // The backend owns the PAGE; the packaged client module only
             // contributes the renderer for this declarative block kind. This
             // is the Koishi-shaped split: one plugin, backend service + UI data.
@@ -416,7 +419,8 @@ public sealed class IndustrialUiComponent : Component
     private static UiPageDefinition Page(
         string id, string title, string route, string renderer, string icon,
         string query, int order, string group,
-        IReadOnlyList<(string Key, string Title)> columns)
+        IReadOnlyList<(string Key, string Title)> columns,
+        string? linkColumnKey = null, string? linkHref = null, bool home = false)
     {
         // Views must be an ARRAY of declarative blocks. The shell consumes
         // these blocks directly; no TSX page is hardcoded in the UI host.
@@ -426,7 +430,11 @@ public sealed class IndustrialUiComponent : Component
             ["title"] = title,
             ["query"] = query,
             ["columns"] = new JsonArray(columns.Select(column =>
-                (JsonNode?)new JsonObject { ["key"] = column.Key, ["title"] = column.Title }).ToArray()),
+            {
+                var cell = new JsonObject { ["key"] = column.Key, ["title"] = column.Title };
+                if (linkHref is not null && column.Key == linkColumnKey) cell["href"] = linkHref;
+                return (JsonNode?)cell;
+            }).ToArray()),
         });
         return new UiPageDefinition(
             id, title, route, renderer, icon, $"Industrial page: {title}", views,
@@ -435,6 +443,6 @@ public sealed class IndustrialUiComponent : Component
                 new UiPageAction("Run collection", "industrial/run-collection"),
                 new UiPageAction("Retry failed", "industrial/retry-failed"),
             ],
-            Order: order, Group: group);
+            Order: order, Group: group, Home: home);
     }
 }

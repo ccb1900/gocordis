@@ -108,7 +108,7 @@ public sealed class UiContributionRegistry
                 definition.Id, definition.Title, definition.Route, definition.Renderer,
                 definition.Icon, definition.Description, definition.Views?.DeepClone(),
                 definition.Actions ?? [], definition.Order, owner,
-                NormalizeGroup(definition.Group));
+                NormalizeGroup(definition.Group), definition.Home);
             _pages[definition.Id] = page;
             return Track("page", definition.Id, owner);
         }

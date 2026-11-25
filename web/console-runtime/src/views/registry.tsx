@@ -15,6 +15,8 @@ import type { Focus, ViewBlock } from "./schema";
 export interface ViewContext {
   hubQuery: <T = unknown>(name: string, params?: Record<string, string>) => Promise<T>;
   hubCommand: (name: string, body: unknown) => Promise<void>;
+  /** Domain-free route change channel supplied by the host shell. */
+  navigate?: (route: string) => void;
   focus: Focus | null;
   onFocus: (sourceId: string, date: string) => void;
   busy: boolean;

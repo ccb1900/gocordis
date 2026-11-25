@@ -28,6 +28,18 @@ test("real browser edits and saves a complete workflow", async ({ page }) => {
   await expect(page.getByText("Industrial Workflow", { exact: true })).toBeVisible();
   await expect(page.locator(".industrial-backfill-input input")).toHaveValue("1");
   await expect(page.locator(".industrial-graph-host")).toBeVisible();
+  expect(await page.getByRole("button", { name: /选\s*择|连\s*线|平\s*移/ }).count()).toBe(0);
+
+  const canvasWidth = () => page.locator(".industrial-graph-host")
+    .evaluate((el) => el.getBoundingClientRect().width);
+  const beforeCollapse = await canvasWidth();
+  await page.getByTestId("toggle-library").click();
+  expect(await canvasWidth()).toBeGreaterThan(beforeCollapse + 100);
+  await page.getByTestId("toggle-library").click();
+
+  await page.getByTestId("toggle-properties").click();
+  await expect(page.getByText("节点属性", { exact: true })).toBeVisible();
+  await page.getByTestId("toggle-properties").click();
 
   const backfill = page.locator(".industrial-backfill-input input");
   await backfill.click();
@@ -48,4 +60,14 @@ test("real browser edits and saves a complete workflow", async ({ page }) => {
   expect(payload.layout.lookbackDays).toBe(7);
   expect(payload.nodes.find((node: { id: string }) => node.id === "map").config.mapping)
     .toEqual({ value: "reading" });
+});
+
+test("industrial product opens on the workflow list and links into a designer", async ({ page }) => {
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/industrial\/workflows$/);
+  const link = page.getByRole("button", { name: "browser-flow" });
+  await expect(link).toBeVisible();
+  await link.click();
+  await expect(page).toHaveURL(/\/industrial\/designer\?workflowId=browser-flow$/);
+  await expect(page.getByText("Industrial Workflow", { exact: true })).toBeVisible();
 });

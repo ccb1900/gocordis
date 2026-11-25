@@ -832,6 +832,7 @@ public sealed class WebUiServer : IAsyncDisposable
                 ["route"] = page.Route,
                 ["renderer"] = page.Renderer,
                 ["order"] = page.Order,
+                ["home"] = page.Home,
             };
             if (page.Icon is not null)
             {

@@ -9,21 +9,13 @@ namespace Industrial.Core;
 public sealed class MappingTransform
 {
     private readonly IReadOnlyDictionary<string, string> _mapping;
+    private readonly bool _dropUnmapped;
 
     public MappingTransform(IReadOnlyDictionary<string, object?> config)
     {
-        if (config.TryGetValue("mapping", out var value) && value is JsonElement element)
-        {
-            _mapping = element.Deserialize<Dictionary<string, string>>() ?? [];
-        }
-        else if (value is IReadOnlyDictionary<string, string> direct)
-        {
-            _mapping = direct;
-        }
-        else
-        {
-            _mapping = new Dictionary<string, string>(StringComparer.Ordinal);
-        }
+        var reader = new NodeConfigReader(config);
+        _mapping = reader.GetStringMap("mapping");
+        _dropUnmapped = reader.GetBool("dropUnmapped", true);
     }
 
     public RecordEnvelope Apply(RecordEnvelope record)
@@ -37,6 +29,13 @@ public sealed class MappingTransform
 
         mapped["record_id"] = record.Values.GetValueOrDefault("record_id");
         mapped["record_time"] = record.Values.GetValueOrDefault("record_time");
+        if (!_dropUnmapped)
+        {
+            foreach (var (key, value) in record.Values)
+            {
+                if (!mapped.ContainsKey(key)) mapped[key] = value;
+            }
+        }
         return record with { Values = mapped };
     }
 }
@@ -48,15 +47,18 @@ public sealed class ValidationTransform
     private readonly string[] _required;
     private readonly IReadOnlyDictionary<string, string> _types;
 
+    private readonly NodeConfigReader _config;
+    private readonly string _onInvalid;
+
     public ValidationTransform(IReadOnlyDictionary<string, object?> config)
     {
-        _required = config.TryGetValue("required", out var value) && value is JsonElement array
-            ? array.Deserialize<string[]>() ?? []
-            : [];
-        _types = config.TryGetValue("types", out var types) && types is JsonElement typeElement
-            ? typeElement.Deserialize<Dictionary<string, string>>() ?? []
-            : [];
+        _config = new NodeConfigReader(config);
+        _required = _config.GetStringList("required").ToArray();
+        _types = _config.GetStringMap("types");
+        _onInvalid = _config.GetString("onInvalid", "drop");
     }
+
+    public string OnInvalid => _onInvalid;
 
     public bool TryApply(RecordEnvelope record, out RecordEnvelope? validated, out string? reason)
     {

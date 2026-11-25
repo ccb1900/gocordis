@@ -175,7 +175,12 @@ function TableBlock({ block, ctx }: { block: ViewBlock; ctx: ViewContext }) {
     title: c.title,
     dataIndex: c.key,
     key: c.key,
-    render: (v: unknown, row: Row) => cellNode(c.key, c.format, c.format ? row : v),
+    render: (v: unknown, row: Row) => c.href && ctx.navigate ? (
+      <Button type="link" size="small" style={{ padding: 0 }}
+        onClick={() => ctx.navigate!(formatRow(c.href!, row))}>
+        {String(v ?? "—")}
+      </Button>
+    ) : cellNode(c.key, c.format, c.format ? row : v),
   })) as TableColumnsType<Row>;
   const actions = block.rowActions ?? [];
   const cols: TableColumnsType<Row> = [

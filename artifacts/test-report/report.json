@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-25T14:45:02.901994+00:00",
+  "generatedAt": "2026-11-25T16:47:06.635194+00:00",
   "source": "tools/release/test-report.sh",
   "suites": [
     {
@@ -33,7 +33,7 @@
     {
       "suite": "console-shell",
       "exitCode": 0,
-      "passed": 2,
+      "passed": 3,
       "skipped": 0,
       "log": "console-shell.log"
     },
@@ -47,7 +47,7 @@
     {
       "suite": "industrial-dotnet",
       "exitCode": 0,
-      "passed": 41,
+      "passed": 52,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
@@ -90,13 +90,13 @@
       "suite": "windows-unc",
       "exitCode": 0,
       "passed": 0,
-      "skipped": 0,
+      "skipped": 1,
       "log": "windows-unc.log"
     }
   ],
   "totals": {
-    "passed": 871,
-    "skipped": 2,
+    "passed": 883,
+    "skipped": 3,
     "failedSuites": []
   },
   "environmentBlockers": [
@@ -125,6 +125,21 @@
       "evidence": "artifacts/windows-unc-blocker.md",
       "runner": ".github/workflows/windows-unc.yml",
       "script": "industrial/e2e-windows-unc.ps1"
+    },
+    {
+      "requirement": "ledger claim/lease/retry state machine",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log"
+    },
+    {
+      "requirement": "stage output resume and EF migrations",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log"
+    },
+    {
+      "requirement": "disconnect and large-file recovery",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log"
     },
     {
       "requirement": "unified test report",

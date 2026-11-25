@@ -27,7 +27,7 @@ const Box = ({ children }: { children?: React.ReactNode }) =>
 const Text = ({ children }: { children?: React.ReactNode }) =>
   React.createElement("span", null, children);
 const antd = {
-  Alert: Box, Button: Box, Divider: Box, Empty: Box, Spin: Box, Switch: Box, Table: Box,
+  Alert: Box, Button: Box, Divider: Box, Drawer: Box, Empty: Box, Spin: Box, Switch: Box, Table: Box,
   Tag: Box, Space: Box, Select: Box,
   Layout: Object.assign(Box, { Header: Box, Content: Box }),
   Typography: Object.assign(Box, { Title: Box, Text }),

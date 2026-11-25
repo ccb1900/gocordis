@@ -52,6 +52,12 @@ public static class ElsaPersistedExecution
         {
             throw new InvalidOperationException($"Elsa instance '{instanceId}' was not found");
         }
+        if (resume && !string.Equals(existing!.WorkflowState.DefinitionId, definitionId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"instance '{instanceId}' belongs to definition '{existing.WorkflowState.DefinitionId}', " +
+                $"not '{definitionId}'");
+        }
 
         var state = resume
             ? existing!.WorkflowState
@@ -63,6 +69,7 @@ public static class ElsaPersistedExecution
                 DefinitionVersion = published.Version,
                 Name = $"{published.WorkflowId}:{instanceId}",
             };
+        state.Properties["industrial.instanceId"] = instanceId;
         state.Properties["industrial.workflowId"] = published.WorkflowId;
         state.Properties["industrial.version"] = published.Version;
         state.Properties["industrial.resourceId"] = resourceId;

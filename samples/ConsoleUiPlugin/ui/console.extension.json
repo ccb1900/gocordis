@@ -1,1 +1,0 @@
-{ "id": "console-footer", "slot": "shell.footer", "renderer": "host-status", "pageId": "console-page", "props": { "source": "console-plugin" } }

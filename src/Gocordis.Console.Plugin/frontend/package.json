@@ -1,0 +1,12 @@
+{
+  "name": "gocordis-builtin-console-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ../../../web/plugin-kit/bin/gocordis-plugin-build.mjs src/ui.tsx -o ../ui.js --ui-config ui.config.json"
+  },
+  "devDependencies": {
+    "@gocordis/plugin-kit": "file:../../../web/plugin-kit",
+    "esbuild": "^0.23.0"
+  }
+}

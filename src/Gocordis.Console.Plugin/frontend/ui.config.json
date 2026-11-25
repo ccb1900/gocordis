@@ -1,0 +1,61 @@
+{
+  "module": "gocordis-console-ui",
+  "pages": [
+    {
+      "id": "gocordis-console-page",
+      "title": "内置控制台",
+      "route": "/console",
+      "renderer": "gocordis-console-overview",
+      "icon": "dashboard",
+      "description": "由产品内置 Console 插件自身携带的 TSX 前端与 API 查询渲染",
+      "group": "Gocordis/Console",
+      "order": -100
+    }
+  ],
+  "panels": [
+    {
+      "id": "gocordis-console-status",
+      "title": "Console 插件状态",
+      "position": "bottom",
+      "renderer": "gocordis-console-status",
+      "pages": ["gocordis-console-page"]
+    }
+  ],
+  "routes": [
+    {
+      "id": "gocordis-console-route",
+      "path": "/console",
+      "pageId": "gocordis-console-page",
+      "layout": "shell",
+      "order": -100
+    }
+  ],
+  "navigation": [
+    {
+      "id": "gocordis-console-nav",
+      "label": "内置控制台",
+      "route": "/console",
+      "pageId": "gocordis-console-page",
+      "icon": "dashboard",
+      "group": "Gocordis/Console",
+      "order": -100
+    }
+  ],
+  "extensions": [
+    {
+      "id": "gocordis-console-footer",
+      "slot": "shell.footer",
+      "renderer": "host-status",
+      "pageId": "gocordis-console-page",
+      "props": { "source": "builtin-console-plugin" }
+    }
+  ],
+  "resources": [
+    {
+      "id": "gocordis-console-assets",
+      "kind": "assets",
+      "path": "/assets/",
+      "mediaType": "text/javascript"
+    }
+  ]
+}

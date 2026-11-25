@@ -1,0 +1,9 @@
+{
+  "id": "gocordis-console-status",
+  "title": "Console 插件状态",
+  "position": "bottom",
+  "renderer": "gocordis-console-status",
+  "pages": [
+    "gocordis-console-page"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "id": "gocordis-console-route",
+  "path": "/console",
+  "pageId": "gocordis-console-page",
+  "layout": "shell",
+  "order": -100
+}

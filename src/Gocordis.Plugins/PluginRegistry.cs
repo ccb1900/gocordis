@@ -534,7 +534,7 @@ public sealed class PluginRegistry : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"factory for '{id}' failed", ex);
+            throw new InvalidOperationException($"factory for '{id}' failed: {ex.Message}", ex);
         }
 
         newlyStaged.Add(component);

@@ -94,7 +94,8 @@ public sealed class ManagedPluginLoader
         {
         if (_plugins.ContainsKey(id))
         {
-            throw new InvalidOperationException($"plugin '{id}' is already loaded");
+            throw new InvalidOperationException(
+                $"plugin '{id}' is already loaded (live: {string.Join(", ", _plugins.Keys)})");
         }
 
         GenerationHandle? generation = null;

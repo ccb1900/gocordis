@@ -145,6 +145,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Koishi.Feature", "samples\K
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Koishi.ConsoleApp", "samples\KoishiShowcase\ConsoleApp\Koishi.ConsoleApp.csproj", "{39A185B9-4AA3-488E-AE3D-4E8AADBADA44}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "BuiltinPlugins", "BuiltinPlugins", "{862F42DD-881F-5EB5-6CCF-7BE3BBE8B352}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Gocordis.Console.Plugin", "src\Gocordis.Console.Plugin\Gocordis.Console.Plugin.csproj", "{68A27D2A-E9C9-4706-BEF9-70AC57F1E759}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -779,6 +783,18 @@ Global
 		{39A185B9-4AA3-488E-AE3D-4E8AADBADA44}.Release|x64.Build.0 = Release|Any CPU
 		{39A185B9-4AA3-488E-AE3D-4E8AADBADA44}.Release|x86.ActiveCfg = Release|Any CPU
 		{39A185B9-4AA3-488E-AE3D-4E8AADBADA44}.Release|x86.Build.0 = Release|Any CPU
+		{68A27D2A-E9C9-4706-BEF9-70AC57F1E759}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{68A27D2A-E9C9-4706-BEF9-70AC57F1E759}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{68A27D2A-E9C9-4706-BEF9-70AC57F1E759}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{68A27D2A-E9C9-4706-BEF9-70AC57F1E759}.Debug|x64.Build.0 = Debug|Any CPU
+		{68A27D2A-E9C9-4706-BEF9-70AC57F1E759}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{68A27D2A-E9C9-4706-BEF9-70AC57F1E759}.Debug|x86.Build.0 = Debug|Any CPU
+		{68A27D2A-E9C9-4706-BEF9-70AC57F1E759}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{68A27D2A-E9C9-4706-BEF9-70AC57F1E759}.Release|Any CPU.Build.0 = Release|Any CPU
+		{68A27D2A-E9C9-4706-BEF9-70AC57F1E759}.Release|x64.ActiveCfg = Release|Any CPU
+		{68A27D2A-E9C9-4706-BEF9-70AC57F1E759}.Release|x64.Build.0 = Release|Any CPU
+		{68A27D2A-E9C9-4706-BEF9-70AC57F1E759}.Release|x86.ActiveCfg = Release|Any CPU
+		{68A27D2A-E9C9-4706-BEF9-70AC57F1E759}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -842,5 +858,6 @@ Global
 		{956ED5CF-E396-4753-889F-CD0935C463D8} = {977D8917-A895-F30A-C165-F445F1E4BE3B}
 		{BF8624CC-7B9D-4A06-8179-CC75522DED9C} = {977D8917-A895-F30A-C165-F445F1E4BE3B}
 		{39A185B9-4AA3-488E-AE3D-4E8AADBADA44} = {977D8917-A895-F30A-C165-F445F1E4BE3B}
+		{68A27D2A-E9C9-4706-BEF9-70AC57F1E759} = {862F42DD-881F-5EB5-6CCF-7BE3BBE8B352}
 	EndGlobalSection
 EndGlobal

@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Gocordis.Core;
 
 namespace Gocordis.Plugins;
@@ -98,6 +100,13 @@ public static class EntryDiff
         return true;
     }
 
+    /// <summary>
+    /// Config values arrive either as CLR primitives (built by a caller) or as
+    /// JsonElement values (read from an application manifest). JsonElement's
+    /// Equals is document-identity based, so two reloads of the SAME declaration
+    /// looked different and forced a needless rebuild — a managed ALC was then
+    /// staged while the original was still live. Compare the JSON value instead.
+    /// </summary>
     private static bool ConfigEqual(
         IReadOnlyDictionary<string, object?> left, IReadOnlyDictionary<string, object?> right)
     {
@@ -108,7 +117,7 @@ public static class EntryDiff
 
         foreach (var (key, value) in left)
         {
-            if (!right.TryGetValue(key, out var other) || !Equals(value, other))
+            if (!right.TryGetValue(key, out var other) || Canonical(value) != Canonical(other))
             {
                 return false;
             }
@@ -116,4 +125,26 @@ public static class EntryDiff
 
         return true;
     }
+
+    private static string Canonical(object? value)
+    {
+        if (value is null)
+        {
+            return "null";
+        }
+
+        var node = value is JsonNode jsonNode
+            ? jsonNode
+            : JsonNode.Parse(JsonSerializer.Serialize(value));
+        return CanonicalNode(node);
+    }
+
+    private static string CanonicalNode(JsonNode? node) => node switch
+    {
+        JsonObject obj => "{" + string.Join(",", obj
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => JsonSerializer.Serialize(pair.Key) + ":" + CanonicalNode(pair.Value))) + "}",
+        JsonArray array => "[" + string.Join(",", array.Select(CanonicalNode)) + "]",
+        _ => node?.ToJsonString() ?? "null",
+    };
 }

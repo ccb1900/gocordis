@@ -3,7 +3,7 @@
 This is the **only** place that records current branch/HEAD, entry commands, verified counts and known gaps. Everything under `docs/migration/` is a historical migration archive except `existence-audit.md`, which is maintained as the current per-capability classification; never read old branch names, SHAs or test counts from the archive as current state. `README.md` is the front door and points here.
 
 - **Branch**: `dotnet` (tracks `origin/dotnet`).
-- **Code HEAD**: `1ee7e5f7 test(product): remove final full-suite flakiness` (architecture code `dbfd28af`); this ledger is updated in the following documentation commit. Always prefer `git rev-parse HEAD` over remembered SHAs.
+- **Code state**: built-in Console plugin and config-equality fix are committed on `dotnet`; use `git rev-parse HEAD` / `git log -1` for the exact SHA rather than a remembered value.
 - **Engineering constitution**: `AGENTS.md` (root). Engineering manual: `docs/guide/csharp-developer-manual.md`. User manual: `docs/guide/user-manual.md`.
 
 ## Product entry
@@ -25,7 +25,9 @@ bash samples/SpatiotemporalShowcase/build-and-run.sh /tmp/gocordis-showcase
 # add --run to start the platform; see samples/SpatiotemporalShowcase/README.md for verification steps
 ```
 
-It builds 5 projects + a real TSX frontend (`@gocordis/plugin-kit`), packs 4 real `.gocordis-plugin` packages (`--shared-assembly`, `--provides`, `--dependency`), installs them and writes the declaration; add `--run` to start the host. Last run also verified the control-plane loop: all 4 fibers Active, queries/pages/client JS served, disable produced the strict LIFO undo log (`client-module → dashboard → worker → writer → store`), re-enable restored Active and healthy queries.
+It builds 5 showcase projects + two real TSX frontends (`@gocordis/plugin-kit`), packs 4 business `.gocordis-plugin` packages (`--shared-assembly`, `--provides`, `--dependency`) and installs them alongside the **product-owned built-in Console package** from `src/Gocordis.Console.Plugin`, then writes the declaration. Last run on port `8199` verified: all 5 plugin fibers Active, `gocordis-console/status` query and the Console's own `ui.js` served, `disable` withdrew the query/module while `/recover` and `/api/meta` stayed 200, and `enable` restored them. The Console is no longer a `samples/` declaration-only placeholder.
+
+`gocordis-console` contains a real managed `Component`, its own TSX-built ESM and all page/panel/route/navigation/extension/resource declarations. Install it with `gocordis plugin install --builtin console` or `gocordis console install --builtin console`; `GOCORDIS_BUILTIN_PACKAGES` can point a deployment at its own package directory. Host startup does not force-install it, so the Console remains an ordinary replaceable plugin.
 
 The empty-directory developer loop (`bash samples/PluginDeveloperWorkflow/e2e.sh <out>`) was re-run green. It now packs a per-run SDK prerelease version: reusing `1.0.0` let NuGet's global cache serve an older Core and caused `MissingMethodException` at plugin activation. E2E test helpers pass `-nodeReuse:false` so reused MSBuild nodes cannot hold redirected stdout pipes open.
 
@@ -41,7 +43,7 @@ dotnet test  Gocordis.sln --nologo --no-build -m:1
 bash docs/migration/verify-baseline.sh   # Go baseline drift check
 ```
 
-**Last locally verified** (2026-11-25, branch `dotnet`, code HEAD `1ee7e5f7` after the final architecture plan): C# **679 passed / 1 skipped / 0 failed**, three consecutive full-suite runs (Core 53, Conformance 179, Runtime 205+1 skipped, Extensions 72, Packaging 88, UI 3, Client 2, Product 77; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **103** tests green plus production build, plugin-kit 2 tests green, solution build 0 warning/0 error. These counts are a record of that run, not a claim about any earlier SHA.
+**Last locally verified** (2026-11-25, branch `dotnet`, built-in Console worktree): C# **682 passed / 1 skipped / 0 failed**, three consecutive full-suite runs (Core 53, Conformance 179, Runtime 206+1 skipped, Extensions 72, Packaging 88, UI 3, Client 2, Product 79; PosixOnly/WindowsOnly tests report Skipped explicitly — never silent passes), frontend **103** tests green plus production build, plugin-kit **3** tests green, solution build 0 warning/0 error. Go baseline verification reports the known frozen `docs/guide/user-manual.md` checksum drift and is recorded, not hidden. No CI result was queried. These counts are a record of that run, not a claim about any earlier SHA.
 
 Task 01 的有限校准基线见 `docs/migration/acceptance-baseline.md`；它区分三个验收域与 E0–E4 证据等级，P0-01…P0-04 均已关闭（真实 Process↔WASM 调用与包闭环由 `CrossBackendCapabilityTests`、`BackendDispatchProductTests` 覆盖）。
 

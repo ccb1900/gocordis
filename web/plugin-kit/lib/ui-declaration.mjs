@@ -16,8 +16,17 @@ const safeId = (id) => {
 };
 
 /** Build the declaration object without touching the filesystem (testable). */
-export function uiDeclaration({ module, entry, pages = [], panels = [] }) {
-  const resources = [{
+export function uiDeclaration({
+  module,
+  entry,
+  pages = [],
+  panels = [],
+  routes = [],
+  navigation = [],
+  extensions = [],
+  resources = [],
+}) {
+  const declared = [{
     kind: "client-module",
     id: safeId(module),
     path: entry.replace(/\\/g, "/"),
@@ -38,7 +47,7 @@ export function uiDeclaration({ module, entry, pages = [], panels = [] }) {
       ...(page.views ? { views: page.views } : {}),
       ...(page.actions ? { actions: page.actions } : {}),
     }]);
-    resources.push({ kind: "page", id, path });
+    declared.push({ kind: "page", id, path });
   }
   for (const panel of panels) {
     const id = safeId(panel.id);
@@ -51,9 +60,27 @@ export function uiDeclaration({ module, entry, pages = [], panels = [] }) {
       ...(panel.pages ? { pages: panel.pages } : {}),
       ...(panel.views ? { views: panel.views } : {}),
     }]);
-    resources.push({ kind: "panel", id, path });
+    declared.push({ kind: "panel", id, path });
   }
-  return { declaration: { resources }, definitions };
+
+  // Routes, navigation, extension slots and static resources are first-class
+  // package UI contributions. Emitting them here keeps a self-contained plugin
+  // to one ui.config.json + one bundle instead of hand-maintained JSON shards.
+  const emit = (kind, folder, items) => {
+    for (const item of items) {
+      const id = safeId(item.id);
+      const path = `ui/${folder}/${id}.json`;
+      const { id: _declaredId, ...rest } = item;
+      definitions.push([path, { id, ...rest }]);
+      declared.push({ kind, id, path });
+    }
+  };
+  emit("route", "routes", routes);
+  emit("navigation", "navigation", navigation);
+  emit("extension", "extensions", extensions);
+  emit("resource", "resources", resources);
+
+  return { declaration: { resources: declared }, definitions };
 }
 
 /** Emit gocordis-ui.json and its definition files next to the bundle. */
@@ -65,6 +92,10 @@ export async function emitUiDeclaration(outfile, config = {}) {
     entry: basename(outfile),
     pages: config.pages ?? [],
     panels: config.panels ?? [],
+    routes: config.routes ?? [],
+    navigation: config.navigation ?? [],
+    extensions: config.extensions ?? [],
+    resources: config.resources ?? [],
   });
   for (const [relative, definition] of definitions) {
     const path = join(outputDir, relative);

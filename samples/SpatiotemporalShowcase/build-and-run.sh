@@ -9,6 +9,10 @@
 #   GOCORDIS_E2E_LOG=/tmp/showcase.log ./build-and-run.sh ...   # effect/undo proof
 set -euo pipefail
 
+# The checkout targets net10.0; development hosts may only carry a newer
+# major runtime. Keep the bundled CLI runnable without changing TFMs.
+export DOTNET_ROLL_FORWARD="${DOTNET_ROLL_FORWARD:-LatestMajor}"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SHOWCASE="$ROOT/samples/SpatiotemporalShowcase"
 OUT="${1:-/tmp/gocordis-showcase}"
@@ -86,15 +90,15 @@ pack_and_install() {
     dotnet "$CLI_DLL" plugin install "$package" --store "$STORE" --host-version 1.0.0
 }
 
-echo "==> packing + installing the optional console UI plugin"
-# The console is an ordinary UI plugin: host web transport / static assets /
-# control API / /recover survive when this package is disabled or uninstalled.
-CONSOLE_SOURCE="$ROOT/samples/ConsoleUiPlugin"
-CONSOLE_PACKAGE="$PACKAGES/gocordis-console-1.0.0.gocordis-plugin"
-dotnet "$CLI_DLL" plugin pack "$CONSOLE_SOURCE" "$CONSOLE_PACKAGE" \
-    --id gocordis-console --version 1.0.0 --type gocordis-console \
-    --host-range "[1.0,)" --backend builtin --entry-assembly entry.txt
-dotnet "$CLI_DLL" plugin install "$CONSOLE_PACKAGE" --store "$STORE" --host-version 1.0.0
+echo "==> installing the product's built-in Console plugin package"
+# The console is a product-owned REAL managed plugin, not a sample placeholder.
+# Its DLL, TSX ESM and UI declarations are packed by the product build script.
+# Host web transport / static assets / control API / /recover survive when the
+# package is disabled or uninstalled.
+bash "$ROOT/src/Gocordis.Console.Plugin/build-and-pack.sh" >/dev/null
+CONSOLE_PACKAGE="$ROOT/src/Gocordis.Console.Plugin/builtin/gocordis-console-1.0.0.gocordis-plugin"
+cp "$CONSOLE_PACKAGE" "$PACKAGES/"
+dotnet "$CLI_DLL" plugin install --builtin console --store "$STORE" --host-version 1.0.0
 
 echo "==> packing + installing managed plugin packages"
 # The --dependency/--provides flags populate the package manifest that the

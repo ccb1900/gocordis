@@ -249,6 +249,30 @@ public sealed class EntryReconciliationTests
     }
 
     [Fact]
+    public void JsonElementConfigIsComparedByValueAcrossManifestReloads()
+    {
+        // ApplicationManifest deserializes config values as JsonElement. Two
+        // reads of the same declaration produce different JsonDocument owners,
+        // so reference-identity equality forced a needless managed ALC rebuild.
+        using var first = System.Text.Json.JsonDocument.Parse(
+            """{"intervalMs":1500,"nested":{"b":2,"a":1}}""");
+        using var second = System.Text.Json.JsonDocument.Parse(
+            """{"intervalMs":1500,"nested":{"a":1,"b":2}}""");
+        var before = Manifest("p", "probe") with
+        {
+            Config = new Dictionary<string, object?> { ["cfg"] = first.RootElement },
+        };
+        var after = Manifest("p", "probe") with
+        {
+            Config = new Dictionary<string, object?> { ["cfg"] = second.RootElement },
+        };
+
+        var delta = EntryDiff.Classify(before, after);
+        Assert.False(delta.ConfigChanged);
+        Assert.True(delta.IsEmpty);
+    }
+
+    [Fact]
     public async Task ConfigAndDisabledRetiresTheFiberInsteadOfApplyingConfigInPlace()
     {
         await using var runtime = new Gocordis.Core.Runtime();

@@ -11,10 +11,9 @@
 import { Alert, Button, Empty, Input, Select, Space, Table, Tag, Typography } from "antd";
 import type { TableColumnsType } from "antd";
 import { useEffect, useMemo, useState } from "react";
-import { api } from "../api";
-import { PLUGIN, useDomainVersion } from "../lib/projections";
-import type { BlockRenderer } from "./registry";
-import type { ViewBlock } from "./schema";
+import { facade } from "../facade";
+import type { BlockRenderer } from "../types";
+import type { ViewBlock } from "../types";
 import {
   compareRows, filterRows, mapStoreEntry, storeRowKey,
   type CatalogFilter, type StoreRow,
@@ -30,7 +29,7 @@ export const MarketCatalogBlock: BlockRenderer = ({ block }: { block: ViewBlock 
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<CatalogFilter>({});
   const [reload, setReload] = useState(0);
-  const version = useDomainVersion(PLUGIN);
+  const version = ctx.generation;
 
   useEffect(() => {
     let alive = true;

@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { ConfigProvider, theme as antdTheme } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import { ThemeProvider, useTheme } from "./theme";
-import { reconcileClientModules } from "./lib/client-modules";
+import { reconcileClientModules } from "@gocordis/console-runtime";
 import App from "./shell/App";
 
 function ThemedRoot() {

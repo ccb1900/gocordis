@@ -6,7 +6,7 @@
 import React, { useRef, useState } from "react";
 import { Button, Typography } from "antd";
 import { UploadOutlined } from "@ant-design/icons";
-import { api } from "../api";
+import { facade } from "../facade";
 import type { UploadedPackage } from "../types";
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -45,7 +45,7 @@ export function PluginFileButton({
     setBusy(true);
     setError(null);
     try {
-      const pkg = await api.uploadPackage(file);
+      const pkg = await facade().api.uploadPackage(file);
       if (!pkg.uploadKey) throw new Error("上传结果缺少 uploadKey");
       await onUploaded(pkg);
     } catch (err) {

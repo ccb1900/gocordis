@@ -5,10 +5,9 @@
 import { Alert, Button, Card, Col, Empty, Row, Space, Statistic, Table, Tag, Timeline, Typography } from "antd";
 import type { TableColumnsType } from "antd";
 import { useEffect, useState } from "react";
-import { ALL, useDomainVersion } from "../lib/projections";
-import { navigate } from "../router";
+import { navigate } from "../navigate";
 import type { FrameworkDashboardDTO, RuntimeEventsDTO } from "../types";
-import type { BlockRenderer } from "./registry";
+import type { BlockRenderer } from "../types";
 import {
   parseDashboard, parseEvents, resolveEvents,
   type DiagnosticRow, type EventRow,
@@ -34,7 +33,7 @@ export const FrameworkDashboardBlock: BlockRenderer = ({ block, ctx }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
-  const version = useDomainVersion(ALL);
+  const version = ctx.generation;
   const dashboardQuery = block.query || DASHBOARD_QUERY;
   const eventsQuery = block.params?.eventsQuery || EVENTS_QUERY;
   const inspectorRoute = block.params?.inspectorRoute || DEFAULT_INSPECTOR_ROUTE;

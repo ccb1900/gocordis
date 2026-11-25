@@ -8,8 +8,7 @@ import React, { useEffect, useState } from "react";
 import { Alert, Button, Empty, Skeleton, Space, Table, Tag, Typography } from "antd";
 import type { TableColumnsType } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
-import { api } from "../api";
-import { PLUGIN, useDomainVersion } from "../lib/projections";
+import { facade } from "../facade";
 import { diagnosticText } from "../lib/plugin-control";
 import type { PackageDependencyView, PluginDependencyView } from "../types";
 
@@ -36,17 +35,17 @@ const depColumns: TableColumnsType<PackageDependencyView> = [
     render: (v: boolean) => <Tag color={v ? "success" : "error"}>{v ? "是" : "否"}</Tag> },
 ];
 
-export function PluginDependencies({ pluginId }: { pluginId: string }) {
+export function PluginDependencies({ pluginId, generation }: { pluginId: string; generation: number }) {
   const [view, setView] = useState<PluginDependencyView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
-  const version = useDomainVersion(PLUGIN);
+  const version = generation;
 
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    api
+    facade().api
       .dependencies(pluginId)
       .then((data) => {
         if (alive) {

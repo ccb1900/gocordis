@@ -150,8 +150,14 @@ public sealed class ProductGateTests
         var bundle = await client.GetStringAsync(script.Groups[1].Value);
         Assert.True(bundle.Contains("dashboard", StringComparison.OrdinalIgnoreCase),
             "served main bundle must contain the dashboard view");
-        Assert.True(bundle.Contains("plugin-explorer", StringComparison.Ordinal),
-            "served built console must register the plugin explorer renderer");
+        // Product renderers now arrive from the builtin Console client module,
+        // not from the shell bundle. Both halves of that boundary are asserted.
+        var modulePath = Path.Combine(
+            AppContext.BaseDirectory, "client-modules", "gocordis-console-ui", "ui.js");
+        Assert.True(File.Exists(modulePath), "builtin console client module must ship with the product host");
+        var module = await File.ReadAllTextAsync(modulePath);
+        Assert.Contains("plugin-explorer", module, StringComparison.Ordinal);
+        Assert.DoesNotContain("plugin-explorer", bundle, StringComparison.Ordinal);
 
         // The Inspector/dashboard query remains live behind the shipped asset.
         var dashboard = JsonNode.Parse(

@@ -7,9 +7,9 @@
 
 import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Alert, Button, Tag } from "antd";
-import { api } from "../api";
+import { facade } from "../facade";
 import { errorCodeOf, mutationMessage } from "../lib/plugin-control";
-import { getSettings, rendererRegistryVersion, subscribeRenderers } from "../views/registry";
+import { facade } from "../facade";
 import { ConfigEditor } from "./ConfigEditor";
 
 interface SaveStatus {
@@ -21,8 +21,8 @@ interface SaveStatus {
 export function SettingsSlot({ pluginId, componentType }: { pluginId: string; componentType?: string }) {
   // A settings UI registered after this slot mounted (late module import,
   // freshly enabled plugin) must swap in reactively, same as renderers.
-  const settingsVersion = useSyncExternalStore(subscribeRenderers, rendererRegistryVersion);
-  const Component = useMemo(() => getSettings(pluginId), [pluginId, settingsVersion]);
+  const settingsVersion = useSyncExternalStore(facade().subscribeRenderers, facade().rendererRegistryVersion);
+  const Component = useMemo(() => facade().getSettings(pluginId) as never, [pluginId, settingsVersion]);
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus | null>(null);
@@ -55,7 +55,7 @@ export function SettingsSlot({ pluginId, componentType }: { pluginId: string; co
   const onSaved = useCallback(
     async (cfg: Record<string, unknown>) => {
       try {
-        const result = await api.savePluginConfig(pluginId, cfg);
+        const result = await facade().api.savePluginConfig(pluginId, cfg);
         if (!result.accepted) {
           const message = mutationMessage(result, "配置保存未接受");
           setSaveStatus({ persisted: result.persisted ?? null, code: result.code, error: message });

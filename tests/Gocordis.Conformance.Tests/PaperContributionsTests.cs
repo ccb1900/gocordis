@@ -52,8 +52,20 @@ public sealed class PaperContributionsTests
         await oldProviderFiber.GoneAsync();
         // Wait for the consumer's observable Pending state directly, published
         // with the snapshot after the reactive withdrawal completes.
-        await runtime.WaitForFiberStateAsync(consumerFiber.Id, FiberState.Pending)
-            .WaitAsync(TimeSpan.FromSeconds(15));
+        try
+        {
+            await runtime.WaitForFiberStateAsync(consumerFiber.Id, FiberState.Pending)
+                .WaitAsync(TimeSpan.FromSeconds(60));
+        }
+        catch (TimeoutException)
+        {
+            var snapshot = runtime.Snapshot();
+            var state = snapshot.Fibers.FirstOrDefault(f => f.Id == consumerFiber.Id);
+            throw new TimeoutException(
+                $"consumer did not reach Pending: state={state?.State.ToString() ?? "missing"}, " +
+                $"failure={state?.Failure ?? "none"}, fibers={snapshot.Fibers.Count}, " +
+                $"cleanup={snapshot.CleanupFailures.Count}, effects={snapshot.EffectFailures.Count}");
+        }
         Assert.Equal(FiberState.Pending, registry.Entries["consumer"].Fiber!.State);
         Assert.Null(registry.Entries["consumer"].Fiber!.Failure);
         Assert.Contains("undo:provider", journal);

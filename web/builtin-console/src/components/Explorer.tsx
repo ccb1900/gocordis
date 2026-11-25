@@ -10,9 +10,7 @@ import {
   Switch, Table, Tag, Tooltip, Typography,
 } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
-import { api } from "../api";
-import { onPluginState } from "../stream";
-import { PLUGIN, useDomainVersion } from "../lib/projections";
+import { facade } from "../facade";
 import { mutationMessage } from "../lib/plugin-control";
 import { PluginDependencies } from "./PluginDependencies";
 import { PluginFileButton } from "./PluginFileButton";
@@ -67,7 +65,7 @@ function resultDetail(result: PluginMutationResult) {
   return `状态 ${result.state || "—"} · 已持久化 ${persisted}${changes}`;
 }
 
-export function PluginExplorer() {
+export function PluginExplorer({ ctx }: { ctx?: import("../types").ViewContext } = {}) {
   const [plugins, setPlugins] = useState<ExplorerPlugin[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -77,11 +75,11 @@ export function PluginExplorer() {
   const [installEnabled, setInstallEnabled] = useState(true);
   const [lastEvent, setLastEvent] = useState<PluginStateEvent | null>(null);
   const [typeFilter, setTypeFilter] = useState<string | undefined>(undefined);
-  const pluginVersion = useDomainVersion(PLUGIN);
+  const pluginVersion = ctx?.generation ?? 0;
 
   const refresh = useCallback(async () => {
     try {
-      setPlugins(await api.plugins());
+      setPlugins(await facade().api.plugins());
       setError(null);
     } catch (e) {
       setError(errText(e));
@@ -96,7 +94,6 @@ export function PluginExplorer() {
   useEffect(() => {
     void refresh();
   }, [refresh, pluginVersion]);
-  useEffect(() => onPluginState(setLastEvent), []);
 
   const selected = plugins.find((p) => p.id === selectedId) ?? plugins[0] ?? null;
   const types = useMemo(() => Array.from(new Set(plugins.map((p) => p.type))).sort(), [plugins]);
@@ -115,7 +112,7 @@ export function PluginExplorer() {
       setError(null);
       setNotice(null);
       try {
-        const result = await api.controlPlugin(plugin.id, enable);
+        const result = await facade().api.controlPlugin(plugin.id, enable);
         report(result, enable ? "已提交启用" : "已提交停用");
       } catch (e) {
         setError(errText(e));
@@ -133,7 +130,7 @@ export function PluginExplorer() {
       setError(null);
       setNotice(null);
       try {
-        const result = await api.installPlugin(pkg.uploadKey, installEnabled);
+        const result = await facade().api.installPlugin(pkg.uploadKey, installEnabled);
         report(result, `已安装 ${pkg.id}@${pkg.version}${installEnabled ? "并启用" : "（未启用）"}`);
       } catch (e) {
         setError(errText(e));
@@ -151,7 +148,7 @@ export function PluginExplorer() {
       setError(null);
       setNotice(null);
       try {
-        const result = await api.upgradePlugin(plugin.id, pkg.uploadKey);
+        const result = await facade().api.upgradePlugin(plugin.id, pkg.uploadKey);
         report(result, `已从 ${pkg.id}@${pkg.version} 提交升级`);
       } catch (e) {
         setError(errText(e));
@@ -171,7 +168,7 @@ export function PluginExplorer() {
       try {
         // The control service matches this against the exact installed store
         // version; the declared `version` is a NuGet range and would not match.
-        const result = await api.uninstallPlugin(plugin.id, plugin.installedVersion || undefined);
+        const result = await facade().api.uninstallPlugin(plugin.id, plugin.installedVersion || undefined);
         report(result, `已提交卸载 ${plugin.id}`);
       } catch (e) {
         setError(errText(e));
@@ -402,7 +399,7 @@ export function PluginExplorer() {
                   </Descriptions.Item>
                 )}
               </Descriptions>
-              <PluginDependencies pluginId={selected.id} />
+              <PluginDependencies pluginId={selected.id} generation={ctx?.generation ?? 0} />
               <div style={{ marginTop: 14, borderTop: "1px solid var(--line-soft, #232a3a)", paddingTop: 10 }}>
                 <Typography.Text strong style={{ fontSize: 13 }}>配置</Typography.Text>
                 <div style={{ marginTop: 8 }}>

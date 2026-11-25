@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import "../styles.css";
 import { Badge, Button, Layout, Menu, Space, Switch, Tabs, Typography } from "antd";
 import {
@@ -6,44 +6,33 @@ import {
   FileTextOutlined, FolderOutlined, ProfileOutlined, SearchOutlined,
 } from "@ant-design/icons";
 import { Alert } from "antd";
-import { api } from "../api";
 import {
+  api,
   reconcileClientModules,
   subscribeClientModulesState,
   clientModuleManagerState,
-} from "../lib/client-modules";
-import { useObservationGeneration, useStreamStatus, onObservation } from "../stream";
-import { useDomainVersion } from "../lib/projections";
-import { usePath, navigate, replace } from "../router";
-import { buildMenuTree, type MenuNode } from "../lib/menu-tree";
-import { useTheme } from "../theme";
-import { ActionBar } from "./ActionBar";
-import { GenericPage } from "../views/GenericPage";
-import { registerBuiltinPageAliases } from "../views/page-renderers";
-import { ViewBlockRenderer, type ViewContext } from "../views/blocks";
-import {
+  useObservationGeneration,
+  useStreamStatus,
+  onObservation,
+  useDomainVersion,
+  buildMenuTree,
+  GenericPage,
+  ViewBlockRenderer,
   getPageRenderer,
   getPanelRenderer,
-  registerPageRenderer,
-  registerPanelRenderer,
   rendererRegistryVersion,
   subscribeRenderers,
-} from "../views/registry";
-import type { UIPage, UIPanel } from "../types";
+} from "@gocordis/console-runtime";
+import type { ViewContext, UIPage, UIPanel, MenuNode } from "@gocordis/console-runtime";
+import { usePath, navigate, replace } from "../router";
+import { useTheme } from "../theme";
+import { ActionBar } from "./ActionBar";
 
 const { Sider, Content } = Layout;
 
-// Console infrastructure renderers register exactly like third-party ones —
-// through the keyed registry, not a switch statement.
-registerPageRenderer("plugin-explorer", function PluginExplorerPage() {
-  return <Lazy><PluginExplorerLazy /></Lazy>;
-});
-// Backend pages declare these renderer names without views; the aliases feed
-// the existing block renderers through GenericPage (see page-renderers.tsx).
-registerBuiltinPageAliases();
-registerPanelRenderer("event-feed", function EventFeedPanel({ generation }: { generation: number }) {
-  return <Lazy><EventFeedLazy generation={generation} /></Lazy>;
-});
+// Product renderers (plugin-explorer, event-feed, dashboards, graphs) are not
+// registered here. They arrive as plugin client modules through the shared
+// extension registry, exactly like third-party pages and blocks.
 
 // Pages declare their menu icon by name from this curated set; the shell
 // never keys icons off application routes.
@@ -315,15 +304,6 @@ export default function App() {
       </Layout>
     </Layout>
   );
-}
-
-const PluginExplorerLazy = lazy(() =>
-  import("../components/Explorer").then((m) => ({ default: m.PluginExplorer }))
-);
-const EventFeedLazy = lazy(() => import("../components/EventFeed").then((m) => ({ default: m.EventFeed })));
-
-function Lazy({ children }: { children: React.ReactNode }) {
-  return <Suspense fallback={<div style={{ padding: 16, color: "#8a93a6" }}>加载中…</div>}>{children}</Suspense>;
 }
 
 

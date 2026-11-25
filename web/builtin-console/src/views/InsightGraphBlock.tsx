@@ -5,10 +5,9 @@
 import { Alert, Segmented, Space, Typography } from "antd";
 import type { Graph } from "@antv/g6";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { COMPOSITION, useDomainVersion } from "../lib/projections";
 import { buildGraph, graphOptions, type G6GraphData } from "../lib/insight-graph-g6";
 import type { GraphView, InsightGraphDTO } from "../lib/insight-graph";
-import type { BlockRenderer } from "./registry";
+import type { BlockRenderer } from "../types";
 
 
 
@@ -24,8 +23,8 @@ export const InsightGraphBlock: BlockRenderer = ({ block, ctx }) => {
   // The dependency graph only changes on composition events (enable/disable/
   // install), not on every data observation. Using the COMPOSITION domain keeps
   // the dagre layout stable while the store writer emits data events.
-  const version = useDomainVersion(block.domain ?? COMPOSITION);
-  // api.hubQuery is a stable module function; capture it once so SSE-driven
+  const version = ctx.generation;
+  // facade().api.hubQuery is a stable module function; capture it once so SSE-driven
   // ctx identity changes cannot restart the query effect.
   const hubQuery = useRef(ctx.hubQuery).current;
 

@@ -6,9 +6,8 @@
 import { Alert, Button, Empty, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { TableColumnsType, TableProps, TabsProps } from "antd";
 import { useEffect, useState } from "react";
-import { ALL, useDomainVersion } from "../lib/projections";
 import type { RuntimeSnapshotDTO } from "../types";
-import type { BlockRenderer } from "./registry";
+import type { BlockRenderer } from "../types";
 import {
   parseSnapshot,
   type DependencyRow, type EffectRow, type FiberRow, type ProviderRow, type ScopeRow,
@@ -47,7 +46,7 @@ export const RuntimeInspectorBlock: BlockRenderer = ({ block, ctx }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
-  const version = useDomainVersion(ALL);
+  const version = ctx.generation;
   const query = block.query || DEFAULT_QUERY;
 
   useEffect(() => {

@@ -7,10 +7,8 @@ import {
   listActions,
   rendererRegistryVersion,
   subscribeRenderers,
-  type ActionContext,
-  type ViewContext,
-} from "../views/registry";
-import type { UIPage } from "../types";
+} from "@gocordis/console-runtime";
+import type { ActionContext, ViewContext, UIPage } from "@gocordis/console-runtime";
 
 export function ActionBar({ ctx, page }: { ctx: ViewContext; page: UIPage | null }) {
   const version = useSyncExternalStore(subscribeRenderers, rendererRegistryVersion);

@@ -53,6 +53,8 @@ import {
   registerWidget,
   registeredBlockKinds,
   registeredWidgets,
+  rendererRegistryVersion,
+  subscribeRenderers,
   type ActionDefinition,
   type BlockRenderer,
   type PageRenderer,
@@ -90,6 +92,13 @@ export interface BaseModuleAPI {
   registerPageRenderer: typeof registerPageRenderer;
   registerPanelRenderer: typeof registerPanelRenderer;
   registeredBlockKinds: typeof registeredBlockKinds;
+  /** Read-side hooks for plugin UIs that render another module's contribution
+   * (settings slots, composite pages). They are registry reads, not lifecycle
+   * writes, so exposing them does not create a second lifecycle authority. */
+  getSettings: typeof getSettings;
+  getWidget: typeof getWidget;
+  subscribeRenderers: typeof subscribeRenderers;
+  rendererRegistryVersion: typeof rendererRegistryVersion;
 }
 
 declare global {
@@ -105,6 +114,7 @@ export function clientModuleAPI(): BaseModuleAPI {
     antd, api,
     registerBlockRenderer, registerPageRenderer, registerPanelRenderer,
     registeredBlockKinds,
+    getSettings, getWidget, subscribeRenderers, rendererRegistryVersion,
   };
 }
 

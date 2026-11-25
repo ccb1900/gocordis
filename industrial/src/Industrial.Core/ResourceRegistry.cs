@@ -72,6 +72,11 @@ public sealed class ResourceRegistry : IResourceRegistry
         return rows.Select(x => x.ToContract()).ToArray();
     }
 
+    private static bool IsReference(
+        IReadOnlyDictionary<string, object?> config, string key, string id) =>
+        config.TryGetValue(key, out var value) &&
+        string.Equals(value?.ToString(), id, StringComparison.Ordinal);
+
     public async ValueTask<bool> RemoveAsync(string id, CancellationToken ct = default)
     {
         await using var db = _db();
@@ -81,16 +86,24 @@ public sealed class ResourceRegistry : IResourceRegistry
             return false;
         }
 
-        if (_workflows is not null)
+        // Reference integrity is a persisted-data invariant. It must not depend
+        // on the workflow plugin being Active, and it must cover every stored
+        // version (including published history), not only the current draft.
+        var workflowRows = await db.Workflows.AsNoTracking().ToListAsync(ct);
+        foreach (var row in workflowRows)
         {
-            var referenced = (await _workflows.ListAsync(ct)).Any(workflow =>
-                workflow.ResourceReferences.Contains(id, StringComparer.Ordinal) ||
-                workflow.Nodes.Any(node => node.Config.TryGetValue("resourceId", out var value) &&
-                                           string.Equals(value?.ToString(), id, StringComparison.Ordinal)));
+            if (string.IsNullOrWhiteSpace(row.DefinitionJson)) continue;
+            var workflow = JsonSerializer.Deserialize<WorkflowDefinition>(row.DefinitionJson, Json);
+            if (workflow is null) continue;
+            var referenced = workflow.ResourceReferences.Contains(id, StringComparer.Ordinal) ||
+                             workflow.Nodes.Any(node =>
+                                 IsReference(node.Config, "resourceId", id) ||
+                                 IsReference(node.Config, "targetResourceId", id));
             if (referenced)
             {
                 throw new InvalidOperationException(
-                    $"resource '{id}' is referenced by a workflow and cannot be deleted");
+                    $"resource '{id}' is referenced by workflow '{workflow.WorkflowId}' v{workflow.Version} " +
+                    "and cannot be deleted");
             }
         }
 

@@ -9,8 +9,8 @@ namespace Industrial.Plugins;
 
 /// <summary>Smaller, independently packaged platform plugins matching the
 /// collector §5.1 taxonomy. Each owns only its own business data and lifetime;
-/// all share the one Cordis Runtime. The aggregate IndustrialDomainComponent
-/// remains only for older dev declarations/tests.</summary>
+/// all share the one Cordis Runtime. Developer and packaged hosts register
+/// these same component types through Industrial.Host.IndustrialComponents.</summary>
 public abstract class IndustrialCapabilityComponent : Component
 {
     private readonly IReadOnlyDictionary<string, object?> _config;
@@ -77,6 +77,22 @@ public sealed class IndustrialResourceComponent : IndustrialCapabilityComponent
             }
         }
 
+        return ValueTask.FromResult<Cleanup?>(null);
+    }
+}
+
+public sealed class IndustrialMachineComponent : IndustrialCapabilityComponent
+{
+    public IndustrialMachineComponent() : this(null) { }
+
+    public IndustrialMachineComponent(IReadOnlyDictionary<string, object?>? config = null) : base(config) { }
+
+    public override string Name => "industrial-machine";
+    public override IReadOnlyList<ICapabilityKey> Provide() => [IndustrialKeys.MachineRegistry];
+
+    public override ValueTask<Cleanup?> ApplyAsync(Context context)
+    {
+        context.Provide(IndustrialKeys.MachineRegistry, new MachineRegistry(LedgerDb));
         return ValueTask.FromResult<Cleanup?>(null);
     }
 }

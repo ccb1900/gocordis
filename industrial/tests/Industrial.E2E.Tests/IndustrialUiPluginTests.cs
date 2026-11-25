@@ -4,6 +4,7 @@ using Gocordis.Core;
 using Gocordis.Platform;
 using Gocordis.Plugins;
 using Industrial.Contracts;
+using Industrial.Host;
 using Industrial.Plugins;
 using Microsoft.EntityFrameworkCore;
 
@@ -25,15 +26,21 @@ public sealed class IndustrialUiPluginTests
         registry.ExternalCapabilities.Add(ApiGateway.Key);
         await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
 
-        registry.RegisterComponentFactory("industrial.domain", manifest =>
-            new IndustrialDomainComponent(manifest.Config));
-        registry.RegisterComponentFactory("industrial.nodes", _ => new IndustrialNodesComponent());
-        registry.RegisterComponentFactory("industrial.ui", _ => new IndustrialUiComponent());
-
-        var domain = Decl("industrial.domain", new Dictionary<string, object?> { ["root"] = temp.Root, ["allowDevelopmentKey"] = "true" });
-        var nodes = Decl("industrial.nodes");
-        var ui = Decl("industrial.ui");
-        await registry.ApplyAsync([domain, nodes, ui]);
+        var config = new Dictionary<string, object?>
+        {
+            ["root"] = temp.Root,
+            ["allowDevelopmentKey"] = "true",
+            ["seedResource"] = "true",
+            ["sourceRoot"] = temp.SourceRoot,
+        };
+        IndustrialComponents.RegisterFactories(registry, config);
+        var declarations = IndustrialComponents.Types
+            .Select(type => IndustrialComponents.Declaration(type)).ToArray();
+        PluginManifest[] WithUi(bool enabled) => declarations
+            .Select(declaration => declaration.Id == "industrial.ui"
+                ? declaration with { Enabled = enabled }
+                : declaration).ToArray();
+        await registry.ApplyAsync(declarations);
 
         Assert.Equal(9, console.Ui.Pages().Count);
         Assert.Contains(console.Ui.Pages(), page => page.Id == "industrial.designer");
@@ -48,6 +55,16 @@ public sealed class IndustrialUiPluginTests
         var nodesWire = Assert.IsType<JsonArray>(console.Api.Query("industrial/nodes"));
         var csv = Assert.Single(nodesWire, node => node?["nodeTypeId"]?.GetValue<string>() == "industrial.reader.csv");
         Assert.Equal("FileBatch", csv!["inputs"]![0]!["type"]!.GetValue<string>());
+        var source = Assert.Single(nodesWire, node => node?["nodeTypeId"]?.GetValue<string>() == "industrial.filesystem.local");
+        Assert.Equal("filesystem.local", source!["configurationSchema"]!["resourceType"]!.GetValue<string>());
+        Assert.Equal("resource", source["configurationSchema"]!["properties"]!["resourceId"]!["format"]!.GetValue<string>());
+        var mapping = Assert.Single(nodesWire, node => node?["nodeTypeId"]?.GetValue<string>() == "industrial.transform.mapping");
+        Assert.Equal("object", mapping!["configurationSchema"]!["properties"]!["mapping"]!["type"]!.GetValue<string>());
+        var validation = Assert.Single(nodesWire, node => node?["nodeTypeId"]?.GetValue<string>() == "industrial.transform.validate");
+        Assert.Equal("array", validation!["configurationSchema"]!["properties"]!["required"]!["type"]!.GetValue<string>());
+        var target = Assert.Single(nodesWire, node => node?["nodeTypeId"]?.GetValue<string>() == "industrial.sink.sqlite");
+        Assert.NotNull(target!["configurationSchema"]!["properties"]!["targetResourceId"]);
+        Assert.Null(target["configurationSchema"]!["properties"]!["resourceId"]);
         Assert.NotNull(console.Api.Query("industrial/credentials"));
         Assert.IsType<JsonArray>(console.Api.Query("industrial/dashboard-rows"));
         var designer = Assert.Single(console.Ui.Pages(), page => page.Id == "industrial.designer");
@@ -55,17 +72,17 @@ public sealed class IndustrialUiPluginTests
         Assert.Contains(designer.Views!.AsArray(), block =>
             block?["kind"]?.GetValue<string>() == "industrial-workflow-canvas");
         var catalog = runtime.RequireCapability(IndustrialKeys.NodeCatalog);
-        Assert.Equal(12, (await catalog.ListAsync()).Count);
+        Assert.Equal(13, (await catalog.ListAsync()).Count);
 
-        await registry.ApplyAsync([domain, nodes, ui with { Enabled = false }]);
+        await registry.ApplyAsync(WithUi(false));
         Assert.DoesNotContain(console.Ui.Pages(), page => page.Owner.ComponentId == "industrial-ui");
         Assert.DoesNotContain(console.Ui.Routes(), route => route.Owner.ComponentId == "industrial-ui");
         Assert.DoesNotContain(console.Ui.Navigations(), nav => nav.Owner.ComponentId == "industrial-ui");
         Assert.DoesNotContain(console.Ui.ClientModules(), module => module.Name == "industrial-designer");
         Assert.Null(console.Api.Query("industrial/dashboard"));
-        Assert.Equal(12, (await catalog.ListAsync()).Count);
+        Assert.Equal(13, (await catalog.ListAsync()).Count);
 
-        await registry.ApplyAsync([domain, nodes, ui]);
+        await registry.ApplyAsync(WithUi(true));
         Assert.Equal(9, console.Ui.Pages().Count);
         Assert.NotNull(console.Api.Query("industrial/dashboard"));
     }
@@ -85,13 +102,13 @@ public sealed class IndustrialUiPluginTests
         registry.ExternalCapabilities.Add(ApiGateway.Key);
         await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
 
-        registry.RegisterComponentFactory("industrial.domain", manifest =>
-            new IndustrialDomainComponent(manifest.Config));
-        registry.RegisterComponentFactory("industrial.ui", _ => new IndustrialUiComponent());
-        await registry.ApplyAsync([
-            Decl("industrial.domain", new Dictionary<string, object?> { ["root"] = temp.Root, ["allowDevelopmentKey"] = "true" }),
-            Decl("industrial.ui"),
-        ]);
+        IndustrialComponents.RegisterFactories(registry, new Dictionary<string, object?>
+        {
+            ["root"] = temp.Root,
+            ["allowDevelopmentKey"] = "true",
+        });
+        await registry.ApplyAsync(IndustrialComponents.Types
+            .Select(type => IndustrialComponents.Declaration(type)).ToArray());
 
         var resources = runtime.RequireCapability(IndustrialKeys.ResourceRegistry);
         await resources.RegisterAsync(new ResourceDefinition(
@@ -152,6 +169,80 @@ public sealed class IndustrialUiPluginTests
             ["guarded"], new Dictionary<string, object?>()));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => resources.RemoveAsync("guarded").AsTask());
+
+        // The guard is a persisted-data invariant: unbinding the workflow
+        // plugin or looking only at the current draft must not weaken it.
+        resources.UnbindWorkflows();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => resources.RemoveAsync("guarded").AsTask());
+        await workflows.SaveDraftAsync(new WorkflowDefinition(
+            "guarded-target-flow", "Guarded target flow", 1,
+            [new WorkflowNode("sink", "guarded.source",
+                new Dictionary<string, object?> { ["targetResourceId"] = "guarded" }, 0, 0)],
+            [], new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            [], new Dictionary<string, object?>()));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => resources.RemoveAsync("guarded").AsTask());
+    }
+
+    [Fact]
+    public async Task ResourceAndCredentialCommandsManageBusinessData()
+    {
+        using var temp = new TempDir();
+        await using var runtime = new Gocordis.Core.Runtime();
+        var console = new ConsoleHost(runtime);
+        await using var registry = new PluginRegistry(runtime);
+        console.AttachRegistry(registry);
+        registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
+        registry.ExternalCapabilities.Add(ApiGateway.Key);
+        await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
+        IndustrialComponents.RegisterFactories(registry, new Dictionary<string, object?>
+        {
+            ["root"] = temp.Root,
+            ["allowDevelopmentKey"] = "true",
+        });
+        await registry.ApplyAsync(IndustrialComponents.Types
+            .Select(type => IndustrialComponents.Declaration(type)).ToArray());
+
+        Assert.True(await console.Api.ExecuteAsync("industrial/save-credential", new JsonObject
+        {
+            ["id"] = "cred-1", ["name"] = "Share", ["kind"] = "username-password", ["secret"] = "first",
+        }));
+        Assert.True(await console.Api.ExecuteAsync("industrial/save-resource", new JsonObject
+        {
+            ["id"] = "resource-1", ["type"] = "filesystem.local", ["name"] = "Share",
+            ["provider"] = "manual", ["enabled"] = true, ["credentialId"] = "cred-1",
+            ["config"] = new JsonObject { ["root"] = temp.SourceRoot },
+        }));
+        var resources = runtime.RequireCapability(IndustrialKeys.ResourceRegistry);
+        var credentials = runtime.RequireCapability(IndustrialKeys.CredentialVault);
+        Assert.Equal("cred-1", (await resources.GetAsync("resource-1"))!.CredentialId);
+        Assert.Equal("first", await credentials.RevealAsync("cred-1"));
+
+        Assert.True(await console.Api.ExecuteAsync("industrial/rotate-credential", new JsonObject
+        {
+            ["id"] = "cred-1", ["secret"] = "second",
+        }));
+        Assert.Equal("second", await credentials.RevealAsync("cred-1"));
+
+        Assert.True(await console.Api.ExecuteAsync("industrial/save-machine", new JsonObject
+        {
+            ["id"] = "machine-1", ["name"] = "PLC-1", ["endpoint"] = "opc.tcp://plc1",
+            ["credentialId"] = "cred-1", ["enabled"] = true,
+        }));
+        var machines = runtime.RequireCapability(IndustrialKeys.MachineRegistry);
+        Assert.Equal("PLC-1", (await machines.GetAsync("machine-1"))!.Name);
+        var machineRows = Assert.IsType<JsonArray>(console.Api.Query("industrial/machines"));
+        Assert.Single(machineRows);
+        Assert.True(await console.Api.ExecuteAsync("industrial/delete-machine", new JsonObject
+        {
+            ["id"] = "machine-1",
+        }));
+        Assert.Null(await machines.GetAsync("machine-1"));
+
+        Assert.True(await console.Api.ExecuteAsync("industrial/delete-resource", new JsonObject
+        {
+            ["id"] = "resource-1",
+        }));
+        Assert.Null(await resources.GetAsync("resource-1"));
     }
 
     private static PluginManifest Decl(string id, IReadOnlyDictionary<string, object?>? config = null) =>

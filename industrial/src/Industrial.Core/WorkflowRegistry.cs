@@ -45,11 +45,27 @@ public sealed class WorkflowRegistry : IWorkflowRegistry
             db.Workflows.Add(existing);
         }
 
-        existing.Version = definition.Version;
-        existing.DefinitionJson = JsonSerializer.Serialize(definition, Json);
-        existing.IsPublished = false;
-        existing.ElsaDefinitionJson = null;
-        existing.PublishedAt = null;
+        if (existing.Version != definition.Version)
+        {
+            // Version is part of the key: replace the draft row instead of
+            // mutating a key value, which EF correctly rejects.
+            db.Workflows.Remove(existing);
+            db.Workflows.Add(new WorkflowEntity
+            {
+                WorkflowId = definition.WorkflowId,
+                Version = definition.Version,
+                Kind = "Draft",
+                DefinitionJson = JsonSerializer.Serialize(definition, Json),
+                IsPublished = false,
+            });
+        }
+        else
+        {
+            existing.DefinitionJson = JsonSerializer.Serialize(definition, Json);
+            existing.IsPublished = false;
+            existing.ElsaDefinitionJson = null;
+            existing.PublishedAt = null;
+        }
         await db.SaveChangesAsync(ct);
         return definition;
     }
@@ -67,7 +83,9 @@ public sealed class WorkflowRegistry : IWorkflowRegistry
     public async ValueTask<IReadOnlyList<WorkflowDefinition>> ListAsync(CancellationToken ct = default)
     {
         await using var db = _db();
-        var rows = await db.Workflows.AsNoTracking().ToListAsync(ct);
+        var rows = await db.Workflows.AsNoTracking()
+            .Where(row => row.Kind == "Draft")
+            .ToListAsync(ct);
         return rows.Select(row => JsonSerializer.Deserialize<WorkflowDefinition>(row.DefinitionJson, Json)!)
             .Where(definition => definition is not null)
             .GroupBy(definition => definition.WorkflowId)
@@ -111,6 +129,22 @@ public sealed class WorkflowRegistry : IWorkflowRegistry
         await db.SaveChangesAsync(ct);
         return new PublishedWorkflow(
             workflowId, publishedVersion, definition, elsaDefinitionJson, published.PublishedAt!.Value);
+    }
+
+    public async ValueTask<PublishedWorkflow?> GetPublishedVersionAsync(
+        string workflowId, int version, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var row = await db.Workflows.AsNoTracking().SingleOrDefaultAsync(
+            x => x.WorkflowId == workflowId && x.Version == version &&
+                 x.Kind == "Published" && x.ElsaDefinitionJson != null, ct);
+        return row is null
+            ? null
+            : new PublishedWorkflow(
+                workflowId, row.Version,
+                JsonSerializer.Deserialize<WorkflowDefinition>(row.DefinitionJson, Json)!,
+                row.ElsaDefinitionJson!,
+                row.PublishedAt ?? DateTimeOffset.UnixEpoch);
     }
 
     public async ValueTask<IReadOnlyList<PublishedWorkflow>> ListPublishedAsync(

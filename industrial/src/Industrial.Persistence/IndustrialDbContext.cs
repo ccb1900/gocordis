@@ -10,6 +10,7 @@ public sealed class IndustrialDbContext : DbContext
     public IndustrialDbContext(DbContextOptions<IndustrialDbContext> options) : base(options) { }
 
     public DbSet<ResourceEntity> Resources => Set<ResourceEntity>();
+    public DbSet<MachineEntity> Machines => Set<MachineEntity>();
     public DbSet<CredentialEntity> Credentials => Set<CredentialEntity>();
     public DbSet<WorkflowEntity> Workflows => Set<WorkflowEntity>();
     public DbSet<CollectionRunEntity> CollectionRuns => Set<CollectionRunEntity>();
@@ -23,6 +24,12 @@ public sealed class IndustrialDbContext : DbContext
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Version).IsConcurrencyToken();
             entity.HasIndex(x => x.Type);
+        });
+
+        model.Entity<MachineEntity>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => x.Enabled);
         });
 
         model.Entity<CredentialEntity>(entity =>
@@ -43,18 +50,25 @@ public sealed class IndustrialDbContext : DbContext
             entity.HasIndex(x => x.WorkflowId);
         });
 
+        model.Entity<CollectionRunEntity>(entity =>
+        {
+            entity.Property(x => x.Version).IsConcurrencyToken();
+        });
+
         model.Entity<CollectionFileEntity>(entity =>
         {
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => x.IdentityKey).IsUnique();
+            entity.HasIndex(x => new { x.ResourceId, x.IdentityKey }).IsUnique();
             entity.HasIndex(x => x.CollectionId);
+            entity.Property(x => x.Version).IsConcurrencyToken();
         });
 
         model.Entity<FileDeliveryEntity>(entity =>
         {
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => new { x.TargetId, x.IdempotencyKey }).IsUnique();
-            entity.HasIndex(x => x.CollectionFileId);
+            entity.HasIndex(x => new { x.CollectionFileId, x.TargetId }).IsUnique();
+            entity.HasIndex(x => x.IdempotencyKey);
+            entity.Property(x => x.Version).IsConcurrencyToken();
         });
     }
 }
@@ -68,6 +82,17 @@ public sealed class ResourceEntity
     public string ConfigurationJson { get; set; } = string.Empty;
     public string? CredentialId { get; set; }
     public long Version { get; set; }
+    public bool Enabled { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+}
+
+public sealed class MachineEntity
+{
+    public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string Endpoint { get; set; } = string.Empty;
+    public string? CredentialId { get; set; }
     public bool Enabled { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
@@ -103,12 +128,15 @@ public sealed class CollectionRunEntity
     public DateTimeOffset StartedAt { get; set; }
     public string Status { get; set; } = string.Empty;
     public string? Error { get; set; }
+    public DateTimeOffset? FinishedAt { get; set; }
+    public long Version { get; set; }
 }
 
 public sealed class CollectionFileEntity
 {
     public string Id { get; set; } = string.Empty;
     public string CollectionId { get; set; } = string.Empty;
+    public string ResourceId { get; set; } = string.Empty;
     public string IdentityKey { get; set; } = string.Empty;
     public string RelativePath { get; set; } = string.Empty;
     public long Length { get; set; }
@@ -117,6 +145,7 @@ public sealed class CollectionFileEntity
     public DateTimeOffset SourceDate { get; set; }
     public DateTimeOffset CollectedAt { get; set; }
     public string Status { get; set; } = string.Empty;
+    public long Version { get; set; }
 }
 
 public sealed class FileDeliveryEntity
@@ -124,10 +153,14 @@ public sealed class FileDeliveryEntity
     public string Id { get; set; } = string.Empty;
     public string CollectionFileId { get; set; } = string.Empty;
     public string TargetId { get; set; } = string.Empty;
+    public string TargetKind { get; set; } = "record";
     public string Status { get; set; } = string.Empty;
     public int Attempts { get; set; }
+    public int Records { get; set; }
     public string? Error { get; set; }
+    public DateTimeOffset? ClaimedAt { get; set; }
     public string IdempotencyKey { get; set; } = string.Empty;
+    public long Version { get; set; }
 }
 
 /// <summary>Delivery target database. Kept separate from the collection ledger

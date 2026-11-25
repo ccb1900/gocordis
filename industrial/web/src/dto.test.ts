@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   canonicalPortType, parseCollections, parseCommandResult, parseNodeDescriptors,
-  parseValidationIssues, parseWorkflow, parseWorkflowSummaries, unwrapData,
+  parseResourceOptions, parseValidationIssues, parseWorkflow, parseWorkflowSummaries, unwrapData,
 } from "./dto";
 
 describe("hub envelope parsing", () => {
@@ -33,6 +33,41 @@ describe("hub envelope parsing", () => {
     expect(nodes[1].inputs).toEqual([{ name: "records", type: "RecordSet", required: true }]);
     expect(nodes[1].outputs[0].type).toBe("DeliveryResult");
     expect(nodes[1].configurationSchema.required).toEqual(["resourceId"]);
+  });
+
+  it("preserves schema hints supplied by a node plugin", () => {
+    const [node] = parseNodeDescriptors({ data: [
+      {
+        nodeTypeId: "industrial.transform.validate",
+        schema: {
+          type: "object", resourceType: "filesystem.local",
+          properties: {
+            required: { type: "array", items: { type: "string" }, default: [] },
+            types: { type: "object", additionalProperties: { type: "string" } },
+            resourceId: { type: "string", format: "resource" },
+          },
+        },
+      },
+    ] });
+    expect(node.configurationSchema.resourceType).toBe("filesystem.local");
+    expect(node.configurationSchema.properties!.required.items).toEqual({ type: "string" });
+    expect(node.configurationSchema.properties!.types.additionalProperties).toEqual({ type: "string" });
+    expect(node.configurationSchema.properties!.resourceId.format).toBe("resource");
+  });
+
+  it("parses resource options with their linked credential for pickers", () => {
+    expect(parseResourceOptions({ data: [
+      { id: "share", name: "Share", type: "filesystem.local", enabled: true, credentialId: "cred-1", credentialName: "Account" },
+      { id: "off", name: "Off", type: "filesystem.local", enabled: false },
+      { name: "no id" },
+      { id: "share", name: "duplicate" },
+    ] })).toEqual([
+      {
+        id: "share", name: "Share", type: "filesystem.local", enabled: true,
+        credentialId: "cred-1", credentialName: "Account",
+      },
+      { id: "off", name: "Off", type: "filesystem.local", enabled: false, credentialId: null, credentialName: null },
+    ]);
   });
 
   it("canonicalizes port types without silently treating unknown types as compatible", () => {

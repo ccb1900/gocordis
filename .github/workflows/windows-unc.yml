@@ -1,0 +1,32 @@
+name: windows-unc
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dotnet]
+    paths:
+      - 'industrial/**'
+      - '.github/workflows/windows-unc.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  unc-integration:
+    name: Windows UNC/SMB integration test
+    runs-on: windows-latest
+    env:
+      GOCORDIS_UNC_PATH: ${{ secrets.GOCORDIS_UNC_PATH }}
+      GOCORDIS_UNC_USER: ${{ secrets.GOCORDIS_UNC_USER }}
+      GOCORDIS_UNC_PASSWORD: ${{ secrets.GOCORDIS_UNC_PASSWORD }}
+      GOCORDIS_UNC_DOMAIN: ${{ secrets.GOCORDIS_UNC_DOMAIN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Run WindowsUncIntegrationTests
+        shell: pwsh
+        run: ./industrial/e2e-windows-unc.ps1

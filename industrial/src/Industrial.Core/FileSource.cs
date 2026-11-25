@@ -27,7 +27,11 @@ internal static class DiscoveredFilePatterns
 /// parsing never contribute to this key.</summary>
 public static class FileIdentityFactory
 {
-    public static FileIdentity Create(string fullPath, string rootPath, DateTimeOffset? sourceDate = null)
+    public static FileIdentity Create(string fullPath, string rootPath, DateTimeOffset? sourceDate = null) =>
+        Create(fullPath, rootPath, string.Empty, sourceDate);
+
+    public static FileIdentity Create(
+        string fullPath, string rootPath, string resourceId, DateTimeOffset? sourceDate = null)
     {
         var root = Path.GetFullPath(rootPath);
         var full = Path.GetFullPath(fullPath);
@@ -36,11 +40,12 @@ public static class FileIdentityFactory
         var hash = Convert.ToHexString(SHA256.HashData(stream));
         var info = new FileInfo(full);
         return new FileIdentity(
-            $"{relative}|{info.Length}|{hash}",
+            $"{resourceId}|{relative}|{info.Length}|{hash}",
             relative,
             info.Length,
             new DateTimeOffset(info.LastWriteTimeUtc),
-            hash);
+            hash,
+            resourceId);
     }
 
     public static DateTimeOffset? ParseSourceDate(string fileName)
@@ -85,7 +90,7 @@ public sealed class LocalFileSource : IFileSource
         foreach (var path in files)
         {
             ct.ThrowIfCancellationRequested();
-            var identity = FileIdentityFactory.Create(path, root);
+            var identity = FileIdentityFactory.Create(path, root, resource.Id);
             var sourceDate = FileIdentityFactory.ParseSourceDate(Path.GetFileName(path)) ?? identity.LastWriteUtc;
             if (sourceDate < range.FromInclusive || sourceDate >= range.ToExclusive)
             {

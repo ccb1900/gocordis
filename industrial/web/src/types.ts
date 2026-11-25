@@ -25,6 +25,15 @@ export interface JsonSchemaLike {
   [key: string]: unknown;
 }
 
+export interface ResourceOption {
+  id: string;
+  name: string;
+  type: string;
+  enabled: boolean;
+  credentialId?: string | null;
+  credentialName?: string | null;
+}
+
 export interface NodeDescriptor {
   nodeTypeId: string;
   name: string;

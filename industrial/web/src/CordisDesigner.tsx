@@ -3,11 +3,13 @@
 // facade. WorkflowDefinition is the single editable source of truth.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Button, Layout, Select, Space, Spin, Tag, Typography, message } from "antd";
+import { Alert, Button, InputNumber, Layout, Select, Space, Spin, Tag, Typography, message } from "antd";
 import { GraphCanvas } from "./GraphCanvas";
 import { NodePalette } from "./NodePalette";
 import { PropertyEditor } from "./PropertyEditor";
-import { parseNodeDescriptors, parseWorkflow, parseWorkflowSummaries, unwrapData } from "./dto";
+import {
+  parseNodeDescriptors, parseResourceOptions, parseWorkflow, parseWorkflowSummaries, unwrapData,
+} from "./dto";
 import { getFacade } from "./facade";
 import type { DesignerMode } from "./graph-model";
 import {
@@ -15,7 +17,7 @@ import {
   removeEdge, removeNode, resolveEdgePorts, setNodeConfig, validateWorkflow,
 } from "./workflow-model";
 import type {
-  NodeDescriptor, ValidationIssue, WorkflowDefinition, WorkflowEdge, WorkflowSummary,
+  NodeDescriptor, ResourceOption, ValidationIssue, WorkflowDefinition, WorkflowEdge, WorkflowSummary,
 } from "./types";
 
 export interface DesignerContext {
@@ -42,7 +44,9 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const [descriptors, setDescriptors] = useState<NodeDescriptor[]>([]);
   const [summaries, setSummaries] = useState<WorkflowSummary[]>([]);
   const [resourceIds, setResourceIds] = useState<string[]>([]);
+  const [resources, setResources] = useState<ResourceOption[]>([]);
   const [resourceId, setResourceId] = useState("");
+  const [backfillDays, setBackfillDays] = useState(1);
   const [loading, setLoading] = useState(true);
   const [loadErrors, setLoadErrors] = useState<string[]>([]);
   const [definition, setDefinition] = useState<WorkflowDefinition>(() => emptyWorkflow());
@@ -71,8 +75,9 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
         if (list.length > 0) void loadWorkflow(list[0].workflowId);
       } else errors.push(`工作流: ${String(workflows.reason)}`);
       if (resources.status === "fulfilled") {
-        const rows = (unwrapData(resources.value) ?? []) as Array<{ id?: string }>;
-        const ids = rows.map((row) => String(row?.id ?? "")).filter(Boolean);
+        const parsed = parseResourceOptions(resources.value);
+        setResources(parsed);
+        const ids = parsed.map((resource) => resource.id);
         setResourceIds(ids);
         setResourceId((current) => current || ids[0] || "");
       } else errors.push(`资源: ${String(resources.reason)}`);
@@ -115,6 +120,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
         ? { ...emptyWorkflow(workflowId), name: workflowId }
         : parseWorkflow(found);
       setDefinition(parsed);
+      setBackfillDays(Number(parsed.layout.lookbackDays ?? 1) || 1);
       const last = parsed.nodes.map((node) => /^n(\d+)$/.exec(node.id)).filter(Boolean)
         .reduce((max, match) => Math.max(max, Number(match![1])), 0);
       idRef.current = last + 1;
@@ -138,8 +144,15 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   }, [ctx]);
 
   const save = useCallback(async () => {
-    if (await command("industrial/save-workflow", definition, "已保存")) setDirty(false);
-  }, [command, definition]);
+    const withPolicy = {
+      ...definition,
+      layout: { ...definition.layout, lookbackDays: backfillDays },
+    };
+    if (await command("industrial/save-workflow", withPolicy, "已保存")) {
+      setDefinition(withPolicy);
+      setDirty(false);
+    }
+  }, [command, definition, backfillDays]);
 
   const publish = useCallback(async () => {
     if (dirty) {
@@ -275,6 +288,17 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
             placeholder="运行资源"
             options={resourceIds.map((id) => ({ value: id, label: id }))}
           />
+          <InputNumber
+            className="industrial-backfill-input"
+            min={1}
+            max={365}
+            value={backfillDays}
+            onChange={(value) => {
+              setBackfillDays(Number(value) || 1);
+              setDirty(true);
+            }}
+            addonBefore="补采天数"
+          />
         </div>
       </Header>
       <Content className="industrial-body">
@@ -325,6 +349,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
             descriptor={selectedNode ? descriptorOf(catalog, selectedNode.type) ?? null : null}
             edges={definition.edges}
             catalog={catalog}
+            resources={resources}
             issues={issues}
             onApplyConfig={(config) => {
               if (selectedId) {

@@ -11,6 +11,7 @@ namespace Industrial.Contracts;
 public static class IndustrialKeys
 {
     public static readonly Key<IResourceRegistry> ResourceRegistry = new("industrial.resource.registry");
+    public static readonly Key<IMachineRegistry> MachineRegistry = new("industrial.machine.registry");
     public static readonly Key<ICredentialVault> CredentialVault = new("industrial.credential.vault");
     public static readonly Key<IWorkflowRegistry> WorkflowRegistry = new("industrial.workflow.registry");
     public static readonly Key<INodeCatalog> NodeCatalog = new("industrial.workflow.node-catalog");
@@ -76,6 +77,25 @@ public sealed record ResourceDefinition(
     bool Enabled,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
+
+/// <summary>A collectable machine is an independent domain object, distinct
+/// from a resource (a connection target) and a credential (secret material).</summary>
+public sealed record MachineDefinition(
+    string Id,
+    string Name,
+    string Endpoint,
+    string? CredentialId,
+    bool Enabled,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
+public interface IMachineRegistry
+{
+    ValueTask<MachineDefinition> RegisterAsync(MachineDefinition machine, CancellationToken ct = default);
+    ValueTask<MachineDefinition?> GetAsync(string id, CancellationToken ct = default);
+    ValueTask<IReadOnlyList<MachineDefinition>> ListAsync(CancellationToken ct = default);
+    ValueTask<bool> RemoveAsync(string id, CancellationToken ct = default);
+}
 
 public sealed record CredentialView(
     string Id,
@@ -201,6 +221,8 @@ public interface IWorkflowRegistry
     ValueTask<PublishedWorkflow?> PublishAsync(
         string workflowId, string elsaDefinitionJson, CancellationToken ct = default);
     ValueTask<PublishedWorkflow?> GetPublishedAsync(string workflowId, CancellationToken ct = default);
+    ValueTask<PublishedWorkflow?> GetPublishedVersionAsync(
+        string workflowId, int version, CancellationToken ct = default);
     ValueTask<IReadOnlyList<PublishedWorkflow>> ListPublishedAsync(string workflowId, CancellationToken ct = default);
     ValueTask<IReadOnlyList<PublishedWorkflow>> ListAllPublishedAsync(CancellationToken ct = default);
 }
@@ -212,7 +234,8 @@ public sealed record FileIdentity(
     string RelativePath,
     long Length,
     DateTimeOffset LastWriteUtc,
-    string ContentHash);
+    string ContentHash,
+    string SourceResourceId = "");
 
 public sealed record DiscoveredFile(
     FileIdentity Identity,
@@ -234,7 +257,8 @@ public sealed record CollectionRun(
     string WorkflowId,
     DateTimeOffset StartedAt,
     string Status,
-    string? Error);
+    string? Error,
+    DateTimeOffset? FinishedAt = null);
 
 public sealed record CollectionFile(
     string Id,
@@ -251,7 +275,10 @@ public sealed record FileDelivery(
     string Status,
     int Attempts,
     string? Error,
-    string IdempotencyKey);
+    string IdempotencyKey,
+    int Records = 0,
+    string TargetKind = "record",
+    DateTimeOffset? ClaimedAt = null);
 
 public interface IFileSource
 {
@@ -301,15 +328,25 @@ public interface IArchiveSink
 public interface ICollectionLedger
 {
     ValueTask<CollectionRun> StartAsync(string workflowId, CancellationToken ct = default);
+    ValueTask<CollectionRun> CompleteRunAsync(
+        string runId, string status, string? error, CancellationToken ct = default);
+    ValueTask<CollectionRun?> GetRunAsync(string runId, CancellationToken ct = default);
+    ValueTask<IReadOnlyList<CollectionRun>> ListRunsAsync(CancellationToken ct = default);
     ValueTask<CollectionFile> DiscoverAsync(string collectionId, DiscoveredFile file, CancellationToken ct = default);
     ValueTask<CollectionFile?> GetFileByIdentityAsync(string identityKey, CancellationToken ct = default);
+    ValueTask<CollectionFile?> GetFileByIdentityAsync(
+        string resourceId, string identityKey, CancellationToken ct = default);
     ValueTask<CollectionFile?> GetFileAsync(string fileId, CancellationToken ct = default);
     ValueTask MarkFileAsync(string fileId, string status, CancellationToken ct = default);
     ValueTask<FileDelivery> StartDeliveryAsync(
-        string collectionFileId, string targetId, string idempotencyKey, CancellationToken ct = default);
+        string collectionFileId, string targetId, string idempotencyKey,
+        string targetKind = "record", CancellationToken ct = default);
+    ValueTask<bool> TryClaimDeliveryAsync(string deliveryId, CancellationToken ct = default);
     ValueTask CompleteDeliveryAsync(string deliveryId, int records, CancellationToken ct = default);
     ValueTask FailDeliveryAsync(string deliveryId, string error, CancellationToken ct = default);
     ValueTask<IReadOnlyList<FileDelivery>> GetRetrableDeliveriesAsync(CancellationToken ct = default);
+    ValueTask<IReadOnlyList<FileDelivery>> GetRetriableDeliveriesAsync(
+        string? targetId = null, CancellationToken ct = default);
     ValueTask<IReadOnlyList<FileDelivery>> ListAllDeliveriesAsync(CancellationToken ct = default);
     ValueTask<IReadOnlyList<CollectionFile>> ListFilesAsync(string collectionId, CancellationToken ct = default);
     ValueTask<IReadOnlyList<CollectionFile>> ListAllFilesAsync(CancellationToken ct = default);
@@ -336,6 +373,11 @@ public interface ICollectionCoordinator
     /// <summary>Retries ledger rows left failed by a previous process. Only the
     /// failed target is retried; already-succeeded deliveries are untouched.</summary>
     ValueTask<int> RetryFailedAsync(
+        IReadOnlyList<IRecordSink> sinks,
+        IArchiveSink? archive,
+        CancellationToken ct = default);
+    ValueTask<int> RetryFailedAsync(
+        string? targetId,
         IReadOnlyList<IRecordSink> sinks,
         IArchiveSink? archive,
         CancellationToken ct = default);

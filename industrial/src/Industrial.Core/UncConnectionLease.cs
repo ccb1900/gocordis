@@ -118,7 +118,7 @@ public sealed class UncFileSource : IFileSource
         foreach (var path in files)
         {
             ct.ThrowIfCancellationRequested();
-            var identity = FileIdentityFactory.Create(path, root);
+            var identity = FileIdentityFactory.Create(path, root, resource.Id);
             var sourceDate = FileIdentityFactory.ParseSourceDate(Path.GetFileName(path)) ?? identity.LastWriteUtc;
             if (sourceDate < range.FromInclusive || sourceDate >= range.ToExclusive)
             {

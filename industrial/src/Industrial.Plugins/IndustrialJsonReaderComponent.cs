@@ -57,7 +57,10 @@ public sealed class IndustrialJsonReaderComponent : Component
             ["type"] = "object",
             ["properties"] = new Dictionary<string, object?>
             {
-                ["resourceId"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "Resource" },
+                ["resourceId"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "string", ["title"] = "Resource", ["format"] = "resource",
+                },
             },
         },
         ActivityType, []);

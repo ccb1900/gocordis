@@ -7,6 +7,7 @@ using Gocordis.Plugins;
 using Industrial.Contracts;
 using Industrial.Core;
 using Industrial.Elsa;
+using Industrial.Host;
 using Industrial.Persistence;
 using Industrial.Plugins;
 using Microsoft.EntityFrameworkCore;
@@ -39,23 +40,14 @@ public sealed class IndustrialReaderPluginTests
             registry.ExternalCapabilities.Add(ApiGateway.Key);
             await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
 
-            registry.RegisterComponentFactory("industrial.domain", manifest =>
-                new IndustrialDomainComponent(manifest.Config));
-            registry.RegisterComponentFactory("industrial.nodes", _ => new IndustrialNodesComponent());
-            registry.RegisterComponentFactory("industrial.elsa", _ => new IndustrialElsaComponent());
-            registry.RegisterComponentFactory("industrial.reader.json", _ => new IndustrialJsonReaderComponent());
-            registry.RegisterComponentFactory("industrial.ui", _ => new IndustrialUiComponent());
-
-            var domain = Decl("industrial.domain", new Dictionary<string, object?>
+            IndustrialComponents.RegisterFactories(registry, new Dictionary<string, object?>
             {
                 ["root"] = root, ["allowDevelopmentKey"] = "true", ["seedResource"] = "true",
                 ["sourceRoot"] = sourceRoot,
             });
-            var nodes = Decl("industrial.nodes");
-            var elsa = Decl("industrial.elsa");
-            var reader = Decl("industrial.reader.json");
-            var ui = Decl("industrial.ui");
-            await registry.ApplyAsync([domain, nodes, elsa, reader, ui]);
+            var declarations = IndustrialComponents.Types
+                .Select(type => IndustrialComponents.Declaration(type)).ToArray();
+            await registry.ApplyAsync(declarations);
 
             var palette = Assert.IsType<JsonArray>(console.Api.Query("industrial/nodes"));
             Assert.Contains(palette, node =>
@@ -106,9 +98,10 @@ public sealed class IndustrialReaderPluginTests
                 .ToListAsync();
             Assert.Contains(rows, row => row.RecordId == "json-1" && row.PayloadJson.Contains("\"value\""));
 
-            await registry.ApplyAsync([
-                domain, nodes, elsa, reader with { Enabled = false }, ui,
-            ]);
+            await registry.ApplyAsync(declarations.Select(declaration =>
+                declaration.Id == "industrial.reader.json"
+                    ? declaration with { Enabled = false }
+                    : declaration).ToArray());
             var withdrawn = Assert.IsType<JsonArray>(console.Api.Query("industrial/nodes"));
             Assert.DoesNotContain(withdrawn, node =>
                 node?["nodeTypeId"]?.GetValue<string>() == IndustrialJsonReaderComponent.NodeTypeId);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { NodeDescriptor, WorkflowDefinition } from "./types";
 import {
-  addEdge, applyPositions, findCycle, makeNode, nextNodeId, portTypesCompatible,
+  addEdge, applyPositions, findCycle, makeNode, mergeAppliedConfig, nextNodeId, portTypesCompatible,
   removeNode, sameEdge, validateWorkflow,
 } from "./workflow-model";
 
@@ -44,6 +44,18 @@ describe("pure workflow operations", () => {
     expect(first.config).toEqual({});
     expect(nextNodeId([first])).toBe("n2");
     expect(nextNodeId([first, makeNode(catalog.get("sink")!, "n2")])).toBe("n3");
+  });
+
+  it("schema applies preserve unknown config and explicit falsy values", () => {
+    const current = { resourceId: "share", targetResourceId: "target", enabled: true };
+    const merged = mergeAppliedConfig(current, { resourceId: "new", enabled: false, count: 0, note: "" });
+    expect(current).toEqual({ resourceId: "share", targetResourceId: "target", enabled: true });
+    expect(merged).toEqual({
+      resourceId: "new", targetResourceId: "target", enabled: false, count: 0, note: "",
+    });
+    expect(mergeAppliedConfig(current, { note: undefined })).toEqual({
+      resourceId: "share", targetResourceId: "target", enabled: true,
+    });
   });
 
   it("adds only type-compatible edges, idempotently", () => {

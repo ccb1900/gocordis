@@ -20,6 +20,7 @@
     <ProjectReference Include="../../src/Industrial.Core/Industrial.Core.csproj" />
     <ProjectReference Include="../../src/Industrial.Plugins/Industrial.Plugins.csproj" />
     <ProjectReference Include="../../src/Industrial.Elsa/Industrial.Elsa.csproj" />
+    <ProjectReference Include="../../src/Industrial.Host/Industrial.Host.csproj" />
     <ProjectReference Include="../../../src/Gocordis.Platform/Gocordis.Platform.csproj" />
     <ProjectReference Include="../../../src/Gocordis.Builtin.WebConsole/Gocordis.Builtin.WebConsole.csproj" />
   </ItemGroup>

@@ -1,0 +1,135 @@
+{
+  "generatedAt": "2026-11-25T14:45:02.901994+00:00",
+  "source": "tools/release/test-report.sh",
+  "suites": [
+    {
+      "suite": "builtin-control-plane",
+      "exitCode": 0,
+      "passed": 1,
+      "skipped": 0,
+      "log": "builtin-control-plane.log"
+    },
+    {
+      "suite": "builtin-insight",
+      "exitCode": 0,
+      "passed": 40,
+      "skipped": 0,
+      "log": "builtin-insight.log"
+    },
+    {
+      "suite": "builtin-webconsole",
+      "exitCode": 0,
+      "passed": 1,
+      "skipped": 0,
+      "log": "builtin-webconsole.log"
+    },
+    {
+      "suite": "console-runtime",
+      "exitCode": 0,
+      "passed": 63,
+      "skipped": 0,
+      "log": "console-runtime.log"
+    },
+    {
+      "suite": "console-shell",
+      "exitCode": 0,
+      "passed": 2,
+      "skipped": 0,
+      "log": "console-shell.log"
+    },
+    {
+      "suite": "industrial-browser-e2e",
+      "exitCode": 0,
+      "passed": 0,
+      "skipped": 0,
+      "log": "industrial-browser-e2e.log"
+    },
+    {
+      "suite": "industrial-dotnet",
+      "exitCode": 0,
+      "passed": 41,
+      "skipped": 0,
+      "log": "industrial-dotnet.log"
+    },
+    {
+      "suite": "industrial-frontend",
+      "exitCode": 0,
+      "passed": 35,
+      "skipped": 0,
+      "log": "industrial-frontend.log"
+    },
+    {
+      "suite": "industrial-packaged-e2e",
+      "exitCode": 0,
+      "passed": 0,
+      "skipped": 0,
+      "log": "industrial-packaged-e2e.log"
+    },
+    {
+      "suite": "industrial-postgresql",
+      "exitCode": 0,
+      "passed": 1,
+      "skipped": 1,
+      "log": "industrial-postgresql.log"
+    },
+    {
+      "suite": "platform-dotnet",
+      "exitCode": 0,
+      "passed": 684,
+      "skipped": 1,
+      "log": "platform-dotnet.log"
+    },
+    {
+      "suite": "plugin-kit",
+      "exitCode": 0,
+      "passed": 3,
+      "skipped": 0,
+      "log": "plugin-kit.log"
+    },
+    {
+      "suite": "windows-unc",
+      "exitCode": 0,
+      "passed": 0,
+      "skipped": 0,
+      "log": "windows-unc.log"
+    }
+  ],
+  "totals": {
+    "passed": 871,
+    "skipped": 2,
+    "failedSuites": []
+  },
+  "environmentBlockers": [
+    "Windows UNC/SMB session lease requires Windows net use; test skips explicitly on macOS/Linux (industrial/tests/Industrial.Database.Tests/WindowsUncIntegrationTests.cs)."
+  ],
+  "acceptance": [
+    {
+      "requirement": "real-browser designer E2E",
+      "status": "passed",
+      "evidence": "industrial-browser-e2e.log"
+    },
+    {
+      "requirement": "real packaged-plugin E2E",
+      "status": "passed",
+      "evidence": "industrial-packaged-e2e.log"
+    },
+    {
+      "requirement": "PostgreSQL integration",
+      "status": "passed",
+      "evidence": "industrial-postgresql.log"
+    },
+    {
+      "requirement": "Windows UNC/SMB integration",
+      "status": "blocked",
+      "passingResult": null,
+      "evidence": "artifacts/windows-unc-blocker.md",
+      "runner": ".github/workflows/windows-unc.yml",
+      "script": "industrial/e2e-windows-unc.ps1"
+    },
+    {
+      "requirement": "unified test report",
+      "status": "passed",
+      "evidence": "tools/release/test-report.sh"
+    }
+  ]
+}

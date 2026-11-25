@@ -79,104 +79,154 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
         }
 
         var run = await _ledger.StartAsync(workflowId, ct);
-        var files = await _source.DiscoverAsync(resourceId, range, ct);
-        foreach (var file in files)
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            if (!await _source.IsStableAsync(file, TimeSpan.FromMilliseconds(200), ct))
+            var files = await _source.DiscoverAsync(resourceId, range, ct);
+            var anySuccess = false;
+            var anyFailure = false;
+            foreach (var file in files)
             {
-                continue;
-            }
-
-            var known = await _ledger.GetFileByIdentityAsync(file.Identity.Key, ct);
-            if (known?.Status == "Succeeded")
-            {
-                continue;
-            }
-
-            var ledgerFile = known ?? await _ledger.DiscoverAsync(run.Id, file, ct);
-            var succeeded = true;
-            foreach (var sink in sinks)
-            {
-                var key = $"{file.Identity.Key}->{sink.TargetId}";
-                var delivery = await _ledger.StartDeliveryAsync(ledgerFile.Id, sink.TargetId, key, ct);
-                if (delivery.Status == "Succeeded")
+                ct.ThrowIfCancellationRequested();
+                if (!await _source.IsStableAsync(file, TimeSpan.FromMilliseconds(200), ct))
                 {
                     continue;
                 }
 
-                try
+                // File status is a roll-up, never a skip decision. A file that
+                // already succeeded for target A must still be delivered to a
+                // newly configured target B; only target-level delivery rows
+                // decide whether work is outstanding.
+                var known = await _ledger.GetFileByIdentityAsync(file.ResourceId, file.Identity.Key, ct);
+                var ledgerFile = known ?? await _ledger.DiscoverAsync(run.Id, file, ct);
+                var fileSucceeded = false;
+                var fileFailed = false;
+                foreach (var sink in sinks)
                 {
-                    var result = await BoundedRetry.RunAsync(
-                        3,
-                        async (_, token) => await sink.WriteAsync(
-                            ledgerFile.Id, reader.ReadAsync(file, token), key, token),
-                        ct);
-                    await _ledger.CompleteDeliveryAsync(delivery.Id, result.Records, ct);
-                }
-                catch (Exception ex)
-                {
-                    succeeded = false;
-                    await _ledger.FailDeliveryAsync(delivery.Id, ex.Message, ct);
-                }
-            }
+                    var key = $"{file.Identity.Key}->{sink.TargetId}";
+                    var delivery = await _ledger.StartDeliveryAsync(
+                        ledgerFile.Id, sink.TargetId, key, "record", ct);
+                    if (delivery.Status == "Succeeded")
+                    {
+                        fileSucceeded = true;
+                        continue;
+                    }
 
-            if (archive is not null)
-            {
-                var key = $"{file.Identity.Key}->archive";
-                var delivery = await _ledger.StartDeliveryAsync(ledgerFile.Id, archive.TargetId, key, ct);
-                if (delivery.Status != "Succeeded")
-                {
+                    if (!await _ledger.TryClaimDeliveryAsync(delivery.Id, ct))
+                    {
+                        continue;
+                    }
+
                     try
                     {
-                        await BoundedRetry.RunAsync(
+                        var result = await BoundedRetry.RunAsync(
                             3,
-                            async (_, token) =>
-                            {
-                                await archive.ArchiveAsync(file, key, token);
-                                return true;
-                            },
+                            async (_, token) => await sink.WriteAsync(
+                                ledgerFile.Id, reader.ReadAsync(file, token), key, token),
                             ct);
-                        await _ledger.CompleteDeliveryAsync(delivery.Id, 1, ct);
+                        await _ledger.CompleteDeliveryAsync(delivery.Id, result.Records, ct);
+                        fileSucceeded = true;
                     }
                     catch (Exception ex)
                     {
-                        succeeded = false;
+                        fileFailed = true;
                         await _ledger.FailDeliveryAsync(delivery.Id, ex.Message, ct);
                     }
                 }
+
+                if (archive is not null)
+                {
+                    var key = $"{file.Identity.Key}->{archive.TargetId}";
+                    var delivery = await _ledger.StartDeliveryAsync(
+                        ledgerFile.Id, archive.TargetId, key, "archive", ct);
+                    if (delivery.Status == "Succeeded")
+                    {
+                        fileSucceeded = true;
+                    }
+                    else if (await _ledger.TryClaimDeliveryAsync(delivery.Id, ct))
+                    {
+                        try
+                        {
+                            await BoundedRetry.RunAsync(
+                                3,
+                                async (_, token) =>
+                                {
+                                    await archive.ArchiveAsync(file, key, token);
+                                    return true;
+                                },
+                                ct);
+                            await _ledger.CompleteDeliveryAsync(delivery.Id, 1, ct);
+                            fileSucceeded = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            fileFailed = true;
+                            await _ledger.FailDeliveryAsync(delivery.Id, ex.Message, ct);
+                        }
+                    }
+                }
+
+                await _ledger.MarkFileAsync(
+                    ledgerFile.Id, fileFailed ? "PartialFailure" : "Succeeded", ct);
+                anySuccess |= fileSucceeded;
+                anyFailure |= fileFailed;
             }
 
-            await _ledger.MarkFileAsync(ledgerFile.Id, succeeded ? "Succeeded" : "PartialFailure", ct);
+            var status = anyFailure ? anySuccess ? "PartialFailure" : "Failed" : "Succeeded";
+            await _ledger.CompleteRunAsync(run.Id, status, null, ct);
+            return run.Id;
         }
-
-        return run.Id;
+        catch (Exception ex)
+        {
+            await _ledger.CompleteRunAsync(run.Id, "Failed", ex.Message, ct);
+            throw;
+        }
     }
 
+    public ValueTask<int> RetryFailedAsync(
+        IReadOnlyList<IRecordSink> sinks, IArchiveSink? archive, CancellationToken ct = default) =>
+        RetryFailedAsync(null, sinks, archive, ct);
+
     public async ValueTask<int> RetryFailedAsync(
-        IReadOnlyList<IRecordSink> sinks, IArchiveSink? archive, CancellationToken ct = default)
+        string? targetId,
+        IReadOnlyList<IRecordSink> sinks,
+        IArchiveSink? archive,
+        CancellationToken ct = default)
     {
         var retried = 0;
-        foreach (var delivery in await _ledger.GetRetrableDeliveriesAsync(ct))
+        foreach (var delivery in await _ledger.GetRetriableDeliveriesAsync(targetId, ct))
         {
             ct.ThrowIfCancellationRequested();
+            if (!await _ledger.TryClaimDeliveryAsync(delivery.Id, ct))
+            {
+                continue;
+            }
+
             var file = await _ledger.GetFileAsync(delivery.CollectionFileId, ct);
             if (file is null)
             {
+                await _ledger.FailDeliveryAsync(delivery.Id, "ledger file no longer exists", ct);
                 continue;
             }
 
             var discovered = await LocateAsync(file, ct);
             if (discovered is null)
             {
+                await _ledger.FailDeliveryAsync(delivery.Id, "source file no longer exists", ct);
                 continue;
             }
 
             try
             {
-                if (string.Equals(delivery.TargetId, "archive", StringComparison.Ordinal))
+                if (delivery.TargetKind == "archive" ||
+                    (archive is not null &&
+                     string.Equals(delivery.TargetId, archive.TargetId, StringComparison.Ordinal)))
                 {
-                    if (archive is null) continue;
+                    if (archive is null)
+                    {
+                        throw new InvalidOperationException(
+                            $"no archive capability is registered for target '{delivery.TargetId}'");
+                    }
+
                     await BoundedRetry.RunAsync(
                         3,
                         async (_, token) =>
@@ -191,7 +241,12 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
                 {
                     var sink = sinks.FirstOrDefault(candidate =>
                         string.Equals(candidate.TargetId, delivery.TargetId, StringComparison.Ordinal));
-                    if (sink is null || _reader is null) continue;
+                    if (sink is null || _reader is null)
+                    {
+                        throw new InvalidOperationException(
+                            $"no reader/sink capability is registered for target '{delivery.TargetId}'");
+                    }
+
                     var result = await BoundedRetry.RunAsync(
                         3,
                         async (_, token) => await sink.WriteAsync(
@@ -214,6 +269,23 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
 
     private async ValueTask<DiscoveredFile?> LocateAsync(CollectionFile file, CancellationToken ct)
     {
+        if (!string.IsNullOrWhiteSpace(file.Identity.SourceResourceId))
+        {
+            var resource = await _resources.GetAsync(file.Identity.SourceResourceId, ct);
+            if (resource?.Configuration.TryGetValue("root", out var configuredRoot) == true &&
+                File.Exists(Path.Combine(configuredRoot?.ToString() ?? string.Empty,
+                    file.Identity.RelativePath)))
+            {
+                var root = configuredRoot!.ToString()!;
+                var fullPath = Path.Combine(root, file.Identity.RelativePath);
+                var candidate = FileIdentityFactory.Create(fullPath, root, resource.Id, file.SourceDate);
+                if (candidate.Key == file.Identity.Key)
+                {
+                    return new DiscoveredFile(candidate, fullPath, file.SourceDate, resource.Id);
+                }
+            }
+        }
+
         foreach (var resource in await _resources.ListAsync(ct))
         {
             if (!resource.Configuration.TryGetValue("root", out var value))
@@ -221,10 +293,17 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
                 continue;
             }
 
-            var fullPath = Path.Combine(value?.ToString() ?? string.Empty, file.Identity.RelativePath);
+            var root = value?.ToString() ?? string.Empty;
+            var fullPath = Path.Combine(root, file.Identity.RelativePath);
             if (File.Exists(fullPath))
             {
-                return new DiscoveredFile(file.Identity, fullPath, file.SourceDate, resource.Id);
+                var candidate = FileIdentityFactory.Create(fullPath, root, resource.Id, file.SourceDate);
+                if (candidate.RelativePath == file.Identity.RelativePath &&
+                    candidate.ContentHash == file.Identity.ContentHash &&
+                    candidate.Length == file.Identity.Length)
+                {
+                    return new DiscoveredFile(candidate, fullPath, file.SourceDate, resource.Id);
+                }
             }
         }
 

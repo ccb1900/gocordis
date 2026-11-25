@@ -7,6 +7,7 @@ using Gocordis.Plugins;
 using Industrial.Contracts;
 using Industrial.Core;
 using Industrial.Elsa;
+using Industrial.Host;
 using Industrial.Persistence;
 using Industrial.Plugins;
 using Microsoft.EntityFrameworkCore;
@@ -40,18 +41,12 @@ public sealed class IndustrialResourceSharingTests
             registry.ExternalCapabilities.Add(ApiGateway.Key);
             await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
 
-            registry.RegisterComponentFactory("industrial.domain", manifest =>
-                new IndustrialDomainComponent(manifest.Config));
-            registry.RegisterComponentFactory("industrial.nodes", _ => new IndustrialNodesComponent());
-            registry.RegisterComponentFactory("industrial.elsa", _ => new IndustrialElsaComponent());
-            registry.RegisterComponentFactory("industrial.ui", _ => new IndustrialUiComponent());
-            await registry.ApplyAsync([
-                Decl("industrial.domain", new Dictionary<string, object?>
-                {
-                    ["root"] = root, ["allowDevelopmentKey"] = "true",
-                }),
-                Decl("industrial.nodes"), Decl("industrial.elsa"), Decl("industrial.ui"),
-            ]);
+            IndustrialComponents.RegisterFactories(registry, new Dictionary<string, object?>
+            {
+                ["root"] = root, ["allowDevelopmentKey"] = "true",
+            });
+            await registry.ApplyAsync(IndustrialComponents.Types
+                .Select(type => IndustrialComponents.Declaration(type)).ToArray());
 
             var resources = runtime.RequireCapability(IndustrialKeys.ResourceRegistry);
             var vault = runtime.RequireCapability(IndustrialKeys.CredentialVault);

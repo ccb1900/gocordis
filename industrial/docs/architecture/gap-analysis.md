@@ -45,15 +45,34 @@ React/antd instance and no frontend-owned page registry.
 - UNC session lease is Windows-only and cannot be exercised on this Linux host.
 - SQL Server / PostgreSQL / MySQL sinks are implemented with mature drivers but
   have no live-server integration test; SQLite is the tested target.
-- The G6 designer has a jsdom integration test using G6's SVG renderer that
-  emits real `node:dragstart`/`pointermove`/`pointerup` events and proves a
-  port-validated edge reaches the workflow domain; connect mode separates
-  drag-to-connect from drag-to-move. Palette drop and facade registration are
-  tested separately. A real-browser screenshot test is still not automated.
+- The G6 designer has a jsdom integration test using G6's SVG renderer plus a
+  real Chromium E2E (`bash industrial/e2e-browser.sh`) that loads the product
+  host, edits the backfill policy and saves through the real hub command.
+- `bash industrial/e2e-packaged.sh` builds and installs real `.gocordis-plugin`
+  packages, starts `Industrial.PackagedHost`, and drives save/publish/run plus
+  the execution-center query over HTTP.
+- `bash industrial/e2e-database.sh` runs the PostgreSQL sink driver against a
+  fresh local PostgreSQL database; SQLite is not substituted.
+- **Blocker:** Windows UNC/SMB session leases require Windows `net use`.
+  `WindowsUncIntegrationTests` records an explicit skip on macOS/Linux. The
+  acceptance path is configured in `.github/workflows/windows-unc.yml` and
+  `industrial/e2e-windows-unc.ps1`: a Windows runner must provide secrets
+  `GOCORDIS_UNC_PATH`, `GOCORDIS_UNC_USER`, `GOCORDIS_UNC_PASSWORD` and optional
+  `GOCORDIS_UNC_DOMAIN`. This host has no Windows runner, no `net use`, no
+  PowerShell and no UNC credentials, so the test cannot actually run here and
+  the item remains incomplete; probe evidence is recorded in
+  `artifacts/windows-unc-blocker.md`. MySQL and SQL Server also still need
+  external servers.
+- `bash tools/release/test-report.sh` is the single fact source for all local
+  suite counts (`artifacts/test-report/report.json` and `report.md`).
 - Retry after restart is proven by a fresh coordinator reading the ledger; an
   automatic startup sweep is intentionally not added (retry stays an explicit
   command, avoiding a self-spinning loop).
 
 Verification: `dotnet build Gocordis.sln` 0 warning/0 error; full solution tests
-green; industrial C# 31 tests green; `industrial/web` 24 tests + build green;
-packaged host re-verified through the UI composition and query endpoints.
+green; industrial C# 41 tests green; `industrial/web` 35 tests + build green;
+packaged host re-verified through the UI composition and query endpoints. Runs
+execute published Elsa Flowcharts with per-node real Activities and persisted
+Elsa instances; ledger identity is resource-scoped, skips are per-target, runs
+reach a terminal state, and retry is TargetId-scoped with an atomic claim.
+Mapping/Validation have dedicated editors and no longer require raw JSON.

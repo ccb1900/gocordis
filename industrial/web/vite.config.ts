@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 
@@ -16,6 +16,9 @@ export default defineConfig({
       { find: /^react$/, replacement: shim("facade-react") },
       { find: /^antd$/, replacement: shim("facade-antd") },
     ],
+  },
+  test: {
+    exclude: ["e2e/**", "node_modules/**", "dist/**"],
   },
   build: {
     outDir: "dist",

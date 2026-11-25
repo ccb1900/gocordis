@@ -24,6 +24,15 @@ samples/SpatiotemporalShowcase/UiClientModule/frontend/node_modules/
 # ZCode harness session state — local tool metadata, never source
 .zcode/
 
+# Generated local verification artifacts (reports remain tracked)
+industrial/web/node_modules/
+industrial/web/test-results/
+industrial/web/playwright-report/
+artifacts/test-report/*.log
+artifacts/test-report/*.code
+__pycache__/
+*.pyc
+
 # .NET build artifacts (migration/dotnet)
 TestResults/
 bin/

@@ -132,6 +132,20 @@ export function removeEdge(definition: WorkflowDefinition, index: number): Workf
   return { ...definition, edges: definition.edges.filter((_, i) => i !== index) };
 }
 
+/** Schema forms submit only their own fields. Unknown plugin-private config
+ * keys survive an apply; `undefined` means "clear this key", while false/0/""
+ * are real values and must be kept. */
+export function mergeAppliedConfig(
+  current: Record<string, unknown>, values: Record<string, unknown>
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) delete merged[key];
+    else merged[key] = value;
+  }
+  return merged;
+}
+
 export function setNodeConfig(
   definition: WorkflowDefinition, id: string, config: Record<string, unknown>
 ): WorkflowDefinition {

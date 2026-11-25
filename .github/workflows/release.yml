@@ -1,0 +1,105 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release label for this manual build'
+        required: true
+        default: 'dev'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: platform + industrial plugin packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            web/console/package-lock.json
+            web/plugin-kit/package-lock.json
+            industrial/web/package-lock.json
+
+      - name: Verify platform
+        run: |
+          set -euo pipefail
+          (cd web/plugin-kit && npm ci && npm test)
+          (cd web/console && npm ci && npm test && npx tsc --noEmit && npm run build)
+          dotnet build Gocordis.sln --nologo -m:1
+          dotnet test Gocordis.sln --nologo --no-build -m:1
+
+      - name: Verify industrial solution
+        run: |
+          set -euo pipefail
+          (cd industrial/web && npm ci && npm test && npm run build)
+          dotnet build industrial/Industrial.slnx --nologo -m:1
+          DOTNET_ROLL_FORWARD=LatestMajor dotnet test industrial/Industrial.slnx --nologo --no-build -m:1
+
+      - name: Resolve release label
+        id: release
+        run: |
+          set -euo pipefail
+          label="${{ github.event.inputs.version || github.ref_name }}"
+          echo "label=${label//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Pack industrial plugin packages
+        run: |
+          set -euo pipefail
+          bash industrial/pack.sh "$GITHUB_WORKSPACE/artifacts/industrial"
+          python3 tools/release/build-registry-index.py \
+            "$GITHUB_WORKSPACE/artifacts/industrial/packages" \
+            "$GITHUB_WORKSPACE/artifacts/industrial/packages/index.json"
+
+      - name: Pack platform host and SDK
+        run: |
+          set -euo pipefail
+          dotnet pack Gocordis.sln -c Release --nologo -m:1 \
+            -o "$GITHUB_WORKSPACE/artifacts/platform/nuget"
+          dotnet publish src/Gocordis.Platform/Gocordis.Platform.csproj -c Release --nologo \
+            -o "$GITHUB_WORKSPACE/artifacts/platform/host"
+          dotnet publish tools/Gocordis.Cli/Gocordis.Cli.csproj -c Release --nologo \
+            -o "$GITHUB_WORKSPACE/artifacts/platform/cli"
+          cp README.md docs/current-status.md "$GITHUB_WORKSPACE/artifacts/platform/"
+
+      - name: Create release archives
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/artifacts"
+          tar czf "gocordis-platform-${{ steps.release.outputs.label }}.tar.gz" platform
+          tar czf "gocordis-industrial-plugins-${{ steps.release.outputs.label }}.tar.gz" industrial
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ steps.release.outputs.label }}
+          path: artifacts/*.tar.gz
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.release.outputs.label }}" \
+            artifacts/*.tar.gz \
+            --title "Gocordis ${{ steps.release.outputs.label }}" \
+            --generate-notes

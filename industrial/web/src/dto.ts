@@ -16,6 +16,7 @@ import {
   type NodeDescriptor,
   type NodePort,
   type PortType,
+  type ResourceOption,
   type TriggerDefinition,
   type ValidationIssue,
   type WorkflowDefinition,
@@ -140,6 +141,29 @@ export function parseNodeDescriptors(raw: unknown): NodeDescriptor[] {
       seen.add(node.nodeTypeId);
       return true;
     });
+}
+
+export function parseResourceOptions(raw: unknown): ResourceOption[] {
+  const data = unwrapData(raw);
+  const list = Array.isArray(data) ? data : asArray(pick(asObj(data), "resources", "items"));
+  const seen = new Set<string>();
+  return list
+    .map((item) => {
+      const o = asObj(item);
+      const id = text(pick(o, "id")).trim();
+      if (!id || seen.has(id)) return null;
+      seen.add(id);
+      const option: ResourceOption = {
+        id,
+        name: text(pick(o, "name"), id),
+        type: text(pick(o, "type"), "unknown"),
+        enabled: o.enabled !== false,
+        credentialId: typeof o.credentialId === "string" ? o.credentialId : null,
+        credentialName: typeof o.credentialName === "string" ? o.credentialName : null,
+      };
+      return option;
+    })
+    .filter((option): option is ResourceOption => option !== null);
 }
 
 function parseSummary(raw: unknown): WorkflowSummary | null {

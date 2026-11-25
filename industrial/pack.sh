@@ -13,6 +13,10 @@ mkdir -p "$ROOT/industrial/src/Industrial.PackagedHost/bin/Debug/net10.0/client-
 cp -r "$ROOT"/industrial/web/dist/. \
   "$ROOT/industrial/src/Industrial.PackagedHost/bin/Debug/net10.0/client-modules/industrial-designer/"
 dotnet build "$ROOT/tools/Gocordis.Cli/Gocordis.Cli.csproj" --nologo -v q
+# Native SQLite assets live in the product host output, not in each package.
+HOST_BIN="$ROOT/industrial/src/Industrial.PackagedHost/bin/Debug/net10.0"
+mkdir -p "$HOST_BIN"
+cp -r "$ROOT/industrial/src/Industrial.Host/bin/Debug/net10.0/runtimes" "$HOST_BIN/" 2>/dev/null || true
 CLI=(dotnet "$ROOT/tools/Gocordis.Cli/bin/Debug/net10.0/Gocordis.Cli.dll")
 
 pack() {
@@ -39,6 +43,8 @@ pack industrial.resource Industrial.Plugins.dll Industrial.Plugins.IndustrialRes
   --provides industrial.capabilities.resource
 pack industrial.credential Industrial.Plugins.dll Industrial.Plugins.IndustrialCredentialComponent \
   --provides industrial.capabilities.credential
+pack industrial.machine Industrial.Plugins.dll Industrial.Plugins.IndustrialMachineComponent \
+  --provides industrial.capabilities.machine
 pack industrial.workflow Industrial.Plugins.dll Industrial.Plugins.IndustrialWorkflowComponent \
   --provides industrial.capabilities.workflow \
   --dependency "industrial.resource@[1.0,2.0)" --dependency "industrial.credential@[1.0,2.0)"
@@ -60,7 +66,8 @@ pack industrial.reader.json Industrial.Plugins.dll Industrial.Plugins.Industrial
 # the page, its data and its client module together (Koishi plugin shape).
 pack industrial.ui Industrial.Plugins.dll Industrial.Plugins.IndustrialUiComponent \
   --provides industrial.ui \
-  --dependency "industrial.resource@[1.0,2.0)" --dependency "industrial.workflow@[1.0,2.0)" \
+  --dependency "industrial.resource@[1.0,2.0)" --dependency "industrial.machine@[1.0,2.0)" \
+  --dependency "industrial.workflow@[1.0,2.0)" \
   --dependency "industrial.execution@[1.0,2.0)" --dependency "industrial.collection@[1.0,2.0)" \
   --dependency "industrial.elsa@[1.0,2.0)"
 
@@ -70,6 +77,7 @@ manifest = {
     "Id": "industrial-app", "Version": "1.0.0", "HostVersion": "1.0.0",
     "Plugins": [
         {"Id": "industrial.resource", "VersionRange": "[1.0,2.0)", "Enabled": True},
+        {"Id": "industrial.machine", "VersionRange": "[1.0,2.0)", "Enabled": True},
         {"Id": "industrial.credential", "VersionRange": "[1.0,2.0)", "Enabled": True},
         {"Id": "industrial.workflow", "VersionRange": "[1.0,2.0)", "Enabled": True},
         {"Id": "industrial.execution", "VersionRange": "[1.0,2.0)", "Enabled": True},

@@ -22,8 +22,13 @@ framework was not modified for industrial logic; all product code lives under
 | Packaged product loop | Implemented | `industrial/pack.sh` builds real `.gocordis-plugin` packages, installs into a fresh store and starts `Industrial.PackagedHost` |
 
 Verification: `dotnet build Gocordis.sln` 0 warning/0 error; full solution tests
-green; industrial C# tests (Contract 2, Unit 8, Integration 16, E2E 5) green;
-`industrial/web` 24 frontend tests + production build green. The last packaged
+green; industrial C# tests (Contract 2, Unit 8, Integration 25, E2E 6) green;
+`industrial/web` 35 frontend tests + production build green. Runs execute the
+published Elsa Flowchart with a distinct real Activity per node type and an
+Elsa-persisted workflow instance that can be inspected after restart; each node
+reads its inputs from predecessor nodes along the published edges. The ledger
+scopes identity by source resource, decides skips per target, and closes
+CollectionRun state. Developer/packaged hosts share one component map. The last packaged
 host was verified through `/api/ui/pages` (declarative designer view),
 `/api/ui/client-modules`, `/api/query/industrial/nodes` (string port types) and
 the served client-module asset. Remaining environment limits are listed in

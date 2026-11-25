@@ -260,11 +260,11 @@ public sealed class CollectionPipelineTests
         var files = await fixture.Source.DiscoverAsync("source-1", range);
         Assert.Single(files);
         var identity = files[0].Identity;
-        var same = FileIdentityFactory.Create(files[0].FullPath, fixture.SourceRoot);
+        var same = FileIdentityFactory.Create(files[0].FullPath, fixture.SourceRoot, "source-1");
         Assert.Equal(identity.Key, same.Key);
 
         var otherMapping = FileIdentityFactory.Create(
-            files[0].FullPath, fixture.SourceRoot, DateTimeOffset.UtcNow);
+            files[0].FullPath, fixture.SourceRoot, "source-1", DateTimeOffset.UtcNow);
         Assert.Equal(identity.Key, otherMapping.Key);
     }
 

@@ -7,13 +7,20 @@ import {
   type TableColumnsType,
 } from "antd";
 import { useEffect, useState, type ReactNode } from "react";
-import type { JsonSchemaLike, NodeDescriptor, ValidationIssue, WorkflowEdge, WorkflowNode } from "./types";
+import type {
+  JsonSchemaLike, NodeDescriptor, ResourceOption, ValidationIssue, WorkflowEdge, WorkflowNode,
+} from "./types";
+import { mergeAppliedConfig } from "./workflow-model";
+import { editorKindForSchema, listSuggestions, valueOptionsOf } from "./config-editor-model";
+import { KeyValueEditor } from "./KeyValueEditor";
+import { StringListEditor } from "./StringListEditor";
 
 export interface PropertyEditorProps {
   node: WorkflowNode | null;
   descriptor: NodeDescriptor | null;
   edges: WorkflowEdge[];
   catalog: ReadonlyMap<string, NodeDescriptor>;
+  resources: readonly ResourceOption[];
   issues: ValidationIssue[];
   onApplyConfig: (config: Record<string, unknown>) => void;
   onDeleteNode: () => void;
@@ -22,28 +29,108 @@ export interface PropertyEditorProps {
   onSelectNode: (id: string) => void;
 }
 
-function SchemaField({ name, schema, required }: {
+function JsonValueField({ value, onChange }: {
+  value?: unknown; onChange?: (next: unknown) => void;
+}) {
+  const serialized = value === undefined ? "{}" : JSON.stringify(value, null, 2);
+  const [text, setText] = useState(serialized);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { setText(serialized); setError(null); }, [serialized]);
+  const commit = (next: string) => {
+    setText(next);
+    try {
+      const parsed: unknown = JSON.parse(next);
+      setError(null);
+      onChange?.(parsed);
+    } catch (caught) {
+      setError((caught as Error).message);
+    }
+  };
+  return (
+    <div>
+      <Input.TextArea rows={5} value={text} onChange={(event) => commit(event.target.value)} />
+      {error && <Typography.Text type="danger" style={{ fontSize: 11 }}>{error}</Typography.Text>}
+    </div>
+  );
+}
+
+function ResourcePicker({ value, onChange, resources, resourceType }: {
+  value?: string; onChange?: (next: string | undefined) => void;
+  resources: readonly ResourceOption[]; resourceType?: string;
+}) {
+  const options = resources
+    .filter((resource) => resource.enabled !== false &&
+      (!resourceType || resource.type === resourceType))
+    .map((resource) => ({
+      value: resource.id,
+      label: `${resource.name} (${resource.type})`,
+    }));
+  const selected = resources.find((resource) => resource.id === value);
+  return (
+    <div>
+      <Select allowClear value={value} onChange={onChange} options={options} />
+      {selected?.credentialId && (
+        <Typography.Text type="secondary" style={{ fontSize: 11, display: "block" }}>
+          凭证：{selected.credentialName ?? selected.credentialId}
+        </Typography.Text>
+      )}
+    </div>
+  );
+}
+
+function SchemaField({ name, schema, required, resources, resourceType, properties, config }: {
   name: string; schema: JsonSchemaLike; required: boolean;
+  resources: readonly ResourceOption[]; resourceType?: string;
+  properties: Record<string, JsonSchemaLike>; config: Record<string, unknown>;
 }) {
   let control: ReactNode;
-  if (schema.enum && schema.enum.length > 0) {
-    control = (
-      <Select
-        allowClear
-        options={schema.enum.map((value) => ({ label: String(value), value }))}
-      />
-    );
-  } else if (schema.type === "number" || schema.type === "integer") {
-    control = <InputNumber style={{ width: "100%" }} />;
-  } else if (schema.type === "boolean") {
-    control = <Switch />;
-  } else {
-    control = <Input placeholder={schema.description} />;
+  let valuePropName: "value" | "checked" = "value";
+  switch (editorKindForSchema(schema)) {
+    case "resource":
+      control = <ResourcePicker resources={resources} resourceType={resourceType} />;
+      break;
+    case "enum":
+      control = (
+        <Select allowClear
+          options={(schema.enum ?? []).map((value) => ({ label: String(value), value }))} />
+      );
+      break;
+    case "number":
+      control = <InputNumber style={{ width: "100%" }} />;
+      break;
+    case "boolean":
+      control = <Switch />;
+      valuePropName = "checked";
+      break;
+    case "key-value":
+      control = (
+        <KeyValueEditor
+          testId={`field-${name}`}
+          valueOptions={valueOptionsOf(schema) ?? undefined}
+          keyTitle={name === "mapping" ? "目标字段" : "字段名"}
+          valueTitle={name === "mapping" ? "来源字段" : "类型"}
+        />
+      );
+      break;
+    case "string-list":
+      control = (
+        <StringListEditor testId={`field-${name}`} suggestions={listSuggestions(properties, config)} />
+      );
+      break;
+    case "json":
+      control = <JsonValueField />;
+      break;
+    default:
+      control = <Input placeholder={schema.description} />;
+      break;
   }
   return (
     <Form.Item
       key={name} name={name} label={schema.title ?? name} tooltip={schema.description}
-      rules={required ? [{ required: true, message: `请填写 ${schema.title ?? name}` }] : []}
+      valuePropName={valuePropName}
+      rules={required && valuePropName === "value"
+        ? [{ required: true, message: `请填写 ${schema.title ?? name}` }]
+        : []}
     >
       {control}
     </Form.Item>
@@ -57,7 +144,7 @@ interface EdgeRow extends WorkflowEdge {
 
 export function PropertyEditor(props: PropertyEditorProps) {
   const {
-    node, descriptor, edges, catalog, issues, onApplyConfig, onDeleteNode,
+    node, descriptor, edges, catalog, resources, issues, onApplyConfig, onDeleteNode,
     onDeleteEdge, onUpdateEdge, onSelectNode,
   } = props;
   const [form] = Form.useForm<Record<string, unknown>>();
@@ -75,7 +162,8 @@ export function PropertyEditor(props: PropertyEditorProps) {
 
   const apply = () => {
     if (fields.length > 0) {
-      void form.validateFields().then((values) => onApplyConfig(values));
+      void form.validateFields().then((values) =>
+        onApplyConfig(mergeAppliedConfig(node?.config ?? {}, values)));
       return;
     }
     try {
@@ -141,7 +229,15 @@ export function PropertyEditor(props: PropertyEditorProps) {
           <Tag color="blue" style={{ marginLeft: 8 }}>{node.id}</Tag>
           <Form form={form} layout="vertical" size="small" style={{ marginTop: 12 }}>
             {fields.map(([name, schema]) => (
-              <SchemaField key={name} name={name} schema={schema} required={requiredFields.has(name)} />
+              <SchemaField
+                key={name} name={name} schema={schema} required={requiredFields.has(name)}
+                resources={resources}
+                resourceType={typeof descriptor?.configurationSchema.resourceType === "string"
+                  ? descriptor.configurationSchema.resourceType
+                  : undefined}
+                properties={descriptor?.configurationSchema.properties ?? {}}
+                config={node?.config ?? {}}
+              />
             ))}
           </Form>
           {fields.length === 0 && (

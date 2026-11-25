@@ -86,6 +86,9 @@ export function GraphCanvas(props: GraphCanvasProps) {
       });
       graph.on("canvas:click", () => callbacks.current.onSelect(null));
       graphRef.current = graph;
+      // Expose the live instance on its container for real-browser E2E. The
+      // test emits the same G6 event a mouse click emits; no mock graph.
+      (container as HTMLElement & { __industrialGraph?: Graph }).__industrialGraph = graph;
       readyRef.current = true;
       void graph.render();
     });

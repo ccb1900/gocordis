@@ -9,6 +9,7 @@ export const DESIGNER_CSS = `
 .industrial-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .industrial-toolbar-divider{width:1px;height:22px;background:rgba(255,255,255,.24)}
 .industrial-resource-select{width:180px}
+.industrial-backfill-input{width:170px}
 .industrial-body{display:grid;grid-template-columns:268px minmax(0,1fr) 348px;gap:0;flex:1;min-height:0;background:#f4f7fb}
 .industrial-palette,.industrial-properties{height:100%;overflow:auto;padding:14px;background:#fff}
 .industrial-palette{border-right:1px solid #e8edf4}
@@ -29,5 +30,9 @@ export const DESIGNER_CSS = `
 .industrial-graph-hint{position:absolute;left:10px;top:10px;z-index:2;pointer-events:none;padding:3px 9px;border-radius:999px;background:rgba(16,37,66,.78);color:#fff;font-size:11px}
 .industrial-edge-ports{display:flex;flex-direction:column;gap:4px}
 .industrial-issue{display:flex;flex-direction:column;gap:2px;margin-bottom:8px;font-size:12px}
+.industrial-kv-editor,.industrial-list-editor{display:flex;flex-direction:column;gap:5px}
+.industrial-kv-row,.industrial-list-row{display:flex;align-items:center;gap:4px}
+.industrial-kv-row>*:first-child,.industrial-list-row>*:first-child{flex:1;min-width:0}
+.industrial-editor-error{display:block;font-size:11px}
 @media(max-width:1100px){.industrial-body{grid-template-columns:220px minmax(0,1fr) 280px}.industrial-resource-select{width:140px}}
 `;

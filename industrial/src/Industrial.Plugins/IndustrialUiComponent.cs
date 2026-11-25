@@ -53,6 +53,7 @@ public sealed class IndustrialUiComponent : Component
         UiContributionRegistry.Key,
         ApiGateway.Key,
         IndustrialKeys.ResourceRegistry,
+        IndustrialKeys.MachineRegistry,
         IndustrialKeys.WorkflowRegistry,
         IndustrialKeys.NodeCatalog,
         IndustrialKeys.CollectionLedger,
@@ -69,6 +70,7 @@ public sealed class IndustrialUiComponent : Component
         var ui = context.Require(UiContributionRegistry.Key);
         var api = context.Require(ApiGateway.Key);
         var resources = context.Require(IndustrialKeys.ResourceRegistry);
+        var machines = context.Require(IndustrialKeys.MachineRegistry);
         var workflows = context.Require(IndustrialKeys.WorkflowRegistry);
         var nodes = context.Require(IndustrialKeys.NodeCatalog);
         var ledger = context.Require(IndustrialKeys.CollectionLedger);
@@ -167,17 +169,29 @@ public sealed class IndustrialUiComponent : Component
                 (JsonNode?)new JsonObject { ["metric"] = "Workflows", ["value"] = workflows.ListAsync().GetAwaiter().GetResult().Count },
                 (JsonNode?)new JsonObject { ["metric"] = "Nodes", ["value"] = nodes.ListAsync().GetAwaiter().GetResult().Count },
                 (JsonNode?)new JsonObject { ["metric"] = "Files", ["value"] = ledger.ListAllFilesAsync().GetAwaiter().GetResult().Count })),
-            ("industrial/resources", () => new JsonArray(resources.ListAsync()
-                .GetAwaiter().GetResult()
-                .Select(resource => (JsonNode?)new JsonObject
-                {
-                    ["id"] = resource.Id,
-                    ["name"] = resource.Name,
-                    ["type"] = resource.Type,
-                    ["provider"] = resource.Provider,
-                    ["enabled"] = resource.Enabled,
-                    ["version"] = resource.Version,
-                }).ToArray())),
+            ("industrial/resources", () =>
+            {
+                var credentialNames = credentials.ListAsync().GetAwaiter().GetResult()
+                    .ToDictionary(credential => credential.Id, credential => credential.Name);
+                return new JsonArray(resources.ListAsync()
+                    .GetAwaiter().GetResult()
+                    .Select(resource => (JsonNode?)new JsonObject
+                    {
+                        ["id"] = resource.Id,
+                        ["name"] = resource.Name,
+                        ["type"] = resource.Type,
+                        ["provider"] = resource.Provider,
+                        ["enabled"] = resource.Enabled,
+                        ["version"] = resource.Version,
+                        ["credentialId"] = resource.CredentialId is null
+                            ? null
+                            : JsonValue.Create(resource.CredentialId),
+                        ["credentialName"] = resource.CredentialId is { } id &&
+                                             credentialNames.TryGetValue(id, out var name)
+                            ? JsonValue.Create(name)
+                            : null,
+                    }).ToArray());
+            }),
             ("industrial/workflows", () => new JsonArray(workflows.ListAsync()
                 .GetAwaiter().GetResult()
                 .Select(workflow => (JsonNode?)new JsonObject
@@ -213,6 +227,7 @@ public sealed class IndustrialUiComponent : Component
                 {
                     ["id"] = file.Id,
                     ["path"] = file.Identity.RelativePath,
+                    ["sourceResourceId"] = file.Identity.SourceResourceId,
                     ["sourceDate"] = file.SourceDate.ToString("O"),
                     ["status"] = file.Status,
                 }).ToArray())),
@@ -223,10 +238,46 @@ public sealed class IndustrialUiComponent : Component
                     ["id"] = delivery.Id,
                     ["collectionFileId"] = delivery.CollectionFileId,
                     ["targetId"] = delivery.TargetId,
+                    ["targetKind"] = delivery.TargetKind,
                     ["status"] = delivery.Status,
                     ["attempts"] = delivery.Attempts,
+                    ["records"] = delivery.Records,
                     ["error"] = delivery.Error is null ? null : JsonValue.Create(delivery.Error),
                 }).ToArray())),
+            ("industrial/machines", () => new JsonArray(machines.ListAsync()
+                .GetAwaiter().GetResult()
+                .Select(machine => (JsonNode?)new JsonObject
+                {
+                    ["id"] = machine.Id,
+                    ["name"] = machine.Name,
+                    ["endpoint"] = machine.Endpoint,
+                    ["credentialId"] = machine.CredentialId is null
+                        ? null
+                        : JsonValue.Create(machine.CredentialId),
+                    ["enabled"] = machine.Enabled,
+                }).ToArray())),
+            ("industrial/execution-center", () => new JsonObject
+            {
+                ["runs"] = new JsonArray(ledger.ListRunsAsync().GetAwaiter().GetResult()
+                    .Select(run => (JsonNode?)new JsonObject
+                    {
+                        ["id"] = run.Id,
+                        ["workflowId"] = run.WorkflowId,
+                        ["status"] = run.Status,
+                        ["startedAt"] = run.StartedAt.ToString("O"),
+                        ["finishedAt"] = run.FinishedAt?.ToString("O"),
+                        ["error"] = run.Error is null ? null : JsonValue.Create(run.Error),
+                    }).ToArray()),
+                ["deliveries"] = new JsonArray(ledger.ListAllDeliveriesAsync().GetAwaiter().GetResult()
+                    .Select(delivery => (JsonNode?)new JsonObject
+                    {
+                        ["id"] = delivery.Id,
+                        ["targetId"] = delivery.TargetId,
+                        ["targetKind"] = delivery.TargetKind,
+                        ["status"] = delivery.Status,
+                        ["records"] = delivery.Records,
+                    }).ToArray()),
+            }),
         };
         foreach (var (name, handler) in queries)
         {
@@ -244,13 +295,100 @@ public sealed class IndustrialUiComponent : Component
                     new ValueTask(RunAsync(payload, coordinator, planner, reader, sink, archive,
                         Setting("workflowId", "daily-collection"),
                         Setting("resourceId", "source-1")).AsTask()), owner);
-                api.RegisterCommand("industrial/retry-failed", _ =>
-                    new ValueTask(coordinator.RetryFailedAsync([sink], archive).AsTask()), owner);
+                api.RegisterCommand("industrial/retry-failed", payload =>
+                {
+                    var body = payload as JsonObject;
+                    var targetId = body?["targetId"] is JsonValue value &&
+                                   value.TryGetValue<string>(out var id)
+                        ? id
+                        : null;
+                    return new ValueTask(coordinator.RetryFailedAsync(targetId, [sink], archive).AsTask());
+                }, owner);
+                api.RegisterCommand("industrial/save-machine", payload =>
+                    new ValueTask(SaveMachineAsync(payload, machines).AsTask()), owner);
+                api.RegisterCommand("industrial/delete-machine", payload =>
+                    new ValueTask(DeleteMachineAsync(payload, machines).AsTask()), owner);
+                api.RegisterCommand("industrial/save-resource", payload =>
+                    new ValueTask(SaveResourceAsync(payload, resources).AsTask()), owner);
+                api.RegisterCommand("industrial/delete-resource", payload =>
+                    new ValueTask(DeleteResourceAsync(payload, resources).AsTask()), owner);
+                api.RegisterCommand("industrial/save-credential", payload =>
+                    new ValueTask(SaveCredentialAsync(payload, credentials).AsTask()), owner);
+                api.RegisterCommand("industrial/rotate-credential", payload =>
+                    new ValueTask(RotateCredentialAsync(payload, credentials).AsTask()), owner);
                 return ValueTask.CompletedTask;
             },
             () => { api.UnregisterAll(owner); return ValueTask.CompletedTask; });
 
         return null;
+    }
+
+    private static string? Text(JsonObject? body, string key) =>
+        body?[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+
+    private static async ValueTask SaveMachineAsync(JsonNode? payload, IMachineRegistry machines)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var id = Text(body, "id") ?? throw new InvalidOperationException("machine id is required");
+        var existing = await machines.GetAsync(id);
+        await machines.RegisterAsync(new MachineDefinition(
+            id,
+            Text(body, "name") ?? id,
+            Text(body, "endpoint") ?? string.Empty,
+            Text(body, "credentialId"),
+            body["enabled"] is JsonValue enabled && enabled.TryGetValue<bool>(out var isEnabled) && isEnabled,
+            existing?.CreatedAt ?? DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow));
+    }
+
+    private static async ValueTask DeleteMachineAsync(JsonNode? payload, IMachineRegistry machines)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var id = Text(body, "id") ?? throw new InvalidOperationException("machine id is required");
+        await machines.RemoveAsync(id);
+    }
+
+    private static async ValueTask SaveResourceAsync(JsonNode? payload, IResourceRegistry resources)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var id = Text(body, "id") ?? throw new InvalidOperationException("resource id is required");
+        var existing = await resources.GetAsync(id);
+        var configuration = body["config"] is JsonObject config
+            ? JsonSerializer.Deserialize<Dictionary<string, object?>>(config.ToJsonString()) ?? []
+            : new Dictionary<string, object?>();
+        await resources.RegisterAsync(new ResourceDefinition(
+            id,
+            Text(body, "type") ?? existing?.Type ?? "unknown",
+            Text(body, "name") ?? id,
+            Text(body, "provider") ?? existing?.Provider ?? "manual",
+            configuration,
+            Text(body, "credentialId"),
+            existing?.Version ?? 0,
+            body["enabled"] is JsonValue enabled && enabled.TryGetValue<bool>(out var isEnabled) && isEnabled,
+            existing?.CreatedAt ?? DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow));
+    }
+
+    private static async ValueTask DeleteResourceAsync(JsonNode? payload, IResourceRegistry resources)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var id = Text(body, "id") ?? throw new InvalidOperationException("resource id is required");
+        await resources.RemoveAsync(id);
+    }
+
+    private static async ValueTask SaveCredentialAsync(JsonNode? payload, ICredentialVault credentials)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var id = Text(body, "id") ?? throw new InvalidOperationException("credential id is required");
+        await credentials.PutAsync(id, Text(body, "name") ?? id,
+            Text(body, "kind") ?? "username-password", Text(body, "secret") ?? string.Empty);
+    }
+
+    private static async ValueTask RotateCredentialAsync(JsonNode? payload, ICredentialVault credentials)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var id = Text(body, "id") ?? throw new InvalidOperationException("credential id is required");
+        await credentials.RotateAsync(id, Text(body, "secret") ?? string.Empty);
     }
 
     private static async ValueTask RunAsync(

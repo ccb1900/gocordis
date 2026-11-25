@@ -1,4 +1,6 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using Gocordis.Core;
 using Gocordis.Plugins;
 using Industrial.Contracts;
@@ -10,6 +12,15 @@ namespace Industrial.Plugins;
 /// through the owning Fiber's effect stack.</summary>
 public sealed class IndustrialUiComponent : Component
 {
+    private static readonly JsonSerializerOptions WireJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        // PortType is a wire NAME, not an ordinal. The browser parser only
+        // accepts the canonical names from Industrial.Contracts.
+        Converters = { new JsonStringEnumConverter() },
+    };
+
     private readonly IReadOnlyDictionary<string, object?> _config;
 
     public IndustrialUiComponent() : this(FromEnvironment()) { }
@@ -73,9 +84,19 @@ public sealed class IndustrialUiComponent : Component
             Page("industrial.workflows", "Workflows", "/industrial/workflows", "generic", "Apartment",
                 "industrial/workflows", 30, "Industrial",
                 [("workflowId", "Workflow"), ("version", "Version"), ("name", "Name")]),
-            Page("industrial.designer", "Workflow Designer", "/industrial/designer", "generic", "Branches",
-                "industrial/nodes", 40, "Industrial",
-                [("nodeTypeId", "Node type"), ("name", "Name"), ("category", "Category"), ("version", "Version")]),
+            // The backend owns the PAGE; the packaged client module only
+            // contributes the renderer for this declarative block kind. This
+            // is the Koishi-shaped split: one plugin, backend service + UI data.
+            new UiPageDefinition(
+                "industrial.designer", "Workflow Designer", "/industrial/designer", "generic", "Branches",
+                "Industrial workflow designer",
+                new JsonArray(new JsonObject
+                {
+                    ["kind"] = "industrial-workflow-canvas",
+                    ["title"] = "Workflow",
+                    ["query"] = "industrial/workflow-definitions",
+                }),
+                Order: 40, Group: "Industrial"),
             Page("industrial.executions", "Execution Center", "/industrial/executions", "generic", "Activity",
                 "industrial/dashboard-rows", 50, "Industrial",
                 [("metric", "Metric"), ("value", "Value")]),
@@ -130,15 +151,18 @@ public sealed class IndustrialUiComponent : Component
                     ["version"] = workflow.Version,
                     ["name"] = workflow.Name,
                 }).ToArray())),
+            // Full descriptors (ports, config schema, activity type) are the
+            // contract between the backend catalog and the browser block. The
+            // UI never hardcodes node types: a new plugin contributes a node
+            // description and the palette updates without a frontend rebuild.
             ("industrial/nodes", () => new JsonArray(nodes.ListAsync()
                 .GetAwaiter().GetResult()
-                .Select(node => (JsonNode?)new JsonObject
-                {
-                    ["nodeTypeId"] = node.NodeTypeId,
-                    ["name"] = node.Name,
-                    ["category"] = node.Category,
-                    ["version"] = node.Version,
-                }).ToArray())),
+                .Select(node => JsonSerializer.SerializeToNode(node, WireJson)!)
+                .ToArray())),
+            ("industrial/workflow-definitions", () => new JsonArray(workflows.ListAsync()
+                .GetAwaiter().GetResult()
+                .Select(workflow => JsonSerializer.SerializeToNode(workflow, WireJson)!)
+                .ToArray())),
             ("industrial/credentials", () => new JsonArray(credentials.ListAsync()
                 .GetAwaiter().GetResult()
                 .Select(credential => (JsonNode?)new JsonObject

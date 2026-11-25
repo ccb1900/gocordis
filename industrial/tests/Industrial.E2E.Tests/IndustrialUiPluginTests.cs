@@ -39,10 +39,16 @@ public sealed class IndustrialUiPluginTests
         Assert.Contains(console.Ui.Pages(), page => page.Id == "industrial.designer");
         Assert.NotNull(console.Api.Query("industrial/dashboard"));
         Assert.NotNull(console.Api.Query("industrial/nodes"));
+        Assert.NotNull(console.Api.Query("industrial/workflow-definitions"));
+        var nodesWire = Assert.IsType<JsonArray>(console.Api.Query("industrial/nodes"));
+        var csv = Assert.Single(nodesWire, node => node?["nodeTypeId"]?.GetValue<string>() == "industrial.reader.csv");
+        Assert.Equal("FileBatch", csv!["inputs"]![0]!["type"]!.GetValue<string>());
         Assert.NotNull(console.Api.Query("industrial/credentials"));
         Assert.IsType<JsonArray>(console.Api.Query("industrial/dashboard-rows"));
         var designer = Assert.Single(console.Ui.Pages(), page => page.Id == "industrial.designer");
         Assert.True(designer.Views is JsonArray, "views must be a declarative block array");
+        Assert.Contains(designer.Views!.AsArray(), block =>
+            block?["kind"]?.GetValue<string>() == "industrial-workflow-canvas");
         var catalog = runtime.RequireCapability(IndustrialKeys.NodeCatalog);
         Assert.Equal(12, (await catalog.ListAsync()).Count);
 
@@ -113,11 +119,12 @@ public sealed class IndustrialUiPluginTests
         var declaration = Decl("clientmodule");
 
         await registry.ApplyAsync([declaration]);
-        Assert.Contains(console.Ui.Pages(), page => page.Id == "industrial.designer.g6");
+        // The client module contributes a renderer, NEVER a frontend page:
+        // pages are backend composition declarations owned by industrial.ui.
+        Assert.DoesNotContain(console.Ui.Pages(), page => page.Id == "industrial.designer.g6");
         Assert.Contains(console.Ui.ClientModules(), module => module.Name == "industrial-designer");
 
         await registry.ApplyAsync([declaration with { Enabled = false }]);
-        Assert.DoesNotContain(console.Ui.Pages(), page => page.Id == "industrial.designer.g6");
         Assert.DoesNotContain(console.Ui.ClientModules(), module => module.Name == "industrial-designer");
     }
 

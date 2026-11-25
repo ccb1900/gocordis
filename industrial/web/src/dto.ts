@@ -16,6 +16,7 @@ import {
   type NodeDescriptor,
   type NodePort,
   type PortType,
+  type TriggerDefinition,
   type ValidationIssue,
   type WorkflowDefinition,
   type WorkflowEdge,
@@ -207,12 +208,23 @@ export function parseWorkflow(raw: unknown): WorkflowDefinition {
     .filter((node): node is WorkflowNode => node !== null);
   const edges = asArray(pick(o, "edges")).map(parseWorkflowEdge)
     .filter((edge): edge is WorkflowEdge => edge !== null);
+  const triggerRaw = asObj(pick(o, "trigger"));
+  const trigger: TriggerDefinition = {
+    kind: text(pick(triggerRaw, "kind", "type"), "manual"),
+    cron: pick(triggerRaw, "cron") === undefined ? null : text(triggerRaw.cron),
+    eventName: pick(triggerRaw, "eventName", "event_name") === undefined
+      ? null : text(pick(triggerRaw, "eventName", "event_name")),
+    config: parseConfig(pick(triggerRaw, "config")),
+  };
   return {
     workflowId: summary.workflowId,
     name: summary.name,
     version: summary.version,
     nodes,
     edges,
+    trigger,
+    resourceReferences: asArray(pick(o, "resourceReferences", "resource_references"))
+      .map((item) => text(item)).filter(Boolean),
     layout: parseConfig(pick(o, "layout")),
   };
 }

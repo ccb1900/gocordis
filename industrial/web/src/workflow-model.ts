@@ -16,6 +16,8 @@ export const emptyWorkflow = (workflowId = "daily-collection"): WorkflowDefiniti
   version: 1,
   nodes: [],
   edges: [],
+  trigger: { kind: "manual", cron: null, eventName: null, config: {} },
+  resourceReferences: [],
   layout: {},
 });
 
@@ -148,6 +150,9 @@ export function applyPositions(
       const pos = positions[node.id];
       return pos ? { ...node, x: pos.x, y: pos.y } : node;
     }),
+    // One canonical layout field: the domain ships positions with the
+    // definition, never as a separate browser-only cache.
+    layout: { ...definition.layout, positions: { ...positions } },
   };
 }
 

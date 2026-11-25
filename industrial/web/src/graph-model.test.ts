@@ -25,6 +25,8 @@ const definition: WorkflowDefinition = {
     { id: "rd", type: "industrial.reader.csv", config: { encoding: "utf-8" }, x: 240, y: 60 },
   ],
   edges: [{ source: "src", sourcePort: "files", target: "rd", targetPort: "input" }],
+  trigger: { kind: "manual", cron: null, eventName: null, config: {} },
+  resourceReferences: ["share"],
   layout: {},
 };
 

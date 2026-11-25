@@ -23,7 +23,9 @@ const catalog = new Map([
 ]);
 
 const base = (): WorkflowDefinition => ({
-  workflowId: "wf", name: "WF", version: 1, nodes: [], edges: [], layout: {},
+  workflowId: "wf", name: "WF", version: 1, nodes: [], edges: [],
+  trigger: { kind: "manual", cron: null, eventName: null, config: {} },
+  resourceReferences: [], layout: {},
 });
 
 describe("port compatibility (§7.4)", () => {

@@ -54,12 +54,21 @@ export interface WorkflowEdge {
   targetPort: string;
 }
 
+export interface TriggerDefinition {
+  kind: string;
+  cron?: string | null;
+  eventName?: string | null;
+  config: Record<string, unknown>;
+}
+
 export interface WorkflowDefinition {
   workflowId: string;
   name: string;
   version: number;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
+  trigger: TriggerDefinition;
+  resourceReferences: string[];
   layout: Record<string, unknown>;
 }
 

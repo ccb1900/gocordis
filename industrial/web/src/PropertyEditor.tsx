@@ -22,13 +22,15 @@ export interface PropertyEditorProps {
   onSelectNode: (id: string) => void;
 }
 
-function SchemaField({ name, schema }: { name: string; schema: JsonSchemaLike }) {
+function SchemaField({ name, schema, required }: {
+  name: string; schema: JsonSchemaLike; required: boolean;
+}) {
   let control: ReactNode;
   if (schema.enum && schema.enum.length > 0) {
     control = (
       <Select
         allowClear
-        options={schema.enum.map((value) => ({ label: String(value), value: String(value) }))}
+        options={schema.enum.map((value) => ({ label: String(value), value }))}
       />
     );
   } else if (schema.type === "number" || schema.type === "integer") {
@@ -39,7 +41,10 @@ function SchemaField({ name, schema }: { name: string; schema: JsonSchemaLike })
     control = <Input placeholder={schema.description} />;
   }
   return (
-    <Form.Item key={name} name={name} label={schema.title ?? name} tooltip={schema.description}>
+    <Form.Item
+      key={name} name={name} label={schema.title ?? name} tooltip={schema.description}
+      rules={required ? [{ required: true, message: `请填写 ${schema.title ?? name}` }] : []}
+    >
       {control}
     </Form.Item>
   );
@@ -65,6 +70,7 @@ export function PropertyEditor(props: PropertyEditorProps) {
     setJsonError(null);
   }, [form, node?.id, node?.config]);
 
+  const requiredFields = new Set(descriptor?.configurationSchema.required ?? []);
   const fields = Object.entries(descriptor?.configurationSchema.properties ?? {});
 
   const apply = () => {
@@ -134,7 +140,9 @@ export function PropertyEditor(props: PropertyEditorProps) {
           <Typography.Text strong>{descriptor?.name ?? node.type}</Typography.Text>
           <Tag color="blue" style={{ marginLeft: 8 }}>{node.id}</Tag>
           <Form form={form} layout="vertical" size="small" style={{ marginTop: 12 }}>
-            {fields.map(([name, schema]) => <SchemaField key={name} name={name} schema={schema} />)}
+            {fields.map(([name, schema]) => (
+              <SchemaField key={name} name={name} schema={schema} required={requiredFields.has(name)} />
+            ))}
           </Form>
           {fields.length === 0 && (
             <>
@@ -150,10 +158,6 @@ export function PropertyEditor(props: PropertyEditorProps) {
           )}
           <Button type="primary" block onClick={apply}>应用配置</Button>
           <Button danger block style={{ marginTop: 8 }} onClick={onDeleteNode}>删除节点</Button>
-          <Divider plain style={{ margin: "16px 0 8px" }}>连线 ({edges.length})</Divider>
-          {edges.length === 0
-            ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>从节点输出拖到另一节点输入即可连线。</Typography.Text>
-            : <Table size="small" columns={edgeColumns} dataSource={edgeRows} pagination={false} />}
           {descriptor?.activityType && (
             <Typography.Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 8 }}>
               {descriptor.activityType}
@@ -161,6 +165,10 @@ export function PropertyEditor(props: PropertyEditorProps) {
           )}
         </>
       )}
+      <Divider plain style={{ margin: "16px 0 8px" }}>连线 ({edges.length})</Divider>
+      {edges.length === 0
+        ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>开启“连线模式”，从节点拖到另一个节点。</Typography.Text>
+        : <Table size="small" columns={edgeColumns} dataSource={edgeRows} pagination={false} />}
       {issues.length > 0 && (
         <>
           <Divider plain style={{ margin: "16px 0 8px" }}>校验定位 ({issues.length})</Divider>

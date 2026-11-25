@@ -45,12 +45,15 @@ React/antd instance and no frontend-owned page registry.
 - UNC session lease is Windows-only and cannot be exercised on this Linux host.
 - SQL Server / PostgreSQL / MySQL sinks are implemented with mature drivers but
   have no live-server integration test; SQLite is the tested target.
-- The G6 designer has a jsdom integration test for facade registration, palette
-  rendering and drop interaction, but not a real-browser screenshot test.
+- The G6 designer has a jsdom integration test using G6's SVG renderer that
+  emits real `node:dragstart`/`pointermove`/`pointerup` events and proves a
+  port-validated edge reaches the workflow domain; connect mode separates
+  drag-to-connect from drag-to-move. Palette drop and facade registration are
+  tested separately. A real-browser screenshot test is still not automated.
 - Retry after restart is proven by a fresh coordinator reading the ledger; an
   automatic startup sweep is intentionally not added (retry stays an explicit
   command, avoiding a self-spinning loop).
 
 Verification: `dotnet build Gocordis.sln` 0 warning/0 error; full solution tests
-green; industrial C# 31 tests green; `industrial/web` 21 tests + build green;
+green; industrial C# 31 tests green; `industrial/web` 24 tests + build green;
 packaged host re-verified through the UI composition and query endpoints.

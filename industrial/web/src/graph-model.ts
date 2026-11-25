@@ -16,6 +16,9 @@ export interface G6Edge {
   id: string;
   source: string;
   target: string;
+  /** G6 port keys: `out:<declared name>` / `in:<declared name>`. */
+  sourcePort?: string;
+  targetPort?: string;
   data: Record<string, unknown>;
   style?: Record<string, unknown>;
   [key: string]: unknown;
@@ -80,13 +83,34 @@ export function workflowToG6(
           stroke: selected ? "#111111" : colorOf(category),
           lineWidth: selected ? 3 : 1.5,
           radius: 8,
+          // Typed anchors: the user can see which side accepts which port,
+          // and G6 binds edges to these keys instead of node centers.
+          port: true,
+          ports: [
+            ...(descriptor?.inputs ?? []).map((port, index, all) => ({
+              key: `in:${port.name}`,
+              placement: [0, (index + 1) / (all.length + 1)] as [number, number],
+              r: 4,
+              stroke: port.required ? "#fa541c" : "#8a93a6",
+              fill: "#fff",
+            })),
+            ...(descriptor?.outputs ?? []).map((port, index, all) => ({
+              key: `out:${port.name}`,
+              placement: [1, (index + 1) / (all.length + 1)] as [number, number],
+              r: 4,
+              stroke: "#1677ff",
+              fill: "#fff",
+            })),
+          ],
         },
       };
     }),
     edges: definition.edges.map((edge) => ({
       id: edgeId(edge),
       source: edge.source,
+      sourcePort: `out:${edge.sourcePort}`,
       target: edge.target,
+      targetPort: `in:${edge.targetPort}`,
       data: {
         label: `${edge.sourcePort} → ${edge.targetPort}`,
         sourcePort: edge.sourcePort,
@@ -143,11 +167,60 @@ export function graphOptions(data: G6GraphData, container: string | HTMLElement)
         endArrow: true,
       },
     },
-    behaviors: [
-      "drag-canvas",
-      "zoom-canvas",
-      { type: "drag-element", onFinish: () => undefined },
-      { type: "create-edge", trigger: "drag", onCreate: (edge: G6Edge) => edge },
-    ],
+    behaviors: graphBehaviors(),
   };
+}
+
+export interface GraphBehaviorHandlers {
+  graph?: { getNodeData(): Array<{ id?: unknown; data?: unknown; style?: unknown }> };
+  onSelect?: (id: string | null) => void;
+  onDropNode?: (type: string, x: number, y: number) => void;
+  /** Returns the resolved domain port pair, or null when incompatible. */
+  onCreateEdge?: (source: string, target: string) => { sourcePort: string; targetPort: string } | null;
+  onPositions?: (positions: Record<string, { x: number; y: number }>) => void;
+  allowedIds?: () => ReadonlySet<string>;
+  /** The two drag gestures share the same pointer; exactly one is enabled. */
+  connectMode?: () => boolean;
+}
+
+/** One place owns the G6 behavior wiring. The component and the interaction
+ * test use the SAME configuration — a test that hand-builds different
+ * behaviors would prove nothing about the shipped designer. */
+export function graphBehaviors(handlers: GraphBehaviorHandlers = {}): any[] {
+  return [
+    "drag-canvas",
+    "zoom-canvas",
+    {
+      type: "drag-element",
+      enable: () => !(handlers.connectMode?.() ?? false),
+      onFinish: () => {
+        const graph = handlers.graph;
+        if (!graph) return;
+        const nodes = graph.getNodeData().map((node: any) => ({
+          id: String(node.id),
+          data: (node.data ?? {}) as Record<string, unknown>,
+          style: (node.style ?? {}) as Record<string, unknown> & { x?: number; y?: number },
+        }));
+        handlers.onPositions?.(positionsFromG6(
+          { nodes, edges: [] }, handlers.allowedIds?.() ?? new Set<string>()));
+      },
+    },
+    {
+      type: "create-edge",
+      trigger: "drag",
+      enable: () => handlers.connectMode?.() ?? false,
+      onCreate: (edge: { source?: unknown; target?: unknown; [key: string]: unknown }) => {
+        const source = String(edge.source ?? "");
+        const target = String(edge.target ?? "");
+        if (!source || !target || source === target) return undefined;
+        const ports = handlers.onCreateEdge?.(source, target);
+        if (!ports) return undefined;
+        return {
+          ...edge,
+          sourcePort: `out:${ports.sourcePort}`,
+          targetPort: `in:${ports.targetPort}`,
+        };
+      },
+    },
+  ];
 }

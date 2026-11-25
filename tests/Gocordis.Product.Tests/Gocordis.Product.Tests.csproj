@@ -5,6 +5,11 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Shared contract sealing is process-global; serialize these E2E tests. -->
+    <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Gocordis.Client/Gocordis.Client.csproj" />
     <ProjectReference Include="../../src/Gocordis.Core/Gocordis.Core.csproj" />
     <ProjectReference Include="../../src/Gocordis.Packaging/Gocordis.Packaging.csproj" />
     <ProjectReference Include="../../src/Gocordis.Plugins/Gocordis.Plugins.csproj" />

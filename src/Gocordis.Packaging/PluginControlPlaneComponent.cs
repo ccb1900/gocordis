@@ -10,6 +10,11 @@ namespace Gocordis.Packaging;
 /// </summary>
 public sealed class PluginControlPlaneComponent : Component
 {
+    /// <summary>Stable protected id. The control plane is a host contribution,
+    /// never a manifest entry that a catalog action may retire or reconfigure.
+    /// </summary>
+    public const string ControlPlaneComponentId = "plugin-control-plane";
+
     private readonly string _manifestPath;
     private readonly PluginStore _store;
     private readonly PluginRegistry _registry;
@@ -43,12 +48,15 @@ public sealed class PluginControlPlaneComponent : Component
 
     private readonly Func<PluginManifest, Component>? _componentFactory;
 
-    public override string Name => "plugin-control-plane";
+    public override string Name => ControlPlaneComponentId;
 
     public override IReadOnlyList<ICapabilityKey> Provide() => [ControlPlaneKeys.Service];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
+        // Protection is part of loading the contribution, not an accident of
+        // finding its id in the application manifest.
+        _registry.ProtectedIds.Add(ControlPlaneComponentId);
         var service = new PluginControlService(
             _manifestPath, _store, _registry, _ui, _componentFactory, _sharedAssemblyApproval,
             _declarationPlan)

@@ -792,6 +792,129 @@ public sealed class PlatformApplicationTests
         return app.HmrAsync(request, new JsonObject { ["source"] = source });
     }
 
+    [Fact]
+    public async Task EntryOnlyPluginIsPreparedByHostAndVisibleToControlPlane()
+    {
+        using var temp = new TempDir();
+        var store = temp.Path("store");
+        await WritePackageAsync(temp, store, "entry-provider", "1.0.0", "entry-provider", []);
+        await WritePackageAsync(temp, store, "entry-only", "1.0.0", "entry-only",
+        [
+            new PluginDependency("entry-provider", "[1.0,)"),
+        ],
+        capabilities: ["provide|entry/capability|endpoint|1.0.0|application/json|"],
+        schema: JsonNode.Parse("""{"type":"object","properties":{"value":{"type":"string"}}}"""));
+
+        var manifestPath = temp.File("entry-only.app.json");
+        await new ApplicationManifest("entry-app", "1.0.0", "1.5.0", [],
+        [
+            new EntryNode("plugins", Children:
+            [
+                new EntryNode("entry-provider", Url: "entry-provider@1.0.0"),
+                new EntryNode("entry-only", Url: "entry-only@1.0.0",
+                    Config: new Dictionary<string, object?> { ["value"] = "from-entry" }),
+            ]),
+        ]).SaveAsync(manifestPath);
+
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, store, Host: UiHostKind.WinForms, HostVersion: "1.5.0"));
+        await app.StartAsync();
+
+        // The host's pre-scan uses the SAME effective declarations as the loader:
+        // an entries-only plugin is resolved, activated and administrable.
+        Assert.Contains(app.ResolvedPlugins,
+            item => item.Id == "entry-only" && item.Enabled && item.Version == "1.0.0");
+        Assert.True(app.Registry.Entries.ContainsKey("entry-only"));
+        Assert.Equal(FiberState.Active, app.Registry.Entries["entry-only"].Fiber!.State);
+        var controlEntries = await app.Control!.ListAsync();
+        Assert.Contains(controlEntries, item => item.Id == "entry-only");
+        var controlEntry = controlEntries.First(item => item.Id == "entry-only");
+        Assert.True(controlEntry.Declared);
+        Assert.True(controlEntry.Enabled);
+
+        // capabilityWire, schema registration and declaredIds all come from the
+        // same plan — not from a separate manifest.Plugins walk.
+        Assert.Contains(app.Capabilities.Declarations,
+            declaration => declaration.Id.ToString() == "entry/capability");
+        var schemas = app.Console.Api.Query("config/schema")?["components"]!.AsArray();
+        Assert.NotNull(schemas);
+        Assert.Contains(schemas, item => item?["type"]?.GetValue<string>() == "entry-only");
+        var diagnostics = app.Console.Api.Query("devtools/diagnostics")!["diagnostics"]!.AsArray();
+        Assert.DoesNotContain(diagnostics, finding =>
+            finding?["code"]?.GetValue<string>() == "PACKAGE_DEPENDENCY_NOT_DECLARED" &&
+            finding?["message"]?.GetValue<string>()?.Contains("entry-provider") == true);
+    }
+
+    [Fact]
+    public async Task ControlPlaneCannotBeInstalledDisabledUpgradedUninstalledOrReconfigured()
+    {
+        using var temp = new TempDir();
+        var manifestPath = await WriteManifestAsync(temp);
+        await using var app = new PlatformApplication(new PlatformHostOptions(
+            manifestPath, temp.Path("store"), Host: UiHostKind.WinForms, HostVersion: "1.5.0"));
+        await app.StartAsync();
+
+        const string controlId = "plugin-control-plane";
+        // Protection is established by loading the control plane fiber, not by
+        // accidentally finding its id in the application manifest.
+        Assert.Contains(controlId, app.Registry.ProtectedIds);
+
+        var source = temp.Path("control-plane-source");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "payload.txt"), "payload");
+        var package = temp.File("control-plane-1.0.0.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source, new PluginPackageManifest(
+            controlId, "1.0.0", controlId, "[1.0,)"), package);
+
+        var manifestBefore = await File.ReadAllTextAsync(manifestPath);
+        await using (var stream = File.OpenRead(package))
+        {
+            var upload = await app.Control!.UploadAsync(stream, "control-plane-1.0.0.gocordis-plugin");
+            var install = await app.Control.InstallAsync(upload.UploadKey);
+            Assert.False(install.Accepted);
+            Assert.Equal("forbidden", install.Code);
+        }
+
+        await using (var stream = File.OpenRead(package))
+        {
+            var upload = await app.Control!.UploadAsync(stream, "control-plane-1.0.0.gocordis-plugin");
+            var upgrade = await app.Control.UpgradeAsync(controlId, upload.UploadKey);
+            Assert.False(upgrade.Accepted);
+            Assert.Equal("forbidden", upgrade.Code);
+        }
+
+        var disabled = await app.Control!.SetEnabledAsync(controlId, false);
+        Assert.False(disabled.Accepted);
+        Assert.Equal("forbidden", disabled.Code);
+        var removed = await app.Control.UninstallAsync(controlId);
+        Assert.False(removed.Accepted);
+        Assert.Equal("forbidden", removed.Code);
+        var reconfigured = await app.Control.SetConfigAsync(controlId,
+            new Dictionary<string, object?> { ["value"] = "blocked" });
+        Assert.False(reconfigured.Accepted);
+        Assert.Equal("forbidden", reconfigured.Code);
+
+        Assert.Equal(manifestBefore, await File.ReadAllTextAsync(manifestPath));
+        Assert.Empty(app.Registry.Entries);
+        Assert.NotNull(app.Runtime.RequireCapability(ControlPlaneKeys.Service));
+    }
+
+    private static async Task WritePackageAsync(
+        TempDir temp, string store, string id, string version, string type,
+        IReadOnlyList<PluginDependency> dependencies,
+        IReadOnlyList<string>? capabilities = null,
+        JsonNode? schema = null)
+    {
+        var source = temp.Path($"source-{id}-{version}");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "payload.txt"), id);
+        var package = temp.File($"{id}-{version}.gocordis-plugin");
+        await PluginPackageWriter.CreateAsync(source, new PluginPackageManifest(
+            id, version, type, "[1.0,)", Dependencies: dependencies,
+            ConfigSchema: schema, Capabilities: capabilities), package);
+        await new PluginStore(store, "1.5.0").InstallAsync(package);
+    }
+
     private static async Task<string> WriteManifestAsync(TempDir temp)
     {
         var path = temp.File("gocordis.app.json");

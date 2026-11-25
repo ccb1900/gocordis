@@ -87,6 +87,48 @@ internal static class UiPackageBinder
                         manifest.Version,
                         hash)));
             }
+            else
+            {
+                var obj = PluginPackageUi.DefinitionOf(resource, source);
+                switch (resource.Kind)
+                {
+                    case "route":
+                        handles.Add(await context.RegisterUiRouteAsync(ui, owner, new UiRouteDefinition(
+                            resource.Id,
+                            Text(obj, "path") ?? $"/plugins/{resource.Id}",
+                            Text(obj, "pageId") ?? resource.Id,
+                            Text(obj, "layout"),
+                            Number(obj, "order"))));
+                        break;
+                    case "navigation":
+                        handles.Add(await context.RegisterUiNavigationAsync(ui, owner, new UiNavigationDefinition(
+                            resource.Id,
+                            Text(obj, "label") ?? resource.Id,
+                            Text(obj, "route") ?? $"/plugins/{resource.Id}",
+                            Text(obj, "icon"),
+                            Text(obj, "group"),
+                            Text(obj, "pageId"),
+                            Number(obj, "order"))));
+                        break;
+                    case "extension":
+                        handles.Add(await context.RegisterUiExtensionAsync(ui, owner, new UiExtensionDefinition(
+                            resource.Id,
+                            Text(obj, "slot") ?? "default",
+                            Text(obj, "renderer") ?? "generic",
+                            Text(obj, "pageId"),
+                            obj["props"]?.DeepClone(),
+                            Number(obj, "order"))));
+                        break;
+                    case "resource":
+                        handles.Add(await context.RegisterUiResourceAsync(ui, owner, new UiResourceDefinition(
+                            resource.Id,
+                            Text(obj, "kind") ?? "asset",
+                            Text(obj, "path") ?? resource.Path,
+                            Text(obj, "mediaType"),
+                            obj["metadata"]?.DeepClone())));
+                        break;
+                }
+            }
         }
 
         return handles;

@@ -25,7 +25,7 @@ Fibers are sorted by their **full semantic projection** (name, state, declaratio
 
 `Context` is the single accessor surface, and declaration checks are part of its contract, not a fallback:
 
-- `Require`, `OnAsync` and `EmitAsync` require the `EventKey`/`Key` in `Inject()`. In particular, emitting is a coeffect use: owning a key via `Provide()` alone does not authorize `EmitAsync`.
+- `Require` and `OnAsync` require the `EventKey`/`Key` in `Inject()`. `EmitAsync` requires the `EventKey` in `Inject()` **or** `Provide()`: using another provider's event is a coeffect, while emitting on a key this component owns is an authorized use of its declared channel and must not create a false self-dependency.
 - `DeclareMeta` requires the `MetaKey` in `Inject()`. `Meta` reads and `OverrideMeta` writes require the `MetaKey` in `Inject()` **or** `Provide()`; metadata is read-time interception policy, but there is no blanket "runtime metadata is exempt" back door.
 - Every undeclared access throws `UndeclaredCapabilityException`. Captured declarations at Fiber creation are authoritative (a component cannot widen them mid-life).
 

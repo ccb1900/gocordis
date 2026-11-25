@@ -55,6 +55,26 @@ managed 插件的 ALC 以「版本+配置指纹」为 key 重新装载——所�
 
 包级别还用 `--provides` / `--dependency` 声明了真实的能力图（`worker→store`、`dashboard→store+worker`、`client-module→dashboard`），所以控制台"依赖关系"面板不再空白，能看到包依赖、被依赖、能力依赖与提供能力。
 
+## Console 插件与宿主恢复
+
+`gocordis-console`（`../ConsoleUiPlugin/`）现在是一个**普通 UI 插件**，和 showcase 的其它插件一样通过 `gocordis-ui.json` 贡献 page / route / navigation / extension / resource。`WebUiServer`、React/AntD 静态资源、控制 API 与最小恢复页属于宿主，不随它卸载：
+
+```bash
+BASE=http://127.0.0.1:8170
+
+# 卸载 Console 后宿主仍在：/recover 与 /api/meta 仍然 200，其它插件页面不受影响
+curl -s -X POST $BASE/api/plugins/uninstall -H 'Content-Type: application/json' \
+  -d '{"id":"gocordis-console","source":"cli"}'
+curl -s -o /dev/null -w "%{http_code}\n" $BASE/recover
+
+# 通过同一 HTTP 控制面恢复 last-known-good manifest / 重新安装 Console
+gocordis console restore --address $BASE
+gocordis console restore /tmp/gocordis-showcase/packages/gocordis-console-1.0.0.gocordis-plugin --address $BASE
+curl -s $BASE/api/plugins/audit | python3 -m json.tool
+```
+
+审计是操作记录（source/action/id/outcome/timestamp/revision），不持久化任何 fiber/runtime 状态。
+
 ## 为什么这很重要：打包形态下的契约共享
 
 `Key<T>` 是**引用标识**（`src/Gocordis.Core/Capabilities.cs`）。过去 `PluginLoadContext` 只共享 `Gocordis.Core` / `Gocordis.Plugins` 两个程序集，于是两个独立插件包各带一份 `Contracts.dll` 时，它们的 Key 是不同对象，跨插件依赖在打包形态下**静默失效**——只有把组件塞进同一进程才能演示依赖。

@@ -128,20 +128,98 @@ public sealed class ConfigurationTreeTests
         Assert.Empty(runtime.Snapshot().Fibers);
     }
 
+    private static readonly Key<string> TreeCapability = new("tree/capability");
+
+    [Fact]
+    public async Task EntryProviderWithdrawalAndRecoveryKeepsDependentsConsistent()
+    {
+        using var temp = new TempDir();
+        await InstallAsync(temp, "tree-provider", ["tree/capability"]);
+        await InstallAsync(temp, "tree-consumer");
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        registry.RegisterComponentFactory("tree-provider", _ => new ProviderProbe());
+        registry.RegisterComponentFactory("tree-consumer", _ => new ConsumerProbe());
+        var loader = new ApplicationLoader(new PluginStore(temp.Path("store"), HostVersion), registry);
+
+        var provider = new EntryNode("provider", Url: "tree-provider@1.0.0");
+        var consumer = new EntryNode("consumer", Url: "tree-consumer@1.0.0");
+        var fullTree = () => new ApplicationManifest("tree", "1.0.0", HostVersion, [],
+            [new EntryNode("group", Children: [provider, consumer])]);
+
+        await loader.ApplyAsync(fullTree());
+        var firstProvider = registry.Entries["provider"].Fiber!;
+        var firstConsumer = registry.Entries["consumer"].Fiber!;
+        Assert.Equal(FiberState.Active, firstProvider.State);
+        Assert.Equal(FiberState.Active, firstConsumer.State);
+        // Entry nesting is a declaration tree, not a parent fiber relationship.
+        Assert.Null(runtime.Snapshot().Fibers.Single(fiber => fiber.Name == "tree-consumer").ParentId);
+
+        await loader.ApplyAsync(new ApplicationManifest("tree", "1.0.0", HostVersion, [],
+            [new EntryNode("group", Children: [provider with { Disabled = true }, consumer])]));
+        Assert.Null(registry.Entries["provider"].Fiber);
+        Assert.Equal(FiberState.Pending, registry.Entries["consumer"].Fiber!.State);
+        Assert.Null(registry.Entries["consumer"].Fiber!.Failure);
+
+        await loader.ApplyAsync(fullTree());
+        Assert.Equal(FiberState.Active, registry.Entries["provider"].Fiber!.State);
+        Assert.Equal(FiberState.Active, registry.Entries["consumer"].Fiber!.State);
+        Assert.NotSame(firstProvider, registry.Entries["provider"].Fiber);
+        Assert.NotSame(firstConsumer, registry.Entries["consumer"].Fiber);
+    }
+
+    [Fact]
+    public async Task MultipleEntryFieldsChangeInOneApplyKeepsSiblingsStable()
+    {
+        using var temp = new TempDir();
+        await InstallAsync(temp, "tree-provider");
+        await using var runtime = new Gocordis.Core.Runtime();
+        await using var registry = new PluginRegistry(runtime);
+        registry.RegisterComponentFactory("tree-provider", manifest =>
+            new Probe(manifest.Id, manifest.Config.TryGetValue("value", out var value)
+                ? value?.ToString() ?? string.Empty
+                : string.Empty));
+        var loader = new ApplicationLoader(new PluginStore(temp.Path("store"), HostVersion), registry);
+
+        await loader.ApplyAsync(new ApplicationManifest("tree", "1.0.0", HostVersion, [],
+            [new EntryNode("group", Children:
+            [
+                Child("p1", "one"),
+                Child("p2", "unchanged"),
+            ])]));
+        var sibling = registry.Entries["p2"].Fiber!;
+
+        // PackageId/Url, Config and Isolate/Intercept annotations can change in
+        // one reconciliation; they are fields of ONE effective declaration.
+        await loader.ApplyAsync(new ApplicationManifest("tree", "1.0.0", HostVersion, [],
+            [new EntryNode("group", Children:
+            [
+                new EntryNode("p1", Url: "tree-provider@1.0.0",
+                    Config: new Dictionary<string, object?> { ["value"] = "changed" },
+                    Isolate: "shared:one", Intercept: "after"),
+                Child("p2", "unchanged"),
+            ])]));
+
+        Assert.Same(sibling, registry.Entries["p2"].Fiber);
+        Assert.Equal("changed", ((Probe)registry.Entries["p1"].Component!).Value);
+        Assert.Equal("shared:one", registry.Entries["p1"].Manifest.Isolate);
+        Assert.Equal("after", registry.Entries["p1"].Manifest.Intercept);
+    }
+
     private static ApplicationManifest IncludeManifest(string path) =>
         new("tree", "1.0.0", HostVersion, [], [new EntryNode("external", Include: path)]);
 
     private static EntryNode Child(string id, string value) =>
         new(id, Url: "tree-provider@1.0.0", Config: new Dictionary<string, object?> { ["value"] = value });
 
-    private static async Task InstallAsync(TempDir temp, string id)
+    private static async Task InstallAsync(TempDir temp, string id, string[]? provides = null)
     {
         var source = temp.Path($"source-{id}");
         Directory.CreateDirectory(source);
         await File.WriteAllTextAsync(Path.Combine(source, "entry.txt"), id);
         var package = temp.File($"{id}-1.0.0.gocordis-plugin");
         await PluginPackageWriter.CreateAsync(source, new PluginPackageManifest(
-            id, "1.0.0", id, "[1.0,)"), package);
+            id, "1.0.0", id, "[1.0,)", Provides: provides ?? []), package);
         await new PluginStore(temp.Path("store"), HostVersion).InstallAsync(package);
     }
 
@@ -181,6 +259,30 @@ public sealed class ConfigurationTreeTests
 
         public override ValueTask<Cleanup?> ApplyAsync(Context context) =>
             ValueTask.FromResult<Cleanup?>(null);
+    }
+
+    private sealed class ProviderProbe : Component
+    {
+        public override string Name => "tree-provider";
+        public override IReadOnlyList<ICapabilityKey> Provide() => [TreeCapability];
+
+        public override ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            context.Provide(TreeCapability, "available");
+            return ValueTask.FromResult<Cleanup?>(null);
+        }
+    }
+
+    private sealed class ConsumerProbe : Component
+    {
+        public override string Name => "tree-consumer";
+        public override IReadOnlyList<ICapabilityKey> Inject() => [TreeCapability];
+
+        public override ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            Assert.Equal("available", context.Require(TreeCapability));
+            return ValueTask.FromResult<Cleanup?>(null);
+        }
     }
 
     private sealed class TempDir : IDisposable

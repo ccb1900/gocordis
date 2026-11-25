@@ -86,6 +86,16 @@ pack_and_install() {
     dotnet "$CLI_DLL" plugin install "$package" --store "$STORE" --host-version 1.0.0
 }
 
+echo "==> packing + installing the optional console UI plugin"
+# The console is an ordinary UI plugin: host web transport / static assets /
+# control API / /recover survive when this package is disabled or uninstalled.
+CONSOLE_SOURCE="$ROOT/samples/ConsoleUiPlugin"
+CONSOLE_PACKAGE="$PACKAGES/gocordis-console-1.0.0.gocordis-plugin"
+dotnet "$CLI_DLL" plugin pack "$CONSOLE_SOURCE" "$CONSOLE_PACKAGE" \
+    --id gocordis-console --version 1.0.0 --type gocordis-console \
+    --host-range "[1.0,)" --backend builtin --entry-assembly entry.txt
+dotnet "$CLI_DLL" plugin install "$CONSOLE_PACKAGE" --store "$STORE" --host-version 1.0.0
+
 echo "==> packing + installing managed plugin packages"
 # The --dependency/--provides flags populate the package manifest that the
 # control-plane dependency view reads. They describe the REAL capability graph:
@@ -106,6 +116,7 @@ cat > "$MANIFEST" <<'JSON'
   "Version": "1.0.0",
   "HostVersion": "1.0.0",
   "Plugins": [
+    { "Id": "gocordis-console",        "VersionRange": "[1.0,2.0)", "Enabled": true },
     { "Id": "showcase-store",          "VersionRange": "[1.0,2.0)", "Enabled": true,
       "Config": { "intervalMs": 1500, "label": "showcase", "verbose": false, "mode": "steady" } },
     { "Id": "showcase-worker",         "VersionRange": "[1.0,2.0)", "Enabled": true, "Config": null },

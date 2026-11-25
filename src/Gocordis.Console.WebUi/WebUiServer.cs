@@ -110,6 +110,10 @@ public sealed class WebUiServer : IAsyncDisposable
         _app.MapGet("/app.js", () => Results.Content(WebResources.Read("app.js"), "text/javascript"));
         _app.MapGet("/app.css", () => Results.Content(WebResources.Read("app.css"), "text/css"));
 
+        // Host-owned minimum recovery page. It is served by the transport even
+        // when the console UI plugin is absent, disabled or being upgraded.
+        _app.MapGet("/recover", () => Results.Content(WebResources.Read("recover.html"), "text/html; charset=utf-8"));
+
         _app.MapGet("/api/plugins", async (HttpContext context) =>
         {
             var denial = Deny(ConsoleAccessScope.Read);
@@ -166,6 +170,47 @@ public sealed class WebUiServer : IAsyncDisposable
                 : ApiResults.Data(ToJson(view));
         });
 
+        _app.MapGet("/api/plugins/audit", async (HttpContext context) =>
+        {
+            var denial = Deny(ConsoleAccessScope.Read);
+            if (denial is not null) return denial;
+            if (_control is null)
+            {
+                return Unavailable("plugin control service is not configured");
+            }
+
+            var entries = await _control.AuditAsync(context.RequestAborted);
+            return ApiResults.Data(new JsonObject
+            {
+                ["audit"] = new JsonArray(entries.Select(entry => (JsonNode?)ToJson(entry)).ToArray()),
+            });
+        });
+
+        // Recover writes declarations only (last-known-good manifest). It is a
+        // host transport endpoint, not a console plugin contribution.
+        _app.MapPost("/api/host/recover", async (HttpContext context) =>
+        {
+            var denial = Deny(ConsoleAccessScope.Package);
+            if (denial is not null) return denial;
+            if (_control is null)
+            {
+                return Unavailable("plugin control service is not configured");
+            }
+
+            JsonNode? payload;
+            try
+            {
+                payload = await ReadBodyAsync(context);
+            }
+            catch (ApiRequestException ex)
+            {
+                return ApiResults.Error(ex.Status, "invalid_request", ex.Message);
+            }
+
+            var source = SourceOf(payload as JsonObject, "http");
+            return MutationResult(await _control.RecoverManifestAsync(source, context.RequestAborted));
+        });
+
         _app.MapGet("/api/fleet", () => ApiResults.Data(new JsonObject
         {
             ["frameworkVersion"] = "1",
@@ -197,8 +242,20 @@ public sealed class WebUiServer : IAsyncDisposable
             var data = ModuleData(host.Ui);
             data["pages"] = PageNodes(host.Ui);
             data["panels"] = PanelNodes(host.Ui);
+            data["routes"] = RouteNodes(host.Ui);
+            data["navigation"] = NavigationNodes(host.Ui);
+            data["extensions"] = ExtensionNodes(host.Ui);
+            data["resources"] = ResourceNodes(host.Ui);
             return ApiResults.Data(data);
         });
+
+        _app.MapGet("/api/ui/contributions", () => ApiResults.Data(new JsonObject
+        {
+            ["routes"] = RouteNodes(host.Ui),
+            ["navigation"] = NavigationNodes(host.Ui),
+            ["extensions"] = ExtensionNodes(host.Ui),
+            ["resources"] = ResourceNodes(host.Ui),
+        }));
 
         _app.MapGet("/api/query/{**name}", (string name) =>
         {
@@ -254,10 +311,12 @@ public sealed class WebUiServer : IAsyncDisposable
             }
 
             IFormFile? file;
+            string? source;
             try
             {
-                file = (await context.Request.ReadFormAsync(context.RequestAborted))
-                    .Files["package"];
+                var form = await context.Request.ReadFormAsync(context.RequestAborted);
+                file = form.Files["package"];
+                source = form["source"].FirstOrDefault();
             }
             catch (InvalidDataException ex)
             {
@@ -278,7 +337,8 @@ public sealed class WebUiServer : IAsyncDisposable
             try
             {
                 await using var stream = file.OpenReadStream();
-                var upload = await _control.UploadAsync(stream, file.FileName, context.RequestAborted);
+                var upload = await _control.UploadAsync(
+                    stream, file.FileName, context.RequestAborted, SourceOf(source, "http"));
                 return ApiResults.Data(ToJson(upload));
             }
             catch (PluginUploadTooLargeException ex)
@@ -328,7 +388,8 @@ public sealed class WebUiServer : IAsyncDisposable
                 return ApiResults.Error(StatusCodes.Status400BadRequest, "invalid_request", "enable must be a boolean");
             }
 
-            return MutationResult(await _control.InstallAsync(uploadKey, enable, context.RequestAborted));
+            return MutationResult(await _control.InstallAsync(
+                uploadKey, enable, context.RequestAborted, SourceOf(body as JsonObject, "http")));
         });
 
         _app.MapPost("/api/plugins/upgrade", async (HttpContext context) =>
@@ -361,7 +422,8 @@ public sealed class WebUiServer : IAsyncDisposable
             }
 
             var versionRange = body?["versionRange"]?.GetValue<string>();
-            return MutationResult(await _control.UpgradeAsync(id, uploadKey, versionRange, context.RequestAborted));
+            return MutationResult(await _control.UpgradeAsync(
+                id, uploadKey, versionRange, context.RequestAborted, SourceOf(body as JsonObject, "http")));
         });
 
         _app.MapPost("/api/plugins/uninstall", async (HttpContext context) =>
@@ -392,7 +454,8 @@ public sealed class WebUiServer : IAsyncDisposable
             }
 
             var version = body?["version"]?.GetValue<string>();
-            return MutationResult(await _control.UninstallAsync(id, version, context.RequestAborted));
+            return MutationResult(await _control.UninstallAsync(
+                id, version, context.RequestAborted, SourceOf(body as JsonObject, "http")));
         });
 
         _app.MapPost("/api/plugins/control", async (HttpContext context) =>
@@ -427,7 +490,8 @@ public sealed class WebUiServer : IAsyncDisposable
                     "pluginId and boolean enable are required");
             }
 
-            return MutationResult(await _control.SetEnabledAsync(pluginId, enabled, context.RequestAborted));
+            return MutationResult(await _control.SetEnabledAsync(
+                pluginId, enabled, context.RequestAborted, SourceOf(body as JsonObject, "http")));
         });
 
         // Paper §5.2.2: the three-phase HMR engine is a real product entry point,
@@ -564,7 +628,8 @@ public sealed class WebUiServer : IAsyncDisposable
                 values[key] = ToClr(value);
             }
 
-            return MutationResult(await _control.SetConfigAsync(id, values, context.RequestAborted));
+            return MutationResult(await _control.SetConfigAsync(
+                id, values, context.RequestAborted, SourceOf(body as JsonObject, "http")));
         });
 
         // Plugin client modules: only registered names are served, and every
@@ -828,6 +893,129 @@ public sealed class WebUiServer : IAsyncDisposable
         return panels;
     }
 
+    private static JsonArray RouteNodes(UiContributionRegistry ui)
+    {
+        var routes = new JsonArray();
+        foreach (var route in ui.Routes())
+        {
+            var item = new JsonObject
+            {
+                ["id"] = route.Id,
+                ["path"] = route.Path,
+                ["pageId"] = route.PageId,
+                ["order"] = route.Order,
+                ["ownerPluginId"] = route.Owner.PluginId,
+            };
+            if (route.Layout is not null)
+            {
+                item["layout"] = route.Layout;
+            }
+
+            routes.Add(item);
+        }
+
+        return routes;
+    }
+
+    private static JsonArray NavigationNodes(UiContributionRegistry ui)
+    {
+        var items = new JsonArray();
+        foreach (var navigation in ui.Navigations())
+        {
+            var item = new JsonObject
+            {
+                ["id"] = navigation.Id,
+                ["label"] = navigation.Label,
+                ["route"] = navigation.Route,
+                ["order"] = navigation.Order,
+                ["ownerPluginId"] = navigation.Owner.PluginId,
+            };
+            if (navigation.Group is not null)
+            {
+                item["group"] = navigation.Group;
+            }
+            if (navigation.Icon is not null)
+            {
+                item["icon"] = navigation.Icon;
+            }
+            if (navigation.PageId is not null)
+            {
+                item["pageId"] = navigation.PageId;
+            }
+
+            items.Add(item);
+        }
+
+        return items;
+    }
+
+    private static JsonArray ExtensionNodes(UiContributionRegistry ui)
+    {
+        var items = new JsonArray();
+        foreach (var extension in ui.Extensions())
+        {
+            var item = new JsonObject
+            {
+                ["id"] = extension.Id,
+                ["slot"] = extension.Slot,
+                ["renderer"] = extension.Renderer,
+                ["order"] = extension.Order,
+                ["ownerPluginId"] = extension.Owner.PluginId,
+            };
+            if (extension.PageId is not null)
+            {
+                item["pageId"] = extension.PageId;
+            }
+            if (extension.Props is not null)
+            {
+                item["props"] = extension.Props.DeepClone();
+            }
+
+            items.Add(item);
+        }
+
+        return items;
+    }
+
+    private static JsonArray ResourceNodes(UiContributionRegistry ui)
+    {
+        var items = new JsonArray();
+        foreach (var resource in ui.Resources())
+        {
+            var item = new JsonObject
+            {
+                ["id"] = resource.Id,
+                ["kind"] = resource.Kind,
+                ["path"] = resource.Path,
+                ["ownerPluginId"] = resource.Owner.PluginId,
+            };
+            if (resource.MediaType is not null)
+            {
+                item["mediaType"] = resource.MediaType;
+            }
+            if (resource.Metadata is not null)
+            {
+                item["metadata"] = resource.Metadata.DeepClone();
+            }
+
+            items.Add(item);
+        }
+
+        return items;
+    }
+
+    /// <summary>The client names its own source; the transport never infers an
+    /// identity from a socket. Audit records carry this value verbatim.</summary>
+    private static string SourceOf(JsonObject? body, string fallback) =>
+        body?["source"] is JsonValue value &&
+        value.TryGetValue<string>(out var source) &&
+        !string.IsNullOrWhiteSpace(source)
+            ? source
+            : fallback;
+
+    private static string SourceOf(string? source, string fallback) =>
+        string.IsNullOrWhiteSpace(source) ? fallback : source!;
+
     private static JsonObject ModuleData(UiContributionRegistry ui)
     {
         var revision = ui.Revision;
@@ -981,6 +1169,18 @@ public sealed class WebUiServer : IAsyncDisposable
         ["hostVersionRange"] = result.HostVersionRange,
         ["checksum"] = result.Checksum,
         ["dependencies"] = DependencyArray(result.Dependencies),
+    };
+
+    private static JsonObject ToJson(ControlPlaneAudit entry) => new()
+    {
+        ["revision"] = entry.Revision,
+        ["timestamp"] = entry.Timestamp.UtcDateTime.ToString("O"),
+        ["source"] = entry.Source,
+        ["action"] = entry.Action,
+        ["id"] = entry.Id,
+        ["outcome"] = entry.Outcome,
+        ["code"] = entry.Code,
+        ["error"] = JsonValue.Create(entry.Error),
     };
 
     private static JsonObject ToJson(PluginMutationResult result) => new()

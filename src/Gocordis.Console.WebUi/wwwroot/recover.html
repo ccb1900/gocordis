@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gocordis host recovery</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 3rem auto; max-width: 44rem; line-height: 1.6; color: #1f2937; }
+    h1 { font-size: 1.6rem; }
+    code, pre { background: #f3f4f6; padding: .15rem .35rem; border-radius: 4px; }
+    pre { padding: .8rem; }
+    .note { border-left: 3px solid #2563eb; padding-left: .8rem; }
+  </style>
+</head>
+<body>
+  <h1>Gocordis host recovery</h1>
+  <p class="note">
+    The web transport, control API and plugin store are host infrastructure and
+    remain available when the optional console UI plugin is missing, disabled
+    or being upgraded.
+  </p>
+  <p>To restore the last known-good application declaration:</p>
+  <pre>POST /api/host/recover  { "source": "recovery-page" }</pre>
+  <p>Or from the CLI (it uses the same HTTP control plane):</p>
+  <pre>gocordis console restore --address &lt;host-url&gt;</pre>
+  <p>To reinstall or replace the console UI plugin, use:</p>
+  <pre>gocordis console restore &lt;package.gocordis-plugin&gt; --address &lt;host-url&gt;</pre>
+</body>
+</html>

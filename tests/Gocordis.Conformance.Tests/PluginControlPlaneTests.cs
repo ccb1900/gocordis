@@ -733,6 +733,174 @@ public sealed class PluginControlPlaneTests
         AssertContainsStoreEntry(await GetDataArrayAsync(fx.Client, "/api/plugins/store"), "alpha", "1.0.0");
     }
 
+    [Fact]
+    public async Task EntryAndPluginUseTheSameEffectiveDeclarationPlan()
+    {
+        await using var fx = await Fixture.CreateAsync();
+
+        foreach (var id in new[] { "alpha", "beta" })
+        {
+            var package = await BuildPackageAsync(fx.Temp, id, "1.0.0", "demo");
+            var key = await UploadAndGetKeyAsync(fx.Client, package, $"{id}-1.0.0.gocordis-plugin");
+            AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+                new JsonObject { ["uploadKey"] = key, ["enable"] = true })), $"install {id}");
+        }
+
+        // One flat declaration and one entries-only declaration. EffectivePlugins
+        // is the single resolution authority for both the host and the control
+        // service, so neither disappears from the list below.
+        var declared = await ApplicationManifest.LoadAsync(fx.ManifestPath);
+        var alpha = Assert.Single(declared.Plugins, item => item.Id == "alpha") with
+        {
+            Config = new Dictionary<string, object?> { ["source"] = "flat" },
+        };
+        await new ApplicationManifest(declared.Id, declared.Version, declared.HostVersion,
+            [alpha],
+            [new EntryNode("group", Children:
+            [
+                new EntryNode("beta", Url: "beta@1.0.0",
+                    Config: new Dictionary<string, object?> { ["source"] = "entry" }),
+            ])]).SaveAsync(fx.ManifestPath);
+        await fx.Control.ApplyAllAsync();
+
+        var plugins = await GetDataArrayAsync(fx.Client, "/api/plugins");
+        Assert.Equal("flat", AssertPlugin(plugins, "alpha")?["config"]?["source"]?.GetValue<string>());
+        Assert.Equal("entry", AssertPlugin(plugins, "beta")?["config"]?["source"]?.GetValue<string>());
+
+        var betaConfig = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/beta/config",
+            new JsonObject { ["config"] = new JsonObject { ["source"] = "entry-changed" } }));
+        AssertAccepted(betaConfig, "configure entries-only beta");
+        var alphaConfig = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/alpha/config",
+            new JsonObject { ["config"] = new JsonObject { ["source"] = "flat-changed" } }));
+        AssertAccepted(alphaConfig, "configure flat alpha");
+        var disabled = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/control",
+            new JsonObject { ["pluginId"] = "beta", ["enable"] = false }));
+        AssertAccepted(disabled, "disable entries-only beta");
+
+        var effective = await ApplicationLoader.EffectivePluginsAsync(
+            await ApplicationManifest.LoadAsync(fx.ManifestPath));
+        Assert.Equal(2, effective.Count);
+        Assert.Equal("flat-changed", Assert.Single(effective, item => item.Id == "alpha")
+            .Config!["source"]?.ToString());
+        var betaEffective = Assert.Single(effective, item => item.Id == "beta");
+        Assert.False(betaEffective.Enabled);
+        Assert.Equal("entry-changed", betaEffective.Config!["source"]?.ToString());
+
+        // The entry is edited in place: no second flat declaration is invented.
+        var persisted = await ApplicationManifest.LoadAsync(fx.ManifestPath);
+        Assert.Single(persisted.Plugins, item => item.Id == "alpha");
+        Assert.DoesNotContain(persisted.Plugins, item => item.Id == "beta");
+        var entry = Assert.Single(persisted.Entries!);
+        Assert.True(entry.Children![0].Disabled);
+        Assert.Equal("entry-changed", entry.Children![0].Config!["source"]?.ToString());
+    }
+
+    [Fact]
+    public async Task EntriesOnlyPluginCanBeUpgradedAndUninstalled()
+    {
+        await using var fx = await Fixture.CreateAsync();
+        var v1 = await BuildPackageAsync(fx.Temp, "beta", "1.0.0", "demo");
+        var v1Key = await UploadAndGetKeyAsync(fx.Client, v1, "beta-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = v1Key, ["enable"] = true })), "install beta v1");
+
+        var declared = await ApplicationManifest.LoadAsync(fx.ManifestPath);
+        await new ApplicationManifest(declared.Id, declared.Version, declared.HostVersion, [],
+            [new EntryNode("group", Children: [new EntryNode("beta", Url: "beta@1.0.0")])])
+            .SaveAsync(fx.ManifestPath);
+        await fx.Control.ApplyAllAsync();
+
+        var v2 = await BuildPackageAsync(fx.Temp, "beta", "2.0.0", "demo");
+        var v2Key = await UploadAndGetKeyAsync(fx.Client, v2, "beta-2.0.0.gocordis-plugin");
+        var upgrade = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/upgrade",
+            new JsonObject { ["id"] = "beta", ["uploadKey"] = v2Key, ["versionRange"] = RangeV2 }));
+        AssertAccepted(upgrade, "upgrade entries-only beta");
+
+        var upgraded = Assert.Single(await ApplicationLoader.EffectivePluginsAsync(
+            await ApplicationManifest.LoadAsync(fx.ManifestPath)));
+        Assert.Equal(RangeV2, upgraded.VersionRange);
+        Assert.Equal("beta@" + RangeV2,
+            (await ApplicationManifest.LoadAsync(fx.ManifestPath)).Entries![0].Children![0].Url);
+        AssertContainsStoreEntry(await GetDataArrayAsync(fx.Client, "/api/plugins/store"), "beta", "2.0.0");
+
+        var removed = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/uninstall",
+            new JsonObject { ["id"] = "beta", ["version"] = RangeV2 }));
+        AssertAccepted(removed, "uninstall entries-only beta");
+        Assert.Empty(await ApplicationLoader.EffectivePluginsAsync(
+            await ApplicationManifest.LoadAsync(fx.ManifestPath)));
+        Assert.Null(AssertPlugin(await GetDataArrayAsync(fx.Client, "/api/plugins"), "beta"));
+        Assert.DoesNotContain((await GetDataArrayAsync(fx.Client, "/api/plugins/store"))
+            .OfType<JsonObject>(), item => Str(item, "id") == "beta");
+    }
+
+    [Fact]
+    public async Task IncludeEntryConfigIsWrittenBackToItsSourceFile()
+    {
+        await using var fx = await Fixture.CreateAsync();
+        var package = await BuildPackageAsync(fx.Temp, "alpha", "1.0.0", "demo");
+        var key = await UploadAndGetKeyAsync(fx.Client, package, "alpha-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = key, ["enable"] = true })), "install alpha");
+
+        var include = fx.Temp.Path("children.json");
+        await File.WriteAllTextAsync(include,
+            """[{"id":"inc-1","url":"alpha@[1.0,2.0)","config":{"source":"include"}}]""");
+        var declared = await ApplicationManifest.LoadAsync(fx.ManifestPath);
+        await new ApplicationManifest(declared.Id, declared.Version, declared.HostVersion, [],
+            [new EntryNode("external", Include: include)]).SaveAsync(fx.ManifestPath);
+        await fx.Control.ApplyAllAsync();
+        Assert.Equal("include", AssertPlugin(await GetDataArrayAsync(fx.Client, "/api/plugins"),
+            "inc-1")?["config"]?["source"]?.GetValue<string>());
+
+        var configured = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/inc-1/config",
+            new JsonObject { ["config"] = new JsonObject { ["source"] = "include-changed" } }));
+        AssertAccepted(configured, "configure include entry");
+
+        var rewritten = JsonNode.Parse(await File.ReadAllTextAsync(include))!.AsArray();
+        Assert.Equal("include-changed", rewritten[0]?["config"]?["source"]?.GetValue<string>());
+        var effective = await ApplicationLoader.EffectivePluginsAsync(
+            await ApplicationManifest.LoadAsync(fx.ManifestPath));
+        Assert.Equal("include-changed", Assert.Single(effective).Config!["source"]?.ToString());
+    }
+
+    [Fact]
+    public async Task EntryIdAndPackageIdStayConsistentAcrossControlMutations()
+    {
+        await using var fx = await Fixture.CreateAsync();
+        var v1 = await BuildPackageAsync(fx.Temp, "alpha", "1.0.0", "demo");
+        var v1Key = await UploadAndGetKeyAsync(fx.Client, v1, "alpha-1.0.0.gocordis-plugin");
+        AssertAccepted(await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/install",
+            new JsonObject { ["uploadKey"] = v1Key, ["enable"] = true })), "install alpha");
+
+        var declared = await ApplicationManifest.LoadAsync(fx.ManifestPath);
+        await new ApplicationManifest(declared.Id, declared.Version, declared.HostVersion, [],
+            [new EntryNode("alias", Url: "alpha@[1.0,2.0)")]).SaveAsync(fx.ManifestPath);
+        await fx.Control.ApplyAllAsync();
+
+        var entry = AssertPlugin(await GetDataArrayAsync(fx.Client, "/api/plugins"), "alias");
+        Assert.Equal("1.0.0", Str(entry, "installedVersion"));
+        var dependencies = await ReadEnvelopeAsync(await fx.Client.GetAsync("/api/plugins/alias/dependencies"));
+        Assert.Equal(HttpStatusCode.OK, dependencies.StatusCode);
+
+        var v2 = await BuildPackageAsync(fx.Temp, "alpha", "2.0.0", "demo");
+        var v2Key = await UploadAndGetKeyAsync(fx.Client, v2, "alpha-2.0.0.gocordis-plugin");
+        var upgrade = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/upgrade",
+            new JsonObject { ["id"] = "alias", ["uploadKey"] = v2Key, ["versionRange"] = RangeV2 }));
+        AssertAccepted(upgrade, "upgrade alias from package alpha");
+
+        var effective = Assert.Single(await ApplicationLoader.EffectivePluginsAsync(
+            await ApplicationManifest.LoadAsync(fx.ManifestPath)));
+        Assert.Equal("alias", effective.Id);
+        Assert.Equal("alpha", effective.PackageId);
+        Assert.Equal(RangeV2, effective.VersionRange);
+
+        var removed = await ReadEnvelopeAsync(await PostJsonAsync(fx.Client, "/api/plugins/uninstall",
+            new JsonObject { ["id"] = "alias", ["version"] = RangeV2 }));
+        AssertAccepted(removed, "uninstall alias package");
+        Assert.DoesNotContain((await GetDataArrayAsync(fx.Client, "/api/plugins/store"))
+            .OfType<JsonObject>(), item => Str(item, "id") == "alpha");
+    }
+
     // -------------------------------------------------------------------------
     // helpers: HTTP
     // -------------------------------------------------------------------------

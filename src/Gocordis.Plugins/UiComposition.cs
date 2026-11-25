@@ -18,6 +18,84 @@ public sealed record UiPageDefinition(
 
 public sealed record UiPageAction(string Label, string Command, bool DatePicker = false);
 
+/// <summary>
+/// First-class route contribution. A route binds a URL to an existing page id;
+/// it never installs a page, so navigation and deep links can be added by one
+/// plugin to a page owned by another without taking over its lifecycle.
+/// </summary>
+public sealed record UiRouteDefinition(
+    string Id,
+    string Path,
+    string PageId,
+    string? Layout = null,
+    int Order = 0,
+    IReadOnlyDictionary<string, object?>? Metadata = null);
+
+public sealed record UiRoute(
+    string Id,
+    string Path,
+    string PageId,
+    string? Layout,
+    int Order,
+    ContributionOwner Owner,
+    IReadOnlyDictionary<string, object?> Metadata);
+
+/// <summary>First-class navigation contribution (menu item / group path).</summary>
+public sealed record UiNavigationDefinition(
+    string Id,
+    string Label,
+    string Route,
+    string? Icon = null,
+    string? Group = null,
+    string? PageId = null,
+    int Order = 0);
+
+public sealed record UiNavigation(
+    string Id,
+    string Label,
+    string Route,
+    string? Icon,
+    string? Group,
+    string? PageId,
+    int Order,
+    ContributionOwner Owner);
+
+/// <summary>First-class extension contribution (named slot on a page/shell).</summary>
+public sealed record UiExtensionDefinition(
+    string Id,
+    string Slot,
+    string Renderer,
+    string? PageId = null,
+    JsonNode? Props = null,
+    int Order = 0);
+
+public sealed record UiExtension(
+    string Id,
+    string Slot,
+    string Renderer,
+    string? PageId,
+    JsonNode? Props,
+    int Order,
+    ContributionOwner Owner);
+
+/// <summary>First-class static resource contribution served by the host's
+/// guarded asset endpoints. The host owns serving; the plugin owns the
+/// declaration and its reversal.</summary>
+public sealed record UiResourceDefinition(
+    string Id,
+    string Kind,
+    string Path,
+    string? MediaType = null,
+    JsonNode? Metadata = null);
+
+public sealed record UiResource(
+    string Id,
+    string Kind,
+    string Path,
+    string? MediaType,
+    JsonNode? Metadata,
+    ContributionOwner Owner);
+
 public sealed record UiPage(
     string Id,
     string Title,
@@ -137,6 +215,34 @@ public static class UiCompositionContextExtensions
         ContributionOwner owner,
         UiClientModuleDefinition module) =>
         RegisterEffectAsync(context, () => registry.RegisterClientModule(owner, module));
+
+    public static ValueTask<UiContributionHandle> RegisterUiRouteAsync(
+        this Context context,
+        UiContributionRegistry registry,
+        ContributionOwner owner,
+        UiRouteDefinition route) =>
+        RegisterEffectAsync(context, () => registry.RegisterRoute(owner, route));
+
+    public static ValueTask<UiContributionHandle> RegisterUiNavigationAsync(
+        this Context context,
+        UiContributionRegistry registry,
+        ContributionOwner owner,
+        UiNavigationDefinition navigation) =>
+        RegisterEffectAsync(context, () => registry.RegisterNavigation(owner, navigation));
+
+    public static ValueTask<UiContributionHandle> RegisterUiExtensionAsync(
+        this Context context,
+        UiContributionRegistry registry,
+        ContributionOwner owner,
+        UiExtensionDefinition extension) =>
+        RegisterEffectAsync(context, () => registry.RegisterExtension(owner, extension));
+
+    public static ValueTask<UiContributionHandle> RegisterUiResourceAsync(
+        this Context context,
+        UiContributionRegistry registry,
+        ContributionOwner owner,
+        UiResourceDefinition resource) =>
+        RegisterEffectAsync(context, () => registry.RegisterResource(owner, resource));
 
     public static ValueTask RegisterApiQueryAsync(
         this Context context,

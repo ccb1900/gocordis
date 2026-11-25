@@ -265,9 +265,11 @@ public sealed class Context
     public ValueTask EmitAsync<T>(EventKey<T> key, T payload)
     {
         EnsureReadable();
-        // Emitting is an observable coeffect use, not a side effect of owning
-        // the key: only an Inject declaration authorizes it (§5.1.4).
-        RequireDeclared(key, _fiber.CapturedInjectKeys);
+        // Emitting is an observable coeffect use (§5.1.4). Both Inject (use of
+        // another provider's event) and Provide (ownership of the event channel)
+        // are declarations of authority. Accepting only Inject would create a
+        // false self-dependency for components that publish their own events.
+        RequireDeclared(key, [.. _fiber.CapturedInjectKeys, .. _fiber.CapturedProvideKeys]);
         return _activation.Runtime.EmitAsync(key, payload, _activation);
     }
 

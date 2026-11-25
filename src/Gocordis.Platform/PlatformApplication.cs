@@ -224,26 +224,31 @@ public class PlatformApplication : IAsyncDisposable
             // which contract version lands in the Default ALC.
             var contractCandidates = new Dictionary<string, List<string>>(StringComparer.Ordinal);
             var capabilityWire = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var plugin in manifest.Plugins)
+            // ONE effective declaration plan for the whole composition root.
+            // Entries/Group/Include expansion, flat Plugins overrides and package
+            // resolution are ApplicationLoader's job; this loop never walks
+            // manifest.Plugins directly.
+            var plan = await ApplicationLoader.ResolveAsync(manifest, Store, cancellationToken);
+            foreach (var effective in plan.Declarations)
             {
-                var installed = await Store.ResolveAsync(plugin.Id, plugin.VersionRange, cancellationToken);
-                if (installed is null)
+                if (effective.Installed is not { } installed)
                 {
                     continue; // ApplicationLoader reports the missing dependency.
                 }
 
-                _resolved.Add(new PlatformResolvedPlugin(plugin.Id, installed.Version, plugin.Enabled));
-                capabilityWire.UnionWith(installed.Manifest.CapabilitiesOrEmpty);
+                _resolved.Add(new PlatformResolvedPlugin(
+                    effective.Id, installed.Version, effective.Enabled));
+                capabilityWire.UnionWith(effective.Capabilities);
 
                 // A package-declared config schema belongs to the plugin, not
                 // to console code. Register it with the registry so the
                 // config/schema query can drive the ConfigEditor's typed form.
-                if (installed.Manifest.ConfigSchema is { } schema)
+                if (effective.ConfigSchema is { } schema)
                 {
-                    Registry.RegisterSchema(installed.Manifest.Type, schema);
+                    Registry.RegisterSchema(effective.Type!, schema);
                 }
 
-                foreach (var contract in installed.Manifest.SharedAssembliesOrEmpty)
+                foreach (var contract in effective.SharedAssemblies)
                 {
                     if (!contractCandidates.TryGetValue(contract, out var paths))
                     {
@@ -562,6 +567,18 @@ public class PlatformApplication : IAsyncDisposable
         // The query surface is synchronous. Move the store's gated IO off the
         // caller's context so no UI/test SynchronizationContext can be captured.
         var installed = Task.Run(() => Store.ListAsync()).GetAwaiter().GetResult();
+        // Declaration authority is the SAME effective set the loader and the
+        // control plane use — entries-only ids are declared too.
+        var declaredIds = new HashSet<string>(StringComparer.Ordinal);
+        if (_manifest is { } declApp)
+        {
+            foreach (var item in Task.Run(
+                         async () => await ApplicationLoader.EffectivePluginsAsync(declApp))
+                         .GetAwaiter().GetResult())
+            {
+                declaredIds.Add(item.Id);
+            }
+        }
 
         var modules = new List<ModuleDeclaration>();
         if (_manifest is { } application)
@@ -633,9 +650,6 @@ public class PlatformApplication : IAsyncDisposable
         // that is installed yet not declared would otherwise look "satisfied"
         // to the package manager while having no runtime provider. Report it
         // explicitly (read-only diagnostic — activation stays declaration-led).
-        var declaredIds = _manifest?.Plugins
-            .Select(item => item.Id).ToHashSet(StringComparer.Ordinal)
-            ?? new HashSet<string>(StringComparer.Ordinal);
         foreach (var entry in Registry.Entries.Values)
         {
             foreach (var requirement in entry.Manifest.Requires.Distinct(StringComparer.Ordinal))

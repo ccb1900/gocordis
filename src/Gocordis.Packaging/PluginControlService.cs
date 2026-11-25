@@ -76,6 +76,21 @@ public sealed record PluginMutationResult(
     bool Persisted,
     IReadOnlyList<PluginChange> Changes);
 
+/// <summary>
+/// Minimum operation audit: who initiated a control action and from which
+/// surface, what was attempted, and what the control plane decided. Audit is
+/// an in-memory operation record, not persisted runtime state.
+/// </summary>
+public sealed record ControlPlaneAudit(
+    long Revision,
+    DateTimeOffset Timestamp,
+    string Source,
+    string Action,
+    string Id,
+    string Outcome,
+    string Code,
+    string? Error);
+
 /// <summary>An upload exceeded the shared package size limit (HTTP 413).</summary>
 public sealed class PluginUploadTooLargeException : InvalidPluginPackageException
 {
@@ -103,21 +118,34 @@ public interface IPluginControlPlane
 
     Task<PluginDependencyView?> DependenciesAsync(string id, CancellationToken ct = default);
 
-    Task<PluginUploadResult> UploadAsync(Stream packageStream, string fileName, CancellationToken ct = default);
+    /// <summary>Operation audit is sourced from the one control plane; it is a
+    /// read-only projection over in-memory operation records.</summary>
+    Task<IReadOnlyList<ControlPlaneAudit>> AuditAsync(CancellationToken ct = default);
+
+    /// <summary>Restores the declaration's last-known-good sidecar. This is the
+    /// single recovery entry used by HTTP, CLI and the host's recovery page.</summary>
+    Task<PluginMutationResult> RecoverManifestAsync(
+        string source = "api", CancellationToken ct = default);
+
+    Task<PluginUploadResult> UploadAsync(
+        Stream packageStream, string fileName, CancellationToken ct = default, string source = "api");
 
     Task<PluginMutationResult> InstallAsync(
-        string uploadKey, bool enable = true, CancellationToken ct = default);
+        string uploadKey, bool enable = true, CancellationToken ct = default, string source = "api");
 
     Task<PluginMutationResult> UpgradeAsync(
-        string id, string uploadKey, string? versionRange = null, CancellationToken ct = default);
+        string id, string uploadKey, string? versionRange = null, CancellationToken ct = default,
+        string source = "api");
 
     Task<PluginMutationResult> UninstallAsync(
-        string id, string? version = null, CancellationToken ct = default);
+        string id, string? version = null, CancellationToken ct = default, string source = "api");
 
-    Task<PluginMutationResult> SetEnabledAsync(string id, bool enabled, CancellationToken ct = default);
+    Task<PluginMutationResult> SetEnabledAsync(
+        string id, bool enabled, CancellationToken ct = default, string source = "api");
 
     Task<PluginMutationResult> SetConfigAsync(
-        string id, IReadOnlyDictionary<string, object?> config, CancellationToken ct = default);
+        string id, IReadOnlyDictionary<string, object?> config, CancellationToken ct = default,
+        string source = "api");
 }
 
 public static class ControlPlaneKeys
@@ -143,6 +171,8 @@ public sealed class PluginControlService : IPluginControlPlane
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly HashSet<string> _registeredTypes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _uploads = new(StringComparer.Ordinal);
+    private readonly List<ControlPlaneAudit> _audit = [];
+    private readonly object _auditSync = new();
     private long _revision;
 
     public PluginControlService(
@@ -200,13 +230,11 @@ public sealed class PluginControlService : IPluginControlPlane
         await _gate.WaitAsync(ct);
         try
         {
-            var application = await LoadApplicationAsync(ct);
-            var installed = await _store.ListAsync(ct);
-            var entries = new List<PluginControlEntry>(application.Plugins.Count);
-            foreach (var declaration in application.Plugins)
+            var plan = await LoadPlanAsync(ct);
+            var entries = new List<PluginControlEntry>(plan.Count);
+            foreach (var declaration in plan.Declarations)
             {
-                var package = installed.FirstOrDefault(p => p.Id == declaration.Id);
-                var resolved = await _store.ResolveAsync(declaration.Id, declaration.VersionRange, ct);
+                var package = declaration.Installed;
                 _registry.Entries.TryGetValue(declaration.Id, out var entry);
                 var fiber = entry?.Fiber;
                 var component = fiber?.Component;
@@ -214,32 +242,30 @@ public sealed class PluginControlService : IPluginControlPlane
                 var state = fiber?.State.ToString() ?? (package is null ? "not_installed" : "disabled");
                 entries.Add(new PluginControlEntry(
                     declaration.Id,
-                    package?.Manifest.DisplayName ?? declaration.Id,
-                    package?.Manifest.Type ?? entry?.Manifest.Type ?? declaration.Id,
+                    declaration.DisplayName ?? declaration.Id,
+                    declaration.Type ?? entry?.Manifest.Type ?? declaration.Id,
                     declaration.Enabled,
                     state,
                     fiber?.Failure?.Message,
                     declaration.VersionRange,
-                    resolved?.Version ?? package?.Version,
+                    declaration.InstalledVersion ?? package?.Version,
                     isProtected,
                     !isProtected,
                     true,
-                    declaration.Config ?? new Dictionary<string, object?>(),
+                    declaration.Config,
                     component is null ? Array.Empty<string>() : [component.Name],
                     component is null
                         ? Array.Empty<string>()
                         : component.Provide().Select(key => key.Name).ToArray(),
                     entry?.Manifest.Requires
-                    ?? package?.Manifest.DependenciesOrEmpty.Select(dep => dep.Id).ToArray()
-                    ?? Array.Empty<string>(),
+                    ?? declaration.Dependencies.Select(dep => dep.Id).ToArray(),
                     entry?.Manifest.Provides
-                    ?? package?.Manifest.ProvidesOrEmpty
-                    ?? Array.Empty<string>(),
+                    ?? declaration.Provides,
                     DeclaredCapabilities(
-                        entry?.Manifest.CapabilitiesOrEmpty ?? package?.Manifest.CapabilitiesOrEmpty,
+                        entry?.Manifest.CapabilitiesOrEmpty ?? declaration.Capabilities,
                         CapabilityDirection.Require),
                     DeclaredCapabilities(
-                        entry?.Manifest.CapabilitiesOrEmpty ?? package?.Manifest.CapabilitiesOrEmpty,
+                        entry?.Manifest.CapabilitiesOrEmpty ?? declaration.Capabilities,
                         CapabilityDirection.Provide)));
             }
 
@@ -257,15 +283,7 @@ public sealed class PluginControlService : IPluginControlPlane
         try
         {
             var installed = await _store.ListAsync(ct);
-            IReadOnlyList<ApplicationPlugin> declarations;
-            try
-            {
-                declarations = (await LoadApplicationAsync(ct)).Plugins;
-            }
-            catch (FileNotFoundException)
-            {
-                declarations = [];
-            }
+            var declared = await LoadPlanOrEmptyAsync(ct);
 
             return installed.Select(package => new StorePluginEntry(
                 package.Id,
@@ -276,7 +294,9 @@ public sealed class PluginControlService : IPluginControlPlane
                 package.Manifest.DependenciesOrEmpty,
                 package.Manifest.ProvidesOrEmpty,
                 package.Manifest.Checksum ?? string.Empty,
-                declarations.Any(declaration => declaration.Id == package.Id),
+                declared.Declarations.Any(declaration =>
+                    string.Equals(declaration.PackageId, package.Id, StringComparison.Ordinal) ||
+                    string.Equals(declaration.Id, package.Id, StringComparison.Ordinal)),
                 _registry.Entries.TryGetValue(package.Id, out var entry) &&
                 entry.Fiber?.State == FiberState.Active)).ToArray();
         }
@@ -293,17 +313,18 @@ public sealed class PluginControlService : IPluginControlPlane
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(id);
             var installed = await _store.ListAsync(ct);
-            var target = installed.FirstOrDefault(package => package.Id == id);
+            var declaration = (await LoadPlanOrEmptyAsync(ct)).Find(id);
+            // An Entry may name a different package id; the store is keyed by
+            // that id while the control surface stays keyed by the plugin id.
+            var storeId = declaration?.PackageId ?? id;
+            var target = installed.FirstOrDefault(package =>
+                string.Equals(package.Id, storeId, StringComparison.Ordinal));
             if (target is null)
             {
                 return null;
             }
 
-            var application = await LoadApplicationAsync(ct);
-            var declaration = application.Plugins.FirstOrDefault(plugin => plugin.Id == id);
-            var resolved = declaration is null
-                ? target
-                : await _store.ResolveAsync(id, declaration.VersionRange, ct) ?? target;
+            var resolved = declaration?.Installed ?? target;
 
             var dependencies = new List<PackageDependencyView>();
             var diagnostics = new List<string>();
@@ -330,8 +351,8 @@ public sealed class PluginControlService : IPluginControlPlane
             }
 
             var dependents = installed
-                .Where(package => package.Id != id &&
-                                  package.Manifest.DependenciesOrEmpty.Any(dependency => dependency.Id == id))
+                .Where(package => package.Id != storeId &&
+                                  package.Manifest.DependenciesOrEmpty.Any(dependency => dependency.Id == storeId))
                 .Select(package => package.Id)
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
@@ -368,8 +389,55 @@ public sealed class PluginControlService : IPluginControlPlane
         }
     }
 
+    public Task<IReadOnlyList<ControlPlaneAudit>> AuditAsync(CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        lock (_auditSync)
+        {
+            return Task.FromResult<IReadOnlyList<ControlPlaneAudit>>(_audit.ToArray());
+        }
+    }
+
+    public async Task<PluginMutationResult> RecoverManifestAsync(
+        string source = "api", CancellationToken ct = default)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            // Restore writes declarations only; the sidecar survives so a failed
+            // apply can be retried. No fiber table or runtime state is persisted.
+            var backupPath = _manifestPath + ApplicationManifest.LastKnownGoodSuffix;
+            if (!File.Exists(backupPath))
+            {
+                // Hand-written manifests have no sidecar yet. Plant one from the
+                // current valid declaration so recovery is always available;
+                // a corrupt primary with no sidecar remains an explicit error.
+                var current = await ApplicationManifest.LoadAsync(_manifestPath, ct);
+                await current.SaveAsync(_manifestPath, ct);
+            }
+
+            await ApplicationManifest.RestoreLastKnownGoodAsync(_manifestPath, ct);
+            await ApplyAllCoreAsync(ct);
+
+            Interlocked.Increment(ref _revision);
+            var accepted = Accepted("manifest", [new PluginChange(PluginChangeKind.Updated, "manifest", string.Empty)]);
+            RecordAudit("recover", "manifest", accepted, source);
+            return accepted;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            var rejected = Rejected("manifest", CodeFor(ex), ex.Message);
+            RecordAudit("recover", "manifest", rejected, source);
+            return rejected;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task<PluginUploadResult> UploadAsync(
-        Stream packageStream, string fileName, CancellationToken ct = default)
+        Stream packageStream, string fileName, CancellationToken ct = default, string source = "api")
     {
         await _gate.WaitAsync(ct);
         try
@@ -416,7 +484,7 @@ public sealed class PluginControlService : IPluginControlPlane
 
                 var content = await PluginPackageReader.ReadAsync(path, _store.HostVersion, ct);
                 _uploads[key] = path;
-                return new PluginUploadResult(
+                var uploaded = new PluginUploadResult(
                     key,
                     content.Manifest.Id,
                     content.Manifest.Version,
@@ -424,6 +492,9 @@ public sealed class PluginControlService : IPluginControlPlane
                     content.Manifest.HostVersionRange,
                     content.Manifest.Checksum ?? string.Empty,
                     content.Manifest.DependenciesOrEmpty);
+                RecordAudit("upload", uploaded.Id,
+                    new PluginMutationResult(true, "ok", null, uploaded.Id, null, false, []), source);
+                return uploaded;
             }
             catch
             {
@@ -438,8 +509,8 @@ public sealed class PluginControlService : IPluginControlPlane
     }
 
     public Task<PluginMutationResult> InstallAsync(
-        string uploadKey, bool enable = true, CancellationToken ct = default) =>
-        MutateAsync(uploadKey ?? string.Empty, async (baseline, token) =>
+        string uploadKey, bool enable = true, CancellationToken ct = default, string source = "api") =>
+        MutateAsync("install", uploadKey ?? string.Empty, source, async (baseline, token) =>
         {
             var key = uploadKey ?? string.Empty;
             var path = await ResolveUploadAsync(key, token);
@@ -448,6 +519,14 @@ public sealed class PluginControlService : IPluginControlPlane
                 var content = await PluginPackageReader.ReadAsync(path, _store.HostVersion, token);
                 var id = content.Manifest.Id;
                 var version = content.Manifest.Version;
+                if (_registry.ProtectedIds.Contains(id))
+                {
+                    // The control plane is a host contribution, never a package.
+                    // Check before any declaration lookup so a missing manifest
+                    // entry can never downgrade this to "not_found".
+                    return Rejected(id, "forbidden", $"plugin '{id}' is protected");
+                }
+
                 if (!SharedAssembliesApproved(content.Manifest.SharedAssembliesOrEmpty))
                 {
                     return Rejected(id, "host_restart_required",
@@ -457,7 +536,7 @@ public sealed class PluginControlService : IPluginControlPlane
                 }
 
                 var application = await LoadApplicationAsync(token);
-                if (application.Plugins.Any(declaration => declaration.Id == id))
+                if ((await ApplicationLoader.ResolveAsync(application, _store, token)).Find(id) is not null)
                 {
                     return Rejected(id, "conflict", $"plugin '{id}' is already declared");
                 }
@@ -497,19 +576,37 @@ public sealed class PluginControlService : IPluginControlPlane
         }, ct);
 
     public Task<PluginMutationResult> UpgradeAsync(
-        string id, string uploadKey, string? versionRange = null, CancellationToken ct = default) =>
-        MutateAsync(id, async (baseline, token) =>
+        string id, string uploadKey, string? versionRange = null, CancellationToken ct = default,
+        string source = "api") =>
+        MutateAsync("upgrade", id, source, async (baseline, token) =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(id);
+            if (_registry.ProtectedIds.Contains(id))
+            {
+                // Protection wins over "not declared": the control plane is not
+                // a manifest entry and must still return forbidden.
+                return Rejected(id, "forbidden", $"plugin '{id}' is protected");
+            }
+
             var key = uploadKey ?? string.Empty;
             var path = await ResolveUploadAsync(key, token);
             try
             {
                 var content = await PluginPackageReader.ReadAsync(path, _store.HostVersion, token);
-                if (!string.Equals(content.Manifest.Id, id, StringComparison.Ordinal))
+                var application = await LoadApplicationAsync(token);
+                var effective = (await ApplicationLoader.ResolveAsync(application, _store, token)).Find(id);
+                if (effective is null)
+                {
+                    return Rejected(id, "not_found", $"plugin '{id}' is not declared");
+                }
+
+                // Entries may declare a plugin id that differs from the package
+                // id; the store and the uploaded package are keyed by PackageId.
+                var storeId = effective.PackageId;
+                if (!string.Equals(content.Manifest.Id, storeId, StringComparison.Ordinal))
                 {
                     return Rejected(id, "invalid_request",
-                        $"uploaded package '{content.Manifest.Id}' does not match '{id}'");
+                        $"uploaded package '{content.Manifest.Id}' does not match '{storeId}'");
                 }
 
                 if (!SharedAssembliesApproved(content.Manifest.SharedAssembliesOrEmpty))
@@ -518,18 +615,6 @@ public sealed class PluginControlService : IPluginControlPlane
                         $"plugin '{id}' declares shared contract(s) " +
                         $"[{string.Join(", ", content.Manifest.SharedAssembliesOrEmpty)}] " +
                         "that the host has not sealed; restart the host to approve a new contract");
-                }
-
-                var application = await LoadApplicationAsync(token);
-                var declaration = application.Plugins.FirstOrDefault(item => item.Id == id);
-                if (declaration is null)
-                {
-                    return Rejected(id, "not_found", $"plugin '{id}' is not declared");
-                }
-
-                if (_registry.ProtectedIds.Contains(id))
-                {
-                    return Rejected(id, "forbidden", $"plugin '{id}' is protected");
                 }
 
                 var newVersion = content.Manifest.Version;
@@ -547,7 +632,7 @@ public sealed class PluginControlService : IPluginControlPlane
                 }
 
                 var installedBefore = await _store.ListAsync(token);
-                var oldInstalled = await _store.ResolveAsync(id, declaration.VersionRange, token);
+                var oldInstalled = effective.Installed;
 
                 // An upgrade removes the old resolved version, not the new one.
                 // Dependents are unsatisfied only when a dependency range matched
@@ -557,7 +642,7 @@ public sealed class PluginControlService : IPluginControlPlane
                     ? new[] { NuGetVersion.Parse(oldInstalled.Version) }
                     : Array.Empty<NuGetVersion>();
                 var survivingVersions = installedBefore
-                    .Where(package => string.Equals(package.Id, id, StringComparison.Ordinal) &&
+                    .Where(package => string.Equals(package.Id, storeId, StringComparison.Ordinal) &&
                                       (oldInstalled is null ||
                                        !string.Equals(package.Version, oldInstalled.Version, StringComparison.Ordinal)))
                     .Select(package => NuGetVersion.Parse(package.Version))
@@ -567,46 +652,46 @@ public sealed class PluginControlService : IPluginControlPlane
                 // ONE reverse-dependency algorithm across upgrade / uninstall /
                 // the store guard — use the already-loaded snapshot, no re-read.
                 var dependents = PluginDependencyPlanner.FindUnsatisfiedDependents(
-                    installedBefore, id, removedVersions, survivingVersions);
+                    installedBefore, storeId, removedVersions, survivingVersions);
                 if (dependents.Count > 0)
                 {
                     return Rejected(id, "conflict",
-                        $"installed plugins depend on '{id}' and would be unsatisfied: {string.Join(", ", dependents)}");
+                        $"installed plugins depend on '{storeId}' and would be unsatisfied: {string.Join(", ", dependents)}");
                 }
 
                 // Store.InstallAsync (not UpgradeAsync) adds v2 while v1 stays in
                 // place. v1 is removed only after the new declaration is applied.
                 var addedPackage = !installedBefore.Any(package =>
-                    string.Equals(package.Id, id, StringComparison.Ordinal) &&
+                    string.Equals(package.Id, storeId, StringComparison.Ordinal) &&
                     string.Equals(package.Version, newVersion, StringComparison.Ordinal));
                 var storeResult = await _store.InstallAsync(path, token, Trust);
                 var installedNew = (await _store.ListAsync(token)).FirstOrDefault(package =>
-                    string.Equals(package.Id, id, StringComparison.Ordinal) &&
+                    string.Equals(package.Id, storeId, StringComparison.Ordinal) &&
                     string.Equals(package.Version, newVersion, StringComparison.Ordinal));
                 if (installedNew is null)
                 {
                     if (addedPackage)
                     {
-                        await TryUninstallPackageAsync(id, newVersion);
+                        await TryUninstallPackageAsync(storeId, newVersion);
                     }
 
                     return Rejected(id, "invalid_request",
-                        $"installed package '{id}' did not resolve to '{newVersion}'");
+                        $"installed package '{storeId}' did not resolve to '{newVersion}'");
                 }
 
                 Func<Task>? undoStore = null;
                 if (addedPackage)
                 {
                     var installedVersion = installedNew.Version;
-                    undoStore = () => _store.UninstallExactAsync(id, installedVersion, CancellationToken.None);
+                    undoStore = () => _store.UninstallExactAsync(storeId, installedVersion, CancellationToken.None);
                 }
 
                 var inverses = Inverses(undoStore);
-                var replacement = declaration with { VersionRange = range };
-                var updated = application with
-                {
-                    Plugins = application.Plugins.Select(item => item.Id == id ? replacement : item).ToArray(),
-                };
+                var updated = await EditAsync(
+                    application, effective,
+                    plugin => plugin with { VersionRange = range },
+                    node => node with { Url = $"{effective.PackageId}@{range}" },
+                    token);
                 var apply = await PersistAndApplyAsync(baseline, updated, token, inverses);
                 if (!apply.Success)
                 {
@@ -619,7 +704,7 @@ public sealed class PluginControlService : IPluginControlPlane
                 {
                     try
                     {
-                        await _store.UninstallAsync(id, oldVersion, CancellationToken.None);
+                        await _store.UninstallAsync(storeId, oldVersion, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
@@ -640,8 +725,8 @@ public sealed class PluginControlService : IPluginControlPlane
         }, ct);
 
     public Task<PluginMutationResult> UninstallAsync(
-        string id, string? version = null, CancellationToken ct = default) =>
-        MutateAsync(id, async (baseline, token) =>
+        string id, string? version = null, CancellationToken ct = default, string source = "api") =>
+        MutateAsync("uninstall", id, source, async (baseline, token) =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(id);
             // The UI sends the declaration's versionRange verbatim, which may be
@@ -657,9 +742,10 @@ public sealed class PluginControlService : IPluginControlPlane
             }
 
             var application = await LoadApplicationOrEmptyAsync(token);
-            var declaration = application.Plugins.FirstOrDefault(item => item.Id == id);
-            var targets = await ResolveUninstallTargetsAsync(id, version, token);
-            if (declaration is null && targets.Length == 0)
+            var effective = (await ApplicationLoader.ResolveAsync(application, _store, token)).Find(id);
+            var storeId = effective?.PackageId ?? id;
+            var targets = await ResolveUninstallTargetsAsync(storeId, version, token);
+            if (effective is null && targets.Length == 0)
             {
                 return Rejected(id, "not_found", $"plugin '{id}' is not declared or installed");
             }
@@ -670,24 +756,24 @@ public sealed class PluginControlService : IPluginControlPlane
             var allInstalled = await _store.ListAsync(token);
             var targetVersions = targets.Select(package => NuGetVersion.Parse(package.Version)).ToArray();
             var survivingVersions = allInstalled
-                .Where(package => package.Id == id &&
+                .Where(package => string.Equals(package.Id, storeId, StringComparison.Ordinal) &&
                                   !targets.Any(target => string.Equals(
                                       target.Version, package.Version, StringComparison.Ordinal)))
                 .Select(package => NuGetVersion.Parse(package.Version)).ToArray();
             var dependents = PluginDependencyPlanner.FindUnsatisfiedDependents(
-                allInstalled, id, targetVersions, survivingVersions);
+                allInstalled, storeId, targetVersions, survivingVersions);
             if (dependents.Count > 0)
             {
                 return Rejected(id, "conflict",
-                    $"installed plugins depend on '{id}': {string.Join(", ", dependents)}");
+                    $"installed plugins depend on '{storeId}': {string.Join(", ", dependents)}");
             }
 
             // Even an orphan package has a fiber: reconcile the declaration first
-            // so the fiber is retired before its bytes leave the store.
-            var updated = application with
-            {
-                Plugins = application.Plugins.Where(item => item.Id != id).ToArray(),
-            };
+            // so the fiber is retired before its bytes leave the store. An
+            // entries-only plugin is removed by clearing its producing node.
+            var updated = effective is not null
+                ? await RemoveAsync(application, effective, token)
+                : application;
             var apply = await PersistAndApplyAsync(baseline, updated, token);
             if (!apply.Success)
             {
@@ -696,7 +782,7 @@ public sealed class PluginControlService : IPluginControlPlane
 
             try
             {
-                var storeResult = await _store.UninstallAsync(id, version, token);
+                var storeResult = await _store.UninstallAsync(storeId, version, token);
                 Interlocked.Increment(ref _revision);
                 return Accepted(id, storeResult.Changes);
             }
@@ -708,27 +794,27 @@ public sealed class PluginControlService : IPluginControlPlane
         }, ct);
 
     public Task<PluginMutationResult> SetEnabledAsync(
-        string id, bool enabled, CancellationToken ct = default) =>
-        MutateAsync(id, async (baseline, token) =>
+        string id, bool enabled, CancellationToken ct = default, string source = "api") =>
+        MutateAsync("set-enabled", id, source, async (baseline, token) =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(id);
-            var application = await LoadApplicationAsync(token);
-            var declaration = application.Plugins.FirstOrDefault(item => item.Id == id);
-            if (declaration is null)
-            {
-                return Rejected(id, "not_found", $"plugin '{id}' is not declared");
-            }
-
-            if (!enabled && _registry.ProtectedIds.Contains(id))
+            if (_registry.ProtectedIds.Contains(id))
             {
                 return Rejected(id, "forbidden", $"plugin '{id}' is protected");
             }
 
-            var replacement = declaration with { Enabled = enabled };
-            var updated = application with
+            var application = await LoadApplicationAsync(token);
+            var effective = (await ApplicationLoader.ResolveAsync(application, _store, token)).Find(id);
+            if (effective is null)
             {
-                Plugins = application.Plugins.Select(item => item.Id == id ? replacement : item).ToArray(),
-            };
+                return Rejected(id, "not_found", $"plugin '{id}' is not declared");
+            }
+
+            var updated = await EditAsync(
+                application, effective,
+                plugin => plugin with { Enabled = enabled },
+                node => node with { Disabled = !enabled },
+                token);
             var apply = await PersistAndApplyAsync(baseline, updated, token);
             if (!apply.Success)
             {
@@ -736,12 +822,13 @@ public sealed class PluginControlService : IPluginControlPlane
             }
 
             Interlocked.Increment(ref _revision);
-            return Accepted(id, [new PluginChange(PluginChangeKind.Updated, id, declaration.VersionRange)]);
+            return Accepted(id, [new PluginChange(PluginChangeKind.Updated, id, effective.VersionRange)]);
         }, ct);
 
     public Task<PluginMutationResult> SetConfigAsync(
-        string id, IReadOnlyDictionary<string, object?> config, CancellationToken ct = default) =>
-        MutateAsync(id, async (baseline, token) =>
+        string id, IReadOnlyDictionary<string, object?> config, CancellationToken ct = default,
+        string source = "api") =>
+        MutateAsync("set-config", id, source, async (baseline, token) =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(id);
             if (config is null)
@@ -760,23 +847,23 @@ public sealed class PluginControlService : IPluginControlPlane
                 values[key] = value;
             }
 
-            var application = await LoadApplicationAsync(token);
-            var declaration = application.Plugins.FirstOrDefault(item => item.Id == id);
-            if (declaration is null)
-            {
-                return Rejected(id, "not_found", $"plugin '{id}' is not declared");
-            }
-
             if (_registry.ProtectedIds.Contains(id))
             {
                 return Rejected(id, "forbidden", $"plugin '{id}' is protected");
             }
 
-            var replacement = declaration with { Config = values };
-            var updated = application with
+            var application = await LoadApplicationAsync(token);
+            var effective = (await ApplicationLoader.ResolveAsync(application, _store, token)).Find(id);
+            if (effective is null)
             {
-                Plugins = application.Plugins.Select(item => item.Id == id ? replacement : item).ToArray(),
-            };
+                return Rejected(id, "not_found", $"plugin '{id}' is not declared");
+            }
+
+            var updated = await EditAsync(
+                application, effective,
+                plugin => plugin with { Config = values },
+                node => node with { Config = values },
+                token);
             var apply = await PersistAndApplyAsync(baseline, updated, token);
             if (!apply.Success)
             {
@@ -784,7 +871,7 @@ public sealed class PluginControlService : IPluginControlPlane
             }
 
             Interlocked.Increment(ref _revision);
-            return Accepted(id, [new PluginChange(PluginChangeKind.Updated, id, declaration.VersionRange)]);
+            return Accepted(id, [new PluginChange(PluginChangeKind.Updated, id, effective.VersionRange)]);
         }, ct);
 
     // ---- transaction baseline ----------------------------------------------
@@ -800,7 +887,13 @@ public sealed class PluginControlService : IPluginControlPlane
         byte[] ManifestBytes,
         string[] StoreVersions,
         string[] RuntimeFingerprint,
-        string? DeclarationFingerprint);
+        string? DeclarationFingerprint,
+        IReadOnlyDictionary<string, byte[]> DeclarationFiles);
+
+    private static readonly StringComparer DeclarationPathComparer =
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
 
     private async Task<MutationBaseline> CaptureBaselineAsync(CancellationToken ct)
     {
@@ -811,7 +904,33 @@ public sealed class PluginControlService : IPluginControlPlane
             .OrderBy(value => value, StringComparer.Ordinal)
             .ToArray();
         return new MutationBaseline(
-            existed, bytes, storeVersions, RuntimeFingerprint(), ReadDeclarationFingerprint());
+            existed, bytes, storeVersions, RuntimeFingerprint(), ReadDeclarationFingerprint(),
+            await CaptureDeclarationFilesAsync(ct));
+    }
+
+    /// <summary>Entry mutations may edit an Include file as well as the manifest.
+    /// Those bytes are part of the declaration baseline, so compensation can
+    /// restore them instead of leaving a half-applied declaration.</summary>
+    private async Task<IReadOnlyDictionary<string, byte[]>> CaptureDeclarationFilesAsync(CancellationToken ct)
+    {
+        var files = new Dictionary<string, byte[]>(DeclarationPathComparer);
+        try
+        {
+            var application = await LoadApplicationAsync(ct);
+            foreach (var path in await ApplicationLoader.DeclarationFilesAsync(application, ct))
+            {
+                if (DeclarationPathComparer.Equals(
+                        Path.GetFullPath(path), Path.GetFullPath(_manifestPath)) ||
+                    !File.Exists(path))
+                {
+                    continue;
+                }
+
+                files[path] = await File.ReadAllBytesAsync(path, ct);
+            }
+        }
+        catch (FileNotFoundException) { }
+        return files;
     }
 
     private string[] RuntimeFingerprint() =>
@@ -835,6 +954,15 @@ public sealed class PluginControlService : IPluginControlPlane
         catch (Exception ex)
         {
             errors.Add($"manifest: {ex.Message}");
+        }
+
+        try
+        {
+            await RestoreDeclarationFilesAsync(baseline);
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"include files: {ex.Message}");
         }
 
         for (var i = inverses.Count - 1; i >= 0; i--)
@@ -900,6 +1028,27 @@ public sealed class PluginControlService : IPluginControlPlane
         }
     }
 
+    private static async Task RestoreDeclarationFilesAsync(MutationBaseline baseline)
+    {
+        foreach (var (path, bytes) in baseline.DeclarationFiles)
+        {
+            var directory = Path.GetDirectoryName(Path.GetFullPath(path))!;
+            Directory.CreateDirectory(directory);
+            var temp = Path.Combine(directory,
+                $".{Path.GetFileName(path)}.rollback-{Guid.NewGuid():N}.tmp");
+            try
+            {
+                await File.WriteAllBytesAsync(temp, bytes, CancellationToken.None);
+                File.Move(temp, path, overwrite: true);
+            }
+            catch
+            {
+                TryDeleteFile(temp);
+                throw;
+            }
+        }
+    }
+
     private async Task<IReadOnlyList<string>> VerifyBaselineAsync(MutationBaseline baseline)
     {
         var errors = new List<string>();
@@ -924,6 +1073,15 @@ public sealed class PluginControlService : IPluginControlPlane
             errors.Add("store versions differ after rollback");
         }
 
+        foreach (var (path, bytes) in baseline.DeclarationFiles)
+        {
+            if (!File.Exists(path) ||
+                !(await File.ReadAllBytesAsync(path, CancellationToken.None)).SequenceEqual(bytes))
+            {
+                errors.Add($"include file '{path}' differs after rollback");
+            }
+        }
+
         if (!RuntimeFingerprint().SequenceEqual(baseline.RuntimeFingerprint))
         {
             errors.Add("runtime declarations differ after rollback");
@@ -943,14 +1101,65 @@ public sealed class PluginControlService : IPluginControlPlane
     private async Task<ApplicationManifest> LoadApplicationAsync(CancellationToken ct) =>
         await ApplicationManifest.LoadAsync(_manifestPath, ct);
 
+    private async Task<ResolvedDeclarationPlan> LoadPlanAsync(CancellationToken ct) =>
+        await ApplicationLoader.ResolveAsync(await LoadApplicationAsync(ct), _store, ct);
+
+    private async Task<ResolvedDeclarationPlan> LoadPlanOrEmptyAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await LoadPlanAsync(ct);
+        }
+        catch (FileNotFoundException)
+        {
+            return new ResolvedDeclarationPlan([]);
+        }
+    }
+
+    /// <summary>
+    /// Writes a mutation to the authority that declared the plugin. Flat
+    /// declarations edit Plugins; entry declarations edit their EntryNode (in
+    /// the manifest tree or in the Include file that produced them). Either way
+    /// the next ResolveAsync sees exactly one declaration for the id.
+    /// </summary>
+    private static async Task<ApplicationManifest> EditAsync(
+        ApplicationManifest application,
+        EffectiveDeclaration declaration,
+        Func<ApplicationPlugin, ApplicationPlugin> editFlat,
+        Func<EntryNode, EntryNode> editEntry,
+        CancellationToken ct) =>
+        await ApplicationLoader.EditDeclarationAsync(application, declaration, editFlat, editEntry, ct);
+
+    private static async Task<ApplicationManifest> RemoveAsync(
+        ApplicationManifest application, EffectiveDeclaration declaration, CancellationToken ct)
+    {
+        if (declaration.Source.Origin == DeclarationOrigin.FlatPlugin)
+        {
+            return application with
+            {
+                Plugins = application.Plugins
+                    .Where(plugin => !string.Equals(plugin.Id, declaration.Id, StringComparison.Ordinal))
+                    .ToArray(),
+            };
+        }
+
+        // An Entry may also be a structural group: clear only the fields that
+        // produce a declaration so its children survive the uninstall.
+        return await ApplicationLoader.EditDeclarationAsync(
+            application, declaration, plugin => plugin,
+            node => node with { Url = null, Config = null, Isolate = null, Intercept = null, Disabled = false },
+            ct);
+    }
+
     private async Task ApplyAllCoreAsync(CancellationToken ct)
     {
         var application = await LoadApplicationAsync(ct);
-        var installed = await _store.ListAsync(ct);
-        var declaredIds = application.Plugins.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
-        foreach (var type in installed
-                     .Where(package => declaredIds.Contains(package.Id))
-                     .Select(package => package.Manifest.Type)
+        var plan = await ApplicationLoader.ResolveAsync(application, _store, ct);
+        // Factories and schemas are registered from the SAME effective plan the
+        // loader applies: entries-only plugins must be administrable too.
+        foreach (var type in plan.Declarations
+                     .Where(declaration => declaration.Installed is not null)
+                     .Select(declaration => declaration.Type!)
                      .Distinct(StringComparer.Ordinal))
         {
             if (!_registeredTypes.Add(type))
@@ -989,10 +1198,10 @@ public sealed class PluginControlService : IPluginControlPlane
         // A schema belongs to the package, so runtime installs/upgrades must
         // register it on every apply, not only during host startup. A conflicting
         // document for the same type is rejected by RegisterSchema.
-        foreach (var package in installed.Where(package =>
-                     declaredIds.Contains(package.Id) && package.Manifest.ConfigSchema is not null))
+        foreach (var declaration in plan.Declarations.Where(declaration =>
+                     declaration.Installed?.Manifest.ConfigSchema is not null))
         {
-            _registry.RegisterSchema(package.Manifest.Type, package.Manifest.ConfigSchema!);
+            _registry.RegisterSchema(declaration.Type!, declaration.Installed!.Manifest.ConfigSchema!);
         }
 
         await _loader.ApplyAsync(application, ct);
@@ -1119,15 +1328,19 @@ public sealed class PluginControlService : IPluginControlPlane
         inverse is null ? [] : [inverse];
 
     private async Task<PluginMutationResult> MutateAsync(
+        string action,
         string id,
+        string source,
         Func<MutationBaseline, CancellationToken, Task<PluginMutationResult>> operation,
         CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
+        PluginMutationResult? result = null;
         try
         {
             var baseline = await CaptureBaselineAsync(ct);
-            return await operation(baseline, ct);
+            result = await operation(baseline, ct);
+            return result;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -1135,11 +1348,37 @@ public sealed class PluginControlService : IPluginControlPlane
         }
         catch (Exception ex)
         {
-            return Failure(id, ex);
+            result = Failure(id, ex);
+            return result;
         }
         finally
         {
+            if (result is not null)
+            {
+                RecordAudit(action, id, result, source);
+            }
+
             _gate.Release();
+        }
+    }
+
+    /// <summary>One append-only operation record per control attempt. The source
+    /// is supplied by the caller (http/cli/host); the host never guesses an
+    /// identity from a network address.</summary>
+    private void RecordAudit(string action, string id, PluginMutationResult result, string source)
+    {
+        var who = string.IsNullOrWhiteSpace(source) ? "api" : source;
+        lock (_auditSync)
+        {
+            _audit.Add(new ControlPlaneAudit(
+                Interlocked.Read(ref _revision),
+                DateTimeOffset.UtcNow,
+                who,
+                action,
+                id,
+                result.Accepted ? "accepted" : "rejected",
+                result.Code,
+                result.Error));
         }
     }
 
@@ -1187,7 +1426,7 @@ public sealed class PluginControlService : IPluginControlPlane
         ProtectedPluginException => "forbidden",
         KeyNotFoundException => "not_found",
         FileNotFoundException or DirectoryNotFoundException => "not_found",
-        ArgumentException or JsonException => "invalid_request",
+        ArgumentException or JsonException or InvalidDataException => "invalid_request",
         IOException or UnauthorizedAccessException => "unavailable",
         _ => "conflict",
     };

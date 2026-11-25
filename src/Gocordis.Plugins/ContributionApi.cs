@@ -21,6 +21,16 @@ public sealed record ContributionOwner(
         new(pluginId, componentId, context.FiberId, context.ActivationId);
 }
 
+/// <summary>Stable identity of the optional console UI plugin. It is an
+/// ordinary declaration: neither the host nor the control plane treats this id
+/// as protected, so the console can be disabled, uninstalled, upgraded or
+/// replaced through the same IPluginControlPlane as any other plugin.
+/// </summary>
+public static class ConsolePlugin
+{
+    public const string Id = "gocordis-console";
+}
+
 public sealed record UiContribution(
     string Kind,
     string Name,
@@ -40,6 +50,10 @@ public sealed class UiContributionRegistry
     private readonly Dictionary<string, UiPage> _pages = new(StringComparer.Ordinal);
     private readonly Dictionary<string, UiPanel> _panels = new(StringComparer.Ordinal);
     private readonly Dictionary<string, UiClientModule> _modules = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, UiRoute> _routes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, UiNavigation> _navigations = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, UiExtension> _extensions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, UiResource> _resources = new(StringComparer.Ordinal);
     private readonly Dictionary<string, UiContributionHandle> _handles = new(StringComparer.Ordinal);
     private long _revision;
 
@@ -130,6 +144,72 @@ public sealed class UiContributionRegistry
         }
     }
 
+    public UiContributionHandle RegisterRoute(ContributionOwner owner, UiRouteDefinition definition)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(definition.Id);
+        ArgumentException.ThrowIfNullOrWhiteSpace(definition.Path);
+        ArgumentException.ThrowIfNullOrWhiteSpace(definition.PageId);
+        lock (_sync)
+        {
+            EnsureFree("route", definition.Id, owner);
+            _routes[definition.Id] = new UiRoute(
+                definition.Id, definition.Path, definition.PageId, definition.Layout,
+                definition.Order, owner,
+                definition.Metadata?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
+                ?? new Dictionary<string, object?>(StringComparer.Ordinal));
+            return Track("route", definition.Id, owner);
+        }
+    }
+
+    public UiContributionHandle RegisterNavigation(ContributionOwner owner, UiNavigationDefinition definition)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(definition.Id);
+        ArgumentException.ThrowIfNullOrWhiteSpace(definition.Label);
+        ArgumentException.ThrowIfNullOrWhiteSpace(definition.Route);
+        lock (_sync)
+        {
+            EnsureFree("navigation", definition.Id, owner);
+            _navigations[definition.Id] = new UiNavigation(
+                definition.Id, definition.Label, definition.Route, definition.Icon,
+                NormalizeGroup(definition.Group), definition.PageId, definition.Order, owner);
+            return Track("navigation", definition.Id, owner);
+        }
+    }
+
+    public UiContributionHandle RegisterExtension(ContributionOwner owner, UiExtensionDefinition definition)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(definition.Id);
+        ArgumentException.ThrowIfNullOrWhiteSpace(definition.Slot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(definition.Renderer);
+        lock (_sync)
+        {
+            EnsureFree("extension", definition.Id, owner);
+            _extensions[definition.Id] = new UiExtension(
+                definition.Id, definition.Slot, definition.Renderer, definition.PageId,
+                definition.Props?.DeepClone(), definition.Order, owner);
+            return Track("extension", definition.Id, owner);
+        }
+    }
+
+    public UiContributionHandle RegisterResource(ContributionOwner owner, UiResourceDefinition definition)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(definition.Id);
+        ArgumentException.ThrowIfNullOrWhiteSpace(definition.Kind);
+        ArgumentException.ThrowIfNullOrWhiteSpace(definition.Path);
+        lock (_sync)
+        {
+            EnsureFree("resource", definition.Id, owner);
+            _resources[definition.Id] = new UiResource(
+                definition.Id, definition.Kind, definition.Path, definition.MediaType,
+                definition.Metadata?.DeepClone(), owner);
+            return Track("resource", definition.Id, owner);
+        }
+    }
+
     public IReadOnlyList<UiPage> Pages()
     {
         lock (_sync)
@@ -162,6 +242,49 @@ public sealed class UiContributionRegistry
         }
     }
 
+    public IReadOnlyList<UiRoute> Routes()
+    {
+        lock (_sync)
+        {
+            return _routes.Values
+                .OrderBy(route => route.Order)
+                .ThenBy(route => route.Id, StringComparer.Ordinal)
+                .ToArray();
+        }
+    }
+
+    public IReadOnlyList<UiNavigation> Navigations()
+    {
+        lock (_sync)
+        {
+            return _navigations.Values
+                .OrderBy(item => item.Order)
+                .ThenBy(item => item.Id, StringComparer.Ordinal)
+                .ToArray();
+        }
+    }
+
+    public IReadOnlyList<UiExtension> Extensions()
+    {
+        lock (_sync)
+        {
+            return _extensions.Values
+                .OrderBy(item => item.Order)
+                .ThenBy(item => item.Id, StringComparer.Ordinal)
+                .ToArray();
+        }
+    }
+
+    public IReadOnlyList<UiResource> Resources()
+    {
+        lock (_sync)
+        {
+            return _resources.Values
+                .OrderBy(item => item.Id, StringComparer.Ordinal)
+                .ToArray();
+        }
+    }
+
     internal void Unregister(UiContributionHandle handle)
     {
         lock (_sync)
@@ -184,6 +307,18 @@ public sealed class UiContributionRegistry
                 case "client-module":
                     _modules.Remove(handle.Id);
                     break;
+                case "route":
+                    _routes.Remove(handle.Id);
+                    break;
+                case "navigation":
+                    _navigations.Remove(handle.Id);
+                    break;
+                case "extension":
+                    _extensions.Remove(handle.Id);
+                    break;
+                case "resource":
+                    _resources.Remove(handle.Id);
+                    break;
             }
 
             _revision++;
@@ -195,6 +330,14 @@ public sealed class UiContributionRegistry
     public void UnregisterPanel(UiContributionHandle handle) => Unregister(handle);
 
     public void UnregisterClientModule(UiContributionHandle handle) => Unregister(handle);
+
+    public void UnregisterRoute(UiContributionHandle handle) => Unregister(handle);
+
+    public void UnregisterNavigation(UiContributionHandle handle) => Unregister(handle);
+
+    public void UnregisterExtension(UiContributionHandle handle) => Unregister(handle);
+
+    public void UnregisterResource(UiContributionHandle handle) => Unregister(handle);
 
     private void EnsureFree(string kind, string id, ContributionOwner owner)
     {
@@ -268,6 +411,10 @@ public sealed class UiContributionRegistry
                     case "page": _pages.Remove(id); break;
                     case "panel": _panels.Remove(id); break;
                     case "client-module": _modules.Remove(id); break;
+                    case "route": _routes.Remove(id); break;
+                    case "navigation": _navigations.Remove(id); break;
+                    case "extension": _extensions.Remove(id); break;
+                    case "resource": _resources.Remove(id); break;
                 }
             }
 

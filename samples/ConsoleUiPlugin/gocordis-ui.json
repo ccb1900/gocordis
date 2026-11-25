@@ -1,0 +1,9 @@
+{
+  "resources": [
+    { "kind": "page", "id": "console-page", "path": "ui/console.page.json" },
+    { "kind": "route", "id": "console-route", "path": "ui/console.route.json" },
+    { "kind": "navigation", "id": "console-nav", "path": "ui/console.nav.json" },
+    { "kind": "extension", "id": "console-footer", "path": "ui/console.extension.json" },
+    { "kind": "resource", "id": "console-assets", "path": "ui/console.resource.json" }
+  ]
+}

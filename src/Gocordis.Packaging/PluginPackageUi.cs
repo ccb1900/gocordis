@@ -114,6 +114,46 @@ internal static class PluginPackageUi
                         $"client module '{resource.Id}' entry '{resource.Path}' is not an ESM file");
                 }
             }
+            else
+            {
+                var definition = resource.Definition;
+                if (definition is null && readFile is not null)
+                {
+                    definition = ParseDefinition(readFile(resource.Path));
+                }
+
+                if (definition is not JsonObject obj)
+                {
+                    if (resource.Definition is not null || readFile is not null)
+                    {
+                        throw new InvalidPluginPackageException(
+                            $"UI resource '{kind}:{resource.Id}' definition must be a JSON object");
+                    }
+
+                    continue;
+                }
+
+                if (obj["id"] is JsonValue idValue &&
+                    idValue.TryGetValue<string>(out var declaredId) &&
+                    !string.Equals(declaredId, resource.Id, StringComparison.Ordinal))
+                {
+                    throw new InvalidPluginPackageException(
+                        $"UI resource '{kind}:{resource.Id}' definition declares id '{declaredId}'");
+                }
+
+                var required = kind switch
+                {
+                    "route" => new[] { "path", "pageId" },
+                    "navigation" => new[] { "label", "route" },
+                    "extension" => new[] { "slot", "renderer" },
+                    "resource" => new[] { "kind", "path" },
+                    _ => Array.Empty<string>(),
+                };
+                foreach (var field in required)
+                {
+                    RequireText(obj, field, kind, resource.Id);
+                }
+            }
         }
     }
 
@@ -122,6 +162,10 @@ internal static class PluginPackageUi
         "page" => "page",
         "panel" => "panel",
         "client-module" => "client-module",
+        "route" => "route",
+        "navigation" => "navigation",
+        "extension" => "extension",
+        "resource" => "resource",
         _ => throw new InvalidPluginPackageException($"unsupported UI resource kind '{kind}'"),
     };
 

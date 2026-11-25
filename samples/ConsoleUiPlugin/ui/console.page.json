@@ -1,0 +1,9 @@
+{
+  "id": "console-page",
+  "title": "Console",
+  "route": "/",
+  "renderer": "console-shell",
+  "icon": "appstore",
+  "description": "Console UI contributed by the optional gocordis-console plugin",
+  "order": -100
+}

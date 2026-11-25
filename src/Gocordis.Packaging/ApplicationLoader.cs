@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Gocordis.Plugins;
 
@@ -43,9 +44,19 @@ public sealed record ApplicationManifest(
     IReadOnlyList<ApplicationPlugin> Plugins,
     IReadOnlyList<EntryNode>? Entries = null)
 {
+    /// <summary>Sidecar holding the most recent declaration set that was written
+    /// successfully. It is declaration state only; no fiber/runtime state is
+    /// ever persisted here.</summary>
+    public const string LastKnownGoodSuffix = ".last-known-good.json";
+
     /// <summary>Path the manifest was loaded from, used to resolve Include files.</summary>
     [JsonIgnore]
     public string? SourcePath { get; init; }
+
+    /// <summary>Set only when the primary manifest was corrupt and this instance
+    /// was recovered from the last-known-good sidecar.</summary>
+    [JsonIgnore]
+    public string? RecoveredFrom { get; init; }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -55,9 +66,56 @@ public sealed record ApplicationManifest(
 
     public static async Task<ApplicationManifest> LoadAsync(string path, CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
-        var manifest = JsonSerializer.Deserialize<ApplicationManifest>(bytes, JsonOptions)
-               ?? throw new InvalidDataException($"application manifest '{path}' is empty");
+        try
+        {
+            var manifest = Deserialize(bytes, path);
+            return manifest with { SourcePath = Path.GetFullPath(path) };
+        }
+        catch (JsonException primary)
+        {
+            // A partially written or hand-corrupted primary file must not make
+            // the declaration set unrecoverable. The sidecar is authoritative
+            // only for JSON corruption; a missing file still reports FileNotFound.
+            var backupPath = path + LastKnownGoodSuffix;
+            if (!File.Exists(backupPath))
+            {
+                throw new InvalidDataException(
+                    $"application manifest '{path}' is corrupt and no last-known-good backup exists at '{backupPath}'",
+                    primary);
+            }
+
+            try
+            {
+                var recovered = Deserialize(
+                    await File.ReadAllBytesAsync(backupPath, cancellationToken), backupPath);
+                return recovered with
+                {
+                    SourcePath = Path.GetFullPath(path),
+                    RecoveredFrom = Path.GetFullPath(backupPath),
+                };
+            }
+            catch (JsonException backup)
+            {
+                throw new InvalidDataException(
+                    $"application manifest '{path}' and its last-known-good backup '{backupPath}' are both corrupt",
+                    new AggregateException(primary, backup));
+            }
+        }
+    }
+
+    /// <summary>Restores the last-known-good declaration set over a corrupt (or
+    /// simply undesired) primary file. The sidecar is left untouched, so a
+    /// failed apply can still be retried. This writes declarations only.</summary>
+    public static async Task<ApplicationManifest> RestoreLastKnownGoodAsync(
+        string path, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var backupPath = path + LastKnownGoodSuffix;
+        var bytes = await File.ReadAllBytesAsync(backupPath, cancellationToken);
+        var manifest = Deserialize(bytes, backupPath);
+        await AtomicWriteAsync(path + ".recover.tmp", path, bytes, cancellationToken);
         return manifest with { SourcePath = Path.GetFullPath(path) };
     }
 
@@ -65,10 +123,152 @@ public sealed record ApplicationManifest(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        var temp = path + ".tmp";
-        await File.WriteAllBytesAsync(temp, JsonSerializer.SerializeToUtf8Bytes(this, JsonOptions), cancellationToken);
-        File.Move(temp, path, overwrite: true);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(this, JsonOptions);
+        try
+        {
+            // Backup the CURRENT declaration before replacing it. A corrupt
+            // primary file is never promoted to last-known-good; recovery must
+            // still find the previous valid declaration set. The first write
+            // seeds the sidecar with the declaration being persisted.
+            if (!File.Exists(path))
+            {
+                await AtomicWriteAsync(path + ".backup.tmp", path + LastKnownGoodSuffix, bytes, cancellationToken);
+            }
+            else
+            {
+                var current = await File.ReadAllBytesAsync(path, cancellationToken);
+                if (CanDeserialize(current))
+                {
+                    await AtomicWriteAsync(path + ".backup.tmp", path + LastKnownGoodSuffix, current, cancellationToken);
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // The primary is corrupt: keep the older sidecar. The subsequent
+            // atomic write of the new declaration is still valid.
+        }
+
+        await AtomicWriteAsync(path + ".tmp", path, bytes, cancellationToken);
     }
+
+    private static ApplicationManifest Deserialize(byte[] bytes, string path) =>
+        JsonSerializer.Deserialize<ApplicationManifest>(bytes, JsonOptions)
+        ?? throw new InvalidDataException($"application manifest '{path}' is empty");
+
+    private static bool CanDeserialize(byte[] bytes)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<ApplicationManifest>(bytes, JsonOptions) is not null;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static async Task AtomicWriteAsync(
+        string temp, string destination, byte[] bytes, CancellationToken cancellationToken)
+    {
+        await File.WriteAllBytesAsync(temp, bytes, cancellationToken);
+        File.Move(temp, destination, overwrite: true);
+    }
+}
+
+/// <summary>Where an effective declaration was written. Flat Plugins are a
+/// later authority over the Entry tree; Entry declarations name the file and
+/// the index path of the node that produced them so a control mutation can edit
+/// the same declaration instead of inventing a second override layer.</summary>
+public enum DeclarationOrigin { FlatPlugin, Entry }
+
+public sealed record DeclarationSource(
+    DeclarationOrigin Origin,
+    string FilePath,
+    IReadOnlyList<int> EntryPath);
+
+/// <summary>
+/// Pure data: one declaration after Entry/Group/Include expansion, flat Plugins
+/// override, and package resolution. This is the single shape the composition
+/// root and the control plane read; it carries declaration AND package metadata
+/// so neither side resolves a package id or schema differently.
+/// </summary>
+public sealed record EffectiveDeclaration(
+    ApplicationPlugin Declaration,
+    DeclarationSource Source,
+    InstalledPlugin? Installed)
+{
+    private static readonly IReadOnlyDictionary<string, object?> EmptyConfig =
+        new Dictionary<string, object?>(StringComparer.Ordinal);
+
+    private static readonly IReadOnlyList<string> EmptyStrings = Array.Empty<string>();
+
+    public string Id => Declaration.Id;
+
+    /// <summary>Identical to ApplicationLoader's package resolution rule.</summary>
+    public string PackageId => Declaration.PackageId ?? Declaration.Id;
+
+    /// <summary>Identical to ApplicationLoader's version selection rule.</summary>
+    public string VersionSelection => Declaration.LockedVersion ?? Declaration.VersionRange;
+
+    public string VersionRange => Declaration.VersionRange;
+
+    public bool Enabled => Declaration.Enabled;
+
+    public IReadOnlyDictionary<string, object?> Config => Declaration.Config ?? EmptyConfig;
+
+    public string? Url => Declaration.Url;
+
+    public string? Isolate => Declaration.Isolate;
+
+    public string? Intercept => Declaration.Intercept;
+
+    public string? ParentId => Declaration.ParentId;
+
+    public string? Type => Installed?.Manifest.Type;
+
+    public string? InstalledVersion => Installed?.Version;
+
+    public string? InstallPath => Installed?.InstallPath;
+
+    public string? Checksum => Installed?.Manifest.Checksum;
+
+    public string? DisplayName => Installed?.Manifest.DisplayName;
+
+    public string? Backend => Installed?.Manifest.Backend;
+
+    public string? EntryAssembly => Installed?.Manifest.EntryAssembly;
+
+    public string? EntryType => Installed?.Manifest.EntryType;
+
+    public IReadOnlyList<string> SharedAssemblies => Installed?.Manifest.SharedAssembliesOrEmpty ?? EmptyStrings;
+
+    public IReadOnlyList<string> Capabilities => Installed?.Manifest.CapabilitiesOrEmpty ?? EmptyStrings;
+
+    public IReadOnlyList<string> Provides => Installed?.Manifest.ProvidesOrEmpty ?? EmptyStrings;
+
+    public IReadOnlyList<PluginDependency> Dependencies => Installed?.Manifest.DependenciesOrEmpty ?? [];
+
+    public JsonNode? ConfigSchema => Installed?.Manifest.ConfigSchema;
+}
+
+/// <summary>The one resolved declaration set used by host pre-scan, loader and
+/// control plane. Order follows the expansion (Entries first, Plugins override
+/// in place), which is also the order the loader reconciles.</summary>
+public sealed record ResolvedDeclarationPlan(IReadOnlyList<EffectiveDeclaration> Declarations)
+{
+    public int Count => Declarations.Count;
+
+    public EffectiveDeclaration? Find(string id) =>
+        Declarations.FirstOrDefault(declaration =>
+            string.Equals(declaration.Id, id, StringComparison.Ordinal));
+
+    public IReadOnlyList<string> DeclaredIds =>
+        Declarations.Select(declaration => declaration.Id).ToArray();
+
+    public IReadOnlyList<string> CapabilityWire =>
+        Declarations.SelectMany(declaration => declaration.Capabilities)
+            .Distinct(StringComparer.Ordinal).ToArray();
 }
 
 /// <summary>An Include file is (transitively) including itself.</summary>
@@ -156,6 +356,7 @@ public sealed class ApplicationLoader
     private static readonly JsonSerializerOptions IncludeOptions = new()
     {
         PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = true,
     };
 
@@ -178,14 +379,56 @@ public sealed class ApplicationLoader
     /// same id; they are a later, distinct authority.
     /// </summary>
     public static async Task<IReadOnlyList<ApplicationPlugin>> EffectivePluginsAsync(
+        ApplicationManifest application, CancellationToken cancellationToken = default) =>
+        (await ExpandAsync(application, cancellationToken)).Plugins;
+
+    /// <summary>
+    /// The single resolution entry point. Expansion and package resolution live
+    /// here so the host pre-scan, the loader and the control plane can never
+    /// disagree about package ids, versions, schemas or capabilities.
+    /// </summary>
+    public static async Task<ResolvedDeclarationPlan> ResolveAsync(
+        ApplicationManifest application, PluginStore store, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(application);
+        ArgumentNullException.ThrowIfNull(store);
+        var (plugins, sources) = await ExpandAsync(application, cancellationToken);
+        var declarations = new List<EffectiveDeclaration>(plugins.Count);
+        foreach (var plugin in plugins)
+        {
+            // Same id/range rule as ApplyAsync: an Entry's Url carries the
+            // package id and range; a flat declaration may name a different one.
+            var installed = await store.ResolveAsync(
+                plugin.PackageId ?? plugin.Id,
+                plugin.LockedVersion ?? plugin.VersionRange,
+                cancellationToken);
+            declarations.Add(new EffectiveDeclaration(plugin, sources[plugin.Id], installed));
+        }
+
+        return new ResolvedDeclarationPlan(declarations);
+    }
+
+    /// <summary>All files that participate in this declaration tree, including
+    /// Include files. Used to snapshot declaration sources for rollback.</summary>
+    public static async Task<IReadOnlyList<string>> DeclarationFilesAsync(
         ApplicationManifest application, CancellationToken cancellationToken = default)
     {
+        var (_, sources) = await ExpandAsync(application, cancellationToken);
+        return sources.Values.Select(source => source.FilePath)
+            .Distinct(PathComparer).ToArray();
+    }
+
+    private static async Task<(IReadOnlyList<ApplicationPlugin> Plugins,
+        IReadOnlyDictionary<string, DeclarationSource> Sources)> ExpandAsync(
+        ApplicationManifest application, CancellationToken cancellationToken)
+    {
         var result = new Dictionary<string, ApplicationPlugin>(StringComparer.Ordinal);
+        var sources = new Dictionary<string, DeclarationSource>(StringComparer.Ordinal);
         var includeStack = new List<string>();
         var expandedIncludes = new HashSet<string>(PathComparer);
         var basePath = Path.GetDirectoryName(application.SourcePath ?? string.Empty) ?? string.Empty;
 
-        async Task AddNode(EntryNode node, string? parentId, string sourcePath)
+        async Task AddNode(EntryNode node, string? parentId, string sourcePath, IReadOnlyList<int> path)
         {
             if (node.Include is { } include)
             {
@@ -213,9 +456,9 @@ public sealed class ApplicationLoader
 
                         var json = await File.ReadAllTextAsync(includePath, cancellationToken);
                         var included = JsonSerializer.Deserialize<List<EntryNode>>(json, IncludeOptions) ?? [];
-                        foreach (var child in included)
+                        for (var index = 0; index < included.Count; index++)
                         {
-                            await AddNode(child, parentId, includePath);
+                            await AddNode(included[index], parentId, includePath, [index]);
                         }
                     }
                     finally
@@ -227,9 +470,10 @@ public sealed class ApplicationLoader
                 // it; declaration priority follows the first occurrence.
             }
 
-            foreach (var child in node.Children ?? [])
+            var children = node.Children ?? [];
+            for (var index = 0; index < children.Count; index++)
             {
-                await AddNode(child, node.Id, sourcePath);
+                await AddNode(children[index], node.Id, sourcePath, [.. path, index]);
             }
 
             if (node.Url is not null || node.Config is not null || node.Isolate is not null ||
@@ -249,21 +493,93 @@ public sealed class ApplicationLoader
                     node.Id, range, !node.Disabled, node.Config,
                     Url: node.Url, Isolate: node.Isolate, Intercept: node.Intercept,
                     ParentId: parentId, PackageId: packageId);
+                sources[node.Id] = new DeclarationSource(
+                    DeclarationOrigin.Entry, sourcePath, path);
             }
         }
 
-        foreach (var entry in application.Entries ?? [])
+        var manifestPath = application.SourcePath ?? string.Empty;
+        var roots = application.Entries ?? [];
+        for (var index = 0; index < roots.Count; index++)
         {
-            await AddNode(entry, null, application.SourcePath ?? string.Empty);
+            await AddNode(roots[index], null, manifestPath, [index]);
         }
 
         // Explicit flat declarations remain authoritative for the same id.
         foreach (var plugin in application.Plugins)
         {
             result[plugin.Id] = plugin;
+            sources[plugin.Id] = new DeclarationSource(DeclarationOrigin.FlatPlugin, manifestPath, []);
         }
 
-        return [.. result.Values];
+        return ([.. result.Values], sources);
+    }
+
+    /// <summary>
+    /// Writes a declaration mutation back to the authority that produced it.
+    /// Flat declarations edit Plugins; entry declarations edit the producing
+    /// EntryNode (in the manifest tree or in the Include file that grafted it).
+    /// No manifest schema field and no new override protocol is introduced.
+    /// </summary>
+    public static async Task<ApplicationManifest> EditDeclarationAsync(
+        ApplicationManifest application,
+        EffectiveDeclaration declaration,
+        Func<ApplicationPlugin, ApplicationPlugin> editFlat,
+        Func<EntryNode, EntryNode> editEntry,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(application);
+        ArgumentNullException.ThrowIfNull(declaration);
+        ArgumentNullException.ThrowIfNull(editFlat);
+        ArgumentNullException.ThrowIfNull(editEntry);
+
+        var source = declaration.Source;
+        if (source.Origin == DeclarationOrigin.FlatPlugin)
+        {
+            var replaced = application.Plugins
+                .Select(plugin => string.Equals(plugin.Id, declaration.Id, StringComparison.Ordinal)
+                    ? editFlat(plugin)
+                    : plugin)
+                .ToArray();
+            return application with { Plugins = replaced };
+        }
+
+        var manifestPath = application.SourcePath ?? string.Empty;
+        if (PathComparer.Equals(Path.GetFullPath(source.FilePath), Path.GetFullPath(manifestPath)))
+        {
+            var entries = ReplaceAtPath(application.Entries ?? [], source.EntryPath, editEntry);
+            return application with { Entries = entries };
+        }
+
+        var json = await File.ReadAllTextAsync(source.FilePath, cancellationToken);
+        var included = JsonSerializer.Deserialize<List<EntryNode>>(json, IncludeOptions) ?? [];
+        var updated = ReplaceAtPath(included, source.EntryPath, editEntry);
+        await File.WriteAllTextAsync(
+            source.FilePath, JsonSerializer.Serialize(updated, IncludeOptions), cancellationToken);
+        return application;
+    }
+
+    private static IReadOnlyList<EntryNode> ReplaceAtPath(
+        IReadOnlyList<EntryNode> nodes, IReadOnlyList<int> path, Func<EntryNode, EntryNode> edit)
+    {
+        if (path.Count == 0)
+        {
+            throw new InvalidOperationException("entry declaration has no source location");
+        }
+
+        var index = path[0];
+        if (index < 0 || index >= nodes.Count)
+        {
+            throw new InvalidOperationException($"entry declaration source index '{index}' is stale");
+        }
+
+        var node = nodes[index];
+        var replaced = path.Count == 1
+            ? edit(node)
+            : node with { Children = ReplaceAtPath(node.Children ?? [], path.Skip(1).ToArray(), edit) };
+        var result = nodes.ToArray();
+        result[index] = replaced;
+        return result;
     }
 
     private static (string Id, string Range) ParseUrl(string url)
@@ -283,12 +599,13 @@ public sealed class ApplicationLoader
                 $"application host version '{application.HostVersion}' does not match store host '{_store.HostVersion}'");
         }
 
-        var declarations = new List<PluginManifest>(application.Plugins.Count);
-        foreach (var plugin in await EffectivePluginsAsync(application, cancellationToken))
+        var resolved = await ResolveAsync(application, _store, cancellationToken);
+        var declarations = new List<PluginManifest>(resolved.Count);
+        foreach (var effective in resolved.Declarations)
         {
-            var selection = plugin.LockedVersion ?? plugin.VersionRange;
-            var packageId = plugin.PackageId ?? plugin.Id;
-            var installed = await _store.ResolveAsync(packageId, selection, cancellationToken)
+            var plugin = effective.Declaration;
+            var selection = effective.VersionSelection;
+            var installed = effective.Installed
                             ?? throw new MissingPluginDependencyException(
                                 $"application '{application.Id}' declares '{plugin.Id}' {selection}, which is not installed");
             if (plugin.PackageHash is { } expectedHash &&
@@ -317,10 +634,7 @@ public sealed class ApplicationLoader
                 plugin.Url, plugin.Isolate, plugin.Intercept, plugin.ParentId));
         }
 
-        var planWire = declarations
-            .SelectMany(manifest => manifest.CapabilitiesOrEmpty)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
+        var planWire = resolved.CapabilityWire;
         IDeclarationTransaction? transaction = null;
         try
         {

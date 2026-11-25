@@ -1236,7 +1236,9 @@ public sealed class CoreSemanticsTests
         Assert.Equal(FiberState.Active, trigger.State);
         Assert.Equal(FiberState.Active, provideOnlyEmitter.State);
         Assert.IsType<UndeclaredCapabilityException>(undeclaredFailure);
-        Assert.IsType<UndeclaredCapabilityException>(provideOnlyFailure);
+        // A provider may emit on its own declared channel: Provide is authority,
+        // and requiring Inject would create a false self-dependency.
+        Assert.Null(provideOnlyFailure);
         Assert.Equal(new[] { "declared" }, received);
         Assert.Equal("provided", providedDelivery);
     }

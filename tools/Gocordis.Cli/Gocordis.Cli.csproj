@@ -3,6 +3,9 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Typed HTTP control client: console restore/list/audit use the same
+         IPluginControlPlane endpoints as the web UI, never direct store writes. -->
+    <ProjectReference Include="../../src/Gocordis.Client/Gocordis.Client.csproj" />
     <ProjectReference Include="../../src/Gocordis.Core/Gocordis.Core.csproj" />
     <ProjectReference Include="../../src/Gocordis.Packaging/Gocordis.Packaging.csproj" />
     <ProjectReference Include="../../src/Gocordis.Plugins/Gocordis.Plugins.csproj" />

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using Gocordis.Client;
 using Gocordis.Console.WebUi;
 using Gocordis.Core;
 using Gocordis.Packaging;
@@ -35,6 +36,7 @@ public static class Program
                 "create" => await CreateAsync(args[1..]),
                 "plugin" => await PluginAsync(args[1..]),
                 "registry" => await RegistryAsync(args[1..]),
+                "console" => await ConsoleAsync(args[1..]),
                 "app" => await AppAsync(args[1..]),
                 _ => Fail($"unknown command '{args[0]}'"),
             };
@@ -1039,6 +1041,105 @@ public static class Program
         [property: JsonPropertyName("code")] string Code,
         [property: JsonPropertyName("message")] string Message);
 
+    /// <summary>
+    /// User-facing plugin management goes through the HTTP control plane that
+    /// owns the one ApplicationLoader/PluginRegistry. The CLI never edits a
+    /// store or manifest directly here; offline package tools stay under
+    /// `plugin doctor|preflight|fetch`.
+    /// </summary>
+    private static async Task<int> ConsoleAsync(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            return Fail("console requires a subcommand: restore|install|upgrade|uninstall|enable|disable|list|audit");
+        }
+
+        var command = args[0];
+        var rest = args[1..];
+        var address = Option(rest, "--address") ?? "http://127.0.0.1:8170";
+        using var client = new ConsoleClient(address);
+        switch (command)
+        {
+            case "restore":
+            case "install":
+            case "upgrade":
+            {
+                var packagePath = Positional(rest, 0);
+                if (packagePath is not null)
+                {
+                    await using var stream = File.OpenRead(packagePath);
+                    var upload = await client.UploadPackageAsync(stream, Path.GetFileName(packagePath));
+                    var mutation = command == "upgrade"
+                        ? await client.UpgradePluginAsync(upload.Id, upload.UploadKey)
+                        : await client.InstallPluginAsync(upload.UploadKey);
+                    Write(new
+                    {
+                        action = "console-" + command, upload.Id, upload.Version,
+                        mutation.Accepted, mutation.Code, mutation.Error,
+                    });
+                    return mutation.Accepted ? 0 : Fail(mutation.Error ?? mutation.Code);
+                }
+
+                var recovered = await client.RecoverHostAsync();
+                Write(new
+                {
+                    action = "console-restore", recovered.Id,
+                    recovered.Accepted, recovered.Code, recovered.Error,
+                });
+                return recovered.Accepted ? 0 : Fail(recovered.Error ?? recovered.Code);
+            }
+            case "uninstall":
+            {
+                var id = Positional(rest, 0);
+                if (id is null)
+                {
+                    return Fail("usage: console uninstall <pluginId> [--address <url>]");
+                }
+
+                var removed = await client.UninstallPluginAsync(id);
+                Write(new { action = "console-uninstall", id, removed.Accepted, removed.Code, removed.Error });
+                return removed.Accepted ? 0 : Fail(removed.Error ?? removed.Code);
+            }
+            case "enable":
+            case "disable":
+            {
+                var id = Positional(rest, 0);
+                if (id is null)
+                {
+                    return Fail($"usage: console {command} <pluginId> [--address <url>]");
+                }
+
+                var changed = await client.SetPluginEnabledAsync(id, command == "enable");
+                Write(new { action = "console-" + command, id, changed.Accepted, changed.Code, changed.Error });
+                return changed.Accepted ? 0 : Fail(changed.Error ?? changed.Code);
+            }
+            case "list":
+            {
+                var plugins = await client.GetPluginsAsync();
+                Write(new
+                {
+                    plugins = plugins.Select(p => new { p.Id, p.Version, p.State, p.Enabled, p.Protected }),
+                });
+                return 0;
+            }
+            case "audit":
+            {
+                var audit = await client.GetAuditAsync();
+                Write(new
+                {
+                    audit = audit.Select(entry => new
+                    {
+                        entry.Revision, entry.Timestamp, entry.Source,
+                        entry.Action, entry.Id, entry.Outcome, entry.Code,
+                    }),
+                });
+                return 0;
+            }
+            default:
+                return Fail($"unknown console command '{command}'");
+        }
+    }
+
     private static async Task<int> AppAsync(string[] args)
     {
         if (args.Length == 0)
@@ -1395,6 +1496,10 @@ public static class Program
         gocordis plugin preflight <packagePath> [--host-version]   # alias: sandbox
         gocordis plugin fetch <id> <versionRange> --source <url> [--output <path>] [--host-version]
         gocordis registry serve <directory> [--address] [--allow-remote]
+        gocordis console restore [--address <url>]                       # last-known-good manifest via HTTP
+        gocordis console install|upgrade <package> [--address <url>]      # HTTP control plane, never direct store writes
+        gocordis console uninstall|enable|disable <pluginId> [--address <url>]
+        gocordis console list|audit [--address <url>]
         gocordis plugin install|upgrade <package> [--store] [--host-version] [--trust development|trusted-only] [--public-key <pem> ...]
         gocordis plugin uninstall <id> [--version] [--store] [--host-version]
         gocordis plugin list [--store] [--host-version]

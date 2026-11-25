@@ -55,7 +55,7 @@ public sealed class PaperContributionsTests
         try
         {
             await runtime.WaitForFiberStateAsync(consumerFiber.Id, FiberState.Pending)
-                .WaitAsync(TimeSpan.FromSeconds(60));
+                .WaitAsync(TimeSpan.FromSeconds(15));
         }
         catch (TimeoutException)
         {

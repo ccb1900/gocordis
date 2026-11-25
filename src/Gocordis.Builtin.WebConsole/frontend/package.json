@@ -5,19 +5,19 @@
   "type": "module",
   "description": "Frontend client module of the builtin Web Console plugin. Owns product pages and renderers; shell only supplies extension points.",
   "scripts": {
-    "build": "node ../plugin-kit/bin/gocordis-plugin-build.mjs src/ui.tsx -o ../../src/Gocordis.Builtin.WebConsole/wwwroot/client-modules/gocordis-console-ui/ui.js --ui-config ui.config.json",
+    "build": "node ../../../web/plugin-kit/bin/gocordis-plugin-build.mjs src/ui.tsx -o ../wwwroot/client-modules/gocordis-console-ui/ui.js --ui-config ui.config.json",
     "test": "vitest run"
   },
   "dependencies": {
     "@ant-design/icons": "^6.3.4",
     "@antv/g6": "^5.1.1",
-    "@gocordis/console-runtime": "file:../console-runtime",
+    "@gocordis/console-runtime": "file:../../../web/console-runtime",
     "antd": "^6.6.3",
     "dayjs": "^1.11.10",
     "react": "^18.3.1"
   },
   "devDependencies": {
-    "@gocordis/plugin-kit": "file:../plugin-kit",
+    "@gocordis/plugin-kit": "file:../../../web/plugin-kit",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",
     "esbuild": "^0.23.0",

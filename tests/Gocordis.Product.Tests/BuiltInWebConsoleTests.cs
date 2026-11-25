@@ -170,6 +170,20 @@ public sealed class BuiltInWebConsoleTests
             Assert.DoesNotContain("Gocordis.Platform", File.ReadAllText(source), StringComparison.Ordinal);
         }
 
+        // Frontend source is inside each plugin, not a separate web/ package.
+        foreach (var plugin in new[]
+                 {
+                     "Gocordis.Builtin.WebConsole", "Gocordis.Builtin.ControlPlaneUi", "Gocordis.Builtin.InsightUi",
+                 })
+        {
+            Assert.True(Directory.Exists(System.IO.Path.Combine(root, "src", plugin, "frontend")), plugin);
+            Assert.True(File.Exists(System.IO.Path.Combine(
+                root, "src", plugin, "frontend", "package.json")), plugin);
+        }
+        Assert.False(Directory.Exists(System.IO.Path.Combine(root, "web", "builtin-console")));
+        Assert.False(Directory.Exists(System.IO.Path.Combine(root, "web", "builtin-control-plane")));
+        Assert.False(Directory.Exists(System.IO.Path.Combine(root, "web", "builtin-insight")));
+
         // The transport plugin no longer owns other builtin UI features.
         var webConsole = File.ReadAllText(System.IO.Path.Combine(pluginDir, "WebConsoleComponent.cs"));
         Assert.DoesNotContain("framework-dashboard", webConsole, StringComparison.Ordinal);

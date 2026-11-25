@@ -14,7 +14,7 @@ Console 通过 UI 安装、配置、启停、升级、卸载插件，并查看�
 
 Web Console 是产品内置插件（`src/Gocordis.Builtin.WebConsole`）：`WebConsoleComponent` 通过 `Inject()` 获取 UI/API/控制面/恢复能力，自己的 Fiber 启动 ASP.NET Core HTTP、SSE、React 前端与插件 ESM，撤销时严格 LIFO 停止；Platform 只 bootstrap Runtime 和受保护内置插件，不再构造或持有 WebUiServer。宿主另外保留一个最小化恢复入口，Web Console 故障时仍可恢复 manifest。
 
-前端按 Cordis 所有权拆分：`web/console-runtime` 是可复用库（扩展注册表、client module、view DSL、API/投影），`web/console` 是极薄 shell（只做布局/路由/主题/组合渲染）。产品 UI 分属三个独立受保护内置插件：`web/builtin-console`（Web Console 传输与 overview）、`web/builtin-control-plane`（插件控制面与事件流）、`web/builtin-insight`（框架概览、依赖/运行图、运行时检视、本地仓库）；每个插件有自己的 C# Component、页面声明和独立 ESM，shell 不再知道任何产品查询名或 renderer 名。
+前端按 Cordis 所有权拆分：`web/console-runtime` 是可复用库（扩展注册表、client module、view DSL、API/投影），`web/console` 是极薄 shell（只做布局/路由/主题/组合渲染）。产品 UI 分属三个独立受保护内置插件：`src/Gocordis.Builtin.WebConsole/frontend`（Web Console 传输与 overview）、`src/Gocordis.Builtin.ControlPlaneUi/frontend`（插件控制面与事件流）、`src/Gocordis.Builtin.InsightUi/frontend`（框架概览、依赖/运行图、运行时检视、本地仓库）；每个插件有自己的 C# Component、页面声明和独立 ESM，shell 不再知道任何产品查询名或 renderer 名。
 
 ## 从此处开始
 

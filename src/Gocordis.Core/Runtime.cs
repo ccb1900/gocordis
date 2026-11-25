@@ -1020,6 +1020,20 @@ public sealed class Runtime : IAsyncDisposable
             return;
         }
 
+        if (command.Error is DependencyMissingException &&
+            activation.Fiber.Intent != LifecycleIntent.Retired)
+        {
+            // A declared provider can be withdrawn between Satisfied(PendingProbe)
+            // and the consumer's Require during Apply. That is dependency LOSS,
+            // not a failed activation (C20-C22): clear the transient error and
+            // return this Fiber to Pending for automatic reactivation.
+            // Undeclared Require throws UndeclaredCapabilityException and still
+            // follows the normal failure path below.
+            activation.Fiber.Failure = null;
+            StartUnwind(activation.Fiber, dependencyLoss: true);
+            return;
+        }
+
         if (command.Error is not null)
         {
             // Apply has LANDED: this failure must not take the in-flight divert

@@ -27,7 +27,7 @@ Total passed: **900**, skipped: **3**.
 | node configuration reaches runtime (CSV delimiter/header/id/time; SQL write strategy) | passed | industrial-dotnet.log |
 | real packaged-plugin E2E | passed | industrial-packaged-e2e.log |
 | PostgreSQL integration | passed | industrial-postgresql.log |
-| Windows UNC/SMB integration | passed | artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/45739397237 |
+| Windows UNC/SMB integration | passed | artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/45744239226 |
 | real OS process kill mid-write resumes original instance and retries only incomplete delivery | passed | industrial-dotnet.log; industrial/tests/Industrial.ProcessCrashFixture |
 | two-target mid-write crash resumes original instance and retries only incomplete delivery | passed | industrial-dotnet.log |
 | concurrent claims, lease renewal and staged-file identity guard | passed | industrial-dotnet.log |

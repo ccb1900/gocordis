@@ -29,4 +29,18 @@ jobs:
 
       - name: Run WindowsUncIntegrationTests
         shell: pwsh
-        run: ./industrial/e2e-windows-unc.ps1
+        run: |
+          try {
+            ./industrial/e2e-windows-unc.ps1 2>&1 | Tee-Object -FilePath unc-run.log
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
+              throw "Windows UNC script exited with $LASTEXITCODE"
+            }
+          } catch {
+            $message = ($_.Exception.Message -replace "`r|`n", " ")
+            if (Test-Path unc-run.log) {
+              $tail = ((Get-Content unc-run.log -Tail 20) -join " | ")
+              $message = "$message | $tail"
+            }
+            Write-Host "::error::$message"
+            throw
+          }

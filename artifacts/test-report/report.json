@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-11-26T14:05:25.025543+00:00",
+  "generatedAt": "2026-11-26T14:14:38.710759+00:00",
   "source": "tools/release/test-report.sh",
-  "commit": "d47a2c612fcfe2cd435642644b507f99a7039ab3",
+  "commit": "061c12d2ac9b6796e90d7ea575d14ddb741012cb",
   "suites": [
     {
       "suite": "builtin-control-plane",

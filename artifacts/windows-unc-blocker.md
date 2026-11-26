@@ -6,7 +6,7 @@ Status: **passed on a real Windows runner**.
 - Runner: `windows-latest`
 - Script: `industrial/e2e-windows-unc.ps1`
 - Test: `Industrial.Database.Tests.WindowsUncIntegrationTests.UncSourceDiscoversFilesThroughARealSessionLease`
-- Passing run: https://github.com/ccb1900/gocordis/actions/runs/45755264390 (job `139692300134`, commit `6758d7e5af63cae2dce811e8ff62a8ee13767457`, conclusion `success`)
+- Passing run: https://github.com/ccb1900/gocordis/actions/runs/45773688588 (job `139752119084`, commit `e8a23742c61a481593fc7e1480c6c02ab83b000a`, conclusion `success`)
 
 When external `GOCORDIS_UNC_*` secrets are not configured, the script provisions an ephemeral local SMB share and account on the Windows runner, sets the four `GOCORDIS_UNC_*` variables, and runs `WindowsUncIntegrationTests` against the real Windows SMB client/server through `UncConnectionLease`. No mock, fake native seam, or Linux/macOS substitute is involved. The share and account are removed in a `finally` block after the test.
 

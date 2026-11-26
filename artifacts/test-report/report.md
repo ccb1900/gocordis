@@ -35,7 +35,7 @@ Total passed: **928**, skipped: **3**.
 | shared sink write options (writeMode/businessKey) reach all database sinks | passed | industrial-dotnet.log; SinkWriteOptionsTests |
 | real packaged-plugin E2E | passed | industrial-packaged-e2e.log |
 | PostgreSQL integration | passed | industrial-postgresql.log |
-| Windows UNC/SMB integration | passed | artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/45755264390 |
+| Windows UNC/SMB integration | passed | artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/45773688588 |
 | real OS process kill mid-write resumes original instance and retries only incomplete delivery | passed | industrial-dotnet.log; industrial/tests/Industrial.ProcessCrashFixture |
 | two-target mid-write crash resumes original instance and retries only incomplete delivery | passed | industrial-dotnet.log |
 | concurrent claims, lease renewal and staged-file identity guard | passed | industrial-dotnet.log |

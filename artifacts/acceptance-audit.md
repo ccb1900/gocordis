@@ -47,6 +47,8 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Low-frequency cron and superseded-version fires recover from persisted checkpoints | `ScheduleCheckpoints`, `RunDueSchedulesAsync`, `SchedulerRecoveryTests.LowFrequencyAndSupersededVersionFiresAreRecovered` | Pass |
 | G6 save/reload preserves node positions and palette-added nodes | `industrial/web/e2e/designer-gestures.spec.ts` | Pass |
 
-Unified report: 937 passed, 3 explicitly skipped, 0 failed suites, generated for tested code commit `75ce6b2cb5fda2c72694a8034f64285b638bf757` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+| Large-file streaming: Reader/Mapping/Validation/Sink use stage-backed IAsyncEnumerable, no full batch in memory | `PublishedNodeExecutor`, `StageOutputStore`, `CrashRecoveryTests.LargeFileStreamsThroughReaderMappingValidationAndSink` | Pass |
+
+Unified report: 938 passed, 3 explicitly skipped, 0 failed suites, generated for tested code commit `6616545da63b5d05654c2b6ef18ab332da97884e` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

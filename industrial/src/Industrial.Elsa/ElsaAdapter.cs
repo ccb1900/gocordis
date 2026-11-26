@@ -232,6 +232,13 @@ public sealed class IndustrialElsaComponent : Component
                 api.RegisterCommand("industrial/recover-instances", async _ =>
                     await RecoverAllAsync(workflows, ledger, resources, vault, planner,
                         source, reader, stage, sinkFactories, sink, archive), owner);
+                // Deterministic scheduler tick for diagnostics and integration
+                // tests. Uses the same single path as the timer, never a second
+                // scheduler implementation.
+                api.RegisterCommand("industrial/scheduler-tick", async _ =>
+                    await RunDueSchedulesAsync(workflows, coordinator, ledger, resources, vault,
+                        planner, source, reader, stage, sinkFactories, sink, archive,
+                        context.CancellationToken), owner);
                 api.RegisterQuery("industrial/recovery", () => _lastRecovery is null
                     ? null
                     : JsonNode.Parse(_lastRecovery), owner);
@@ -528,13 +535,17 @@ public sealed class IndustrialElsaComponent : Component
                 // without turning downtime into an unbounded catch-up storm.
                 var cursor = now - TimeSpan.FromHours(24);
                 var dueInstants = new List<DateTimeOffset>();
-                while (dueInstants.Count < 3)
+                while (true)
                 {
                     var next = expression.GetNextOccurrence(cursor, zone, true);
                     if (next is null) break;
                     var instant = next.Value.ToUniversalTime();
                     if (instant > now) break;
+                    // Keep only the most recent bounded window; taking the
+                    // first N after the lookback start would replay fires from
+                    // a full day ago instead of the ones actually missed.
                     dueInstants.Add(instant);
+                    if (dueInstants.Count > 3) dueInstants.RemoveAt(0);
                     cursor = next.Value.AddSeconds(1);
                 }
                 if (dueInstants.Count == 0) continue;

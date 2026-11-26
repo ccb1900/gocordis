@@ -383,61 +383,50 @@ public sealed class CrashRecoveryTests
         using var temp = new TempDir();
         var sourceRoot = Path.Combine(temp.Root, "source");
         Directory.CreateDirectory(sourceRoot);
-        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "20261126.csv"),
+        var now = DateTimeOffset.UtcNow;
+        var firstFile = $"{now:yyyyMMdd}.csv";
+        var secondFile = $"{now.AddDays(-25):yyyyMMdd}.csv";
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, firstFile),
             "record_id,reading\n1,11\n2,22\n3,33\n");
-        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, "20261126.csv"),
-            DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
+        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, firstFile), now.AddHours(-1).UtcDateTime);
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, secondFile),
+            "record_id,reading\n4,77\n5,88\n6,99\n");
+        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, secondFile), now.AddDays(-25).UtcDateTime);
         var targetA = Path.Combine(temp.Root, "target-a.db");
         var targetB = Path.Combine(temp.Root, "target-b.db");
         var factories = new FactorySet(targetA, targetB);
 
-        WorkflowDefinition Definition(int version, bool includeSecondSink) => new(
+        WorkflowDefinition Definition(int version) => new(
             "multi-run-retry-flow", "Multi run retry flow", version,
-            includeSecondSink
-                ? [
-                    new WorkflowNode("src", "industrial.filesystem.local",
-                        new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
-                    new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
-                    new WorkflowNode("map", "industrial.transform.mapping",
-                        new Dictionary<string, object?>
-                        {
-                            ["mapping"] = JsonSerializer.SerializeToElement(
-                                new Dictionary<string, string> { ["value"] = "reading" }),
-                        }, 200, 0),
-                    new WorkflowNode("storeA", "industrial.sink.sqlite",
-                        new Dictionary<string, object?> { ["targetResourceId"] = "target-a" }, 300, 0),
-                    new WorkflowNode("storeB", "industrial.sink.sqlite",
-                        new Dictionary<string, object?> { ["targetResourceId"] = "target-b" }, 300, 200),
-                ]
-                : [
-                    new WorkflowNode("src", "industrial.filesystem.local",
-                        new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
-                    new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
-                    new WorkflowNode("map", "industrial.transform.mapping",
-                        new Dictionary<string, object?>
-                        {
-                            ["mapping"] = JsonSerializer.SerializeToElement(
-                                new Dictionary<string, string> { ["value"] = "reading" }),
-                        }, 200, 0),
-                    new WorkflowNode("storeA", "industrial.sink.sqlite",
-                        new Dictionary<string, object?> { ["targetResourceId"] = "target-a" }, 300, 0),
-                ],
-            includeSecondSink
-                ? [
-                    new WorkflowEdge("src", "files", "read", "input"),
-                    new WorkflowEdge("read", "records", "map", "input"),
-                    new WorkflowEdge("map", "output", "storeA", "records"),
-                    new WorkflowEdge("map", "output", "storeB", "records"),
-                ]
-                : [
-                    new WorkflowEdge("src", "files", "read", "input"),
-                    new WorkflowEdge("read", "records", "map", "input"),
-                    new WorkflowEdge("map", "output", "storeA", "records"),
-                ],
+            [
+                new WorkflowNode("src", "industrial.filesystem.local",
+                    new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
+                new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
+                new WorkflowNode("map", "industrial.transform.mapping",
+                    new Dictionary<string, object?>
+                    {
+                        ["mapping"] = JsonSerializer.SerializeToElement(
+                            new Dictionary<string, string> { ["value"] = "reading" }),
+                    }, 200, 0),
+                version == 1
+                    ? new WorkflowNode("storeA", "industrial.sink.sqlite",
+                        new Dictionary<string, object?> { ["targetResourceId"] = "target-a" }, 300, 0)
+                    : new WorkflowNode("storeB", "industrial.sink.sqlite",
+                        new Dictionary<string, object?> { ["targetResourceId"] = "target-b" }, 300, 0),
+            ],
+            [
+                new WorkflowEdge("src", "files", "read", "input"),
+                new WorkflowEdge("read", "records", "map", "input"),
+                version == 1
+                    ? new WorkflowEdge("map", "output", "storeA", "records")
+                    : new WorkflowEdge("map", "output", "storeB", "records"),
+            ],
             new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
-            ["source-1"], new Dictionary<string, object?>());
+            ["source-1"], new Dictionary<string, object?> { ["lookbackDays"] = version == 1 ? 1 : 30 });
 
         string failedDeliveryId = string.Empty;
+        string firstDeliveryId = string.Empty;
+        string firstRunId = string.Empty;
         await Compose(temp.Root, factories, async (_, workflows, resources, ledger, api) =>
         {
             var now = DateTimeOffset.UtcNow;
@@ -448,7 +437,7 @@ public sealed class CrashRecoveryTests
                     0, true, now, now));
             }
             Assert.True(await api.ExecuteAsync("industrial/save-workflow",
-                JsonSerializer.SerializeToNode(Definition(1, false))));
+                JsonSerializer.SerializeToNode(Definition(1))));
             Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
                 new JsonObject { ["workflowId"] = "multi-run-retry-flow" }));
             // This id sorts ABOVE the failing run's id: the old string-sort
@@ -458,9 +447,14 @@ public sealed class CrashRecoveryTests
                 ["workflowId"] = "multi-run-retry-flow", ["version"] = 1,
                 ["resourceId"] = "source-1", ["instanceId"] = "zzz-unrelated-instance",
             }));
+            var firstDelivery = (await ledger.ListAllDeliveriesAsync())
+                .Single(candidate => candidate.TargetId == "target-a" && candidate.Status == CollectionStatus.Succeeded);
+            firstDeliveryId = firstDelivery.Id;
+            firstRunId = (await ledger.GetRunIdsByDeliveryAsync(firstDelivery.Id)).Single();
+            File.Delete(Path.Combine(sourceRoot, firstFile));
 
             Assert.True(await api.ExecuteAsync("industrial/save-workflow",
-                JsonSerializer.SerializeToNode(Definition(2, true))));
+                JsonSerializer.SerializeToNode(Definition(2))));
             Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
                 new JsonObject { ["workflowId"] = "multi-run-retry-flow" }));
             factories.FailTargetBOnce = true;
@@ -483,9 +477,21 @@ public sealed class CrashRecoveryTests
             {
                 ["deliveryId"] = failedDeliveryId,
             }));
+
+            // The first run's successful delivery is untouched by the retry.
+            var firstAfter = (await ledger.ListAllDeliveriesAsync())
+                .Single(candidate => candidate.Id == firstDeliveryId);
+            Assert.Equal(CollectionStatus.Succeeded, firstAfter.Status);
+            Assert.Equal(firstRunId, (await ledger.GetRunIdsByDeliveryAsync(firstDeliveryId)).Single());
+            Assert.Single(await ledger.ListAllDeliveriesAsync(), candidate => candidate.TargetId == "target-a");
         });
 
         Assert.Equal(3, await CountRowsAsync(targetA));
+        await using var firstTarget = IndustrialStore.CreateTarget(targetA);
+        var firstRows = firstTarget.Records.AsNoTracking().ToList();
+        Assert.Equal(3, firstRows.Count);
+        Assert.All(firstRows, row => Assert.Contains("\"value\"", row.PayloadJson, StringComparison.Ordinal));
+        Assert.Equal(new[] { "11", "22", "33" }, ValuesOf(firstRows));
         await using var target = IndustrialStore.CreateTarget(targetB);
         var rows = target.Records.AsNoTracking().ToList();
         Assert.Equal(3, rows.Count);
@@ -494,6 +500,7 @@ public sealed class CrashRecoveryTests
             Assert.Contains("\"value\"", row.PayloadJson, StringComparison.Ordinal);
             Assert.DoesNotContain("\"reading\"", row.PayloadJson, StringComparison.Ordinal);
         });
+        Assert.Equal(new[] { "77", "88", "99" }, ValuesOf(rows));
     }
 
     [Fact]
@@ -580,6 +587,11 @@ public sealed class CrashRecoveryTests
         Assert.Equal(3, await CountRowsAsync(targetA));
         Assert.Equal(3, await CountRowsAsync(targetB));
     }
+
+    private static string[] ValuesOf(IEnumerable<TargetRecordEntity> rows) => rows
+        .Select(row => JsonDocument.Parse(row.PayloadJson).RootElement
+            .GetProperty("value").GetString() ?? string.Empty)
+        .OrderBy(value => value, StringComparer.Ordinal).ToArray();
 
     private sealed class FactorySet(string targetA, string targetB)
     {

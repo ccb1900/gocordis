@@ -60,14 +60,22 @@ test("G6 native gestures: port drag connects, node drag moves, canvas drag pans,
   await expect(page.getByText("连线 (2)", { exact: true })).toBeVisible();
   await page.getByTestId("toggle-properties").click();
 
-  // --- native port drag: output port of src → body of read ---
+  // --- native port drag: output port of src → INPUT port of read ---
   const points = await page.evaluate(() => {
     const el = document.querySelector('[data-testid="industrial-graph"]') as any;
     const graph = el.__industrialGraph;
     const a = graph.getNodeData().find((n: any) => n.id === "src") as any;
     const b = graph.getNodeData().find((n: any) => n.id === "read") as any;
-    const [sx, sy] = graph.getClientByCanvas([a.style.x + 74, a.style.y]);
-    const [tx, ty] = graph.getClientByCanvas([b.style.x, b.style.y]);
+    const portPoint = (node: any, key: string): [number, number] => {
+      const port = (node.style.ports ?? []).find((item: any) => item.key === key);
+      if (!port) throw new Error(`port ${key} is missing on ${node.id}`);
+      return [
+        node.style.x + (port.placement[0] - 0.5) * 148,
+        node.style.y + (port.placement[1] - 0.5) * 46,
+      ];
+    };
+    const [sx, sy] = graph.getClientByCanvas(portPoint(a, "out:files"));
+    const [tx, ty] = graph.getClientByCanvas(portPoint(b, "in:input"));
     return { sx, sy, tx, ty };
   });
   await page.mouse.move(points.sx, points.sy);

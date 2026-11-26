@@ -54,6 +54,10 @@ for code_path in sorted(out.glob("*.code")):
     suites.append({
         "suite": name,
         "exitCode": exit_code,
+        # executionStatus is the suite gate; countStatus is independent so a
+        # passing shell-driven suite is never mistaken for "0 tests passed".
+        "executionStatus": "passed" if exit_code == 0 else "failed",
+        "countStatus": "parsed" if counts else "unparsed",
         # null means the suite ran successfully but its log has no parseable
         # per-test count (shell-driven E2E). Exit code remains the gate.
         "passed": sum(counts) if counts else None,
@@ -69,17 +73,21 @@ unc_evidence = json.loads(unc_evidence_path.read_text()) if unc_evidence_path.ex
 import subprocess
 commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root,
                         capture_output=True, text=True).stdout.strip()
+expected_suites = re.findall(r"^run (\S+)", (root / "tools/release/test-report.sh").read_text(), re.M)
+not_executed = [name for name in expected_suites if not (out / f"{name}.code").exists()]
 
 report = {
     "generatedAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
     "source": "tools/release/test-report.sh",
     "commit": commit,
+    "statusVocabulary": ["passed", "skipped", "not-executed", "unparsed", "failed"],
     "suites": suites,
     "totals": {
         "passed": sum(s["passed"] or 0 for s in suites),
         "skipped": sum(s["skipped"] for s in suites),
         "failedSuites": [s["suite"] for s in suites if s["exitCode"] != 0],
         "unparsedSuites": [s["suite"] for s in suites if s["passed"] is None],
+        "notExecutedSuites": not_executed,
     },
     "environmentBlockers": [],
     "windowsUnc": unc_evidence,
@@ -93,13 +101,14 @@ report = {
         {"requirement": "node configuration reaches runtime (CSV delimiter/header/id/time; SQL write strategy)", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
         {"requirement": "resource edit preserves connection config and credential binding", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; IndustrialUiPluginTests"},
         {"requirement": "delivery retry reuses published mapping and validation", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; CrashRecoveryTests.DeliveryRetryReusesPublishedMappingAndValidation"},
-        {"requirement": "multi-run retry resolves delivery→run→Elsa instance and never reuses another run's stages", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; CrashRecoveryTests.DeliveryRetryResumesTheRunThatOwnsTheFailedDelivery"},
-        {"requirement": "schedule fires separate claim from completion, compensate missed fires and recover failed fires", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; DeliveryLeaseTests.ScheduleFireLifecycleSeparatesClaimCompletionAndRecovery; RunningScheduleFireIsFailedOnRestartAndRetriedWithinAttemptLimit"},
+        {"requirement": "multi-run retry resolves delivery→run→Elsa instance and never reuses another run's stages", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; CrashRecoveryTests.DeliveryRetryResumesTheRunThatOwnsTheFailedDelivery (two different files, first run's delivery and rows unchanged)"},
+        {"requirement": "schedule fires separate claim from completion, compensate missed fires and recover failed fires", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; SchedulerRecoveryTests.MissedScheduleFiresAreRetriedAfterFailureAndRecovery; DeliveryLeaseTests.ScheduleFireLifecycleSeparatesClaimCompletionAndRecovery"},
         {"requirement": "G6 native gestures: palette drag-drop, port drag connect, node move, canvas pan, save/reload", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; industrial/web/e2e/designer-gestures.spec.ts"},
         {"requirement": "schedule fire claim is durable and at-most-once across restarts", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; DeliveryLeaseTests.ScheduleFireIsClaimedAtMostOnceAcrossRestarts"},
         {"requirement": "backfill preview uses published sink target set", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; ElsaPocTests.BackfillPreviewUsesPublishedSinkTargets"},
         {"requirement": "newly added sink backfills historical files without duplicating existing targets", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; CrashRecoveryTests.PublishANewSinkBackfillsOnlyThatTargetForHistoricalFiles"},
         {"requirement": "shared sink write options (writeMode/businessKey) reach all database sinks", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; SinkWriteOptionsTests"},
+        {"requirement": "Windows UNC/SMB execution on this macOS host", "status": "not-executed", "evidence": "external windows-latest runner row below is the acceptance evidence; local suite records an explicit skip"},
         {"requirement": "real packaged-plugin E2E", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-packaged-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-packaged-e2e.log"},
         {"requirement": "PostgreSQL integration", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-postgresql")["exitCode"] == 0 else "failed", "evidence": "industrial-postgresql.log"},
         {"requirement": "Windows UNC/SMB integration", "status": unc_evidence.get("status", "blocked"), "passingResult": unc_evidence.get("url") if unc_evidence.get("status") == "passed" else None, "evidence": "artifacts/windows-unc-result.json; " + unc_evidence.get("url", "artifacts/windows-unc-blocker.md"), "runner": "windows-latest", "script": "industrial/e2e-windows-unc.ps1"},
@@ -115,11 +124,12 @@ report = {
 (out / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
 lines = ["# Local test report", "", f"Generated by `{report['source']}`.", "",
          f"Tested commit: `{report['commit']}`", "",
-         "| Suite | Exit | Passed | Skipped |", "|---|---:|---:|---:|"]
+         "| Suite | Execution | Count | Passed | Skipped |", "|---|---|---|---:|---:|"]
 for s in suites:
     passed = "unknown" if s["passed"] is None else str(s["passed"])
-    lines.append(f"| {s['suite']} | {s['exitCode']} | {passed} | {s['skipped']} |")
+    lines.append(f"| {s['suite']} | {s['executionStatus']} | {s['countStatus']} | {passed} | {s['skipped']} |")
 lines += ["", f"Total passed: **{report['totals']['passed']}**, skipped: **{report['totals']['skipped']}**.",
+          f"Not executed: {', '.join(report['totals']['notExecutedSuites']) or 'none'}.",
           f"Unparsed suites (exit-code gated): {', '.join(report['totals']['unparsedSuites']) or 'none'}.",
           "", "| Acceptance requirement | Status | Evidence |", "|---|---|---|"]
 for item in report["acceptance"]:

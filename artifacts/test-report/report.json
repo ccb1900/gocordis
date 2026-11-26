@@ -1,6 +1,7 @@
 {
-  "generatedAt": "2026-11-26T10:26:41.090882+00:00",
+  "generatedAt": "2026-11-26T14:05:25.025543+00:00",
   "source": "tools/release/test-report.sh",
+  "commit": "d47a2c612fcfe2cd435642644b507f99a7039ab3",
   "suites": [
     {
       "suite": "builtin-control-plane",
@@ -40,14 +41,14 @@
     {
       "suite": "industrial-browser-e2e",
       "exitCode": 0,
-      "passed": 12,
+      "passed": 13,
       "skipped": 0,
       "log": "industrial-browser-e2e.log"
     },
     {
       "suite": "industrial-dotnet",
       "exitCode": 0,
-      "passed": 82,
+      "passed": 85,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
@@ -61,7 +62,7 @@
     {
       "suite": "industrial-packaged-e2e",
       "exitCode": 0,
-      "passed": 0,
+      "passed": null,
       "skipped": 0,
       "log": "industrial-packaged-e2e.log"
     },
@@ -102,9 +103,12 @@
     }
   ],
   "totals": {
-    "passed": 930,
+    "passed": 934,
     "skipped": 3,
-    "failedSuites": []
+    "failedSuites": [],
+    "unparsedSuites": [
+      "industrial-packaged-e2e"
+    ]
   },
   "environmentBlockers": [],
   "windowsUnc": {
@@ -168,6 +172,21 @@
       "requirement": "delivery retry reuses published mapping and validation",
       "status": "passed",
       "evidence": "industrial-dotnet.log; CrashRecoveryTests.DeliveryRetryReusesPublishedMappingAndValidation"
+    },
+    {
+      "requirement": "multi-run retry resolves delivery→run→Elsa instance and never reuses another run's stages",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; CrashRecoveryTests.DeliveryRetryResumesTheRunThatOwnsTheFailedDelivery"
+    },
+    {
+      "requirement": "schedule fires separate claim from completion, compensate missed fires and recover failed fires",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; DeliveryLeaseTests.ScheduleFireLifecycleSeparatesClaimCompletionAndRecovery; RunningScheduleFireIsFailedOnRestartAndRetriedWithinAttemptLimit"
+    },
+    {
+      "requirement": "G6 native gestures: palette drag-drop, port drag connect, node move, canvas pan, save/reload",
+      "status": "passed",
+      "evidence": "industrial-browser-e2e.log; industrial/web/e2e/designer-gestures.spec.ts"
     },
     {
       "requirement": "schedule fire claim is durable and at-most-once across restarts",

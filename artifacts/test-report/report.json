@@ -1,11 +1,20 @@
 {
-  "generatedAt": "2026-11-26T14:14:38.710759+00:00",
+  "generatedAt": "2026-11-26T14:51:52.518682+00:00",
   "source": "tools/release/test-report.sh",
-  "commit": "061c12d2ac9b6796e90d7ea575d14ddb741012cb",
+  "commit": "131fd0c50f4e0454df1ce3a82ad35d2adbe2a350",
+  "statusVocabulary": [
+    "passed",
+    "skipped",
+    "not-executed",
+    "unparsed",
+    "failed"
+  ],
   "suites": [
     {
       "suite": "builtin-control-plane",
       "exitCode": 0,
+      "executionStatus": "passed",
+      "countStatus": "parsed",
       "passed": 1,
       "skipped": 0,
       "log": "builtin-control-plane.log"
@@ -13,6 +22,8 @@
     {
       "suite": "builtin-insight",
       "exitCode": 0,
+      "executionStatus": "passed",
+      "countStatus": "parsed",
       "passed": 40,
       "skipped": 0,
       "log": "builtin-insight.log"
@@ -20,6 +31,8 @@
     {
       "suite": "builtin-webconsole",
       "exitCode": 0,
+      "executionStatus": "passed",
+      "countStatus": "parsed",
       "passed": 1,
       "skipped": 0,
       "log": "builtin-webconsole.log"
@@ -27,6 +40,8 @@
     {
       "suite": "console-runtime",
       "exitCode": 0,
+      "executionStatus": "passed",
+      "countStatus": "parsed",
       "passed": 63,
       "skipped": 0,
       "log": "console-runtime.log"
@@ -34,6 +49,8 @@
     {
       "suite": "console-shell",
       "exitCode": 0,
+      "executionStatus": "passed",
+      "countStatus": "parsed",
       "passed": 3,
       "skipped": 0,
       "log": "console-shell.log"
@@ -41,6 +58,8 @@
     {
       "suite": "industrial-browser-e2e",
       "exitCode": 0,
+      "executionStatus": "passed",
+      "countStatus": "parsed",
       "passed": 13,
       "skipped": 0,
       "log": "industrial-browser-e2e.log"
@@ -48,13 +67,17 @@
     {
       "suite": "industrial-dotnet",
       "exitCode": 0,
-      "passed": 85,
+      "executionStatus": "passed",
+      "countStatus": "parsed",
+      "passed": 86,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
     {
       "suite": "industrial-frontend",
       "exitCode": 0,
+      "executionStatus": "passed",
+      "countStatus": "parsed",
       "passed": 38,
       "skipped": 0,
       "log": "industrial-frontend.log"
@@ -62,6 +85,8 @@
     {
       "suite": "industrial-packaged-e2e",
       "exitCode": 0,
+      "executionStatus": "passed",
+      "countStatus": "unparsed",
       "passed": null,
       "skipped": 0,
       "log": "industrial-packaged-e2e.log"
@@ -69,6 +94,8 @@
     {
       "suite": "industrial-postgresql",
       "exitCode": 0,
+      "executionStatus": "passed",
+      "countStatus": "parsed",
       "passed": 1,
       "skipped": 1,
       "log": "industrial-postgresql.log"
@@ -76,6 +103,8 @@
     {
       "suite": "industrial-user-flow",
       "exitCode": 0,
+      "executionStatus": "passed",
+      "countStatus": "parsed",
       "passed": 1,
       "skipped": 0,
       "log": "industrial-user-flow.log"
@@ -83,6 +112,8 @@
     {
       "suite": "platform-dotnet",
       "exitCode": 0,
+      "executionStatus": "passed",
+      "countStatus": "parsed",
       "passed": 685,
       "skipped": 1,
       "log": "platform-dotnet.log"
@@ -90,6 +121,8 @@
     {
       "suite": "plugin-kit",
       "exitCode": 0,
+      "executionStatus": "passed",
+      "countStatus": "parsed",
       "passed": 3,
       "skipped": 0,
       "log": "plugin-kit.log"
@@ -97,18 +130,21 @@
     {
       "suite": "windows-unc",
       "exitCode": 0,
+      "executionStatus": "passed",
+      "countStatus": "parsed",
       "passed": 0,
       "skipped": 1,
       "log": "windows-unc.log"
     }
   ],
   "totals": {
-    "passed": 934,
+    "passed": 935,
     "skipped": 3,
     "failedSuites": [],
     "unparsedSuites": [
       "industrial-packaged-e2e"
-    ]
+    ],
+    "notExecutedSuites": []
   },
   "environmentBlockers": [],
   "windowsUnc": {
@@ -176,12 +212,12 @@
     {
       "requirement": "multi-run retry resolves delivery→run→Elsa instance and never reuses another run's stages",
       "status": "passed",
-      "evidence": "industrial-dotnet.log; CrashRecoveryTests.DeliveryRetryResumesTheRunThatOwnsTheFailedDelivery"
+      "evidence": "industrial-dotnet.log; CrashRecoveryTests.DeliveryRetryResumesTheRunThatOwnsTheFailedDelivery (two different files, first run's delivery and rows unchanged)"
     },
     {
       "requirement": "schedule fires separate claim from completion, compensate missed fires and recover failed fires",
       "status": "passed",
-      "evidence": "industrial-dotnet.log; DeliveryLeaseTests.ScheduleFireLifecycleSeparatesClaimCompletionAndRecovery; RunningScheduleFireIsFailedOnRestartAndRetriedWithinAttemptLimit"
+      "evidence": "industrial-dotnet.log; SchedulerRecoveryTests.MissedScheduleFiresAreRetriedAfterFailureAndRecovery; DeliveryLeaseTests.ScheduleFireLifecycleSeparatesClaimCompletionAndRecovery"
     },
     {
       "requirement": "G6 native gestures: palette drag-drop, port drag connect, node move, canvas pan, save/reload",
@@ -207,6 +243,11 @@
       "requirement": "shared sink write options (writeMode/businessKey) reach all database sinks",
       "status": "passed",
       "evidence": "industrial-dotnet.log; SinkWriteOptionsTests"
+    },
+    {
+      "requirement": "Windows UNC/SMB execution on this macOS host",
+      "status": "not-executed",
+      "evidence": "external windows-latest runner row below is the acceptance evidence; local suite records an explicit skip"
     },
     {
       "requirement": "real packaged-plugin E2E",

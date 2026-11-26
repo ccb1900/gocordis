@@ -43,6 +43,10 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Unified test report fact source | `tools/release/test-report.sh`, `report.json`, `report.md` | Pass |
 | Windows UNC/SMB real-share acceptance | `.github/workflows/windows-unc.yml`, `e2e-windows-unc.ps1`, `artifacts/windows-unc-result.json`, passing run https://github.com/ccb1900/gocordis/actions/runs/45799908846 | Pass on real `windows-latest` runner with a real SMB share |
 
-Unified report: 935 passed, 3 explicitly skipped, 0 failed suites, generated for tested code commit `131fd0c50f4e0454df1ce3a82ad35d2adbe2a350` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+| Same Delivery across two failing runs retries with the last attempt's instance | `FileDelivery.LastAttemptRunId`, `RetryDeliveryAsync`, `CrashRecoveryTests.RetryUsesTheLastRunThatAttemptedTheSameDelivery` | Pass |
+| Low-frequency cron and superseded-version fires recover from persisted checkpoints | `ScheduleCheckpoints`, `RunDueSchedulesAsync`, `SchedulerRecoveryTests.LowFrequencyAndSupersededVersionFiresAreRecovered` | Pass |
+| G6 save/reload preserves node positions and palette-added nodes | `industrial/web/e2e/designer-gestures.spec.ts` | Pass |
+
+Unified report: 937 passed, 3 explicitly skipped, 0 failed suites, generated for tested code commit `75ce6b2cb5fda2c72694a8034f64285b638bf757` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

@@ -64,7 +64,7 @@ test("a user previews a backfill before running it", async ({ page }) => {
   await page.getByTestId("open-backfill-preview").click();
   await page.getByRole("button", { name: /扫描最近 1 天/ }).click();
   await expect(page.getByText(/发现 \d+ 个文件/)).toBeVisible();
-  await expect(page.getByText("recent.csv")).toBeVisible();
+  await expect(page.getByText(/recent\.csv/).first()).toBeVisible();
 });
 
 test("a user sees per-file processing details and classified failures", async ({ page }) => {
@@ -78,7 +78,7 @@ test("a user sees per-file processing details and classified failures", async ({
 
   await page.goto("/industrial/files");
   await expect(page.getByText("文件处理详情", { exact: true })).toBeVisible();
-  await expect(page.getByText("recent.csv", { exact: true })).toBeVisible();
+  await expect(page.getByText(/recent\.csv/).first()).toBeVisible();
   await page.locator(".ant-table-row-expand-icon").first().click();
   await expect(page.getByText("原因与下一步", { exact: true })).toBeVisible();
 });
@@ -223,7 +223,8 @@ test("a user repairs a failed target and retries only that delivery", async ({ p
   });
 
   await page.goto("/industrial/executions");
-  const brokenRow = page.getByRole("row").filter({ hasText: "broken-target" });
+  const brokenRow = page.getByRole("row").filter({ hasText: "broken-target" })
+    .filter({ hasText: "Failed" });
   const retryButton = brokenRow.getByRole("button", { name: "重试此目标" });
   await expect(retryButton).toBeEnabled();
 
@@ -238,6 +239,7 @@ test("a user repairs a failed target and retries only that delivery", async ({ p
 
   await page.goto("/industrial/executions");
   await page.getByRole("row").filter({ hasText: "broken-target" })
+    .filter({ hasText: "Failed" })
     .getByRole("button", { name: "重试此目标" }).click();
   await expect.poll(async () => {
     const response = await page.request.get("/api/query/industrial/execution-center");

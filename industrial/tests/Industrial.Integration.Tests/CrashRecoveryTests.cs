@@ -377,6 +377,91 @@ public sealed class CrashRecoveryTests
         });
     }
 
+    [Fact]
+    public async Task PublishANewSinkBackfillsOnlyThatTargetForHistoricalFiles()
+    {
+        using var temp = new TempDir();
+        var sourceRoot = Path.Combine(temp.Root, "source");
+        Directory.CreateDirectory(sourceRoot);
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "20261126.csv"),
+            "record_id,reading\n1,11\n2,22\n3,33\n");
+        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, "20261126.csv"),
+            DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
+        var targetA = Path.Combine(temp.Root, "target-a.db");
+        var targetB = Path.Combine(temp.Root, "target-b.db");
+        var factories = new FactorySet(targetA, targetB);
+
+        WorkflowDefinition Definition(int version, bool includeSecondSink) => new(
+            "backfill-flow", "Backfill flow", version,
+            includeSecondSink
+                ? [
+                    new WorkflowNode("src", "industrial.filesystem.local",
+                        new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
+                    new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
+                    new WorkflowNode("storeA", "industrial.sink.sqlite",
+                        new Dictionary<string, object?> { ["targetResourceId"] = "target-a" }, 200, 0),
+                    new WorkflowNode("storeB", "industrial.sink.sqlite",
+                        new Dictionary<string, object?> { ["targetResourceId"] = "target-b" }, 200, 200),
+                ]
+                : [
+                    new WorkflowNode("src", "industrial.filesystem.local",
+                        new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
+                    new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
+                    new WorkflowNode("storeA", "industrial.sink.sqlite",
+                        new Dictionary<string, object?> { ["targetResourceId"] = "target-a" }, 200, 0),
+                ],
+            includeSecondSink
+                ? [
+                    new WorkflowEdge("src", "files", "read", "input"),
+                    new WorkflowEdge("read", "records", "storeA", "records"),
+                    new WorkflowEdge("read", "records", "storeB", "records"),
+                ]
+                : [
+                    new WorkflowEdge("src", "files", "read", "input"),
+                    new WorkflowEdge("read", "records", "storeA", "records"),
+                ],
+            new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            ["source-1"], new Dictionary<string, object?>());
+
+        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, api) =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            foreach (var id in new[] { "target-a", "target-b" })
+            {
+                await resources.RegisterAsync(new ResourceDefinition(
+                    id, id, id, "fixture", new Dictionary<string, object?>(), null,
+                    0, true, now, now));
+            }
+            Assert.True(await api.ExecuteAsync("industrial/save-workflow",
+                JsonSerializer.SerializeToNode(Definition(1, false))));
+            Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
+                new JsonObject { ["workflowId"] = "backfill-flow" }));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = "backfill-flow", ["version"] = 1, ["resourceId"] = "source-1",
+            }));
+            Assert.Equal(3, await CountRowsAsync(targetA));
+            Assert.False(File.Exists(targetB));
+
+            Assert.True(await api.ExecuteAsync("industrial/save-workflow",
+                JsonSerializer.SerializeToNode(Definition(2, true))));
+            Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
+                new JsonObject { ["workflowId"] = "backfill-flow" }));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = "backfill-flow", ["version"] = 2, ["resourceId"] = "source-1",
+            }));
+
+            var deliveries = await ledger.ListAllDeliveriesAsync();
+            Assert.Equal(2, deliveries.Count(delivery => delivery.Status == CollectionStatus.Succeeded));
+            Assert.Single(deliveries, delivery => delivery.TargetId == "target-a");
+            Assert.Single(deliveries, delivery => delivery.TargetId == "target-b");
+        });
+
+        Assert.Equal(3, await CountRowsAsync(targetA));
+        Assert.Equal(3, await CountRowsAsync(targetB));
+    }
+
     private sealed class FactorySet(string targetA, string targetB)
     {
         public bool CrashTargetB { get; set; }

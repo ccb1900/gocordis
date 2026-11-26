@@ -17,6 +17,7 @@ vi.mock("antd", async () => {
   );
   return {
     Button: (props: any) => React.createElement("button", { onClick: props.onClick }, props.children),
+    Space: (props: any) => React.createElement("div", null, props.children),
     Input,
     Select: (props: any) => React.createElement("select", {
       "aria-label": props["aria-label"],

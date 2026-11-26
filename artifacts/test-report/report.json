@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-26T07:28:09.820442+00:00",
+  "generatedAt": "2026-11-26T10:15:03.169050+00:00",
   "source": "tools/release/test-report.sh",
   "suites": [
     {
@@ -47,7 +47,7 @@
     {
       "suite": "industrial-dotnet",
       "exitCode": 0,
-      "passed": 81,
+      "passed": 82,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
@@ -73,6 +73,13 @@
       "log": "industrial-postgresql.log"
     },
     {
+      "suite": "industrial-user-flow",
+      "exitCode": 0,
+      "passed": 1,
+      "skipped": 0,
+      "log": "industrial-user-flow.log"
+    },
+    {
       "suite": "platform-dotnet",
       "exitCode": 0,
       "passed": 685,
@@ -95,7 +102,7 @@
     }
   ],
   "totals": {
-    "passed": 928,
+    "passed": 930,
     "skipped": 3,
     "failedSuites": []
   },
@@ -121,6 +128,11 @@
       "requirement": "real-browser designer E2E",
       "status": "passed",
       "evidence": "industrial-browser-e2e.log"
+    },
+    {
+      "requirement": "blank-environment browser-only full flow (resources, graph, run, failure injection, repair, retry)",
+      "status": "passed",
+      "evidence": "industrial-user-flow.log; industrial/web/e2e/full-flow.spec.ts"
     },
     {
       "requirement": "browser user stories: create workflow, configure/test resource, manage credential, read execution center and retry action",
@@ -166,6 +178,11 @@
       "requirement": "backfill preview uses published sink target set",
       "status": "passed",
       "evidence": "industrial-dotnet.log; ElsaPocTests.BackfillPreviewUsesPublishedSinkTargets"
+    },
+    {
+      "requirement": "newly added sink backfills historical files without duplicating existing targets",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; CrashRecoveryTests.PublishANewSinkBackfillsOnlyThatTargetForHistoricalFiles"
     },
     {
       "requirement": "shared sink write options (writeMode/businessKey) reach all database sinks",

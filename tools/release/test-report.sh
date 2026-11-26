@@ -20,6 +20,7 @@ run platform-dotnet bash -c 'dotnet build Gocordis.sln --nologo -m:1 -v q && DOT
 run industrial-dotnet bash -c 'dotnet build industrial/Industrial.slnx --nologo -m:1 -v q && DOTNET_ROLL_FORWARD=LatestMajor dotnet test industrial/Industrial.slnx --nologo --no-build -m:1'
 run industrial-frontend bash -c 'cd industrial/web && npm test -- --run && npx tsc --noEmit && npm run build'
 run industrial-browser-e2e bash industrial/e2e-browser.sh
+run industrial-user-flow bash industrial/e2e-user-flow.sh
 run industrial-packaged-e2e bash industrial/e2e-packaged.sh
 run industrial-postgresql bash industrial/e2e-database.sh
 run windows-unc bash -c 'DOTNET_ROLL_FORWARD=LatestMajor dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --nologo -m:1 --filter FullyQualifiedName~WindowsUnc'
@@ -74,6 +75,7 @@ report = {
     "windowsUnc": unc_evidence,
     "acceptance": [
         {"requirement": "real-browser designer E2E", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log"},
+        {"requirement": "blank-environment browser-only full flow (resources, graph, run, failure injection, repair, retry)", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-user-flow")["exitCode"] == 0 else "failed", "evidence": "industrial-user-flow.log; industrial/web/e2e/full-flow.spec.ts"},
         {"requirement": "browser user stories: create workflow, configure/test resource, manage credential, read execution center and retry action", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts"},
         {"requirement": "schedule trigger configuration and automatic cron run", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts"},
         {"requirement": "backfill preview before execution", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts"},
@@ -83,6 +85,7 @@ report = {
         {"requirement": "delivery retry reuses published mapping and validation", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; CrashRecoveryTests.DeliveryRetryReusesPublishedMappingAndValidation"},
         {"requirement": "schedule fire claim is durable and at-most-once across restarts", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; DeliveryLeaseTests.ScheduleFireIsClaimedAtMostOnceAcrossRestarts"},
         {"requirement": "backfill preview uses published sink target set", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; ElsaPocTests.BackfillPreviewUsesPublishedSinkTargets"},
+        {"requirement": "newly added sink backfills historical files without duplicating existing targets", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; CrashRecoveryTests.PublishANewSinkBackfillsOnlyThatTargetForHistoricalFiles"},
         {"requirement": "shared sink write options (writeMode/businessKey) reach all database sinks", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; SinkWriteOptionsTests"},
         {"requirement": "real packaged-plugin E2E", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-packaged-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-packaged-e2e.log"},
         {"requirement": "PostgreSQL integration", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-postgresql")["exitCode"] == 0 else "failed", "evidence": "industrial-postgresql.log"},

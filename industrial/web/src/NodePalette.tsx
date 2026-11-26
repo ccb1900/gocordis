@@ -9,9 +9,10 @@ export interface NodePaletteProps {
   descriptors: NodeDescriptor[];
   loading: boolean;
   error?: string | null;
+  onAdd?: (nodeTypeId: string) => void;
 }
 
-export function NodePalette({ descriptors, loading, error }: NodePaletteProps) {
+export function NodePalette({ descriptors, loading, error, onAdd }: NodePaletteProps) {
   const groups = new Map<string, NodeDescriptor[]>();
   for (const descriptor of descriptors) {
     const category = descriptor.category.split(".")[0] || "General";
@@ -45,7 +46,13 @@ export function NodePalette({ descriptors, loading, error }: NodePaletteProps) {
               key={descriptor.nodeTypeId}
               className="industrial-palette-node"
               draggable
+              role="button"
+              tabIndex={0}
               onDragStart={(event) => start(event, descriptor)}
+              onClick={() => onAdd?.(descriptor.nodeTypeId)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") onAdd?.(descriptor.nodeTypeId);
+              }}
               title={descriptor.description || descriptor.nodeTypeId}
             >
               <div className="industrial-palette-node-title">{descriptor.name}</div>

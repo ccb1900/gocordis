@@ -30,6 +30,8 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | UNC connection test uses the credentialed WNet session | `ResourceConnectionTester`, `UncConnectionLease`, fake-native unit test | Pass |
 | Schedule fires are durable and timezone-aware | `ScheduleFires`, `TryClaimScheduleFireAsync`, `TriggerEditor`, `DeliveryLeaseTests` | Pass |
 | Backfill preview uses the published sink target set | `PreviewBackfillAsync`, `ExpectedTargetsAsync`, `ElsaPocTests` | Pass |
+| Blank-environment browser-only full user flow | `industrial/e2e-user-flow.sh`, `full-flow.spec.ts`, palette click add + edge form | Pass |
+| New Sink backfills historical files to only the added target | `CrashRecoveryTests.PublishANewSinkBackfillsOnlyThatTargetForHistoricalFiles` | Pass |
 | Node configuration schemas and typed validation | `IndustrialNodesComponent.cs`, `WorkflowValidator.cs`, `NodeConfigReader.cs` | Pass |
 | Validation strategies and ProcessingResult statistics | `ValidationTransform.cs`, `ProcessingResult`, ledger statistics columns | Pass |
 | Normalized ref-counted WNet UNC leases with credential identity (native seam) | `UncConnectionLease.cs`, `UncLeaseTests.cs`, real Windows runner row below | Pass |
@@ -38,6 +40,6 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Unified test report fact source | `tools/release/test-report.sh`, `report.json`, `report.md` | Pass |
 | Windows UNC/SMB real-share acceptance | `.github/workflows/windows-unc.yml`, `e2e-windows-unc.ps1`, `artifacts/windows-unc-result.json`, passing run https://github.com/ccb1900/gocordis/actions/runs/45773688588 | Pass on real `windows-latest` runner with a real SMB share |
 
-Unified report: 928 passed, 3 explicitly skipped, 0 failed suites. Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+Unified report: 930 passed, 3 explicitly skipped, 0 failed suites. Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

@@ -50,16 +50,19 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const [triggerOpen, setTriggerOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const idRef = useRef(1);
+  const ctxRef = useRef(ctx);
+  ctxRef.current = ctx;
   const triggerRef = useRef<TriggerDefinition>(definition.trigger);
 
   useEffect(() => { triggerRef.current = definition.trigger; }, [definition.trigger]);
 
   useEffect(() => {
     let alive = true;
+    const hub = ctxRef.current.hubQuery;
     Promise.allSettled([
-      ctx.hubQuery("industrial/nodes"),
-      ctx.hubQuery("industrial/workflows"),
-      ctx.hubQuery("industrial/resources"),
+      hub("industrial/nodes"),
+      hub("industrial/workflows"),
+      hub("industrial/resources"),
     ]).then(([nodes, workflows, resources]) => {
       if (!alive) return;
       const errors: string[] = [];
@@ -85,7 +88,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
     }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ctx]);
+  }, []);
 
   const catalog = useMemo(
     () => new Map(descriptors.map((descriptor) => [descriptor.nodeTypeId, descriptor])),
@@ -198,6 +201,11 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
     setDirty(true);
   }, [catalog]);
 
+  const addNodeFromPalette = useCallback((type: string) => {
+    const index = idRef.current - 1;
+    dropNode(type, 80 + (index % 3) * 190, 80 + Math.floor(index / 3) * 130);
+  }, [dropNode]);
+
   const createEdge = useCallback((from: string, to: string) => {
     const first = definition.nodes.find((node) => node.id === from);
     const second = definition.nodes.find((node) => node.id === to);
@@ -296,14 +304,15 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
             <Button size="small" loading={busy} onClick={() => void publish()}>发布</Button>
             <Button size="small" type="primary" loading={busy} onClick={() => void run()}>运行</Button>
           </Space>
-          <Select
+          <select
             className="industrial-resource-select"
-            size="small"
+            aria-label="运行资源"
             value={resourceId}
-            onChange={setResourceId}
-            placeholder="运行资源"
-            options={resourceIds.map((id) => ({ value: id, label: id }))}
-          />
+            onChange={(event) => setResourceId(event.target.value)}
+          >
+            <option value="">运行资源</option>
+            {resourceIds.map((id) => <option key={id} value={id}>{id}</option>)}
+          </select>
           <InputNumber
             className="industrial-backfill-input"
             size="small"
@@ -331,7 +340,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
                 options={summaries.map((item) => ({ value: item.workflowId, label: item.name }))}
               />
             )}
-            <NodePalette descriptors={descriptors} loading={false} />
+            <NodePalette descriptors={descriptors} loading={false} onAdd={addNodeFromPalette} />
           </aside>
         ) : (
           <div className="industrial-palette-rail">
@@ -409,6 +418,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
         <PropertyEditor
           node={selectedNode}
           descriptor={selectedNode ? descriptorOf(catalog, selectedNode.type) ?? null : null}
+          nodes={definition.nodes}
           edges={definition.edges}
           catalog={catalog}
           resources={resources}
@@ -428,6 +438,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
             setDefinition((current) => removeEdge(current, index));
             setDirty(true);
           }}
+          onCreateEdge={(from, to) => void createEdge(from, to)}
           onUpdateEdge={updateEdge}
           onSelectNode={(id) => {
             setSelectedId(id);

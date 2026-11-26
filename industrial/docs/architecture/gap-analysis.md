@@ -51,9 +51,11 @@ React/antd instance and no frontend-owned page registry.
 - The G6 designer has a jsdom integration test using G6's SVG renderer plus a
   real Chromium E2E (`bash industrial/e2e-browser.sh`) covering resource edit
   preservation, triggered/backfill UIs, file diagnosis and a real failed-target
-  repair+retry. A fully blank, drag-only browser construction is not yet
-  automated because G6 does not reliably render dropped nodes in the packaged
-  headless browser; graph construction is still covered by component tests.
+  repair+retry. A separate blank-environment suite (`bash industrial/e2e-user-flow.sh`)
+  builds the whole graph in the browser and covers failure/repair/retry without
+  API seeding. The designer also supports click-to-add nodes and an explicit
+  edge form because G6's native drop gesture is not reliable in the packaged
+  headless browser.
 - `bash industrial/e2e-packaged.sh` builds and installs real `.gocordis-plugin`
   packages, starts `Industrial.PackagedHost`, and drives save/publish/run plus
   the execution-center query over HTTP.

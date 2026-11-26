@@ -3,7 +3,7 @@
 // listed with editable ports so a type mismatch can always be corrected.
 
 import {
-  Button, Divider, Empty, Form, Input, InputNumber, Select, Switch, Table, Tag, Typography,
+  Button, Divider, Empty, Form, Input, InputNumber, Select, Space, Switch, Table, Tag, Typography,
   type TableColumnsType,
 } from "antd";
 import { useEffect, useState, type ReactNode } from "react";
@@ -18,6 +18,7 @@ import { StringListEditor } from "./StringListEditor";
 export interface PropertyEditorProps {
   node: WorkflowNode | null;
   descriptor: NodeDescriptor | null;
+  nodes: readonly WorkflowNode[];
   edges: WorkflowEdge[];
   catalog: ReadonlyMap<string, NodeDescriptor>;
   resources: readonly ResourceOption[];
@@ -25,6 +26,7 @@ export interface PropertyEditorProps {
   onApplyConfig: (config: Record<string, unknown>) => void;
   onDeleteNode: () => void;
   onDeleteEdge: (index: number) => void;
+  onCreateEdge: (from: string, to: string) => void;
   onUpdateEdge: (index: number, edge: WorkflowEdge) => void;
   onSelectNode: (id: string) => void;
 }
@@ -54,9 +56,9 @@ function JsonValueField({ value, onChange }: {
   );
 }
 
-function ResourcePicker({ value, onChange, resources, resourceType }: {
+function ResourcePicker({ value, onChange, resources, resourceType, label }: {
   value?: string; onChange?: (next: string | undefined) => void;
-  resources: readonly ResourceOption[]; resourceType?: string;
+  resources: readonly ResourceOption[]; resourceType?: string; label?: string;
 }) {
   const options = resources
     .filter((resource) => resource.enabled !== false &&
@@ -68,7 +70,13 @@ function ResourcePicker({ value, onChange, resources, resourceType }: {
   const selected = resources.find((resource) => resource.id === value);
   return (
     <div>
-      <Select allowClear value={value} onChange={onChange} options={options} />
+      <select aria-label={label} value={value ?? ""}
+        onChange={(event) => onChange?.(event.target.value || undefined)}>
+        <option value="">未选择</option>
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
       {selected?.credentialId && (
         <Typography.Text type="secondary" style={{ fontSize: 11, display: "block" }}>
           凭证：{selected.credentialName ?? selected.credentialId}
@@ -87,7 +95,8 @@ function SchemaField({ name, schema, required, resources, resourceType, properti
   let valuePropName: "value" | "checked" = "value";
   switch (editorKindForSchema(schema)) {
     case "resource":
-      control = <ResourcePicker resources={resources} resourceType={resourceType} />;
+      control = <ResourcePicker resources={resources} resourceType={resourceType}
+        label={String(schema.title ?? name)} />;
       break;
     case "enum":
       control = (
@@ -144,12 +153,14 @@ interface EdgeRow extends WorkflowEdge {
 
 export function PropertyEditor(props: PropertyEditorProps) {
   const {
-    node, descriptor, edges, catalog, resources, issues, onApplyConfig, onDeleteNode,
-    onDeleteEdge, onUpdateEdge, onSelectNode,
+    node, descriptor, nodes, edges, catalog, resources, issues, onApplyConfig, onDeleteNode,
+    onDeleteEdge, onCreateEdge, onUpdateEdge, onSelectNode,
   } = props;
   const [form] = Form.useForm<Record<string, unknown>>();
   const [json, setJson] = useState("{}");
   const [jsonError, setJsonError] = useState<string | null>(null);
+  const [fromNode, setFromNode] = useState<string | undefined>();
+  const [toNode, setToNode] = useState<string | undefined>();
 
   useEffect(() => {
     form.setFieldsValue(node?.config ?? {});
@@ -261,6 +272,24 @@ export function PropertyEditor(props: PropertyEditorProps) {
         </>
       )}
       <Divider plain style={{ margin: "16px 0 8px" }}>连线 ({edges.length})</Divider>
+      {nodes.length > 1 && <Space wrap style={{ marginBottom: 8 }}>
+        <select aria-label="连线起点" value={fromNode ?? ""}
+          onChange={(event) => setFromNode(event.target.value || undefined)}>
+          <option value="">起点节点</option>
+          {nodes.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+        </select>
+        <select aria-label="连线终点" value={toNode ?? ""}
+          onChange={(event) => setToNode(event.target.value || undefined)}>
+          <option value="">终点节点</option>
+          {nodes.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+        </select>
+        <Button size="small" disabled={!fromNode || !toNode || fromNode === toNode}
+          onClick={() => {
+            if (fromNode && toNode) onCreateEdge(fromNode, toNode);
+          }}>
+          添加连线
+        </Button>
+      </Space>}
       {edges.length === 0
         ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>从节点端口拖到另一个节点即可连线；也可以在这里编辑端口。</Typography.Text>
         : <Table size="small" columns={edgeColumns} dataSource={edgeRows} pagination={false} />}

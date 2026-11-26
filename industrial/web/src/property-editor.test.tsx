@@ -15,6 +15,7 @@ vi.mock("antd", async () => {
   return {
   Button: ({ children, onClick }: any) => React.createElement("button", { onClick }, children),
   Divider: Box,
+  Space: Box,
   Empty: Box,
   Form: Object.assign(Box, {
     Item: (props: any) => {
@@ -64,7 +65,8 @@ describe("schema-driven property form", () => {
     const applied: Array<Record<string, unknown>> = [];
     render(React.createElement(PropertyEditor, {
       node: { id: "n1", type: "probe", config: { targetResourceId: "target" }, x: 0, y: 0 },
-      descriptor, edges: [], catalog: new Map(), resources: [
+      descriptor, nodes: [{ id: "n1", type: "probe", config: {}, x: 0, y: 0 }],
+      edges: [], catalog: new Map(), resources: [
         { id: "share", name: "Share", type: "filesystem.local", enabled: true, credentialId: "cred-1", credentialName: "Account" },
         { id: "other", name: "Other", type: "database", enabled: true },
         { id: "off", name: "Disabled", type: "filesystem.local", enabled: false },
@@ -73,14 +75,14 @@ describe("schema-driven property form", () => {
       onApplyConfig: (config) => applied.push(config),
       onDeleteNode: () => undefined,
       onDeleteEdge: () => undefined,
+      onCreateEdge: () => undefined,
       onUpdateEdge: () => undefined,
       onSelectNode: () => undefined,
     }));
 
     expect(formItems.find((item) => item.name === "enabled")?.valuePropName).toBe("checked");
-    const picker = selects.find((item) => Array.isArray(item.options) &&
-      item.options.some((option: any) => option.value === "share"));
-    expect(picker?.options.map((option: any) => option.value)).toEqual(["share"]);
+    const picker = screen.getByLabelText("Source") as HTMLSelectElement;
+    expect(Array.from(picker.options).map((option) => option.value)).toEqual(["", "share"]);
     expect(screen.getByText(/凭证：Account/)).toBeTruthy();
 
     fireEvent.click(screen.getByText("应用配置"));

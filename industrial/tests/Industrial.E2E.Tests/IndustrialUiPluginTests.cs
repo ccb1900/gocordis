@@ -44,9 +44,9 @@ public sealed class IndustrialUiPluginTests
 
         Assert.Equal(9, console.Ui.Pages().Count);
         Assert.Contains(console.Ui.Pages(), page => page.Id == "industrial.designer");
-        // One plugin identity owns the page, its data, navigation, route AND
-        // its client module; disabling it withdraws all of them together.
-        Assert.Contains(console.Ui.ClientModules(), module => module.Name == "industrial-designer");
+        // Pages/routes/navigation/data are code contributions of this plugin;
+        // the browser bundle is a UI resource of the same PACKAGE and is bound
+        // by UiPackageBinder in the packaged product path, not here.
         Assert.Equal(9, console.Ui.Routes().Count(route => route.Owner.ComponentId == "industrial-ui"));
         Assert.Equal(9, console.Ui.Navigations().Count(nav => nav.Owner.ComponentId == "industrial-ui"));
         Assert.NotNull(console.Api.Query("industrial/dashboard"));
@@ -78,7 +78,6 @@ public sealed class IndustrialUiPluginTests
         Assert.DoesNotContain(console.Ui.Pages(), page => page.Owner.ComponentId == "industrial-ui");
         Assert.DoesNotContain(console.Ui.Routes(), route => route.Owner.ComponentId == "industrial-ui");
         Assert.DoesNotContain(console.Ui.Navigations(), nav => nav.Owner.ComponentId == "industrial-ui");
-        Assert.DoesNotContain(console.Ui.ClientModules(), module => module.Name == "industrial-designer");
         Assert.Null(console.Api.Query("industrial/dashboard"));
         Assert.Equal(13, (await catalog.ListAsync()).Count);
 

@@ -18,7 +18,7 @@ framework was not modified for industrial logic; all product code lives under
 | CSV → mapping/validation → sink → archive (scenario D) | Implemented | `WorkflowTransformReader`, resource-aware sinks, `FileArchiveSink`; `industrial/deliveries` query exposes per-target status |
 | Failure, retry, restart recovery (scenario E) | Implemented | `BoundedRetry`, token-fenced ledger claims/leases with renewal, `RetryFailedAsync`; startup resumes the original Elsa instance and only incomplete deliveries; `CrashRecoveryTests` proves two-database mid-write crash recovery, `DeliveryLeaseTests` and `RecoveryTests` cover concurrency, identity and large files |
 | Historical backfill (scenario F) | Implemented | Corrected `HistoricalRangePlanner` scans the last N days; ledger identity prevents duplicate business rows, covered by offline/backfill test |
-| UI plugin lifecycle incl. routes/navigation (scenario G) | Implemented | One `industrial.ui` plugin contributes page, views, route, navigation, client module and APIs; enable/disable withdraws all through Fiber effects |
+| UI plugin lifecycle incl. routes/navigation (scenario G) | Implemented | One `industrial.ui` plugin contributes page, views, route, navigation and APIs; its browser bundle is a `client-module` UI resource of the same package, bound by `UiPackageBinder`; enable/disable withdraws all through Fiber effects |
 | Packaged product loop | Implemented | `industrial/pack.sh` builds real `.gocordis-plugin` packages, installs into a fresh store and starts `Industrial.PackagedHost` |
 
 Verification: `dotnet build Gocordis.sln` 0 warning/0 error; full solution tests

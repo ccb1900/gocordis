@@ -21,14 +21,14 @@ Status legend: implemented / partial / not implemented / not applicable.
 | Multi-target independent delivery | implemented | `FileDelivery` per target, `industrial/deliveries` query, archive-only retry |
 | Bounded retry and restart resume | implemented | `BoundedRetry`, token-fenced ledger claims, startup resumes the original Elsa instance from reusable stages; real OS process-kill test proves only incomplete targets are retried |
 | Excel / MySQL / PostgreSQL sinks | implemented (no live-server test) | Mature drivers (`ExcelDataReader`, `Npgsql`, `MySqlConnector`); SQLite is the executable target in CI |
-| Full Web UI pages and lifecycle | implemented | Nine page contributions, declarative views, routes, navigation and one client module, all owned by `industrial.ui` |
+| Full Web UI pages and lifecycle | implemented | Nine page contributions, declarative views, routes and navigation owned by `industrial.ui`; the client module is shipped inside the `industrial.ui` package and bound by `UiPackageBinder` |
 | E2E acceptance A–G | implemented in executable tests | `IndustrialReaderPluginTests`, `IndustrialResourceSharingTests`, `IndustrialUiPluginTests`, `CollectionPipelineTests`, `designer-block.test.tsx` |
 
 ## Post-review organization verdict (2026-11-25, after closing gaps)
 
 **Framework / paper semantics: conforming.** One Runtime/Registry; no industrial
 logic in Core; contracts separated; every business capability bound through
-`Cordis Key<T>`; UI pages, views, routes, navigation, client module, queries and
+`Cordis Key<T>`; UI pages, views, routes, navigation, packaged client module, queries and
 commands registered as Fiber effects and withdrawn in LIFO order; product host
 uses real `.gocordis-plugin` packages with shared-contract sealing and declared
 `--provides` / `--dependency`. No ALC sandbox claim, no second lifecycle.

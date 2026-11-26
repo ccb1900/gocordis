@@ -14,11 +14,9 @@ namespace Industrial.Plugins;
 public sealed class IndustrialUiComponent : Component
 {
     // One plugin identity contributes BOTH the backend service/data and the
-    // frontend extension (Koishi shape). The page routes here are declarative;
-    // the browser module only registers a block renderer into the console.
-    private const string ClientModuleName = "industrial-designer";
-    private const string ClientModuleUrl = "/client-modules/industrial-designer/module.js";
-    private const string ClientModuleEntry = "module.js";
+    // frontend page composition (Koishi shape). The browser bundle is shipped
+    // as a client-module UI resource of THIS package; UiPackageBinder owns its
+    // lifecycle, so this component must not register a second module entry.
 
     private static readonly JsonSerializerOptions WireJson = new()
     {
@@ -85,9 +83,6 @@ public sealed class IndustrialUiComponent : Component
         var sink = context.Require(IndustrialKeys.RecordSink);
         var archive = context.Require(IndustrialKeys.ArchiveSink);
         var owner = ContributionOwner.ForContext(context, "industrial.ui", "industrial-ui");
-
-        await context.RegisterUiClientModuleAsync(ui, owner, new UiClientModuleDefinition(
-            ClientModuleName, ClientModuleUrl, "0.1.2", ClientModuleEntry));
 
         var pages = new[]
         {

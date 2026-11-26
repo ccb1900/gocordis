@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build real .gocordis-plugin packages for the industrial product. No raw
-# factories are needed: Industrial.PackagedHost loads only these packages.
+# Build real .gocordis-plugin packages for the industrial product. These are
+# installed into the generic Gocordis.Platform store; no industrial-specific
+# host or pre-registered raw factory is involved.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-/tmp/gocordis-industrial-packages}"
@@ -9,15 +10,21 @@ MANIFEST="$OUT/gocordis.app.json"
 mkdir -p "$OUT/packages" "$STORE"
 
 dotnet build "$ROOT/industrial/Industrial.slnx" --nologo -m:1 >/dev/null
-mkdir -p "$ROOT/industrial/src/Industrial.PackagedHost/bin/Debug/net10.0/client-modules/industrial-designer"
-cp -r "$ROOT"/industrial/web/dist/. \
-  "$ROOT/industrial/src/Industrial.PackagedHost/bin/Debug/net10.0/client-modules/industrial-designer/"
 dotnet build "$ROOT/tools/Gocordis.Cli/Gocordis.Cli.csproj" --nologo -v q
-# Native SQLite assets live in the product host output, not in each package.
-HOST_BIN="$ROOT/industrial/src/Industrial.PackagedHost/bin/Debug/net10.0"
-mkdir -p "$HOST_BIN"
-cp -r "$ROOT/industrial/src/Industrial.Host/bin/Debug/net10.0/runtimes" "$HOST_BIN/" 2>/dev/null || true
 CLI=(dotnet "$ROOT/tools/Gocordis.Cli/bin/Debug/net10.0/Gocordis.Cli.dll")
+
+# Native SQLite assets are host process assets (not package payloads). Seed
+# them into the GENERIC platform output so packaged plugins can open the ledger.
+NATIVE_SRC="$ROOT/industrial/src/Industrial.Host/bin/Debug/net10.0/runtimes"
+PLATFORM_BIN="$ROOT/src/Gocordis.Platform/bin/Debug/net10.0"
+if [[ -d "$NATIVE_SRC" ]]; then
+  mkdir -p "$PLATFORM_BIN/runtimes"
+  while IFS= read -r -d '' asset; do
+    rel="${asset#"$NATIVE_SRC"/}"
+    mkdir -p "$PLATFORM_BIN/runtimes/$(dirname "$rel")"
+    cp "$asset" "$PLATFORM_BIN/runtimes/$rel"
+  done < <(find "$NATIVE_SRC" -name '*e_sqlite3*' -print0)
+fi
 
 pack() {
   local id="$1" assembly="$2" type="$3"
@@ -28,8 +35,24 @@ pack() {
   # CsvHelper, SqlClient, Elsa...). Package it so a collectible ALC can resolve
   # every dependency without relying on the host's default context.
   cp "$ROOT/industrial/tests/Industrial.Integration.Tests/bin/Debug/net10.0/"*.dll "$stage/"
-  # Native assets are provided to the product host output, not to each package:
-  # copying all runtimes would exceed the package payload limit with Wasmtime.
+  # The browser bundle belongs to the PLUGIN PACKAGE, not to a host directory.
+  # UiPackageBinder reads gocordis-ui.json and gives the module a real Source,
+  # so a generic Platform host serves it without any pre-registered factory.
+  if [[ "$id" == "industrial.ui" ]]; then
+    mkdir -p "$stage/ui/industrial-designer"
+    cp -r "$ROOT/industrial/web/dist/." "$stage/ui/industrial-designer/"
+    cat > "$stage/gocordis-ui.json" <<'JSON'
+{
+  "resources": [
+    {
+      "kind": "client-module",
+      "id": "industrial-designer",
+      "path": "ui/industrial-designer/module.js"
+    }
+  ]
+}
+JSON
+  fi
   local package="$OUT/packages/$id-1.0.0.gocordis-plugin"
   "${CLI[@]}" plugin pack "$stage" "$package" \
     --id "$id" --version 1.0.0 --type "$id" --host-range '[1.0,)' \
@@ -101,6 +124,6 @@ if [[ "${2:-}" == "--run" ]]; then
   export GOCORDIS_INDUSTRIAL_SEED_RESOURCE=true
   export GOCORDIS_INDUSTRIAL_SOURCE_ROOT="$OUT/source"
   mkdir -p "$OUT/source"
-  exec dotnet run --project "$ROOT/industrial/src/Industrial.PackagedHost/Industrial.PackagedHost.csproj" --no-build -- \
-    "$MANIFEST" "$STORE" "${GOCORDIS_INDUSTRIAL_ADDR:-http://127.0.0.1:0}"
+  exec "${CLI[@]}" app run "$MANIFEST" --store "$STORE" \
+    --address "${GOCORDIS_INDUSTRIAL_ADDR:-http://127.0.0.1:0}"
 fi

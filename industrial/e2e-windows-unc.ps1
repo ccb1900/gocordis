@@ -10,7 +10,7 @@ $userName = $null
 $sharePath = $null
 
 function New-LocalSmbFixture {
-    if (-not [System.Environment]::IsWindows()) {
+    if (-not $IsWindows) {
         throw "Windows UNC/SMB acceptance requires a Windows runner"
     }
 

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-26T02:06:58.526701+00:00",
+  "generatedAt": "2026-11-26T02:41:02.671998+00:00",
   "source": "tools/release/test-report.sh",
   "suites": [
     {
@@ -47,14 +47,14 @@
     {
       "suite": "industrial-dotnet",
       "exitCode": 0,
-      "passed": 63,
+      "passed": 66,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
     {
       "suite": "industrial-frontend",
       "exitCode": 0,
-      "passed": 36,
+      "passed": 37,
       "skipped": 0,
       "log": "industrial-frontend.log"
     },
@@ -95,7 +95,7 @@
     }
   ],
   "totals": {
-    "passed": 896,
+    "passed": 900,
     "skipped": 3,
     "failedSuites": []
   },
@@ -121,6 +121,16 @@
       "requirement": "real-browser designer E2E",
       "status": "passed",
       "evidence": "industrial-browser-e2e.log"
+    },
+    {
+      "requirement": "browser user stories: create workflow, configure/test resource, manage credential, read execution center and retry action",
+      "status": "passed",
+      "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts"
+    },
+    {
+      "requirement": "node configuration reaches runtime (CSV delimiter/header/id/time; SQL write strategy)",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log"
     },
     {
       "requirement": "real packaged-plugin E2E",

@@ -58,12 +58,16 @@ public sealed class IndustrialResourceComponent : IndustrialCapabilityComponent
     public IndustrialResourceComponent(IReadOnlyDictionary<string, object?>? config = null) : base(config) { }
 
     public override string Name => "industrial-resource";
-    public override IReadOnlyList<ICapabilityKey> Provide() => [IndustrialKeys.ResourceRegistry];
+    public override IReadOnlyList<ICapabilityKey> Inject() => [IndustrialKeys.CredentialVault];
+    public override IReadOnlyList<ICapabilityKey> Provide() =>
+        [IndustrialKeys.ResourceRegistry, IndustrialKeys.ResourceConnectionTester];
 
     public override ValueTask<Cleanup?> ApplyAsync(Context context)
     {
         var registry = new ResourceRegistry(LedgerDb);
         context.Provide(IndustrialKeys.ResourceRegistry, registry);
+        context.Provide(IndustrialKeys.ResourceConnectionTester,
+            new ResourceConnectionTester(context.Require(IndustrialKeys.CredentialVault)));
         if (string.Equals(Setting("seedResource", "false"), "true", StringComparison.OrdinalIgnoreCase))
         {
             var id = Setting("resourceId", "source-1");

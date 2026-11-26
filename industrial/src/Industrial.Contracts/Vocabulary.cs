@@ -34,6 +34,8 @@ public static class IndustrialKeys
         new("industrial.reader.broker");
     public static readonly Key<IStageOutputStore> StageOutputStore =
         new("industrial.execution.stage-output-store");
+    public static readonly Key<IResourceConnectionTester> ResourceConnectionTester =
+        new("industrial.resource.connection-tester");
 }
 
 /// <summary>Canonical Activity type ids contributed by the built-in node
@@ -126,6 +128,17 @@ public interface IResourceRegistry
 
 /// <summary>Secret material is returned only to internal consumers through
 /// RevealAsync; UI/API layers must use CredentialView instead.</summary>
+/// <summary>Read-only probe used by the resource management UI. It opens a
+/// connection or checks a directory without writing business data, so a user
+/// can validate configuration before publishing a workflow.</summary>
+public sealed record ResourceTestResult(bool Ok, string Detail);
+
+public interface IResourceConnectionTester
+{
+    ValueTask<ResourceTestResult> TestAsync(
+        ResourceDefinition resource, CancellationToken ct = default);
+}
+
 public interface ICredentialVault
 {
     ValueTask<CredentialView> PutAsync(string id, string name, string kind, string secret, CancellationToken ct = default);

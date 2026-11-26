@@ -12,8 +12,14 @@ import {
   PORT_TYPES,
   type CollectionRow,
   type CommandResult,
+  type CredentialRow,
+  type DeliveryRow,
+  type ExecutionCenterView,
   type ExecutionNodeView,
+  type ExecutionRunRow,
   type ExecutionStateView,
+  type ResourceRow,
+  type ResourceTestRow,
   type JsonSchemaLike,
   type NodeDescriptor,
   type NodePort,
@@ -269,6 +275,84 @@ export function parseCollections(raw: unknown): CollectionRow[] {
       status: text(pick(o, "status"), "—"),
     };
   });
+}
+
+const bool = (v: unknown): boolean => v === true || (typeof v === "string" && v.toLowerCase() === "true");
+
+export function parseResources(raw: unknown): ResourceRow[] {
+  const data = unwrapData(raw);
+  const list = Array.isArray(data) ? data : asArray(pick(asObj(data), "resources", "items"));
+  return list.map((item) => {
+    const o = asObj(item);
+    const credentialId = pick(o, "credentialId", "credential_id");
+    return {
+      id: text(pick(o, "id"), "—"),
+      name: text(pick(o, "name"), "—"),
+      type: text(pick(o, "type"), "—"),
+      provider: text(pick(o, "provider"), "—"),
+      enabled: bool(pick(o, "enabled")),
+      credentialId: credentialId == null ? null : text(credentialId),
+      credentialName: pick(o, "credentialName") == null ? null : text(pick(o, "credentialName")),
+    };
+  });
+}
+
+export function parseCredentials(raw: unknown): CredentialRow[] {
+  const data = unwrapData(raw);
+  const list = Array.isArray(data) ? data : asArray(pick(asObj(data), "credentials", "items"));
+  return list.map((item) => {
+    const o = asObj(item);
+    return {
+      id: text(pick(o, "id"), "—"),
+      name: text(pick(o, "name"), "—"),
+      kind: text(pick(o, "kind"), "—"),
+      version: number(pick(o, "version")),
+    };
+  });
+}
+
+export function parseResourceTests(raw: unknown): ResourceTestRow[] {
+  const data = unwrapData(raw);
+  const list = Array.isArray(data) ? data : asArray(pick(asObj(data), "tests", "items"));
+  return list.map((item) => {
+    const o = asObj(item);
+    return {
+      resourceId: text(pick(o, "resourceId", "resource_id"), "—"),
+      ok: bool(pick(o, "ok")),
+      detail: text(pick(o, "detail"), ""),
+    };
+  });
+}
+
+export function parseExecutionCenter(raw: unknown): ExecutionCenterView {
+  const data = unwrapData(raw);
+  const o = asObj(data);
+  const runs: ExecutionRunRow[] = asArray(pick(o, "runs")).map((item) => {
+    const run = asObj(item);
+    return {
+      id: text(pick(run, "id"), "—"),
+      workflowId: text(pick(run, "workflowId", "workflow_id"), "—"),
+      status: text(pick(run, "status"), "—"),
+      startedAt: text(pick(run, "startedAt", "started_at"), ""),
+      finishedAt: pick(run, "finishedAt", "finished_at") == null
+        ? null : text(pick(run, "finishedAt", "finished_at")),
+      error: pick(run, "error") == null ? null : text(pick(run, "error")),
+    };
+  });
+  const deliveries: DeliveryRow[] = asArray(pick(o, "deliveries")).map((item) => {
+    const delivery = asObj(item);
+    return {
+      id: text(pick(delivery, "id"), "—"),
+      collectionFileId: text(pick(delivery, "collectionFileId", "collection_file_id"), ""),
+      targetId: text(pick(delivery, "targetId", "target_id"), "—"),
+      targetKind: text(pick(delivery, "targetKind", "target_kind"), "record"),
+      status: text(pick(delivery, "status"), "—"),
+      attempts: number(pick(delivery, "attempts")),
+      records: number(pick(delivery, "records")),
+      error: pick(delivery, "error") == null ? null : text(pick(delivery, "error")),
+    };
+  });
+  return { runs, deliveries };
 }
 
 /** Validation errors may arrive as `{errors:[...]}` or a bare array. Located

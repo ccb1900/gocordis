@@ -369,12 +369,16 @@ public sealed class PluginRegistry : IAsyncDisposable
         var plans = new List<EntryPlan>();
         var staged = new Dictionary<string, Component>(StringComparer.Ordinal);
         var newlyStaged = new HashSet<Component>(ReferenceEqualityComparer.Instance);
+        // ProtectedIds is mutated by hosts outside this transaction gate; read
+        // one immutable snapshot so a concurrent registration cannot corrupt
+        // HashSet enumeration here.
+        var protectedIds = new HashSet<string>(ProtectedIds, StringComparer.Ordinal);
 
         try
         {
             foreach (var manifest in declarations)
             {
-                if (rejectProtectedDisable && ProtectedIds.Contains(manifest.Id) && !manifest.Enabled)
+                if (rejectProtectedDisable && protectedIds.Contains(manifest.Id) && !manifest.Enabled)
                 {
                     throw new ProtectedPluginException(manifest.Id);
                 }
@@ -555,10 +559,11 @@ public sealed class PluginRegistry : IAsyncDisposable
 
     private async Task CommitAsync(PreparedBatch batch, RegistryUndo undo)
     {
+        var protectedIds = new HashSet<string>(ProtectedIds, StringComparer.Ordinal);
         // Platform-owned ids survive a declaration that omits them entirely.
         foreach (var id in _entries.Keys.Except(batch.ById.Keys).ToArray())
         {
-            if (ProtectedIds.Contains(id))
+            if (protectedIds.Contains(id))
             {
                 continue;
             }

@@ -58,7 +58,12 @@ describe("industrial-workflow-canvas inside the console shell", () => {
           : name === "industrial/workflows" ? [] : [{ id: "source-1" }],
         hubCommand: async () => undefined,
       },
-      blocks: { register: (_kind: string, component: unknown) => { canvas = component; return () => undefined; } },
+      blocks: {
+        register: (kind: string, component: unknown) => {
+          if (kind === "industrial-workflow-canvas") canvas = component;
+          return () => undefined;
+        },
+      },
     };
 
     register(api);

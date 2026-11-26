@@ -93,36 +93,42 @@ public sealed class PostgreSqlSinkFactory : IRecordSinkFactory
 {
     public string ResourceType => "postgresql";
 
-    public async ValueTask<IRecordSink> CreateAsync(
-        ResourceDefinition resource, ICredentialVault vault,
-        IReadOnlyDictionary<string, object?>? nodeConfig = null, CancellationToken ct = default)
+    public static async ValueTask<string> BuildConnectionStringAsync(
+        ResourceDefinition resource, ICredentialVault vault, CancellationToken ct = default)
     {
         var (user, password) = await ResourceConnection.CredentialsAsync(resource, vault, ct);
         var host = ResourceConnection.Require(resource, "host", "server");
         var database = ResourceConnection.Require(resource, "database");
         var port = ResourceConnection.Value(resource, "port") ?? "5432";
-        return new PostgreSqlRecordSink(
-            $"Host={host};Port={port};Database={database};Username={user};Password={password}",
-            resource.Id);
+        return $"Host={host};Port={port};Database={database};Username={user};Password={password}";
     }
+
+    public async ValueTask<IRecordSink> CreateAsync(
+        ResourceDefinition resource, ICredentialVault vault,
+        IReadOnlyDictionary<string, object?>? nodeConfig = null, CancellationToken ct = default) =>
+        new PostgreSqlRecordSink(
+            await BuildConnectionStringAsync(resource, vault, ct), resource.Id);
 }
 
 public sealed class MySqlSinkFactory : IRecordSinkFactory
 {
     public string ResourceType => "mysql";
 
-    public async ValueTask<IRecordSink> CreateAsync(
-        ResourceDefinition resource, ICredentialVault vault,
-        IReadOnlyDictionary<string, object?>? nodeConfig = null, CancellationToken ct = default)
+    public static async ValueTask<string> BuildConnectionStringAsync(
+        ResourceDefinition resource, ICredentialVault vault, CancellationToken ct = default)
     {
         var (user, password) = await ResourceConnection.CredentialsAsync(resource, vault, ct);
         var host = ResourceConnection.Require(resource, "host", "server");
         var database = ResourceConnection.Require(resource, "database");
         var port = ResourceConnection.Value(resource, "port") ?? "3306";
-        return new MySqlRecordSink(
-            $"Server={host};Port={port};Database={database};Uid={user};Pwd={password}",
-            resource.Id);
+        return $"Server={host};Port={port};Database={database};Uid={user};Pwd={password}";
     }
+
+    public async ValueTask<IRecordSink> CreateAsync(
+        ResourceDefinition resource, ICredentialVault vault,
+        IReadOnlyDictionary<string, object?>? nodeConfig = null, CancellationToken ct = default) =>
+        new MySqlRecordSink(
+            await BuildConnectionStringAsync(resource, vault, ct), resource.Id);
 }
 
 public sealed class SqliteSinkFactory(Func<IndustrialTargetDbContext> db) : IRecordSinkFactory

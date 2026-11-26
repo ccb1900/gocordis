@@ -1,10 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
-  canonicalPortType, parseCollections, parseCommandResult, parseExecution, parseNodeDescriptors,
-  parseResourceOptions, parseValidationIssues, parseWorkflow, parseWorkflowSummaries, unwrapData,
+  canonicalPortType, parseCollections, parseCommandResult, parseCredentials, parseExecution,
+  parseExecutionCenter, parseNodeDescriptors, parseResourceOptions, parseResourceTests,
+  parseResources, parseValidationIssues, parseWorkflow, parseWorkflowSummaries, unwrapData,
 } from "./dto";
 
 describe("hub envelope parsing", () => {
+  it("parses resource management and execution-center payloads", () => {
+    const resources = parseResources([{ id: "src", name: "Source", type: "filesystem.local",
+      enabled: true, credentialId: "cred", credentialName: "SMB" }]);
+    expect(resources[0]).toMatchObject({ id: "src", enabled: true, credentialName: "SMB" });
+    expect(parseResourceTests([{ resourceId: "src", ok: false, detail: "找不到目录" }])[0])
+      .toEqual({ resourceId: "src", ok: false, detail: "找不到目录" });
+    expect(parseCredentials([{ id: "cred", name: "SMB", kind: "username-password", version: 2 }])[0].version)
+      .toBe(2);
+
+    const center = parseExecutionCenter({ runs: [{ id: "run-1", workflowId: "flow", status: "Succeeded",
+      startedAt: "2026-11-26T00:00:00Z", finishedAt: null, error: null }],
+      deliveries: [{ id: "d1", collectionFileId: "f1", targetId: "target-b", targetKind: "record",
+        status: "Failed", attempts: 3, records: 1, error: "connection reset" }] });
+    expect(center.runs[0].status).toBe("Succeeded");
+    expect(center.deliveries[0]).toMatchObject({ targetId: "target-b", attempts: 3, error: "connection reset" });
+  });
+
   it("parses bounded node execution diagnostics from the same execution payload", () => {
     const state = parseExecution({ data: {
       status: "Finished",

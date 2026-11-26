@@ -18,9 +18,14 @@ describe("industrial console client module", () => {
     const unregister = register(api);
     expect(typeof unregister).toBe("function");
     unregister();
-    expect(registrations).toEqual([
-      { kind: "industrial-workflow-canvas", component: expect.any(Function) },
+    expect(registrations.map((entry) => entry.kind)).toEqual([
+      "industrial-workflow-canvas",
+      "industrial-workflow-list",
+      "industrial-resource-console",
+      "industrial-credential-console",
+      "industrial-execution-center",
     ]);
+    expect(registrations.every((entry) => typeof entry.component === "function")).toBe(true);
     expect(getFacade()).toBe(api);
   });
 });

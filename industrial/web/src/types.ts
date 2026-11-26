@@ -118,6 +118,54 @@ export interface ExecutionNodeView {
   samples: string[];
 }
 
+export interface ResourceRow {
+  id: string;
+  name: string;
+  type: string;
+  provider: string;
+  enabled: boolean;
+  credentialId: string | null;
+  credentialName: string | null;
+}
+
+export interface CredentialRow {
+  id: string;
+  name: string;
+  kind: string;
+  version: number;
+}
+
+export interface ResourceTestRow {
+  resourceId: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface ExecutionRunRow {
+  id: string;
+  workflowId: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  error: string | null;
+}
+
+export interface DeliveryRow {
+  id: string;
+  collectionFileId: string;
+  targetId: string;
+  targetKind: string;
+  status: string;
+  attempts: number;
+  records: number;
+  error: string | null;
+}
+
+export interface ExecutionCenterView {
+  runs: ExecutionRunRow[];
+  deliveries: DeliveryRow[];
+}
+
 export interface ExecutionStateView {
   status: string;
   error: string | null;

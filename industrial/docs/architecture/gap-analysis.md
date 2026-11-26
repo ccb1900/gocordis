@@ -8,7 +8,7 @@ Status legend: implemented / partial / not implemented / not applicable.
 | Five dependency layers distinguished | implemented | shared `Industrial.Contracts`, reference-identity `Key<T>`, package `--provides/--dependency`; no plugin→plugin implementation imports |
 | Plugin lifecycle owned by Cordis | implemented | Every capability, UI page/view/route/navigation/client module and API is a Fiber effect; disabling withdraws in LIFO order |
 | Resource / Credential / Connection separated | implemented | `ResourceDefinition` stores ids and config; secrets live only in `CredentialVault`; `UncConnectionLease` keys sessions by share + credential hash |
-| Windows UNC explicit credentials | implemented (Windows runtime only) | `RoutingFileSource` + `UncConnectionLease`; Linux host cannot exercise SMB 1219, so no Windows integration test here |
+| Windows UNC explicit credentials | implemented and accepted on Windows runner | `RoutingFileSource` + `UncConnectionLease`; real SMB share verified on `windows-latest` (see current-state evidence) |
 | Absence of secrets in workflow/API/log | implemented | Node config carries `targetResourceId`; `SqlServerSinkFactory` reveals from vault; test asserts workflow JSON and node config contain no secret |
 | Workflow Definition single editable source | implemented | JSON/Elsa derivative is published output only; the designer edits `WorkflowDefinition` |
 | G6 editor with drag/connect | implemented | `industrial/web` module registers `industrial-workflow-canvas`; palette drop, port validation, property panel, save/validate/publish/run toolbar |
@@ -19,7 +19,7 @@ Status legend: implemented / partial / not implemented / not applicable.
 | source_date / record_time / collected_at | implemented | filename/date parsing, `RecordEnvelope.RecordTime`, ledger `CollectedAt` |
 | Idempotent DB writes / no duplicate retry | implemented | unique `record_id`, per-target delivery idempotency key |
 | Multi-target independent delivery | implemented | `FileDelivery` per target, `industrial/deliveries` query, archive-only retry |
-| Bounded retry and restart resume | implemented | `BoundedRetry`, ledger failure rows, fresh coordinator resumes via `RetryFailedAsync`; automatic resume-on-startup is not wired (manual retry command remains) |
+| Bounded retry and restart resume | implemented | `BoundedRetry`, token-fenced ledger claims, startup resumes the original Elsa instance from reusable stages; real OS process-kill test proves only incomplete targets are retried |
 | Excel / MySQL / PostgreSQL sinks | implemented (no live-server test) | Mature drivers (`ExcelDataReader`, `Npgsql`, `MySqlConnector`); SQLite is the executable target in CI |
 | Full Web UI pages and lifecycle | implemented | Nine page contributions, declarative views, routes, navigation and one client module, all owned by `industrial.ui` |
 | E2E acceptance A–G | implemented in executable tests | `IndustrialReaderPluginTests`, `IndustrialResourceSharingTests`, `IndustrialUiPluginTests`, `CollectionPipelineTests`, `designer-block.test.tsx` |

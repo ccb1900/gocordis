@@ -1,4 +1,8 @@
 import { CordisDesigner } from "./CordisDesigner";
+import { WorkflowList } from "./WorkflowList";
+import { ResourceConsole } from "./ResourceConsole";
+import { CredentialConsole } from "./CredentialConsole";
+import { ExecutionCenter } from "./ExecutionCenter";
 import { setFacade } from "./facade";
 import { createElement } from "./facade-react";
 import { DESIGNER_CSS } from "./styles";
@@ -17,9 +21,21 @@ export function register(api: any) {
   const IndustrialWorkflowCanvas = ({ ctx }: { ctx: unknown }) =>
     createElement(CordisDesigner, { ctx });
   IndustrialWorkflowCanvas.displayName = "IndustrialWorkflowCanvas";
-  const dispose = api.blocks.register("industrial-workflow-canvas", IndustrialWorkflowCanvas);
+  const wrap = (name: string, Component: any) => {
+    const Renderer = ({ block, ctx }: { block: unknown; ctx: unknown }) =>
+      createElement(Component, { block, ctx });
+    Renderer.displayName = name;
+    return api.blocks.register(name, Renderer);
+  };
+  const disposers = [
+    api.blocks.register("industrial-workflow-canvas", IndustrialWorkflowCanvas),
+    wrap("industrial-workflow-list", WorkflowList),
+    wrap("industrial-resource-console", ResourceConsole),
+    wrap("industrial-credential-console", CredentialConsole),
+    wrap("industrial-execution-center", ExecutionCenter),
+  ];
   return () => {
-    dispose?.();
+    for (const dispose of disposers) dispose?.();
     style?.remove();
   };
 }

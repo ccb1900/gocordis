@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -29,6 +30,7 @@ public sealed class IndustrialUiComponent : Component
     };
 
     private readonly IReadOnlyDictionary<string, object?> _config;
+    private readonly ConcurrentDictionary<string, ResourceTestResult> _resourceTests = new(StringComparer.Ordinal);
 
     public IndustrialUiComponent() : this(FromEnvironment()) { }
 
@@ -53,6 +55,7 @@ public sealed class IndustrialUiComponent : Component
         UiContributionRegistry.Key,
         ApiGateway.Key,
         IndustrialKeys.ResourceRegistry,
+        IndustrialKeys.ResourceConnectionTester,
         IndustrialKeys.MachineRegistry,
         IndustrialKeys.WorkflowRegistry,
         IndustrialKeys.NodeCatalog,
@@ -70,6 +73,7 @@ public sealed class IndustrialUiComponent : Component
         var ui = context.Require(UiContributionRegistry.Key);
         var api = context.Require(ApiGateway.Key);
         var resources = context.Require(IndustrialKeys.ResourceRegistry);
+        var resourceTester = context.Require(IndustrialKeys.ResourceConnectionTester);
         var machines = context.Require(IndustrialKeys.MachineRegistry);
         var workflows = context.Require(IndustrialKeys.WorkflowRegistry);
         var nodes = context.Require(IndustrialKeys.NodeCatalog);
@@ -90,15 +94,26 @@ public sealed class IndustrialUiComponent : Component
             Page("industrial.dashboard", "Industrial Dashboard", "/industrial", "dashboard", "Dashboard",
                 "industrial/dashboard-rows", 10, "Industrial",
                 [("metric", "Metric"), ("value", "Value")]),
-            Page("industrial.resources", "Resources", "/industrial/resources", "generic", "Database",
-                "industrial/resources", 20, "Industrial",
-                [("id", "Id"), ("name", "Name"), ("type", "Type"), ("provider", "Provider"), ("enabled", "Enabled")]),
-            Page("industrial.workflows", "Workflows", "/industrial/workflows", "generic", "Apartment",
-                "industrial/workflows", 30, "Industrial",
-                [("workflowId", "Workflow"), ("version", "Version"), ("name", "Name")],
-                linkColumnKey: "workflowId",
-                linkHref: "/industrial/designer?workflowId={workflowId}",
-                home: true),
+            new UiPageDefinition(
+                "industrial.resources", "Resources", "/industrial/resources", "generic", "Database",
+                "Configure sources and targets",
+                new JsonArray(new JsonObject
+                {
+                    ["kind"] = "industrial-resource-console",
+                    ["query"] = "industrial/resources",
+                }),
+                Order: 20, Group: "Industrial"),
+            // User-owned workflow creation lives in the client module; the
+            // page and its data query remain backend contributions.
+            new UiPageDefinition(
+                "industrial.workflows", "Workflows", "/industrial/workflows", "generic", "Apartment",
+                "Create and open collection workflows",
+                new JsonArray(new JsonObject
+                {
+                    ["kind"] = "industrial-workflow-list",
+                    ["query"] = "industrial/workflows",
+                }),
+                Order: 30, Group: "Industrial", Home: true),
             // The backend owns the PAGE; the packaged client module only
             // contributes the renderer for this declarative block kind. This
             // is the Koishi-shaped split: one plugin, backend service + UI data.
@@ -112,9 +127,15 @@ public sealed class IndustrialUiComponent : Component
                     ["query"] = "industrial/workflow-definitions",
                 }),
                 Order: 40, Group: "Industrial"),
-            Page("industrial.executions", "Execution Center", "/industrial/executions", "generic", "Activity",
-                "industrial/dashboard-rows", 50, "Industrial",
-                [("metric", "Metric"), ("value", "Value")]),
+            new UiPageDefinition(
+                "industrial.executions", "Execution Center", "/industrial/executions", "generic", "Activity",
+                "Runs, files and per-target delivery results",
+                new JsonArray(new JsonObject
+                {
+                    ["kind"] = "industrial-execution-center",
+                    ["query"] = "industrial/execution-center",
+                }),
+                Order: 50, Group: "Industrial"),
             // File processing AND per-target delivery status are both visible.
             new UiPageDefinition(
                 "industrial.collections", "Collection History", "/industrial/collections", "generic", "History",
@@ -134,16 +155,29 @@ public sealed class IndustrialUiComponent : Component
                         ["columns"] = new JsonArray(
                             (JsonNode?)new JsonObject { ["key"] = "targetId", ["title"] = "Target" },
                             (JsonNode?)new JsonObject { ["key"] = "status", ["title"] = "Status" },
+                            (JsonNode?)new JsonObject { ["key"] = "records", ["title"] = "Records" },
                             (JsonNode?)new JsonObject { ["key"] = "attempts", ["title"] = "Attempts" },
                             (JsonNode?)new JsonObject { ["key"] = "error", ["title"] = "Error" }),
+                        ["rowActions"] = new JsonArray(new JsonObject
+                        {
+                            ["label"] = "重试此目标",
+                            ["command"] = "industrial/retry-failed",
+                            ["args"] = new JsonObject { ["targetId"] = "$row.targetId" },
+                        }),
                     }),
                 Order: 60, Group: "Industrial"),
             Page("industrial.machines", "Machine Management", "/industrial/machines", "generic", "Desktop",
-                "industrial/resources", 70, "Industrial",
-                [("id", "Id"), ("name", "Name"), ("type", "Type"), ("enabled", "Enabled")]),
-            Page("industrial.credentials", "Credential Management", "/industrial/credentials", "generic", "Key",
-                "industrial/credentials", 80, "Industrial",
-                [("id", "Id"), ("name", "Name"), ("kind", "Kind"), ("version", "Version")]),
+                "industrial/machines", 70, "Industrial",
+                [("id", "Id"), ("name", "Name"), ("endpoint", "Endpoint"), ("enabled", "Enabled")]),
+            new UiPageDefinition(
+                "industrial.credentials", "Credential Management", "/industrial/credentials", "generic", "Key",
+                "Manage credential references without exposing secrets",
+                new JsonArray(new JsonObject
+                {
+                    ["kind"] = "industrial-credential-console",
+                    ["query"] = "industrial/credentials",
+                }),
+                Order: 80, Group: "Industrial"),
             Page("industrial.tasks", "Collection Tasks", "/industrial/tasks", "generic", "Schedule",
                 "industrial/workflows", 90, "Industrial",
                 [("workflowId", "Workflow"), ("version", "Version"), ("name", "Name")]),
@@ -275,12 +309,22 @@ public sealed class IndustrialUiComponent : Component
                     .Select(delivery => (JsonNode?)new JsonObject
                     {
                         ["id"] = delivery.Id,
+                        ["collectionFileId"] = delivery.CollectionFileId,
                         ["targetId"] = delivery.TargetId,
                         ["targetKind"] = delivery.TargetKind,
                         ["status"] = delivery.Status,
+                        ["attempts"] = delivery.Attempts,
                         ["records"] = delivery.Records,
+                        ["error"] = delivery.Error is null ? null : JsonValue.Create(delivery.Error),
                     }).ToArray()),
             }),
+            ("industrial/resource-tests", () => new JsonArray(_resourceTests
+                .Select(pair => (JsonNode?)new JsonObject
+                {
+                    ["resourceId"] = pair.Key,
+                    ["ok"] = pair.Value.Ok,
+                    ["detail"] = pair.Value.Detail,
+                }).OrderBy(node => node!["resourceId"]!.GetValue<string>(), StringComparer.Ordinal).ToArray())),
         };
         foreach (var (name, handler) in queries)
         {
@@ -306,6 +350,13 @@ public sealed class IndustrialUiComponent : Component
                         ? id
                         : null;
                     return new ValueTask(coordinator.RetryFailedAsync(targetId, [sink], archive).AsTask());
+                }, owner);
+                api.RegisterCommand("industrial/test-resource", payload =>
+                {
+                    var body = payload as JsonObject;
+                    var id = Text(body, "id") ?? Text(body, "resourceId")
+                             ?? throw new InvalidOperationException("resource id is required");
+                    return new ValueTask(TestResourceAsync(id, resources, resourceTester, _resourceTests).AsTask());
                 }, owner);
                 api.RegisterCommand("industrial/save-machine", payload =>
                     new ValueTask(SaveMachineAsync(payload, machines).AsTask()), owner);
@@ -356,9 +407,13 @@ public sealed class IndustrialUiComponent : Component
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var id = Text(body, "id") ?? throw new InvalidOperationException("resource id is required");
         var existing = await resources.GetAsync(id);
-        var configuration = body["config"] is JsonObject config
-            ? JsonSerializer.Deserialize<Dictionary<string, object?>>(config.ToJsonString()) ?? []
-            : new Dictionary<string, object?>();
+        var configuration = body["config"] switch
+        {
+            JsonObject config => JsonSerializer.Deserialize<Dictionary<string, object?>>(config.ToJsonString()) ?? [],
+            JsonValue value when value.TryGetValue<string>(out var json) && !string.IsNullOrWhiteSpace(json) =>
+                JsonSerializer.Deserialize<Dictionary<string, object?>>(json) ?? [],
+            _ => new Dictionary<string, object?>(),
+        };
         await resources.RegisterAsync(new ResourceDefinition(
             id,
             Text(body, "type") ?? existing?.Type ?? "unknown",
@@ -392,6 +447,20 @@ public sealed class IndustrialUiComponent : Component
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var id = Text(body, "id") ?? throw new InvalidOperationException("credential id is required");
         await credentials.RotateAsync(id, Text(body, "secret") ?? string.Empty);
+    }
+
+    private static async ValueTask TestResourceAsync(
+        string id, IResourceRegistry resources, IResourceConnectionTester tester,
+        ConcurrentDictionary<string, ResourceTestResult> results)
+    {
+        var resource = await resources.GetAsync(id)
+                       ?? throw new InvalidOperationException($"resource '{id}' was not found");
+        var result = await tester.TestAsync(resource);
+        results[id] = result;
+        if (!result.Ok)
+        {
+            throw new InvalidOperationException(result.Detail);
+        }
     }
 
     private static async ValueTask RunAsync(

@@ -137,8 +137,16 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   }, [ctx]);
 
   const save = useCallback(async () => {
+    const referenced = new Set<string>(definition.resourceReferences ?? []);
+    for (const node of definition.nodes) {
+      for (const key of ["resourceId", "targetResourceId"]) {
+        const value = node.config?.[key];
+        if (typeof value === "string" && value.trim()) referenced.add(value.trim());
+      }
+    }
     const withPolicy = {
       ...definition,
+      resourceReferences: [...referenced],
       layout: { ...definition.layout, lookbackDays: backfillDays },
     };
     if (await command("industrial/save-workflow", withPolicy, "已保存")) {

@@ -60,14 +60,24 @@ public sealed class ValidationTransform
 
     public string OnInvalid => _onInvalid;
 
+    private static bool IsBlank(object value) => value switch
+    {
+        string text => string.IsNullOrWhiteSpace(text),
+        // Stage spool round-trips turn plain strings into JsonElement values.
+        JsonElement element => element.ValueKind == JsonValueKind.Null ||
+                               element.ValueKind == JsonValueKind.Undefined ||
+                               (element.ValueKind == JsonValueKind.String &&
+                                string.IsNullOrWhiteSpace(element.GetString())),
+        _ => false,
+    };
+
     public bool TryApply(RecordEnvelope record, out RecordEnvelope? validated, out string? reason)
     {
         validated = null;
         reason = null;
         foreach (var field in _required)
         {
-            if (!record.Values.TryGetValue(field, out var value) || value is null ||
-                (value is string text && string.IsNullOrWhiteSpace(text)))
+            if (!record.Values.TryGetValue(field, out var value) || value is null || IsBlank(value))
             {
                 reason = $"missing required field '{field}'";
                 return false;

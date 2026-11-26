@@ -596,6 +596,79 @@ public sealed class CrashRecoveryTests
     }
 
     [Fact]
+    public async Task LargeFileStreamsThroughReaderMappingValidationAndSink()
+    {
+        const int rowCount = 20_000;
+        using var temp = new TempDir();
+        var sourceRoot = Path.Combine(temp.Root, "source");
+        Directory.CreateDirectory(sourceRoot);
+        var now = DateTimeOffset.UtcNow;
+        var file = Path.Combine(sourceRoot, $"{now:yyyyMMdd}.csv");
+        await using (var writer = new StreamWriter(file))
+        {
+            await writer.WriteLineAsync("record_id,reading");
+            for (var i = 1; i <= rowCount; i++)
+                await writer.WriteLineAsync($"{i},{i * 3}");
+        }
+        File.SetLastWriteTimeUtc(file, now.AddHours(-1).UtcDateTime);
+        var target = Path.Combine(temp.Root, "target.db");
+        var factories = new FactorySet(target, Path.Combine(temp.Root, "unused.db"));
+
+        var definition = new WorkflowDefinition(
+            "streaming-flow", "Streaming flow", 1,
+            [
+                new WorkflowNode("src", "industrial.filesystem.local",
+                    new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
+                new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
+                new WorkflowNode("map", "industrial.transform.mapping",
+                    new Dictionary<string, object?>
+                    {
+                        ["mapping"] = JsonSerializer.SerializeToElement(
+                            new Dictionary<string, string> { ["value"] = "reading" }),
+                    }, 200, 0),
+                new WorkflowNode("validate", "industrial.transform.validate",
+                    new Dictionary<string, object?>
+                    {
+                        ["required"] = JsonSerializer.SerializeToElement(new[] { "value" }),
+                    }, 300, 0),
+                new WorkflowNode("store", "industrial.sink.sqlite",
+                    new Dictionary<string, object?> { ["targetResourceId"] = "target-a" }, 400, 0),
+            ],
+            [
+                new WorkflowEdge("src", "files", "read", "input"),
+                new WorkflowEdge("read", "records", "map", "input"),
+                new WorkflowEdge("map", "output", "validate", "input"),
+                new WorkflowEdge("validate", "output", "store", "records"),
+            ],
+            new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            ["source-1"], new Dictionary<string, object?>());
+
+        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, api) =>
+        {
+            var registered = DateTimeOffset.UtcNow;
+            await resources.RegisterAsync(new ResourceDefinition(
+                "target-a", "target-a", "target-a", "fixture",
+                new Dictionary<string, object?> { ["database"] = target }, null, 0, true, registered, registered));
+            Assert.True(await api.ExecuteAsync("industrial/save-workflow",
+                JsonSerializer.SerializeToNode(definition)));
+            Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
+                new JsonObject { ["workflowId"] = definition.WorkflowId }));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = definition.WorkflowId,
+                ["resourceId"] = "source-1",
+            }));
+            var delivery = (await ledger.ListAllDeliveriesAsync())
+                .Single(candidate => candidate.TargetId == "target-a");
+            Assert.Equal(CollectionStatus.Succeeded, delivery.Status);
+            Assert.Equal(rowCount, delivery.Records);
+        });
+
+        Assert.Equal(rowCount, await CountRowsAsync(target));
+        Assert.Equal(rowCount, await DistinctRowCountAsync(target));
+    }
+
+    [Fact]
     public async Task PublishANewSinkBackfillsOnlyThatTargetForHistoricalFiles()
     {
         using var temp = new TempDir();

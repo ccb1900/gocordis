@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using Elsa.Extensions;
@@ -909,7 +910,6 @@ public sealed class IndustrialElsaComponent : Component
         private readonly IRecordSink _defaultSink;
         private readonly IArchiveSink _archive;
         private readonly Dictionary<string, List<DiscoveredFile>> _files = new(StringComparer.Ordinal);
-        private readonly Dictionary<string, List<RecordEnvelope>> _records = new(StringComparer.Ordinal);
         private readonly Dictionary<string, CollectionFile> _ledgerFiles = new(StringComparer.Ordinal);
         private readonly List<string> _executed = [];
         private readonly Dictionary<string, NodeView> _views = new(StringComparer.Ordinal);
@@ -981,10 +981,18 @@ public sealed class IndustrialElsaComponent : Component
             return view;
         }
 
-        private static IReadOnlyList<string> Samples(IEnumerable<RecordEnvelope> records) => records
-            .Take(3)
-            .Select(record => record.Values.GetValueOrDefault("record_id")?.ToString() ?? record.Source.Key)
-            .ToArray();
+        private sealed class SampleAccumulator
+        {
+            private readonly List<string> _values = new(3);
+            public int Count { get; private set; }
+            public IReadOnlyList<string> Values => _values;
+            public void Add(RecordEnvelope record)
+            {
+                Count++;
+                if (_values.Count < 3)
+                    _values.Add(record.Values.GetValueOrDefault("record_id")?.ToString() ?? record.Source.Key);
+            }
+        }
 
         private static bool IsSink(string nodeType) =>
             nodeType.Contains("sink", StringComparison.OrdinalIgnoreCase);
@@ -994,25 +1002,36 @@ public sealed class IndustrialElsaComponent : Component
             .Select(edge => edge.Source)
             .Distinct(StringComparer.Ordinal);
 
-        private List<RecordEnvelope> RecordsFrom(string nodeId)
+        /// <summary>Stage-backed async record flow. Records are read from the
+        /// predecessor's persisted dataset one at a time; no stage keeps a full
+        /// batch in memory.</summary>
+        private async IAsyncEnumerable<RecordEnvelope> RecordsFromAsync(
+            string nodeId, [EnumeratorCancellation] CancellationToken ct = default)
         {
-            var result = new List<RecordEnvelope>();
-            var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var input in Inputs(nodeId))
             {
-                if (!_records.TryGetValue(input, out var records)) continue;
-                foreach (var record in records)
+                var predecessor = _definition.Nodes.FirstOrDefault(node =>
+                    string.Equals(node.Id, input, StringComparison.Ordinal));
+                if (predecessor is null) continue;
+                var fingerprint = Fingerprint(predecessor);
+                DatasetRef? dataset = null;
+                if (predecessor.Type.Contains("reader", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Records from one file share Source.Key; dedupe by the
-                    // business record id or a bounded fallback, never by file.
-                    var id = record.Values.GetValueOrDefault("record_id")?.ToString();
-                    var key = string.IsNullOrWhiteSpace(id)
-                        ? $"{record.Source.Key}#{record.RecordTime:O}#{result.Count}"
-                        : $"{record.Source.Key}#{id}";
-                    if (seen.Add(key)) result.Add(record);
+                    dataset = await _stage.TryGetAsync<DatasetRef>(
+                        _instanceId, predecessor.Id, fingerprint, ct);
+                }
+                else
+                {
+                    var transformed = await _stage.TryGetAsync<TransformResultRef>(
+                        _instanceId, predecessor.Id, fingerprint, ct);
+                    dataset = transformed?.Dataset;
+                }
+                if (dataset is null) continue;
+                await foreach (var record in _stage.ReadAsync(dataset, ct).WithCancellation(ct))
+                {
+                    yield return record;
                 }
             }
-            return result;
         }
 
         private List<DiscoveredFile> FilesFrom(string nodeId)
@@ -1177,12 +1196,14 @@ public sealed class IndustrialElsaComponent : Component
             var cached = await CachedAsync<DatasetRef>(node, ct);
             if (cached is not null)
             {
-                var restored = new List<RecordEnvelope>();
-                await foreach (var record in _stage.ReadAsync(cached, ct)) restored.Add(record);
-                _records[node.Id] = restored;
+                var cachedSample = new SampleAccumulator();
+                await foreach (var record in _stage.ReadAsync(cached, ct).WithCancellation(ct))
+                {
+                    cachedSample.Add(record);
+                }
                 View(node.Id).Status = "Reused";
-                View(node.Id).Records = restored.Count;
-                View(node.Id).Samples = Samples(restored);
+                View(node.Id).Records = cachedSample.Count;
+                View(node.Id).Samples = cachedSample.Values;
                 return;
             }
 
@@ -1191,43 +1212,58 @@ public sealed class IndustrialElsaComponent : Component
                 : node.Type.Contains("reader.excel", StringComparison.OrdinalIgnoreCase)
                     ? new ExcelRecordReader(node.Config)
                     : _reader;
-            var records = new List<RecordEnvelope>();
-            foreach (var file in FilesFrom(node.Id))
+            var sample = new SampleAccumulator();
+            async IAsyncEnumerable<RecordEnvelope> ReadFiles(
+                [EnumeratorCancellation] CancellationToken token)
             {
-                await foreach (var record in reader.ReadAsync(file, ct).WithCancellation(ct))
+                foreach (var file in FilesFrom(node.Id))
                 {
-                    records.Add(record);
+                    await foreach (var record in reader.ReadAsync(file, token).WithCancellation(token))
+                    {
+                        sample.Add(record);
+                        yield return record;
+                    }
                 }
             }
-            _records[node.Id] = records;
-            View(node.Id).Records = records.Count;
-            View(node.Id).Samples = Samples(records);
-            await _stage.SpoolAsync(_instanceId, node.Id, Fingerprint(node), Stream(records), ct);
+            await _stage.SpoolAsync(_instanceId, node.Id, Fingerprint(node), ReadFiles(ct), ct);
+            View(node.Id).Records = sample.Count;
+            View(node.Id).Samples = sample.Values;
         }
-
 
         private async ValueTask ExecuteMappingAsync(WorkflowNode node, CancellationToken ct)
         {
             var cached = await CachedAsync<TransformResultRef>(node, ct);
             if (cached is not null)
             {
-                var records = new List<RecordEnvelope>();
-                await foreach (var record in _stage.ReadAsync(cached.Dataset, ct)) records.Add(record);
-                _records[node.Id] = records;
+                var cachedSample = new SampleAccumulator();
+                await foreach (var record in _stage.ReadAsync(cached.Dataset, ct).WithCancellation(ct))
+                {
+                    cachedSample.Add(record);
+                }
                 View(node.Id).Status = "Reused";
-                View(node.Id).Records = records.Count;
-                View(node.Id).Samples = Samples(records);
+                View(node.Id).Records = cachedSample.Count;
+                View(node.Id).Samples = cachedSample.Values;
                 return;
             }
             var transform = new MappingTransform(node.Config);
-            var mapped = RecordsFrom(node.Id).Select(transform.Apply).ToList();
-            _records[node.Id] = mapped;
-            View(node.Id).Records = mapped.Count;
-            View(node.Id).Samples = Samples(mapped);
-            var dataset = await _stage.SpoolAsync(_instanceId, node.Id + "-dataset", Fingerprint(node), Stream(mapped), ct);
+            var sample = new SampleAccumulator();
+            async IAsyncEnumerable<RecordEnvelope> Map(
+                [EnumeratorCancellation] CancellationToken token)
+            {
+                await foreach (var record in RecordsFromAsync(node.Id, token).WithCancellation(token))
+                {
+                    var mapped = transform.Apply(record);
+                    sample.Add(mapped);
+                    yield return mapped;
+                }
+            }
+            var dataset = await _stage.SpoolAsync(
+                _instanceId, node.Id + "-dataset", Fingerprint(node), Map(ct), ct);
             await _stage.CommitAsync(_instanceId, node.Id, Fingerprint(node),
                 new TransformResultRef($"transform-{Guid.NewGuid():N}", _instanceId, node.Id,
-                    Fingerprint(node), dataset, mapped.Count, 0), ct);
+                    Fingerprint(node), dataset, sample.Count, 0), ct);
+            View(node.Id).Records = sample.Count;
+            View(node.Id).Samples = sample.Values;
         }
 
         private async ValueTask ExecuteValidationAsync(WorkflowNode node, CancellationToken ct)
@@ -1235,57 +1271,73 @@ public sealed class IndustrialElsaComponent : Component
             var cached = await CachedAsync<TransformResultRef>(node, ct);
             if (cached is not null)
             {
-                var restored = new List<RecordEnvelope>();
-                await foreach (var record in _stage.ReadAsync(cached.Dataset, ct)) restored.Add(record);
-                _records[node.Id] = restored;
+                var cachedSample = new SampleAccumulator();
+                await foreach (var record in _stage.ReadAsync(cached.Dataset, ct).WithCancellation(ct))
+                {
+                    cachedSample.Add(record);
+                }
                 View(node.Id).Status = "Reused";
-                View(node.Id).Records = restored.Count;
-                View(node.Id).Samples = Samples(restored);
+                View(node.Id).Records = cachedSample.Count;
+                View(node.Id).Samples = cachedSample.Values;
                 return;
             }
 
             var transform = new ValidationTransform(node.Config);
-            var valid = new List<RecordEnvelope>();
-            var rejectedRecords = new List<RecordEnvelope>();
+            var sample = new SampleAccumulator();
             var rejected = 0;
             var warnings = 0;
-            foreach (var record in RecordsFrom(node.Id))
-            {
-                if (transform.TryApply(record, out var applied, out var reason) && applied is not null)
-                {
-                    valid.Add(applied);
-                    continue;
-                }
 
-                rejected++;
-                var strategy = transform.OnInvalid;
-                if (strategy == "fail")
+            async IAsyncEnumerable<RecordEnvelope> Valid(
+                [EnumeratorCancellation] CancellationToken token)
+            {
+                await foreach (var record in RecordsFromAsync(node.Id, token).WithCancellation(token))
                 {
-                    throw new InvalidOperationException(
-                        $"validation failed for {record.Source.Key}: {reason}");
+                    if (transform.TryApply(record, out var applied, out var reason) && applied is not null)
+                    {
+                        sample.Add(applied);
+                        yield return applied;
+                        continue;
+                    }
+                    rejected++;
+                    if (transform.OnInvalid == "fail")
+                    {
+                        throw new InvalidOperationException(
+                            $"validation failed for {record.Source.Key}: {reason}");
+                    }
+                    if (transform.OnInvalid == "warn")
+                    {
+                        warnings++;
+                        sample.Add(record);
+                        yield return record;
+                    }
                 }
-                if (strategy == "warn")
-                {
-                    warnings++;
-                    valid.Add(record);
-                    continue;
-                }
-                if (strategy == "quarantine") rejectedRecords.Add(record);
             }
 
-            _records[node.Id] = valid;
-            View(node.Id).Records = valid.Count;
-            View(node.Id).Samples = Samples(valid);
-            if (rejected > 0) View(node.Id).Error = $"{rejected} record(s) rejected";
-            var dataset = await _stage.SpoolAsync(_instanceId, node.Id + "-dataset", Fingerprint(node), Stream(valid), ct);
-            if (rejectedRecords.Count > 0)
+            var dataset = await _stage.SpoolAsync(
+                _instanceId, node.Id + "-dataset", Fingerprint(node), Valid(ct), ct);
+            // Re-evaluate the staged input for quarantine instead of retaining
+            // rejected records in memory during the first pass.
+            if (transform.OnInvalid == "quarantine" && rejected > 0)
             {
+                async IAsyncEnumerable<RecordEnvelope> Quarantine(
+                    [EnumeratorCancellation] CancellationToken token)
+                {
+                    await foreach (var record in RecordsFromAsync(node.Id, token).WithCancellation(token))
+                    {
+                        if (!transform.TryApply(record, out var applied, out _) || applied is null)
+                            yield return record;
+                    }
+                }
                 await _stage.SpoolAsync(_instanceId, node.Id + "-quarantine", Fingerprint(node),
-                    Stream(rejectedRecords), ct);
+                    Quarantine(ct), ct);
             }
+
+            View(node.Id).Records = sample.Count;
+            View(node.Id).Samples = sample.Values;
+            if (rejected > 0) View(node.Id).Error = $"{rejected} record(s) rejected";
             await _stage.CommitAsync(_instanceId, node.Id, Fingerprint(node),
                 new TransformResultRef($"transform-{Guid.NewGuid():N}", _instanceId, node.Id,
-                    Fingerprint(node), dataset, valid.Count, rejected), ct);
+                    Fingerprint(node), dataset, sample.Count, rejected), ct);
         }
 
         private async ValueTask<IRecordSink> ResolveSinkAsync(WorkflowNode node, CancellationToken ct)
@@ -1316,14 +1368,18 @@ public sealed class IndustrialElsaComponent : Component
             var sink = await ResolveSinkAsync(node, ct);
             var delivered = 0;
             var stageComplete = true;
-            var byFile = RecordsFrom(node.Id)
-                .GroupBy(record => record.Source.Key, StringComparer.Ordinal)
-                .ToArray();
-            View(node.Id).Samples = Samples(byFile.SelectMany(group => group));
-            foreach (var group in byFile)
+            var sourceKeys = new HashSet<string>(StringComparer.Ordinal);
+            var sinkSample = new SampleAccumulator();
+            await foreach (var record in RecordsFromAsync(node.Id, ct).WithCancellation(ct))
             {
-                if (!_ledgerFiles.TryGetValue(group.Key, out var ledgerFile)) continue;
-                var key = $"{group.Key}->{sink.TargetId}";
+                sourceKeys.Add(record.Source.Key);
+                sinkSample.Add(record);
+            }
+            View(node.Id).Samples = sinkSample.Values;
+            foreach (var sourceKey in sourceKeys)
+            {
+                if (!_ledgerFiles.TryGetValue(sourceKey, out var ledgerFile)) continue;
+                var key = $"{sourceKey}->{sink.TargetId}";
                 var delivery = await _ledger.StartDeliveryAsync(
                     ledgerFile.Id, sink.TargetId, key, "record", _runId, ct);
                 if (_retryDeliveryId is not null && delivery.Id != _retryDeliveryId) continue;
@@ -1341,7 +1397,8 @@ public sealed class IndustrialElsaComponent : Component
                 }
                 try
                 {
-                    var paced = WithLeaseRenewal(Stream(group), delivery.Id,
+                    var paced = WithLeaseRenewal(
+                        RecordsForSourceAsync(node.Id, sourceKey, ct), delivery.Id,
                         claim.ClaimToken, TimeSpan.FromMinutes(5), 250, ct);
                     var result = await sink.WriteAsync(ledgerFile.Id, paced, key, ct);
                     await _ledger.CompleteDeliveryAsync(delivery.Id, claim.ClaimToken, result.Records, ct);
@@ -1434,6 +1491,16 @@ public sealed class IndustrialElsaComponent : Component
         /// <summary>Keeps a long delivery alive while the sink consumes it.
         /// Renewal is bound to the claim token, so a fenced writer cannot
         /// extend somebody else's lease.</summary>
+        private async IAsyncEnumerable<RecordEnvelope> RecordsForSourceAsync(
+            string nodeId, string sourceKey, [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            await foreach (var record in RecordsFromAsync(nodeId, ct).WithCancellation(ct))
+            {
+                if (string.Equals(record.Source.Key, sourceKey, StringComparison.Ordinal))
+                    yield return record;
+            }
+        }
+
         private async IAsyncEnumerable<RecordEnvelope> WithLeaseRenewal(
             IAsyncEnumerable<RecordEnvelope> source, string deliveryId, string claimToken,
             TimeSpan lease, int every,

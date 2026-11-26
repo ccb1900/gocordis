@@ -54,16 +54,19 @@ public sealed class ExcelRecordReader : IRecordReader
     }
 }
 
-/// <summary>PostgreSQL target with record_id primary key and ON CONFLICT DO
-/// NOTHING. Npgsql owns pooling and protocol handling.</summary>
+/// <summary>PostgreSQL target with record_id primary key. Write mode and
+/// business key come from the shared SinkWriteOptions contract.</summary>
 public sealed class PostgreSqlRecordSink : IRecordSink
 {
     private readonly string _connectionString;
+    private readonly SinkWriteOptions _options;
 
-    public PostgreSqlRecordSink(string connectionString, string? targetId = null)
+    public PostgreSqlRecordSink(string connectionString, string? targetId = null,
+        SinkWriteOptions? options = null)
     {
         _connectionString = connectionString;
         TargetId = targetId ?? "postgresql";
+        _options = options ?? SinkWriteOptions.From(null);
     }
 
     public string TargetId { get; }
@@ -74,23 +77,49 @@ public sealed class PostgreSqlRecordSink : IRecordSink
     {
         await using var connection = new NpgsqlConnection(_connectionString);
         await connection.OpenAsync(ct);
+        await using var transaction = _options.WriteMode == "replace"
+            ? await connection.BeginTransactionAsync(ct)
+            : null;
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             CREATE TABLE IF NOT EXISTS industrial_records (
                 record_id text PRIMARY KEY, source_identity text NOT NULL,
                 record_time timestamptz NOT NULL, payload jsonb NOT NULL);
             """;
         await command.ExecuteNonQueryAsync(ct);
+
         var count = 0;
+        var replacedSources = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var record in records.WithCancellation(ct))
         {
-            var id = record.Values.GetValueOrDefault("record_id")?.ToString()
-                     ?? throw new InvalidOperationException("record_id is required");
-            command.CommandText = """
-                INSERT INTO industrial_records(record_id, source_identity, record_time, payload)
-                VALUES (@id, @source, @time, CAST(@payload AS jsonb))
-                ON CONFLICT (record_id) DO NOTHING;
-                """;
+            var id = _options.ResolveId(record);
+            if (_options.WriteMode == "replace" && replacedSources.Add(record.Source.Key))
+            {
+                command.Parameters.Clear();
+                command.Parameters.AddWithValue("@source", record.Source.Key);
+                command.CommandText = "DELETE FROM industrial_records WHERE source_identity = @source;";
+                await command.ExecuteNonQueryAsync(ct);
+            }
+            command.CommandText = _options.WriteMode switch
+            {
+                "upsert" => """
+                    INSERT INTO industrial_records(record_id, source_identity, record_time, payload)
+                    VALUES (@id, @source, @time, CAST(@payload AS jsonb))
+                    ON CONFLICT (record_id) DO UPDATE SET
+                        source_identity = EXCLUDED.source_identity,
+                        record_time = EXCLUDED.record_time, payload = EXCLUDED.payload;
+                    """,
+                "replace" => """
+                    INSERT INTO industrial_records(record_id, source_identity, record_time, payload)
+                    VALUES (@id, @source, @time, CAST(@payload AS jsonb));
+                    """,
+                _ => """
+                    INSERT INTO industrial_records(record_id, source_identity, record_time, payload)
+                    VALUES (@id, @source, @time, CAST(@payload AS jsonb))
+                    ON CONFLICT (record_id) DO NOTHING;
+                    """,
+            };
             command.Parameters.Clear();
             command.Parameters.AddWithValue("@id", id);
             command.Parameters.AddWithValue("@source", record.Source.Key);
@@ -98,20 +127,24 @@ public sealed class PostgreSqlRecordSink : IRecordSink
             command.Parameters.AddWithValue("@payload", JsonSerializer.Serialize(record.Values));
             count += await command.ExecuteNonQueryAsync(ct);
         }
-
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return new DeliveryResultRef(idempotencyKey, TargetId, count);
     }
 }
 
-/// <summary>MySQL target with INSERT IGNORE on the record_id unique key.</summary>
+/// <summary>MySQL target. Write mode and business key follow the same contract
+/// as SQL Server and PostgreSQL.</summary>
 public sealed class MySqlRecordSink : IRecordSink
 {
     private readonly string _connectionString;
+    private readonly SinkWriteOptions _options;
 
-    public MySqlRecordSink(string connectionString, string? targetId = null)
+    public MySqlRecordSink(string connectionString, string? targetId = null,
+        SinkWriteOptions? options = null)
     {
         _connectionString = connectionString;
         TargetId = targetId ?? "mysql";
+        _options = options ?? SinkWriteOptions.From(null);
     }
 
     public string TargetId { get; }
@@ -122,22 +155,47 @@ public sealed class MySqlRecordSink : IRecordSink
     {
         await using var connection = new MySqlConnection(_connectionString);
         await connection.OpenAsync(ct);
+        await using var transaction = _options.WriteMode == "replace"
+            ? await connection.BeginTransactionAsync(ct)
+            : null;
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             CREATE TABLE IF NOT EXISTS industrial_records (
                 record_id VARCHAR(256) PRIMARY KEY, source_identity VARCHAR(512) NOT NULL,
                 record_time DATETIME(6) NOT NULL, payload JSON NOT NULL);
             """;
         await command.ExecuteNonQueryAsync(ct);
+
         var count = 0;
+        var replacedSources = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var record in records.WithCancellation(ct))
         {
-            var id = record.Values.GetValueOrDefault("record_id")?.ToString()
-                     ?? throw new InvalidOperationException("record_id is required");
-            command.CommandText = """
-                INSERT IGNORE INTO industrial_records(record_id, source_identity, record_time, payload)
-                VALUES (@id, @source, @time, @payload);
-                """;
+            var id = _options.ResolveId(record);
+            if (_options.WriteMode == "replace" && replacedSources.Add(record.Source.Key))
+            {
+                command.Parameters.Clear();
+                command.Parameters.AddWithValue("@source", record.Source.Key);
+                command.CommandText = "DELETE FROM industrial_records WHERE source_identity = @source;";
+                await command.ExecuteNonQueryAsync(ct);
+            }
+            command.CommandText = _options.WriteMode switch
+            {
+                "upsert" => """
+                    INSERT INTO industrial_records(record_id, source_identity, record_time, payload)
+                    VALUES (@id, @source, @time, @payload)
+                    ON DUPLICATE KEY UPDATE source_identity = VALUES(source_identity),
+                        record_time = VALUES(record_time), payload = VALUES(payload);
+                    """,
+                "replace" => """
+                    INSERT INTO industrial_records(record_id, source_identity, record_time, payload)
+                    VALUES (@id, @source, @time, @payload);
+                    """,
+                _ => """
+                    INSERT IGNORE INTO industrial_records(record_id, source_identity, record_time, payload)
+                    VALUES (@id, @source, @time, @payload);
+                    """,
+            };
             command.Parameters.Clear();
             command.Parameters.AddWithValue("@id", id);
             command.Parameters.AddWithValue("@source", record.Source.Key);
@@ -145,7 +203,7 @@ public sealed class MySqlRecordSink : IRecordSink
             command.Parameters.AddWithValue("@payload", JsonSerializer.Serialize(record.Values));
             count += await command.ExecuteNonQueryAsync(ct);
         }
-
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return new DeliveryResultRef(idempotencyKey, TargetId, count);
     }
 }

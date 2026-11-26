@@ -158,7 +158,11 @@ public sealed class IndustrialUiComponent : Component
                         {
                             ["label"] = "重试此目标",
                             ["command"] = "industrial/retry-failed",
-                            ["args"] = new JsonObject { ["targetId"] = "$row.targetId" },
+                            ["args"] = new JsonObject
+                            {
+                                ["deliveryId"] = "$row.id",
+                                ["targetId"] = "$row.targetId",
+                            },
                         }),
                     }),
                 Order: 60, Group: "Industrial"),
@@ -232,6 +236,8 @@ public sealed class IndustrialUiComponent : Component
                                              credentialNames.TryGetValue(id, out var name)
                             ? JsonValue.Create(name)
                             : null,
+                        // Configuration contains no secrets; credentials are separate.
+                        ["config"] = JsonSerializer.SerializeToNode(resource.Configuration, WireJson),
                     }).ToArray());
             }),
             ("industrial/workflows", () => new JsonArray(workflows.ListAsync()
@@ -382,15 +388,8 @@ public sealed class IndustrialUiComponent : Component
                     new ValueTask(RunAsync(payload, coordinator, planner, reader, sink, archive,
                         Setting("workflowId", "daily-collection"),
                         Setting("resourceId", "source-1")).AsTask()), owner);
-                api.RegisterCommand("industrial/retry-failed", payload =>
-                {
-                    var body = payload as JsonObject;
-                    var targetId = body?["targetId"] is JsonValue value &&
-                                   value.TryGetValue<string>(out var id)
-                        ? id
-                        : null;
-                    return new ValueTask(coordinator.RetryFailedAsync(targetId, [sink], archive).AsTask());
-                }, owner);
+                // Delivery retry is owned by the Elsa plugin: it must resume the
+                // original published workflow instead of bypassing transforms.
                 api.RegisterCommand("industrial/test-resource", payload =>
                 {
                     var body = payload as JsonObject;
@@ -452,17 +451,27 @@ public sealed class IndustrialUiComponent : Component
             JsonObject config => JsonSerializer.Deserialize<Dictionary<string, object?>>(config.ToJsonString()) ?? [],
             JsonValue value when value.TryGetValue<string>(out var json) && !string.IsNullOrWhiteSpace(json) =>
                 JsonSerializer.Deserialize<Dictionary<string, object?>>(json) ?? [],
+            // An edit that only changes name/credential/enabled must not erase
+            // the stored connection configuration.
+            null => existing?.Configuration.ToDictionary(pair => pair.Key, pair => pair.Value,
+                        StringComparer.Ordinal) ?? new Dictionary<string, object?>(),
             _ => new Dictionary<string, object?>(),
         };
+        var credentialId = body["credentialId"] is null
+            ? existing?.CredentialId
+            : Text(body, "credentialId");
+        var enabled = body["enabled"] is JsonValue flag && flag.TryGetValue<bool>(out var isEnabled)
+            ? isEnabled
+            : existing?.Enabled ?? true;
         await resources.RegisterAsync(new ResourceDefinition(
             id,
             Text(body, "type") ?? existing?.Type ?? "unknown",
             Text(body, "name") ?? id,
             Text(body, "provider") ?? existing?.Provider ?? "manual",
             configuration,
-            Text(body, "credentialId"),
+            credentialId,
             existing?.Version ?? 0,
-            body["enabled"] is JsonValue enabled && enabled.TryGetValue<bool>(out var isEnabled) && isEnabled,
+            enabled,
             existing?.CreatedAt ?? DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow));
     }

@@ -268,7 +268,22 @@ public static class IndustrialStore
         {
             context.Database.Migrate();
         }
+        EnsureScheduleFireTable(context);
         return context;
+    }
+
+    private static void EnsureScheduleFireTable(IndustrialDbContext context)
+    {
+        // Read by raw SQL from CollectionLedger; kept outside EF migrations so
+        // both fresh and legacy ledger files get the same at-most-once claim.
+        Execute(context, """
+            CREATE TABLE IF NOT EXISTS ScheduleFires (
+                Key TEXT NOT NULL PRIMARY KEY,
+                WorkflowId TEXT NOT NULL,
+                Version INTEGER NOT NULL,
+                DueAtUtc TEXT NOT NULL,
+                FiredAtUtc TEXT NOT NULL);
+            """);
     }
 
     private static void UpgradeLedgerSchema(IndustrialDbContext context)

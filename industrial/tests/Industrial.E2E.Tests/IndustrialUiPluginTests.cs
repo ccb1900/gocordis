@@ -222,6 +222,20 @@ public sealed class IndustrialUiPluginTests
         var credentials = runtime.RequireCapability(IndustrialKeys.CredentialVault);
         Assert.Equal("cred-1", (await resources.GetAsync("resource-1"))!.CredentialId);
         Assert.Equal("first", await credentials.RevealAsync("cred-1"));
+        var resourceRows = Assert.IsType<JsonArray>(console.Api.Query("industrial/resources"));
+        var resourceRow = Assert.IsType<JsonObject>(resourceRows.Single());
+        Assert.Equal(temp.SourceRoot, resourceRow["config"]?["root"]?.GetValue<string>());
+
+        // A rename-only edit must preserve connection config and credential binding.
+        Assert.True(await console.Api.ExecuteAsync("industrial/save-resource", new JsonObject
+        {
+            ["id"] = "resource-1", ["name"] = "Renamed",
+        }));
+        var edited = (await resources.GetAsync("resource-1"))!;
+        Assert.Equal("Renamed", edited.Name);
+        Assert.Equal(temp.SourceRoot, edited.Configuration["root"]?.ToString());
+        Assert.Equal("cred-1", edited.CredentialId);
+        Assert.True(edited.Enabled);
 
         Assert.True(await console.Api.ExecuteAsync("industrial/rotate-credential", new JsonObject
         {

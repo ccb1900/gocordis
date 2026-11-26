@@ -126,6 +126,7 @@ export interface ResourceRow {
   enabled: boolean;
   credentialId: string | null;
   credentialName: string | null;
+  config: Record<string, unknown>;
 }
 
 export interface CredentialRow {
@@ -162,6 +163,7 @@ export interface TriggerStatusRow {
   kind: string;
   cron: string | null;
   eventName: string | null;
+  timezone: string | null;
   resourceId: string | null;
   nextRun: string | null;
   lastStatus: string | null;
@@ -173,8 +175,10 @@ export interface BackfillPreviewRow {
   path: string;
   sourceDate: string;
   inLedger: boolean;
+  expectedTargets: number;
   succeededTargets: number;
   incompleteTargets: number;
+  missingTargets: string;
   wouldSkip: boolean;
   wouldCollect: boolean;
   duplicateRisk: boolean;

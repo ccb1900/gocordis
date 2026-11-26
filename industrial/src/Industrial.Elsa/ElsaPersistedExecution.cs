@@ -28,14 +28,18 @@ public static class ElsaPersistedExecution
     public sealed record RecoverableInstance(
         string InstanceId, string WorkflowId, int Version, string ResourceId);
 
-    public static async ValueTask<IReadOnlyList<RecoverableInstance>> ListRecoverableAsync(
-        string databasePath, CancellationToken ct = default)
+    public static ValueTask<IReadOnlyList<RecoverableInstance>> ListRecoverableAsync(
+        string databasePath, CancellationToken ct = default) =>
+        ListInstancesAsync(databasePath, WorkflowStatus.Running, ct);
+
+    public static async ValueTask<IReadOnlyList<RecoverableInstance>> ListInstancesAsync(
+        string databasePath, WorkflowStatus? status = null, CancellationToken ct = default)
     {
         await using var provider = ElsaRuntime.CreateProvider(databasePath: databasePath);
         var instances = provider.GetRequiredService<IWorkflowInstanceStore>();
         var rows = await instances.FindManyAsync(new WorkflowInstanceFilter
         {
-            WorkflowStatus = WorkflowStatus.Running,
+            WorkflowStatus = status,
             // A hard process exit leaves IsExecuting=true because no graceful
             // shutdown flips it. At startup no local activity owns the instance,
             // and token-fenced ledger claims still prevent double delivery.

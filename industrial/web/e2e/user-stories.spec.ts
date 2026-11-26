@@ -156,3 +156,93 @@ test("the execution center shows real runs and per-target retry actions", async 
   await expect(page.getByText(flow.workflowId, { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "重试此目标" }).first()).toBeDisabled();
 });
+
+test("a user edits a resource without losing its connection configuration", async ({ page }) => {
+  await page.goto("/industrial/resources");
+  await page.getByRole("button", { name: "新建资源" }).click();
+  await page.getByLabel("资源 ID").fill("edit-source");
+  await page.getByLabel("资源名称").fill("Before rename");
+  await page.getByLabel("目录路径").fill("/tmp/gocordis-industrial-browser-e2e/source");
+  await page.getByRole("button", { name: "保存资源" }).click();
+  await expect(page.getByText("edit-source", { exact: true })).toBeVisible();
+
+  const readConfig = async () => {
+    const response = await page.request.get("/api/query/industrial/resources");
+    const rows = (await response.json()).data;
+    return rows.find((row: { id: string }) => row.id === "edit-source");
+  };
+  const before = await readConfig();
+  expect(before.config.root).toBe("/tmp/gocordis-industrial-browser-e2e/source");
+
+  const row = page.getByRole("row").filter({ hasText: "edit-source" });
+  await row.getByRole("button", { name: /编\s*辑/ }).click();
+  await page.getByLabel("资源名称").fill("After rename");
+  await page.getByRole("button", { name: "保存资源" }).click();
+  await expect(page.getByText("After rename", { exact: true })).toBeVisible();
+
+  const after = await readConfig();
+  expect(after.name).toBe("After rename");
+  expect(after.config.root).toBe(before.config.root);
+});
+
+test("a user repairs a failed target and retries only that delivery", async ({ page }) => {
+  // A directory is not a valid SQLite database file; opening it fails inside
+  // the sink after the delivery has been claimed.
+  const broken = "/tmp/gocordis-industrial-browser-e2e/source";
+  const fixed = "/tmp/gocordis-industrial-browser-e2e/fixed.db";
+  await page.goto("/industrial/resources");
+  await page.getByRole("button", { name: "新建资源" }).click();
+  await page.getByLabel("资源 ID").fill("broken-target");
+  await page.getByLabel("资源名称").fill("Broken target");
+  await page.getByRole("button", { name: "SQLite", exact: true }).click();
+  await page.getByLabel("数据库文件").fill(broken);
+  await page.getByRole("button", { name: "保存资源" }).click();
+  await expect(page.getByText("broken-target", { exact: true })).toBeVisible();
+
+  const retryFlow = {
+    ...flow,
+    workflowId: "browser-retry-flow",
+    name: "Browser retry flow",
+    nodes: [
+      { id: "src", type: "industrial.filesystem.local", config: { resourceId: "source-1" }, x: 80, y: 120 },
+      { id: "read", type: "industrial.reader.csv", config: {}, x: 280, y: 120 },
+      { id: "store", type: "industrial.sink.sqlite",
+        config: { targetResourceId: "broken-target" }, x: 480, y: 120 },
+    ],
+    edges: [
+      { source: "src", sourcePort: "files", target: "read", targetPort: "input" },
+      { source: "read", sourcePort: "records", target: "store", targetPort: "records" },
+    ],
+  };
+  await page.request.post("/api/command/industrial/save-workflow", { data: retryFlow });
+  await page.request.post("/api/command/industrial/publish-workflow", {
+    data: { workflowId: retryFlow.workflowId },
+  });
+  await page.request.post("/api/command/industrial/run-workflow", {
+    data: { workflowId: retryFlow.workflowId, resourceId: "source-1" },
+  });
+
+  await page.goto("/industrial/executions");
+  const brokenRow = page.getByRole("row").filter({ hasText: "broken-target" });
+  const retryButton = brokenRow.getByRole("button", { name: "重试此目标" });
+  await expect(retryButton).toBeEnabled();
+
+  await page.goto("/industrial/resources");
+  const targetRow = page.getByRole("row").filter({ hasText: "broken-target" });
+  await targetRow.getByRole("button", { name: /编\s*辑/ }).click();
+  await page.getByLabel("数据库文件").fill(fixed);
+  await page.getByRole("button", { name: "保存资源" }).click();
+  const repaired = (await (await page.request.get("/api/query/industrial/resources")).json()).data
+    .find((row: { id: string }) => row.id === "broken-target");
+  expect(repaired.config.database).toBe(fixed);
+
+  await page.goto("/industrial/executions");
+  await page.getByRole("row").filter({ hasText: "broken-target" })
+    .getByRole("button", { name: "重试此目标" }).click();
+  await expect.poll(async () => {
+    const response = await page.request.get("/api/query/industrial/execution-center");
+    const deliveries = (await response.json()).data.deliveries;
+    return deliveries.some((delivery: { targetId: string; status: string }) =>
+      delivery.targetId === "broken-target" && delivery.status === "Succeeded");
+  }, { timeout: 30_000 }).toBe(true);
+});

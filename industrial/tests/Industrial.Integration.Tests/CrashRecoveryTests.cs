@@ -66,7 +66,7 @@ public sealed class CrashRecoveryTests
 
         // First process: the second sink commits one row and then the process
         // vanishes before the delivery or the Elsa activity can complete.
-        await Compose(temp.Root, factories, async (catalog, workflows, resources, api) =>
+        await Compose(temp.Root, factories, async (catalog, workflows, resources, _, api) =>
         {
             await RegisterTargetAsync(resources, "target-a", DateTimeOffset.UtcNow);
             await RegisterTargetAsync(resources, "target-b", DateTimeOffset.UtcNow);
@@ -107,7 +107,7 @@ public sealed class CrashRecoveryTests
         // Second process: recovery runs as an effect of loading the same plugin,
         // not as a manual API call. Only target-b had an incomplete delivery.
         factories.CrashTargetB = false;
-        await Compose(temp.Root, factories, async (_, _, _, api) =>
+        await Compose(temp.Root, factories, async (_, _, _, _, api) =>
         {
             var recovery = Assert.IsType<JsonObject>(api.Query("industrial/recovery"));
             Assert.Equal(1, recovery["recovered"]?.GetValue<int>());
@@ -207,7 +207,7 @@ public sealed class CrashRecoveryTests
         // New process: startup recovery sees the orphaned Elsa instance and
         // resumes it from committed stages; only target-b still needs work.
         var factories = new FactorySet(targetA, targetB);
-        await Compose(temp.Root, factories, async (_, _, _, api) =>
+        await Compose(temp.Root, factories, async (_, _, _, _, api) =>
         {
             var recovery = Assert.IsType<JsonObject>(api.Query("industrial/recovery"));
             Assert.Equal(1, recovery["recovered"]?.GetValue<int>());
@@ -255,7 +255,7 @@ public sealed class CrashRecoveryTests
     private static async Task Compose(
         string root,
         FactorySet factories,
-        Func<INodeCatalog, IWorkflowRegistry, IResourceRegistry, ApiGateway, Task> act)
+        Func<INodeCatalog, IWorkflowRegistry, IResourceRegistry, ICollectionLedger, ApiGateway, Task> act)
     {
         await using var runtime = new Gocordis.Core.Runtime();
         var console = new ConsoleHost(runtime);
@@ -286,21 +286,134 @@ public sealed class CrashRecoveryTests
             runtime.RequireCapability(IndustrialKeys.NodeCatalog),
             runtime.RequireCapability(IndustrialKeys.WorkflowRegistry),
             runtime.RequireCapability(IndustrialKeys.ResourceRegistry),
+            runtime.RequireCapability(IndustrialKeys.CollectionLedger),
             console.Api);
+    }
+
+    [Fact]
+    public async Task DeliveryRetryReusesPublishedMappingAndValidation()
+    {
+        using var temp = new TempDir();
+        var sourceRoot = Path.Combine(temp.Root, "source");
+        Directory.CreateDirectory(sourceRoot);
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "20261126.csv"),
+            "record_id,reading\n1,11\n2,22\n3,33\n");
+        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, "20261126.csv"),
+            DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
+        var targetA = Path.Combine(temp.Root, "target-a.db");
+        var targetB = Path.Combine(temp.Root, "target-b.db");
+        var factories = new FactorySet(targetA, targetB) { FailTargetBOnce = true };
+
+        var definition = new WorkflowDefinition(
+            "retry-flow", "Retry flow", 1,
+            [
+                new WorkflowNode("src", "industrial.filesystem.local",
+                    new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
+                new WorkflowNode("read", "industrial.reader.csv",
+                    new Dictionary<string, object?>(), 100, 0),
+                new WorkflowNode("map", "industrial.transform.mapping",
+                    new Dictionary<string, object?>
+                    {
+                        ["mapping"] = JsonSerializer.SerializeToElement(
+                            new Dictionary<string, string> { ["value"] = "reading" }),
+                    }, 200, 0),
+                new WorkflowNode("validate", "industrial.transform.validate",
+                    new Dictionary<string, object?>
+                    {
+                        ["required"] = JsonSerializer.SerializeToElement(new[] { "value" }),
+                    }, 300, 0),
+                new WorkflowNode("storeA", "industrial.sink.sqlite",
+                    new Dictionary<string, object?> { ["targetResourceId"] = "target-a" }, 400, 0),
+                new WorkflowNode("storeB", "industrial.sink.sqlite",
+                    new Dictionary<string, object?> { ["targetResourceId"] = "target-b" }, 400, 200),
+            ],
+            [
+                new WorkflowEdge("src", "files", "read", "input"),
+                new WorkflowEdge("read", "records", "map", "input"),
+                new WorkflowEdge("map", "output", "validate", "input"),
+                new WorkflowEdge("validate", "output", "storeA", "records"),
+                new WorkflowEdge("validate", "output", "storeB", "records"),
+            ],
+            new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            ["source-1"], new Dictionary<string, object?>());
+
+        string failedDeliveryId = string.Empty;
+        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, api) =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            foreach (var id in new[] { "target-a", "target-b" })
+            {
+                await resources.RegisterAsync(new ResourceDefinition(
+                    id, id, id, "fixture", new Dictionary<string, object?>(), null,
+                    0, true, now, now));
+            }
+            Assert.True(await api.ExecuteAsync("industrial/save-workflow",
+                JsonSerializer.SerializeToNode(definition)));
+            Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
+                new JsonObject { ["workflowId"] = definition.WorkflowId }));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = definition.WorkflowId,
+                ["resourceId"] = "source-1",
+            }));
+
+            var delivery = (await ledger.ListAllDeliveriesAsync()).Single(candidate =>
+                candidate.TargetId == "target-b" && candidate.Status == "Failed");
+            failedDeliveryId = delivery.Id;
+            Assert.True(await api.ExecuteAsync("industrial/retry-failed", new JsonObject
+            {
+                ["deliveryId"] = failedDeliveryId,
+            }));
+        });
+
+        Assert.Equal(3, await CountRowsAsync(targetA));
+        await using var target = IndustrialStore.CreateTarget(targetB);
+        var rows = target.Records.AsNoTracking().ToList();
+        Assert.Equal(3, rows.Count);
+        Assert.All(rows, row =>
+        {
+            Assert.Contains("\"value\"", row.PayloadJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"reading\"", row.PayloadJson, StringComparison.Ordinal);
+        });
     }
 
     private sealed class FactorySet(string targetA, string targetB)
     {
         public bool CrashTargetB { get; set; }
+        public bool FailTargetBOnce { get; set; }
 
         public IReadOnlyList<IRecordSinkFactory> Factories =>
         [
             new TargetFactory("target-a", () => new SqliteRecordSink(
                 () => IndustrialStore.CreateTarget(targetA), "target-a")),
-            new TargetFactory("target-b", () => CrashTargetB
-                ? new PartialThenExitSink(() => IndustrialStore.CreateTarget(targetB), "target-b", 1)
-                : new SqliteRecordSink(() => IndustrialStore.CreateTarget(targetB), "target-b")),
+            new TargetFactory("target-b", () =>
+            {
+                if (CrashTargetB)
+                {
+                    return new PartialThenExitSink(() => IndustrialStore.CreateTarget(targetB), "target-b", 1);
+                }
+                if (FailTargetBOnce)
+                {
+                    FailTargetBOnce = false;
+                    return new FailOnceSink(() => IndustrialStore.CreateTarget(targetB), "target-b");
+                }
+                return new SqliteRecordSink(() => IndustrialStore.CreateTarget(targetB), "target-b");
+            }),
         ];
+    }
+
+    private sealed class FailOnceSink : IRecordSink
+    {
+        private readonly string _targetId;
+
+        public FailOnceSink(Func<IndustrialTargetDbContext> _, string targetId) => _targetId = targetId;
+
+        public string TargetId => _targetId;
+
+        public ValueTask<DeliveryResultRef> WriteAsync(
+            string collectionFileId, IAsyncEnumerable<RecordEnvelope> records,
+            string idempotencyKey, CancellationToken ct = default) =>
+            throw new IOException("connection refused");
     }
 
     private sealed class TargetFactory(string resourceType, Func<IRecordSink> create) : IRecordSinkFactory

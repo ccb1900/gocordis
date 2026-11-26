@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-26T04:34:35.408388+00:00",
+  "generatedAt": "2026-11-26T07:10:41.575482+00:00",
   "source": "tools/release/test-report.sh",
   "suites": [
     {
@@ -40,14 +40,14 @@
     {
       "suite": "industrial-browser-e2e",
       "exitCode": 0,
-      "passed": 0,
+      "passed": 12,
       "skipped": 0,
       "log": "industrial-browser-e2e.log"
     },
     {
       "suite": "industrial-dotnet",
       "exitCode": 0,
-      "passed": 73,
+      "passed": 81,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
@@ -95,7 +95,7 @@
     }
   ],
   "totals": {
-    "passed": 908,
+    "passed": 928,
     "skipped": 3,
     "failedSuites": []
   },
@@ -146,6 +146,31 @@
       "requirement": "node configuration reaches runtime (CSV delimiter/header/id/time; SQL write strategy)",
       "status": "passed",
       "evidence": "industrial-dotnet.log"
+    },
+    {
+      "requirement": "resource edit preserves connection config and credential binding",
+      "status": "passed",
+      "evidence": "industrial-browser-e2e.log; IndustrialUiPluginTests"
+    },
+    {
+      "requirement": "delivery retry reuses published mapping and validation",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; CrashRecoveryTests.DeliveryRetryReusesPublishedMappingAndValidation"
+    },
+    {
+      "requirement": "schedule fire claim is durable and at-most-once across restarts",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; DeliveryLeaseTests.ScheduleFireIsClaimedAtMostOnceAcrossRestarts"
+    },
+    {
+      "requirement": "backfill preview uses published sink target set",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; ElsaPocTests.BackfillPreviewUsesPublishedSinkTargets"
+    },
+    {
+      "requirement": "shared sink write options (writeMode/businessKey) reach all database sinks",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; SinkWriteOptionsTests"
     },
     {
       "requirement": "real packaged-plugin E2E",

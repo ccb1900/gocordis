@@ -409,6 +409,57 @@ public sealed class ElsaPocTests
         Assert.Equal("daily", workflow.Identity.DefinitionId);
         Assert.Equal(1, workflow.Identity.Version);
     }
+    [Fact]
+    public async Task BackfillPreviewUsesPublishedSinkTargets()
+    {
+        using var temp = new TempDir();
+        Directory.CreateDirectory(Path.Combine(temp.Root, "source"));
+        await File.WriteAllTextAsync(Path.Combine(temp.Root, "source", "recent.csv"),
+            "record_id,reading\n1,42\n");
+        File.SetLastWriteTimeUtc(Path.Combine(temp.Root, "source", "recent.csv"),
+            DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
+        var definition = new WorkflowDefinition(
+            "preview-flow", "Preview flow", 1,
+            [
+                new WorkflowNode("src", "industrial.filesystem.local",
+                    new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
+                new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
+                new WorkflowNode("storeA", "industrial.sink.sqlite",
+                    new Dictionary<string, object?>(), 200, 0),
+                new WorkflowNode("storeB", "industrial.sink.sqlite",
+                    new Dictionary<string, object?> { ["targetResourceId"] = "missing-target" }, 200, 200),
+            ],
+            [
+                new WorkflowEdge("src", "files", "read", "input"),
+                new WorkflowEdge("read", "records", "storeA", "records"),
+                new WorkflowEdge("read", "records", "storeB", "records"),
+            ],
+            new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            ["source-1"], new Dictionary<string, object?>());
+
+        await ComposeRuntime(temp.Root, async (_, workflows, api) =>
+        {
+            Assert.True(await api.ExecuteAsync("industrial/save-workflow",
+                System.Text.Json.JsonSerializer.SerializeToNode(definition)));
+            Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
+                new JsonObject { ["workflowId"] = definition.WorkflowId }));
+            Assert.True(await api.ExecuteAsync("industrial/preview-backfill", new JsonObject
+            {
+                ["workflowId"] = definition.WorkflowId,
+                ["resourceId"] = "source-1",
+                ["lookbackDays"] = 1,
+            }));
+
+            var preview = Assert.IsType<JsonObject>(api.Query("industrial/backfill-preview"));
+            var file = Assert.IsType<JsonObject>(preview["files"]!.AsArray().Single());
+            Assert.Equal(2, file["expectedTargets"]!.GetValue<int>());
+            var missing = file["missingTargets"]!.GetValue<string>();
+            Assert.Contains("sqlite", missing, StringComparison.Ordinal);
+            Assert.Contains("missing-target", missing, StringComparison.Ordinal);
+            Assert.True(file["wouldCollect"]!.GetValue<bool>());
+        });
+    }
+
     private static async Task ComposeRuntime(
         string root,
         Func<INodeCatalog, IWorkflowRegistry, ApiGateway, Task> act)

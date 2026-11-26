@@ -58,4 +58,55 @@ public sealed class ResourceConnectionTesterTests
             if (File.Exists(dbPath)) File.Delete(dbPath);
         }
     }
+
+    [Fact]
+    public async Task UncTestEstablishesCredentialedSessionBeforeProbing()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "industrial-vault-" + Guid.NewGuid().ToString("N") + ".db");
+        try
+        {
+            var vault = new CredentialVault(() => IndustrialStore.Create(dbPath), allowDevelopmentKey: true);
+            await vault.PutAsync("unc-cred", "SMB", "username-password",
+                "{\"user\":\"operator\",\"password\":\"secret\",\"domain\":\"factory\"}");
+            var native = new FakeNetworkConnection();
+            var tester = new ResourceConnectionTester(vault, native);
+            var resource = new ResourceDefinition(
+                "unc", "filesystem.unc", "UNC", "local",
+                new Dictionary<string, object?> { ["root"] = @"\\factory\share" },
+                "unc-cred", 0, true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+            await tester.TestAsync(resource);
+
+            Assert.Equal(1, native.Adds);
+            Assert.Equal(1, native.Cancels);
+            Assert.Equal("factory\\operator", native.LastUser);
+            Assert.Equal("secret", native.LastPassword);
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+        }
+    }
+
+    private sealed class FakeNetworkConnection : INativeNetworkConnection
+    {
+        public int Adds { get; private set; }
+        public int Cancels { get; private set; }
+        public string? LastUser { get; private set; }
+        public string? LastPassword { get; private set; }
+
+        public int Add(string remote, string userName, string password)
+        {
+            Adds++;
+            LastUser = userName;
+            LastPassword = password;
+            return 0;
+        }
+
+        public int Cancel(string remote)
+        {
+            Cancels++;
+            return 0;
+        }
+    }
 }

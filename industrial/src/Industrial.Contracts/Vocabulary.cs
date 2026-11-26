@@ -430,6 +430,10 @@ public interface ICollectionLedger
     ValueTask<CollectionRun> CancelRunAsync(string runId, string reason, CancellationToken ct = default);
     ValueTask<int> RecoverExpiredLeasesAsync(DateTimeOffset now, CancellationToken ct = default);
     ValueTask<int> RecoverAbandonedLeasesAsync(CancellationToken ct = default);
+    /// <summary>Atomic at-most-once claim for a scheduled cron occurrence.
+    /// The durable row survives restarts and multiple hosts.</summary>
+    ValueTask<bool> TryClaimScheduleFireAsync(
+        string workflowId, int version, DateTimeOffset dueAtUtc, CancellationToken ct = default);
     ValueTask MarkDeliveryContestedAsync(
         string runId, string deliveryId, string reason, CancellationToken ct = default);
     ValueTask<CollectionRun?> GetRunAsync(string runId, CancellationToken ct = default);
@@ -459,6 +463,9 @@ public interface ICollectionLedger
     ValueTask<IReadOnlyList<FileDelivery>> GetRetrableDeliveriesAsync(CancellationToken ct = default);
     ValueTask<IReadOnlyList<FileDelivery>> GetRetriableDeliveriesAsync(
         string? targetId = null, CancellationToken ct = default);
+    ValueTask<FileDelivery?> GetDeliveryAsync(string deliveryId, CancellationToken ct = default);
+    ValueTask<IReadOnlyList<string>> GetRunIdsByDeliveryAsync(
+        string deliveryId, CancellationToken ct = default);
     ValueTask<IReadOnlyList<FileDelivery>> ListAllDeliveriesAsync(CancellationToken ct = default);
     ValueTask<IReadOnlyList<CollectionFile>> ListFilesAsync(string collectionId, CancellationToken ct = default);
     ValueTask<IReadOnlyList<CollectionFile>> ListAllFilesAsync(CancellationToken ct = default);

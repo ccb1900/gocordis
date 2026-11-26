@@ -22,11 +22,11 @@ framework was not modified for industrial logic; all product code lives under
 | Packaged product loop | Implemented | `industrial/pack.sh` builds real `.gocordis-plugin` packages, installs into a fresh store and starts `Industrial.PackagedHost` |
 
 Verification: `dotnet build Gocordis.sln` 0 warning/0 error; full solution tests
-green (685 passed / 1 skipped); industrial C# tests (Contract 2, Unit 25,
-Integration 40, E2E 6) green; `industrial/web` 38 frontend tests + production
+green (685 passed / 1 skipped); industrial C# tests (Contract 2, Unit 30,
+Integration 43, E2E 6) green; `industrial/web` 38 frontend tests + production
 build green. The unified local report
 (`bash tools/release/test-report.sh` → `artifacts/test-report/report.json`)
-records 908 passed / 3 explicitly skipped / 0 failed suites; Windows UNC/SMB
+records 928 passed / 3 explicitly skipped / 0 failed suites; Windows UNC/SMB
 is verified on a real `windows-latest` runner
 (https://github.com/ccb1900/gocordis/actions/runs/45755264390). Runs execute the published Elsa
 Flowchart with a distinct real Activity per node type and an Elsa-persisted
@@ -36,7 +36,7 @@ partial second-target write is recovered from the original instance: completed
 stages are reused, the abandoned claim is released, and only the incomplete
 delivery is retried to exact, duplicate-free data in both targets. Node
 execution diagnostics (status, counts, errors, bounded samples) are exposed
-through `industrial/execution` and rendered in the designer. Users can create named workflows and resources from the browser, test resource connections before publishing, manage credentials without exposing secrets, read ledger-backed run/delivery history and retry a failed target from the UI. The long-running path is also user-owned: schedule/event triggers are editable in the designer, published cron workflows run through the official Timer capability, backfill preview is read-only and explains duplicate risk, and the file-details page classifies failures into actionable messages. The ledger
+through `industrial/execution` and rendered in the designer. Users can create named workflows and resources from the browser, test resource connections before publishing, manage credentials without exposing secrets, read ledger-backed run/delivery history and retry a failed target from the UI. Correctness convergence preserves resource configuration on edit, applies one writeMode/businessKey contract across SQL Server/PostgreSQL/MySQL, uses credentialed WNet sessions for UNC tests, resumes the pinned published workflow for delivery-level retry, claims cron occurrences durably with an explicit timezone, and previews backfill against the published sink set. The long-running path is also user-owned: schedule/event triggers are editable in the designer, published cron workflows run through the official Timer capability, backfill preview is read-only and explains duplicate risk, and the file-details page classifies failures into actionable messages. The ledger
 scopes identity by source resource, decides skips per target, and closes
 CollectionRun state. Developer/packaged hosts share one component map. The last packaged
 host was verified through `/api/ui/pages` (declarative designer view),

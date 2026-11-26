@@ -40,16 +40,18 @@ out = pathlib.Path(sys.argv[1])
 suites = []
 for code_path in sorted(out.glob("*.code")):
     name = code_path.stem
-    log = (out / f"{name}.log").read_text(errors="replace")
+    log = re.sub(r"\x1b\[[0-9;]*m", "", (out / f"{name}.log").read_text(errors="replace"))
     exit_code = int(code_path.read_text().strip())
     dotnet = [int(x) for x in re.findall(r"(?:Passed|Skipped)!\s+-\s+Failed:\s+\d+,\s+Passed:\s+(\d+)", log)]
     vitest = [int(x) for x in re.findall(r"Tests\s+(\d+)\s+passed", log)]
     node = [int(x) for x in re.findall(r"^ℹ pass (\d+)$", log, re.M)]
+    playwright = [int(x) for x in re.findall(r"^\s*(\d+)\s+passed(?:\s*,|\s+\(|\s*$)", log, re.M)]
     skipped = [int(x) for x in re.findall(r"(?:Passed|Skipped)!.*?Skipped:\s*(\d+)", log)]
+    skipped += [int(x) for x in re.findall(r"^\s*\d+\s+passed\b.*?\b(\d+)\s+skipped\b", log, re.M)]
     suites.append({
         "suite": name,
         "exitCode": exit_code,
-        "passed": sum(dotnet + vitest + node),
+        "passed": sum(dotnet + vitest + node + playwright),
         "skipped": sum(skipped),
         "log": f"{name}.log",
     })
@@ -77,6 +79,11 @@ report = {
         {"requirement": "backfill preview before execution", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts"},
         {"requirement": "file-level processing detail and classified failure diagnosis", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts"},
         {"requirement": "node configuration reaches runtime (CSV delimiter/header/id/time; SQL write strategy)", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
+        {"requirement": "resource edit preserves connection config and credential binding", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; IndustrialUiPluginTests"},
+        {"requirement": "delivery retry reuses published mapping and validation", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; CrashRecoveryTests.DeliveryRetryReusesPublishedMappingAndValidation"},
+        {"requirement": "schedule fire claim is durable and at-most-once across restarts", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; DeliveryLeaseTests.ScheduleFireIsClaimedAtMostOnceAcrossRestarts"},
+        {"requirement": "backfill preview uses published sink target set", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; ElsaPocTests.BackfillPreviewUsesPublishedSinkTargets"},
+        {"requirement": "shared sink write options (writeMode/businessKey) reach all database sinks", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; SinkWriteOptionsTests"},
         {"requirement": "real packaged-plugin E2E", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-packaged-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-packaged-e2e.log"},
         {"requirement": "PostgreSQL integration", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-postgresql")["exitCode"] == 0 else "failed", "evidence": "industrial-postgresql.log"},
         {"requirement": "Windows UNC/SMB integration", "status": unc_evidence.get("status", "blocked"), "passingResult": unc_evidence.get("url") if unc_evidence.get("status") == "passed" else None, "evidence": "artifacts/windows-unc-result.json; " + unc_evidence.get("url", "artifacts/windows-unc-blocker.md"), "runner": "windows-latest", "script": "industrial/e2e-windows-unc.ps1"},

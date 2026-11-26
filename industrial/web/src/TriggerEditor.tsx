@@ -100,6 +100,12 @@ export function TriggerEditor({
           <Input aria-label="Cron 表达式" placeholder="分 时 日 月 周，例如 0 2 * * *"
             value={draft.cron ?? ""}
             onChange={(event: any) => setDraft({ ...draft, cron: event.target.value })} />
+          <Input aria-label="调度时区" placeholder="时区（默认 UTC，例如 Asia/Shanghai）"
+            value={triggerTimezone(draft)}
+            onChange={(event: any) => setDraft({
+              ...draft,
+              config: { ...draft.config, timezone: event.target.value },
+            })} />
           <Input aria-label="事件名称" placeholder="事件名称"
             value={draft.eventName ?? ""}
             onChange={(event: any) => setDraft({ ...draft, eventName: event.target.value })} />
@@ -110,6 +116,7 @@ export function TriggerEditor({
         {current && (
           <Table rowKey="workflowId" dataSource={[current]} pagination={false}
             columns={[
+              { title: "时区", dataIndex: "timezone", render: (v: string | null) => v ?? "UTC" },
               { title: "状态", dataIndex: "lastStatus", render: (v: string | null) => v ?? "未运行" },
               { title: "上次运行", dataIndex: "lastStartedAt", render: (v: string | null) => v ?? "—" },
               { title: "错误", dataIndex: "lastError", render: (v: string | null) => v ?? "—" },
@@ -125,4 +132,9 @@ export function TriggerEditor({
 function triggerResource(trigger: TriggerDefinition): string | undefined {
   const value = trigger.config.resourceId;
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function triggerTimezone(trigger: TriggerDefinition): string {
+  const value = trigger.config.timezone;
+  return typeof value === "string" && value.trim() ? value : "UTC";
 }

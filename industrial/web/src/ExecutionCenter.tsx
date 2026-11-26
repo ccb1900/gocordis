@@ -40,7 +40,9 @@ export function ExecutionCenter({ block, ctx }: { block?: { query?: string }; ct
     setError(null);
     setNotice(null);
     try {
-      await ctx.hubCommand("industrial/retry-failed", { targetId: row.targetId });
+      await ctx.hubCommand("industrial/retry-failed", {
+        deliveryId: row.id, targetId: row.targetId,
+      });
       setNotice(`已提交目标 ${row.targetId} 的重试`);
       await load();
     } catch (cause) {

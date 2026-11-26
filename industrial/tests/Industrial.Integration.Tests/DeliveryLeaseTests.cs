@@ -141,6 +141,19 @@ public sealed class DeliveryLeaseTests
     }
 
     [Fact]
+    public async Task ScheduleFireIsClaimedAtMostOnceAcrossRestarts()
+    {
+        using var fixture = new Fixture();
+        var due = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var restarted = new CollectionLedger(fixture.NewDb);
+
+        Assert.True(await fixture.Ledger.TryClaimScheduleFireAsync("flow", 1, due));
+        Assert.False(await fixture.Ledger.TryClaimScheduleFireAsync("flow", 1, due));
+        Assert.False(await restarted.TryClaimScheduleFireAsync("flow", 1, due));
+        Assert.True(await restarted.TryClaimScheduleFireAsync("flow", 1, due.AddMinutes(1)));
+    }
+
+    [Fact]
     public async Task ManyIndependentWritersClaimTheSameDeliveryExactlyOnce()
     {
         using var fixture = new Fixture();

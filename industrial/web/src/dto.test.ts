@@ -31,8 +31,9 @@ describe("hub envelope parsing", () => {
 
   it("parses resource management and execution-center payloads", () => {
     const resources = parseResources([{ id: "src", name: "Source", type: "filesystem.local",
-      enabled: true, credentialId: "cred", credentialName: "SMB" }]);
+      enabled: true, credentialId: "cred", credentialName: "SMB", config: { root: "/tmp/source" } }]);
     expect(resources[0]).toMatchObject({ id: "src", enabled: true, credentialName: "SMB" });
+    expect(resources[0].config.root).toBe("/tmp/source");
     expect(parseResourceTests([{ resourceId: "src", ok: false, detail: "找不到目录" }])[0])
       .toEqual({ resourceId: "src", ok: false, detail: "找不到目录" });
     expect(parseCredentials([{ id: "cred", name: "SMB", kind: "username-password", version: 2 }])[0].version)

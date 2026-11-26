@@ -80,7 +80,6 @@ public sealed class IndustrialElsaComponent : Component
     private string? _lastRecovery;
     private IReadOnlyList<NodeExecutionView> _lastNodeViews = [];
     private readonly SemaphoreSlim _recoveryLock = new(1, 1);
-    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastScheduleFire = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _lastScheduleError = new(StringComparer.Ordinal);
     private JsonObject? _lastBackfillPreview;
 
@@ -294,6 +293,15 @@ public sealed class IndustrialElsaComponent : Component
                             stage, sinkFactories, sink, archive, ElsaDbPath);
                     }
                 }, owner);
+                api.RegisterCommand("industrial/retry-failed", async payload =>
+                {
+                    var body = payload as JsonObject ?? new JsonObject();
+                    await RetryDeliveryAsync(
+                        body["deliveryId"]?.GetValue<string>(),
+                        body["targetId"]?.GetValue<string>(),
+                        workflows, ledger, resources, vault, planner, source, reader,
+                        stage, sinkFactories, sink, archive);
+                }, owner);
                 api.RegisterQuery("industrial/trigger-status", () =>
                     TriggerStatus(workflows, ledger), owner);
                 api.RegisterCommand("industrial/preview-backfill", async payload =>
@@ -306,8 +314,8 @@ public sealed class IndustrialElsaComponent : Component
                         ? parsed
                         : 1;
                     _lastBackfillPreview = await PreviewBackfillAsync(
-                        workflows, source, ledger, planner, workflowId, resourceId, days,
-                        context.CancellationToken);
+                        workflows, source, ledger, planner, resources, vault, sinkFactories,
+                        sink, archive, workflowId, resourceId, days, context.CancellationToken);
                 }, owner);
                 api.RegisterQuery("industrial/backfill-preview", () => _lastBackfillPreview, owner);
                 api.RegisterQuery("industrial/instance", () => _lastInstanceId is null
@@ -352,6 +360,69 @@ public sealed class IndustrialElsaComponent : Component
         return null;
     }
 
+    private async ValueTask RetryDeliveryAsync(
+        string? deliveryId, string? targetId,
+        IWorkflowRegistry workflows, ICollectionLedger ledger,
+        IResourceRegistry resources, ICredentialVault vault, IHistoricalRangePlanner planner,
+        IFileSource source, IRecordReader reader, IStageOutputStore stage,
+        Broker<IRecordSinkFactory> factories, IRecordSink defaultSink, IArchiveSink archive)
+    {
+        FileDelivery delivery;
+        if (!string.IsNullOrWhiteSpace(deliveryId))
+        {
+            delivery = await ledger.GetDeliveryAsync(deliveryId)
+                       ?? throw new InvalidOperationException($"delivery '{deliveryId}' was not found");
+        }
+        else
+        {
+            var candidates = await ledger.GetRetriableDeliveriesAsync(targetId);
+            delivery = candidates.FirstOrDefault()
+                       ?? throw new InvalidOperationException("no retriable delivery was found");
+        }
+
+        var file = await ledger.GetFileAsync(delivery.CollectionFileId)
+                   ?? throw new InvalidOperationException("the delivery source file was not found");
+        var resourceId = file.Identity.SourceResourceId;
+        var runIds = await ledger.GetRunIdsByDeliveryAsync(delivery.Id);
+        var workflowId = string.Empty;
+        foreach (var runId in runIds)
+        {
+            var run = await ledger.GetRunAsync(runId);
+            if (run is not null)
+            {
+                workflowId = run.WorkflowId;
+                break;
+            }
+        }
+        var instance = (await ElsaPersistedExecution.ListInstancesAsync(ElsaDbPath))
+            .Where(candidate => string.Equals(candidate.ResourceId, resourceId, StringComparison.Ordinal) &&
+                                (string.IsNullOrWhiteSpace(workflowId) ||
+                                 string.Equals(candidate.WorkflowId, workflowId, StringComparison.Ordinal)))
+            .OrderByDescending(candidate => candidate.InstanceId, StringComparer.Ordinal)
+            .FirstOrDefault()
+            ?? throw new InvalidOperationException(
+                "the original workflow instance for this delivery was not found");
+        var published = await workflows.GetPublishedVersionAsync(instance.WorkflowId, instance.Version)
+                        ?? throw new InvalidOperationException(
+                            $"published version {instance.WorkflowId}:v{instance.Version} was not found");
+        var executor = CreateExecutor(published.Definition, resourceId, ledger, resources, vault,
+            planner, source, reader, stage, factories, defaultSink, archive,
+            delivery.Id, delivery.TargetId);
+        await ElsaPersistedExecution.RunAsync(published, executor, resourceId, ElsaDbPath,
+            instance.InstanceId, resume: true);
+    }
+
+    private static TimeZoneInfo ScheduleZone(TriggerDefinition trigger)
+    {
+        if (trigger.Config.TryGetValue("timezone", out var configured) &&
+            configured is not null &&
+            TimeZoneInfo.TryFindSystemTimeZoneById(configured.ToString()!, out var zone))
+        {
+            return zone;
+        }
+        return TimeZoneInfo.Utc;
+    }
+
     private static string? TriggerResource(WorkflowDefinition definition) =>
         definition.Trigger.Config.TryGetValue("resourceId", out var configured) &&
         configured is not null && !string.IsNullOrWhiteSpace(configured.ToString())
@@ -369,11 +440,12 @@ public sealed class IndustrialElsaComponent : Component
             {
                 var trigger = item.Definition.Trigger;
                 string? next = null;
+                var zone = ScheduleZone(trigger);
                 if (trigger.Kind == "schedule" &&
                     CronExpression.TryParse(trigger.Cron ?? string.Empty, out var expression))
                 {
-                    next = expression.GetNextOccurrence(DateTimeOffset.UtcNow, TimeZoneInfo.Utc)
-                        ?.ToString("O");
+                    next = expression.GetNextOccurrence(DateTimeOffset.UtcNow, zone)
+                        ?.ToUniversalTime().ToString("O");
                 }
                 var last = runs.Where(run => run.WorkflowId == item.WorkflowId)
                     .OrderByDescending(run => run.StartedAt).FirstOrDefault();
@@ -385,6 +457,7 @@ public sealed class IndustrialElsaComponent : Component
                     ["kind"] = trigger.Kind,
                     ["cron"] = trigger.Cron is null ? null : JsonValue.Create(trigger.Cron),
                     ["eventName"] = trigger.EventName is null ? null : JsonValue.Create(trigger.EventName),
+                    ["timezone"] = zone.Id,
                     ["resourceId"] = TriggerResource(item.Definition) is { } resource
                         ? JsonValue.Create(resource) : null,
                     ["nextRun"] = next is null ? null : JsonValue.Create(next),
@@ -420,11 +493,16 @@ public sealed class IndustrialElsaComponent : Component
                 ct.ThrowIfCancellationRequested();
                 var trigger = item.Definition.Trigger;
                 var expression = CronExpression.Parse(trigger.Cron!);
-                var due = expression.GetNextOccurrence(now.AddMinutes(-1), TimeZoneInfo.Utc, true);
+                var zone = ScheduleZone(trigger);
+                var due = expression.GetNextOccurrence(now.AddMinutes(-1), zone, true);
                 if (due is null || due > now) continue;
+                var instant = due.Value.ToUniversalTime();
                 var key = $"{item.WorkflowId}:v{item.Version}";
-                if (_lastScheduleFire.TryGetValue(key, out var last) && last >= due) continue;
-                _lastScheduleFire[key] = due.Value;
+                if (!await ledger.TryClaimScheduleFireAsync(
+                        item.WorkflowId, item.Version, instant, ct))
+                {
+                    continue;
+                }
                 try
                 {
                     await RunWorkflowAsync(new JsonObject
@@ -450,14 +528,63 @@ public sealed class IndustrialElsaComponent : Component
         }
     }
 
+    private async ValueTask<HashSet<string>> ExpectedTargetsAsync(
+        WorkflowDefinition definition, IResourceRegistry resources, ICredentialVault vault,
+        Broker<IRecordSinkFactory> factories, IRecordSink defaultSink, IArchiveSink archive,
+        CancellationToken ct)
+    {
+        var targets = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var node in definition.Nodes)
+        {
+            if (node.Type.Contains("archive", StringComparison.OrdinalIgnoreCase))
+            {
+                targets.Add(archive.TargetId);
+                continue;
+            }
+            if (!node.Type.Contains("sink", StringComparison.OrdinalIgnoreCase)) continue;
+            var targetResourceId = node.Config.TryGetValue("targetResourceId", out var configured) &&
+                                   configured is not null &&
+                                   !string.IsNullOrWhiteSpace(configured.ToString())
+                ? configured.ToString()!
+                : null;
+            if (targetResourceId is null)
+            {
+                targets.Add(defaultSink.TargetId);
+                continue;
+            }
+            try
+            {
+                var resource = await resources.GetAsync(targetResourceId, ct)
+                               ?? throw new InvalidOperationException("resource not found");
+                var factory = factories.Providers.FirstOrDefault(candidate =>
+                    string.Equals(candidate.ResourceType, resource.Type, StringComparison.OrdinalIgnoreCase))
+                    ?? throw new InvalidOperationException("no sink factory for resource type");
+                var sink = await factory.CreateAsync(resource, vault, node.Config, ct);
+                targets.Add(sink.TargetId);
+            }
+            catch (Exception)
+            {
+                // Preview stays useful even when a target is temporarily
+                // misconfigured: fall back to the configured resource id.
+                targets.Add(targetResourceId);
+            }
+        }
+        return targets;
+    }
+
     private async ValueTask<JsonObject> PreviewBackfillAsync(
         IWorkflowRegistry workflows, IFileSource source, ICollectionLedger ledger,
-        IHistoricalRangePlanner planner, string workflowId, string resourceId,
-        int days, CancellationToken ct)
+        IHistoricalRangePlanner planner, IResourceRegistry resources, ICredentialVault vault,
+        Broker<IRecordSinkFactory> factories, IRecordSink defaultSink, IArchiveSink archive,
+        string workflowId, string resourceId, int days, CancellationToken ct)
     {
-        var definition = string.IsNullOrWhiteSpace(workflowId)
+        var published = string.IsNullOrWhiteSpace(workflowId)
             ? null
-            : await workflows.GetAsync(workflowId);
+            : await workflows.GetPublishedAsync(workflowId);
+        var definition = published?.Definition ??
+                         (string.IsNullOrWhiteSpace(workflowId)
+                             ? null
+                             : await workflows.GetAsync(workflowId));
         var resource = string.IsNullOrWhiteSpace(resourceId)
             ? TriggerResource(definition ?? EmptyDefinition())
               ?? Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_RESOURCE")
@@ -469,26 +596,43 @@ public sealed class IndustrialElsaComponent : Component
         var known = (await ledger.ListAllFilesAsync(ct)).ToDictionary(
             file => file.Identity.Key, file => file, StringComparer.Ordinal);
         var deliveries = await ledger.ListAllDeliveriesAsync(ct);
+        var expectedTargets = definition is null
+            ? new HashSet<string>(StringComparer.Ordinal)
+            : await ExpectedTargetsAsync(definition, resources, vault, factories,
+                defaultSink, archive, ct);
 
         var rows = discovered.Select(file =>
         {
             known.TryGetValue(file.Identity.Key, out var ledgerFile);
             var fileDeliveries = ledgerFile is null
                 ? []
-                : deliveries.Where(delivery => delivery.CollectionFileId == ledgerFile.Id).ToArray();
-            var succeeded = fileDeliveries.Count(delivery => delivery.Status == CollectionStatus.Succeeded);
-            var incomplete = fileDeliveries.Count(delivery =>
-                delivery.Status is CollectionStatus.Failed or CollectionStatus.Interrupted or CollectionStatus.Pending);
+                : deliveries.Where(delivery =>
+                    delivery.CollectionFileId == ledgerFile.Id &&
+                    expectedTargets.Contains(delivery.TargetId)).ToArray();
+            var succeeded = fileDeliveries
+                .Where(delivery => delivery.Status == CollectionStatus.Succeeded)
+                .Select(delivery => delivery.TargetId)
+                .ToHashSet(StringComparer.Ordinal);
+            var incomplete = fileDeliveries
+                .Where(delivery => delivery.Status is CollectionStatus.Failed or
+                    CollectionStatus.Interrupted or CollectionStatus.Pending)
+                .Select(delivery => delivery.TargetId)
+                .ToHashSet(StringComparer.Ordinal);
+            var missing = new HashSet<string>(expectedTargets, StringComparer.Ordinal);
+            missing.ExceptWith(succeeded);
+            var duplicateRisk = succeeded.Intersect(incomplete, StringComparer.Ordinal).ToArray();
             return (JsonNode)new JsonObject
             {
                 ["path"] = file.Identity.RelativePath,
                 ["sourceDate"] = file.SourceDate.ToString("O"),
                 ["inLedger"] = ledgerFile is not null,
-                ["succeededTargets"] = succeeded,
-                ["incompleteTargets"] = incomplete,
-                ["wouldSkip"] = ledgerFile is not null && incomplete == 0,
-                ["wouldCollect"] = ledgerFile is null || incomplete > 0,
-                ["duplicateRisk"] = ledgerFile is not null && succeeded > 0 && incomplete > 0,
+                ["expectedTargets"] = expectedTargets.Count,
+                ["succeededTargets"] = succeeded.Count,
+                ["incompleteTargets"] = incomplete.Count,
+                ["missingTargets"] = string.Join(",", missing.OrderBy(id => id, StringComparer.Ordinal)),
+                ["wouldSkip"] = expectedTargets.Count > 0 && missing.Count == 0,
+                ["wouldCollect"] = expectedTargets.Count == 0 || missing.Count > 0,
+                ["duplicateRisk"] = duplicateRisk.Length > 0,
             };
         }).ToArray();
         return new JsonObject
@@ -516,9 +660,11 @@ public sealed class IndustrialElsaComponent : Component
         WorkflowDefinition definition, string resourceId, ICollectionLedger ledger,
         IResourceRegistry resources, ICredentialVault vault, IHistoricalRangePlanner planner,
         IFileSource source, IRecordReader reader, IStageOutputStore stage,
-        Broker<IRecordSinkFactory> factories, IRecordSink defaultSink, IArchiveSink archive) =>
+        Broker<IRecordSinkFactory> factories, IRecordSink defaultSink, IArchiveSink archive,
+        string? retryDeliveryId = null, string? retryTargetId = null) =>
         new(definition.WorkflowId, resourceId, definition, null!, ledger, resources, vault,
-            planner, source, reader, stage, factories, defaultSink, archive);
+            planner, source, reader, stage, factories, defaultSink, archive,
+            retryDeliveryId, retryTargetId);
 
     private async ValueTask RecoverAllAsync(
         IWorkflowRegistry workflows, ICollectionLedger ledger, IResourceRegistry resources,
@@ -658,6 +804,8 @@ public sealed class IndustrialElsaComponent : Component
         private readonly List<string> _executed = [];
         private readonly Dictionary<string, NodeView> _views = new(StringComparer.Ordinal);
         private string? _runId;
+        private readonly string? _retryDeliveryId;
+        private readonly string? _retryTargetId;
         private string _instanceId = string.Empty;
         private int _remainingConsequences;
         private int _anyFailure;
@@ -668,8 +816,11 @@ public sealed class IndustrialElsaComponent : Component
             IResourceRegistry resources, ICredentialVault vault,
             IHistoricalRangePlanner planner, IFileSource source, IRecordReader reader,
             IStageOutputStore stage, Broker<IRecordSinkFactory> factories,
-            IRecordSink defaultSink, IArchiveSink archive)
+            IRecordSink defaultSink, IArchiveSink archive,
+            string? retryDeliveryId = null, string? retryTargetId = null)
         {
+            _retryDeliveryId = retryDeliveryId;
+            _retryTargetId = retryTargetId;
             _workflowId = workflowId;
             _resourceId = resourceId;
             _definition = definition;
@@ -1041,7 +1192,7 @@ public sealed class IndustrialElsaComponent : Component
         private async ValueTask ExecuteSinkAsync(WorkflowNode node, CancellationToken ct)
         {
             var cachedResult = await CachedAsync<DeliveryResultRef>(node, ct);
-            if (cachedResult is not null)
+            if (cachedResult is not null && _retryDeliveryId is null && _retryTargetId is null)
             {
                 View(node.Id).Status = "Reused";
                 View(node.Id).Records = cachedResult.Records;
@@ -1061,6 +1212,9 @@ public sealed class IndustrialElsaComponent : Component
                 var key = $"{group.Key}->{sink.TargetId}";
                 var delivery = await _ledger.StartDeliveryAsync(
                     ledgerFile.Id, sink.TargetId, key, "record", _runId, ct);
+                if (_retryDeliveryId is not null && delivery.Id != _retryDeliveryId) continue;
+                if (_retryTargetId is not null &&
+                    !string.Equals(sink.TargetId, _retryTargetId, StringComparison.Ordinal)) continue;
                 if (delivery.Status == "Succeeded") continue;
                 var claim = await _ledger.TryClaimDeliveryAsync(
                     _runId!, delivery.Id, TimeSpan.FromMinutes(5), ct);
@@ -1106,7 +1260,7 @@ public sealed class IndustrialElsaComponent : Component
         private async ValueTask ExecuteArchiveAsync(WorkflowNode node, CancellationToken ct)
         {
             var cachedArchive = await CachedAsync<DeliveryResultRef>(node, ct);
-            if (cachedArchive is not null)
+            if (cachedArchive is not null && _retryDeliveryId is null && _retryTargetId is null)
             {
                 View(node.Id).Status = "Reused";
                 View(node.Id).Files = cachedArchive.Records;
@@ -1123,6 +1277,9 @@ public sealed class IndustrialElsaComponent : Component
                 var key = $"{file.Identity.Key}->{_archive.TargetId}";
                 var delivery = await _ledger.StartDeliveryAsync(
                     ledgerFile.Id, _archive.TargetId, key, "archive", _runId, ct);
+                if (_retryDeliveryId is not null && delivery.Id != _retryDeliveryId) continue;
+                if (_retryTargetId is not null &&
+                    !string.Equals(_archive.TargetId, _retryTargetId, StringComparison.Ordinal)) continue;
                 if (delivery.Status == "Succeeded") continue;
                 var claim = await _ledger.TryClaimDeliveryAsync(
                     _runId!, delivery.Id, TimeSpan.FromMinutes(5), ct);

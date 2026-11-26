@@ -107,7 +107,8 @@ public sealed class PostgreSqlSinkFactory : IRecordSinkFactory
         ResourceDefinition resource, ICredentialVault vault,
         IReadOnlyDictionary<string, object?>? nodeConfig = null, CancellationToken ct = default) =>
         new PostgreSqlRecordSink(
-            await BuildConnectionStringAsync(resource, vault, ct), resource.Id);
+            await BuildConnectionStringAsync(resource, vault, ct), resource.Id,
+            SinkWriteOptions.From(nodeConfig));
 }
 
 public sealed class MySqlSinkFactory : IRecordSinkFactory
@@ -128,17 +129,24 @@ public sealed class MySqlSinkFactory : IRecordSinkFactory
         ResourceDefinition resource, ICredentialVault vault,
         IReadOnlyDictionary<string, object?>? nodeConfig = null, CancellationToken ct = default) =>
         new MySqlRecordSink(
-            await BuildConnectionStringAsync(resource, vault, ct), resource.Id);
+            await BuildConnectionStringAsync(resource, vault, ct), resource.Id,
+            SinkWriteOptions.From(nodeConfig));
 }
 
-public sealed class SqliteSinkFactory(Func<IndustrialTargetDbContext> db) : IRecordSinkFactory
+public sealed class SqliteSinkFactory(Func<IndustrialTargetDbContext> fallback) : IRecordSinkFactory
 {
     public string ResourceType => "sqlite";
 
     public ValueTask<IRecordSink> CreateAsync(
         ResourceDefinition resource, ICredentialVault vault,
-        IReadOnlyDictionary<string, object?>? nodeConfig = null, CancellationToken ct = default) =>
-        ValueTask.FromResult<IRecordSink>(new SqliteRecordSink(db, resource.Id));
+        IReadOnlyDictionary<string, object?>? nodeConfig = null, CancellationToken ct = default)
+    {
+        var database = ResourceConnection.Value(resource, "database", "path");
+        var db = string.IsNullOrWhiteSpace(database)
+            ? fallback
+            : () => IndustrialStore.CreateTarget(database!);
+        return ValueTask.FromResult<IRecordSink>(new SqliteRecordSink(db, resource.Id));
+    }
 }
 
 /// <summary>Archive is a separate capability (IArchiveSink): the coordinator

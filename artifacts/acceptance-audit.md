@@ -24,6 +24,12 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Browser user configures triggers and cron runs automatically | `TriggerEditor.tsx`, `industrial/trigger-status`, Timer-backed scheduler, `user-stories.spec.ts` | Pass |
 | Browser user previews backfill impact before execution | `BackfillPreview.tsx`, `industrial/preview-backfill`, `industrial/backfill-preview`, `user-stories.spec.ts` | Pass |
 | File-level processing detail with classified failure diagnosis | `FileDetails.tsx`, `industrial/file-details`, `FailureDiagnoses`, `user-stories.spec.ts` | Pass |
+| Resource edit preserves connection config and credential | `industrial/resources` query, `SaveResourceAsync`, `ResourceConsole`, browser edit test | Pass |
+| Delivery retry reuses published mapping/validation and delivery scope | `RetryDeliveryAsync`, `PublishedNodeExecutor` retry scope, `CrashRecoveryTests` | Pass |
+| Shared sink write options reach SQL Server/PostgreSQL/MySQL | `SinkWriteOptions`, `SinkFactories`, `ExtendedIo`, `SinkWriteOptionsTests` | Pass |
+| UNC connection test uses the credentialed WNet session | `ResourceConnectionTester`, `UncConnectionLease`, fake-native unit test | Pass |
+| Schedule fires are durable and timezone-aware | `ScheduleFires`, `TryClaimScheduleFireAsync`, `TriggerEditor`, `DeliveryLeaseTests` | Pass |
+| Backfill preview uses the published sink target set | `PreviewBackfillAsync`, `ExpectedTargetsAsync`, `ElsaPocTests` | Pass |
 | Node configuration schemas and typed validation | `IndustrialNodesComponent.cs`, `WorkflowValidator.cs`, `NodeConfigReader.cs` | Pass |
 | Validation strategies and ProcessingResult statistics | `ValidationTransform.cs`, `ProcessingResult`, ledger statistics columns | Pass |
 | Normalized ref-counted WNet UNC leases with credential identity (native seam) | `UncConnectionLease.cs`, `UncLeaseTests.cs`, real Windows runner row below | Pass |
@@ -32,6 +38,6 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Unified test report fact source | `tools/release/test-report.sh`, `report.json`, `report.md` | Pass |
 | Windows UNC/SMB real-share acceptance | `.github/workflows/windows-unc.yml`, `e2e-windows-unc.ps1`, `artifacts/windows-unc-result.json`, passing run https://github.com/ccb1900/gocordis/actions/runs/45755264390 | Pass on real `windows-latest` runner with a real SMB share |
 
-Unified report: 908 passed, 3 explicitly skipped, 0 failed suites. Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+Unified report: 928 passed, 3 explicitly skipped, 0 failed suites. Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

@@ -44,11 +44,16 @@ React/antd instance and no frontend-owned page registry.
   config is delivered through environment variables in the packaged path.
 - UNC session lease is Windows-only; it is verified on a real `windows-latest`
   runner, not on this macOS/Linux host.
-- SQL Server / PostgreSQL / MySQL sinks are implemented with mature drivers but
-  have no live-server integration test; SQLite is the tested target.
+- SQL Server / PostgreSQL / MySQL sinks share one writeMode/businessKey contract
+  and the one-delete-per-source replace rule, but only PostgreSQL and SQLite
+  have live integration tests here; SQL Server/MySQL replace remains unverified
+  against a real server.
 - The G6 designer has a jsdom integration test using G6's SVG renderer plus a
-  real Chromium E2E (`bash industrial/e2e-browser.sh`) that loads the product
-  host, edits the backfill policy and saves through the real hub command.
+  real Chromium E2E (`bash industrial/e2e-browser.sh`) covering resource edit
+  preservation, triggered/backfill UIs, file diagnosis and a real failed-target
+  repair+retry. A fully blank, drag-only browser construction is not yet
+  automated because G6 does not reliably render dropped nodes in the packaged
+  headless browser; graph construction is still covered by component tests.
 - `bash industrial/e2e-packaged.sh` builds and installs real `.gocordis-plugin`
   packages, starts `Industrial.PackagedHost`, and drives save/publish/run plus
   the execution-center query over HTTP.

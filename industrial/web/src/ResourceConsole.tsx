@@ -23,11 +23,13 @@ interface Draft {
   table: string;
   credentialId: string;
   enabled: boolean;
+  config: Record<string, unknown>;
 }
 
 const emptyDraft: Draft = {
   id: "", name: "", type: "filesystem.local", provider: "local",
   root: "", host: "", database: "", port: "", table: "", credentialId: "", enabled: true,
+  config: {},
 };
 
 const TYPES = [
@@ -40,20 +42,32 @@ const TYPES = [
 ];
 
 function configOf(draft: Draft): Record<string, unknown> {
+  // Start from the loaded configuration so editing a name or credential keeps
+  // every field the user did not touch. Empty inputs are not written back.
+  const config: Record<string, unknown> = { ...draft.config };
+  const put = (key: string, value: string) => { if (value.trim()) config[key] = value; };
   switch (draft.type) {
     case "filesystem.local":
     case "filesystem.unc":
-      return { root: draft.root };
+      put("root", draft.root);
+      break;
     case "sqlserver":
-      return { server: draft.host, database: draft.database, table: draft.table || "IndustrialRecords" };
+      put("server", draft.host);
+      put("host", draft.host);
+      put("database", draft.database);
+      put("table", draft.table || "IndustrialRecords");
+      break;
     case "postgresql":
     case "mysql":
-      return { host: draft.host, database: draft.database, port: draft.port || (draft.type === "mysql" ? "3306" : "5432") };
+      put("host", draft.host);
+      put("database", draft.database);
+      put("port", draft.port || (draft.type === "mysql" ? "3306" : "5432"));
+      break;
     case "sqlite":
-      return { database: draft.database };
-    default:
-      return {};
+      put("database", draft.database);
+      break;
   }
+  return config;
 }
 
 export function ResourceConsole({ block, ctx }: { block?: { query?: string }; ctx: Context }) {
@@ -83,18 +97,26 @@ export function ResourceConsole({ block, ctx }: { block?: { query?: string }; ct
   useEffect(() => { void load(); }, [load]);
 
   const edit = useCallback((row: ResourceRow) => {
+    const value = (...keys: string[]) => {
+      for (const key of keys) {
+        const raw = row.config[key];
+        if (raw !== undefined && raw !== null && String(raw).trim()) return String(raw);
+      }
+      return "";
+    };
     setDraft({
       id: row.id,
       name: row.name,
       type: row.type,
       provider: row.provider,
-      root: "",
-      host: "",
-      database: "",
-      port: "",
-      table: "",
+      root: value("root", "path"),
+      host: value("server", "host", "dataSource", "data_source"),
+      database: value("database", "initialCatalog", "initial_catalog", "path"),
+      port: value("port"),
+      table: value("table"),
       credentialId: row.credentialId ?? "",
       enabled: row.enabled,
+      config: row.config,
     });
     setOpen(true);
   }, []);
@@ -200,8 +222,16 @@ export function ResourceConsole({ block, ctx }: { block?: { query?: string }; ct
             onChange={(e: any) => setDraft({ ...draft, id: e.target.value })} />
           <Input aria-label="资源名称" placeholder="显示名称" value={draft.name}
             onChange={(e: any) => setDraft({ ...draft, name: e.target.value })} />
-          <Select aria-label="资源类型" value={draft.type} options={TYPES}
-            onChange={(value: string) => setDraft({ ...draft, type: value })} />
+          <Typography.Text>资源类型</Typography.Text>
+          <Space wrap>
+            {TYPES.map((type) => (
+              <Button key={type.value} size="small"
+                type={draft.type === type.value ? "primary" : "default"}
+                onClick={() => setDraft({ ...draft, type: type.value })}>
+                {type.label}
+              </Button>
+            ))}
+          </Space>
           {(draft.type === "filesystem.local" || draft.type === "filesystem.unc") && (
             <Input aria-label="目录路径" placeholder={draft.type === "filesystem.unc" ? "\\\\server\\share" : "/data/csv"}
               value={draft.root} onChange={(e: any) => setDraft({ ...draft, root: e.target.value })} />

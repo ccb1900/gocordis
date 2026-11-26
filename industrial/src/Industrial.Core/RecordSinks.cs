@@ -82,7 +82,11 @@ public sealed class SqlServerRecordSink : IRecordSink
     {
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync(ct);
+        await using System.Data.Common.DbTransaction? transaction = _writeMode == "replace"
+            ? await connection.BeginTransactionAsync(ct)
+            : null;
         var command = connection.CreateCommand();
+        command.Transaction = (SqlTransaction?)transaction;
         command.CommandText = $"""
             IF OBJECT_ID(N'{_table}', N'U') IS NULL
             CREATE TABLE {_table} (
@@ -95,6 +99,7 @@ public sealed class SqlServerRecordSink : IRecordSink
         await command.ExecuteNonQueryAsync(ct);
 
         var count = 0;
+        var replacedSources = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var record in records.WithCancellation(ct))
         {
             var recordId = _businessKey is not null &&
@@ -105,6 +110,14 @@ public sealed class SqlServerRecordSink : IRecordSink
             if (string.IsNullOrWhiteSpace(recordId))
             {
                 throw new InvalidOperationException("record_id is required for idempotent delivery");
+            }
+
+            if (_writeMode == "replace" && replacedSources.Add(record.Source.Key))
+            {
+                command.Parameters.Clear();
+                command.Parameters.AddWithValue("@source", record.Source.Key);
+                command.CommandText = $"DELETE FROM {_table} WHERE source_identity = @source;";
+                await command.ExecuteNonQueryAsync(ct);
             }
 
             command.CommandText = _writeMode switch
@@ -119,7 +132,6 @@ public sealed class SqlServerRecordSink : IRecordSink
                         VALUES (@id, @source, @time, @payload);
                     """,
                 "replace" => $"""
-                    DELETE FROM {_table} WHERE source_identity = @source;
                     INSERT INTO {_table}(record_id, source_identity, record_time, payload)
                     VALUES (@id, @source, @time, @payload);
                     """,
@@ -137,6 +149,10 @@ public sealed class SqlServerRecordSink : IRecordSink
             count += await command.ExecuteNonQueryAsync(ct);
         }
 
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(ct);
+        }
         return new DeliveryResultRef(idempotencyKey, TargetId, count);
     }
 }

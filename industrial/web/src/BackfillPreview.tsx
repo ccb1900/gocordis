@@ -65,7 +65,9 @@ export function BackfillPreview({
                 { title: "文件", dataIndex: "path" },
                 { title: "源日期", dataIndex: "sourceDate" },
                 { title: "账本", dataIndex: "inLedger", render: (v: boolean) => v ? "已登记" : "新文件" },
+                { title: "当前目标", dataIndex: "expectedTargets" },
                 { title: "成功目标", dataIndex: "succeededTargets" },
+                { title: "待补目标", dataIndex: "missingTargets", render: (v: string) => v || "—" },
                 { title: "未完成目标", dataIndex: "incompleteTargets" },
                 { title: "预计动作",
                   render: (_: unknown, row: BackfillPreviewRow) => row.wouldSkip

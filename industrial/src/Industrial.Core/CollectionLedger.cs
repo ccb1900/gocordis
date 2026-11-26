@@ -139,6 +139,21 @@ public sealed class CollectionLedger : ICollectionLedger
     public ValueTask<int> RecoverAbandonedLeasesAsync(CancellationToken ct = default) =>
         RecoverLeasesAsync(_ => true, "process restarted before delivery completed", ct);
 
+    public async ValueTask<bool> TryClaimScheduleFireAsync(
+        string workflowId, int version, DateTimeOffset dueAtUtc, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var instant = dueAtUtc.ToUniversalTime().ToString("O");
+        var key = $"{workflowId}:v{version}:{instant}";
+        var rows = await Exec(db,
+            """
+            INSERT OR IGNORE INTO ScheduleFires(Key, WorkflowId, Version, DueAtUtc, FiredAtUtc)
+            VALUES ({0}, {1}, {2}, {3}, {4});
+            """,
+            key, workflowId, version, instant, DateTimeOffset.UtcNow.ToString("O"), ct);
+        return rows == 1;
+    }
+
     private async ValueTask<int> RecoverLeasesAsync(
         Func<FileDeliveryEntity, bool> predicate, string reason, CancellationToken ct)
     {
@@ -478,6 +493,26 @@ public sealed class CollectionLedger : ICollectionLedger
             .OrderBy(delivery => delivery.CollectionFileId)
             .ToListAsync(ct);
         return rows.Select(ToContract).ToArray();
+    }
+
+    public async ValueTask<FileDelivery?> GetDeliveryAsync(
+        string deliveryId, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var row = await db.FileDeliveries.AsNoTracking()
+            .SingleOrDefaultAsync(delivery => delivery.Id == deliveryId, ct);
+        return row is null ? null : ToContract(row);
+    }
+
+    public async ValueTask<IReadOnlyList<string>> GetRunIdsByDeliveryAsync(
+        string deliveryId, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        return await db.CollectionRunDeliveries.AsNoTracking()
+            .Where(row => row.DeliveryId == deliveryId)
+            .Select(row => row.RunId)
+            .Distinct()
+            .ToListAsync(ct);
     }
 
     public async ValueTask<IReadOnlyList<FileDelivery>> ListAllDeliveriesAsync(CancellationToken ct = default)

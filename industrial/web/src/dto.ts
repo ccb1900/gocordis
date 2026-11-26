@@ -298,6 +298,7 @@ export function parseResources(raw: unknown): ResourceRow[] {
       enabled: bool(pick(o, "enabled")),
       credentialId: credentialId == null ? null : text(credentialId),
       credentialName: pick(o, "credentialName") == null ? null : text(pick(o, "credentialName")),
+      config: parseConfig(pick(o, "config", "configuration")),
     };
   });
 }
@@ -352,6 +353,7 @@ export function parseTriggerStatus(raw: unknown): TriggerStatusRow[] {
       kind: text(pick(o, "kind"), "manual"),
       cron: nullable("cron"),
       eventName: nullable("eventName"),
+      timezone: nullable("timezone"),
       resourceId: nullable("resourceId"),
       nextRun: nullable("nextRun"),
       lastStatus: nullable("lastStatus"),
@@ -372,8 +374,10 @@ export function parseBackfillPreview(raw: unknown): BackfillPreviewView | null {
       path: text(pick(row, "path"), "—"),
       sourceDate: text(pick(row, "sourceDate"), ""),
       inLedger: bool(pick(row, "inLedger")),
+      expectedTargets: number(pick(row, "expectedTargets")),
       succeededTargets: number(pick(row, "succeededTargets")),
       incompleteTargets: number(pick(row, "incompleteTargets")),
+      missingTargets: text(pick(row, "missingTargets"), ""),
       wouldSkip: bool(pick(row, "wouldSkip")),
       wouldCollect: bool(pick(row, "wouldCollect")),
       duplicateRisk: bool(pick(row, "duplicateRisk")),

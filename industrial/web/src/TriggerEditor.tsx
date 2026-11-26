@@ -119,6 +119,11 @@ export function TriggerEditor({
               { title: "时区", dataIndex: "timezone", render: (v: string | null) => v ?? "UTC" },
               { title: "状态", dataIndex: "lastStatus", render: (v: string | null) => v ?? "未运行" },
               { title: "上次运行", dataIndex: "lastStartedAt", render: (v: string | null) => v ?? "—" },
+              { title: "触发点", dataIndex: "lastFireStatus",
+                render: (_: string | null, row: TriggerStatusRow) =>
+                  row.lastFireStatus
+                    ? `${row.lastFireStatus} · ${row.lastFireDueAt ?? "—"} · ${row.lastFireAttempts ?? 0} 次`
+                    : "—" },
               { title: "错误", dataIndex: "lastError", render: (v: string | null) => v ?? "—" },
             ]}
           />

@@ -30,7 +30,10 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | UNC connection test uses the credentialed WNet session | `ResourceConnectionTester`, `UncConnectionLease`, fake-native unit test | Pass |
 | Schedule fires are durable and timezone-aware | `ScheduleFires`, `TryClaimScheduleFireAsync`, `TriggerEditor`, `DeliveryLeaseTests` | Pass |
 | Backfill preview uses the published sink target set | `PreviewBackfillAsync`, `ExpectedTargetsAsync`, `ElsaPocTests` | Pass |
-| Blank-environment browser-only full user flow | `industrial/e2e-user-flow.sh`, `full-flow.spec.ts`, palette click add + edge form | Pass |
+| Blank-environment browser-only full user flow | `industrial/e2e-user-flow.sh`, `full-flow.spec.ts` | Pass |
+| Multi-run retry resolves delivery→run→Elsa instance | `CollectionRunEntity.InstanceId`, `RetryDeliveryAsync`, `CrashRecoveryTests.DeliveryRetryResumesTheRunThatOwnsTheFailedDelivery` | Pass |
+| Schedule fire lifecycle: claim/complete separation, bounded missed-fire compensation, failed-fire recovery | `ScheduleFires` status/attempts/token, `CollectionLedger`, `RunDueSchedulesAsync`, `DeliveryLeaseTests` | Pass |
+| G6 native gestures in packaged browser | `industrial/web/e2e/designer-gestures.spec.ts`, `industrial/e2e-browser.sh` | Pass |
 | New Sink backfills historical files to only the added target | `CrashRecoveryTests.PublishANewSinkBackfillsOnlyThatTargetForHistoricalFiles` | Pass |
 | Node configuration schemas and typed validation | `IndustrialNodesComponent.cs`, `WorkflowValidator.cs`, `NodeConfigReader.cs` | Pass |
 | Validation strategies and ProcessingResult statistics | `ValidationTransform.cs`, `ProcessingResult`, ledger statistics columns | Pass |

@@ -384,24 +384,43 @@ public sealed class IndustrialElsaComponent : Component
                    ?? throw new InvalidOperationException("the delivery source file was not found");
         var resourceId = file.Identity.SourceResourceId;
         var runIds = await ledger.GetRunIdsByDeliveryAsync(delivery.Id);
+        var instances = await ElsaPersistedExecution.ListInstancesAsync(ElsaDbPath);
         var workflowId = string.Empty;
+
+        // Exact resolution: delivery → CollectionRun → persisted Elsa instance.
+        // Instance ids are arbitrary strings, so ordering them can never stand
+        // in for a durable association between a run and its execution.
+        ElsaPersistedExecution.RecoverableInstance? instance = null;
         foreach (var runId in runIds)
         {
             var run = await ledger.GetRunAsync(runId);
-            if (run is not null)
-            {
-                workflowId = run.WorkflowId;
-                break;
-            }
+            if (run is null) continue;
+            if (string.IsNullOrWhiteSpace(workflowId)) workflowId = run.WorkflowId;
+            var linkedId = await ledger.GetRunInstanceAsync(runId);
+            if (string.IsNullOrWhiteSpace(linkedId)) continue;
+            instance = instances.FirstOrDefault(candidate =>
+                string.Equals(candidate.InstanceId, linkedId, StringComparison.Ordinal) &&
+                string.Equals(candidate.ResourceId, resourceId, StringComparison.Ordinal));
+            if (instance is not null) break;
         }
-        var instance = (await ElsaPersistedExecution.ListInstancesAsync(ElsaDbPath))
-            .Where(candidate => string.Equals(candidate.ResourceId, resourceId, StringComparison.Ordinal) &&
-                                (string.IsNullOrWhiteSpace(workflowId) ||
-                                 string.Equals(candidate.WorkflowId, workflowId, StringComparison.Ordinal)))
-            .OrderByDescending(candidate => candidate.InstanceId, StringComparer.Ordinal)
-            .FirstOrDefault()
-            ?? throw new InvalidOperationException(
-                "the original workflow instance for this delivery was not found");
+
+        // Legacy runs predate the link. Only resolve when exactly one instance
+        // matches; never guess between several executions.
+        if (instance is null)
+        {
+            var candidates = instances
+                .Where(candidate => string.Equals(candidate.ResourceId, resourceId, StringComparison.Ordinal) &&
+                                    (string.IsNullOrWhiteSpace(workflowId) ||
+                                     string.Equals(candidate.WorkflowId, workflowId, StringComparison.Ordinal)))
+                .ToArray();
+            if (candidates.Length != 1)
+            {
+                throw new InvalidOperationException(
+                    $"cannot resolve the original instance for delivery '{delivery.Id}': " +
+                    $"{candidates.Length} candidates and no persisted run/instance link");
+            }
+            instance = candidates[0];
+        }
         var published = await workflows.GetPublishedVersionAsync(instance.WorkflowId, instance.Version)
                         ?? throw new InvalidOperationException(
                             $"published version {instance.WorkflowId}:v{instance.Version} was not found");
@@ -433,6 +452,7 @@ public sealed class IndustrialElsaComponent : Component
         IWorkflowRegistry workflows, ICollectionLedger ledger)
     {
         var runs = ledger.ListRunsAsync().GetAwaiter().GetResult();
+        var fires = ledger.ListScheduleFiresAsync().GetAwaiter().GetResult();
         var rows = workflows.ListAllPublishedAsync().GetAwaiter().GetResult()
             .GroupBy(item => item.WorkflowId, StringComparer.Ordinal)
             .Select(group => group.OrderByDescending(item => item.Version).First())
@@ -449,7 +469,13 @@ public sealed class IndustrialElsaComponent : Component
                 }
                 var last = runs.Where(run => run.WorkflowId == item.WorkflowId)
                     .OrderByDescending(run => run.StartedAt).FirstOrDefault();
+                var lastFire = fires
+                    .Where(fire => fire.WorkflowId == item.WorkflowId && fire.Version == item.Version)
+                    .OrderByDescending(fire => fire.DueAtUtc).FirstOrDefault();
                 var key = $"{item.WorkflowId}:v{item.Version}";
+                string? scheduleError = last?.Error ?? lastFire?.Error;
+                if (scheduleError is null && _lastScheduleError.TryGetValue(key, out var volatileError))
+                    scheduleError = volatileError;
                 return (JsonNode)new JsonObject
                 {
                     ["workflowId"] = item.WorkflowId,
@@ -463,9 +489,10 @@ public sealed class IndustrialElsaComponent : Component
                     ["nextRun"] = next is null ? null : JsonValue.Create(next),
                     ["lastStatus"] = last is null ? null : JsonValue.Create(last.Status),
                     ["lastStartedAt"] = last is null ? null : JsonValue.Create(last.StartedAt.ToString("O")),
-                    ["lastError"] = last?.Error is { } error ? JsonValue.Create(error)
-                        : _lastScheduleError.TryGetValue(key, out var scheduleError)
-                            ? JsonValue.Create(scheduleError) : null,
+                    ["lastFireStatus"] = lastFire is null ? null : JsonValue.Create(lastFire.Status),
+                    ["lastFireDueAt"] = lastFire is null ? null : JsonValue.Create(lastFire.DueAtUtc.ToString("O")),
+                    ["lastFireAttempts"] = lastFire is null ? null : JsonValue.Create(lastFire.Attempts),
+                    ["lastError"] = scheduleError is null ? null : JsonValue.Create(scheduleError),
                 };
             }).ToArray();
         return new JsonObject { ["triggers"] = new JsonArray(rows) };
@@ -494,31 +521,54 @@ public sealed class IndustrialElsaComponent : Component
                 var trigger = item.Definition.Trigger;
                 var expression = CronExpression.Parse(trigger.Cron!);
                 var zone = ScheduleZone(trigger);
-                var due = expression.GetNextOccurrence(now.AddMinutes(-1), zone, true);
-                if (due is null || due > now) continue;
-                var instant = due.Value.ToUniversalTime();
                 var key = $"{item.WorkflowId}:v{item.Version}";
-                if (!await ledger.TryClaimScheduleFireAsync(
-                        item.WorkflowId, item.Version, instant, ct))
+
+                // Materialize a bounded set of recent instants. A host that was
+                // down for hours still executes the most recent missed fires,
+                // without turning downtime into an unbounded catch-up storm.
+                var cursor = now - TimeSpan.FromHours(24);
+                var dueInstants = new List<DateTimeOffset>();
+                while (dueInstants.Count < 3)
                 {
-                    continue;
+                    var next = expression.GetNextOccurrence(cursor, zone, true);
+                    if (next is null) break;
+                    var instant = next.Value.ToUniversalTime();
+                    if (instant > now) break;
+                    dueInstants.Add(instant);
+                    cursor = next.Value.AddSeconds(1);
                 }
-                try
+                if (dueInstants.Count == 0) continue;
+                await ledger.EnsureScheduleFiresAsync(item.WorkflowId, item.Version, dueInstants, ct);
+
+                foreach (var instant in dueInstants)
                 {
-                    await RunWorkflowAsync(new JsonObject
+                    var claim = await ledger.TryStartScheduleFireAsync(
+                        item.WorkflowId, item.Version, instant, TimeSpan.FromMinutes(5), ct);
+                    if (claim is null) continue;
+                    try
                     {
-                        ["workflowId"] = item.WorkflowId,
-                        ["version"] = item.Version,
-                        ["resourceId"] = TriggerResource(item.Definition)
-                                         ?? Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_RESOURCE")
-                                         ?? "source-1",
-                    }, workflows, coordinator, ledger, resources, vault, planner, source, reader,
-                        stage, factories, sink, archive, ElsaDbPath);
-                    _lastScheduleError.TryRemove(key, out _);
-                }
-                catch (Exception ex)
-                {
-                    _lastScheduleError[key] = ex.Message;
+                        await RunWorkflowAsync(new JsonObject
+                        {
+                            ["workflowId"] = item.WorkflowId,
+                            ["version"] = item.Version,
+                            ["resourceId"] = TriggerResource(item.Definition)
+                                             ?? Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_RESOURCE")
+                                             ?? "source-1",
+                        }, workflows, coordinator, ledger, resources, vault, planner, source, reader,
+                            stage, factories, sink, archive, ElsaDbPath);
+                        var succeeded = string.Equals(_lastExecution?.Status, "Completed", StringComparison.Ordinal);
+                        await ledger.CompleteScheduleFireAsync(claim.Key, claim.Token,
+                            succeeded ? ScheduleFireStatus.Succeeded : ScheduleFireStatus.Failed,
+                            succeeded ? null : _lastError ?? "workflow did not complete", ct);
+                        if (succeeded) _lastScheduleError.TryRemove(key, out _);
+                        else _lastScheduleError[key] = _lastError ?? "workflow did not complete";
+                    }
+                    catch (Exception ex)
+                    {
+                        await ledger.CompleteScheduleFireAsync(
+                            claim.Key, claim.Token, ScheduleFireStatus.Failed, ex.Message, ct);
+                        _lastScheduleError[key] = ex.Message;
+                    }
                 }
             }
         }
@@ -679,6 +729,10 @@ public sealed class IndustrialElsaComponent : Component
             if (startup)
             {
                 expiredLeases += await ledger.RecoverAbandonedLeasesAsync();
+                // A claimed schedule fire whose owner died must become visibly
+                // Failed; the single scheduler loop then retries it within the
+                // bounded attempt policy instead of silently skipping it.
+                await ledger.AbandonScheduleFiresAsync();
             }
             var instances = await ElsaPersistedExecution.ListRecoverableAsync(ElsaDbPath);
             var recovered = 0;
@@ -1012,6 +1066,9 @@ public sealed class IndustrialElsaComponent : Component
                 // A resumed instance must keep the original run id so its
                 // incomplete deliveries belong to the same run-scoped ledger.
                 _runId = cached.RunId;
+                // A resumed run must still point at the instance whose stage
+                // outputs it reuses; legacy runs may not carry the link yet.
+                await _ledger.SetRunInstanceAsync(_runId!, _instanceId, ct);
                 var files = new List<DiscoveredFile>();
                 foreach (var refFile in cached.Files)
                 {
@@ -1030,6 +1087,7 @@ public sealed class IndustrialElsaComponent : Component
             {
                 _runId = (await _ledger.StartAsync(_workflowId, ct)).Id;
                 await _ledger.BeginRunAsync(_runId, ct);
+                await _ledger.SetRunInstanceAsync(_runId, _instanceId, ct);
             }
 
             var resourceId = node.Config.TryGetValue("resourceId", out var configured)

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Industrial.Contracts;
 using Industrial.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -139,19 +140,133 @@ public sealed class CollectionLedger : ICollectionLedger
     public ValueTask<int> RecoverAbandonedLeasesAsync(CancellationToken ct = default) =>
         RecoverLeasesAsync(_ => true, "process restarted before delivery completed", ct);
 
-    public async ValueTask<bool> TryClaimScheduleFireAsync(
-        string workflowId, int version, DateTimeOffset dueAtUtc, CancellationToken ct = default)
+    private static string ScheduleFireKey(string workflowId, int version, DateTimeOffset dueAtUtc) =>
+        $"{workflowId}:v{version}:{dueAtUtc.ToUniversalTime():O}";
+
+    public async ValueTask EnsureScheduleFiresAsync(
+        string workflowId, int version, IEnumerable<DateTimeOffset> dueInstants,
+        CancellationToken ct = default)
     {
         await using var db = _db();
-        var instant = dueAtUtc.ToUniversalTime().ToString("O");
-        var key = $"{workflowId}:v{version}:{instant}";
+        var planned = DateTimeOffset.UtcNow.ToString("O");
+        foreach (var instant in dueInstants)
+        {
+            await Exec(db,
+                """
+                INSERT OR IGNORE INTO ScheduleFires
+                    (Key, WorkflowId, Version, DueAtUtc, FiredAtUtc, Status, Attempts, PlannedAtUtc)
+                VALUES ({0}, {1}, {2}, {3}, {4}, {5}, 0, {6});
+                """,
+                ScheduleFireKey(workflowId, version, instant), workflowId, version,
+                instant.ToUniversalTime().ToString("O"), string.Empty,
+                ScheduleFireStatus.Pending, planned, ct);
+        }
+    }
+
+    public async ValueTask<ScheduleFireClaim?> TryStartScheduleFireAsync(
+        string workflowId, int version, DateTimeOffset dueAtUtc, TimeSpan lease,
+        CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var key = ScheduleFireKey(workflowId, version, dueAtUtc);
+        // Insert first so a caller may claim without a separate materialize
+        // step; INSERT OR IGNORE keeps the operation idempotent.
+        await Exec(db,
+            """
+            INSERT OR IGNORE INTO ScheduleFires
+                (Key, WorkflowId, Version, DueAtUtc, FiredAtUtc, Status, Attempts, PlannedAtUtc)
+            VALUES ({0}, {1}, {2}, {3}, {4}, {5}, 0, {6});
+            """,
+            key, workflowId, version, dueAtUtc.ToUniversalTime().ToString("O"),
+            string.Empty, ScheduleFireStatus.Pending, DateTimeOffset.UtcNow.ToString("O"), ct);
+        var token = $"sf-{Guid.NewGuid():N}";
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var leaseEnd = now + (long)lease.TotalMilliseconds;
         var rows = await Exec(db,
             """
-            INSERT OR IGNORE INTO ScheduleFires(Key, WorkflowId, Version, DueAtUtc, FiredAtUtc)
-            VALUES ({0}, {1}, {2}, {3}, {4});
+            UPDATE ScheduleFires
+               SET Status = {0}, ClaimToken = {1}, LeaseExpiresAtUnixMs = {2}, Attempts = Attempts + 1
+             WHERE Key = {3}
+               AND Status IN ({4}, {5})
+               AND (LeaseExpiresAtUnixMs = 0 OR LeaseExpiresAtUnixMs <= {6})
+               AND Attempts < {7};
             """,
-            key, workflowId, version, instant, DateTimeOffset.UtcNow.ToString("O"), ct);
-        return rows == 1;
+            ScheduleFireStatus.Running, token, leaseEnd, key,
+            ScheduleFireStatus.Pending, ScheduleFireStatus.Failed, now, MaxAttempts, ct);
+        if (rows != 1) return null;
+        var attempts = await db.Database.SqlQueryRaw<ScheduleFireAttemptRow>(
+            "SELECT Attempts FROM ScheduleFires WHERE Key = {0}", key).SingleAsync(ct);
+        return new ScheduleFireClaim(key, token, attempts.Attempts);
+    }
+
+    public async ValueTask<bool> TryClaimScheduleFireAsync(
+        string workflowId, int version, DateTimeOffset dueAtUtc, CancellationToken ct = default) =>
+        await TryStartScheduleFireAsync(workflowId, version, dueAtUtc, TimeSpan.FromMinutes(5), ct) is not null;
+
+    public async ValueTask CompleteScheduleFireAsync(
+        string key, string token, string status, string? error, CancellationToken ct = default)
+    {
+        if (status is not (ScheduleFireStatus.Succeeded or ScheduleFireStatus.Failed))
+            throw new ArgumentException($"invalid schedule fire status '{status}'", nameof(status));
+        await using var db = _db();
+        await Exec(db,
+            """
+            UPDATE ScheduleFires
+               SET Status = {0}, Error = {1}, FinishedAtUtc = {2},
+                   ClaimToken = NULL, LeaseExpiresAtUnixMs = 0
+             WHERE Key = {3} AND ClaimToken = {4} AND Status = {5};
+            """,
+            status, error ?? string.Empty, DateTimeOffset.UtcNow.ToString("O"),
+            key, token, ScheduleFireStatus.Running, ct);
+    }
+
+    public async ValueTask<int> AbandonScheduleFiresAsync(CancellationToken ct = default)
+    {
+        await using var db = _db();
+        return await Exec(db,
+            """
+            UPDATE ScheduleFires
+               SET Status = {0}, Error = {1}, ClaimToken = NULL, LeaseExpiresAtUnixMs = 0
+             WHERE Status = {2};
+            """,
+            ScheduleFireStatus.Failed, "process restarted before scheduled run completed",
+            ScheduleFireStatus.Running, ct);
+    }
+
+    public async ValueTask<IReadOnlyList<ScheduleFireView>> ListScheduleFiresAsync(CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var rows = await db.Database.SqlQueryRaw<ScheduleFireRow>(
+            """
+            SELECT Key, WorkflowId, Version, DueAtUtc, Status, Attempts, Error, FinishedAtUtc
+              FROM ScheduleFires
+             ORDER BY DueAtUtc DESC;
+            """).ToListAsync(ct);
+        return rows.Select(row => new ScheduleFireView(
+            row.Key, row.WorkflowId, row.Version,
+            DateTimeOffset.Parse(row.DueAtUtc, CultureInfo.InvariantCulture),
+            row.Status, row.Attempts,
+            string.IsNullOrEmpty(row.Error) ? null : row.Error,
+            string.IsNullOrEmpty(row.FinishedAtUtc)
+                ? null : DateTimeOffset.Parse(row.FinishedAtUtc, CultureInfo.InvariantCulture)))
+            .ToArray();
+    }
+
+    private sealed class ScheduleFireAttemptRow
+    {
+        public int Attempts { get; set; }
+    }
+
+    private sealed class ScheduleFireRow
+    {
+        public string Key { get; set; } = string.Empty;
+        public string WorkflowId { get; set; } = string.Empty;
+        public int Version { get; set; }
+        public string DueAtUtc { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public int Attempts { get; set; }
+        public string? Error { get; set; }
+        public string? FinishedAtUtc { get; set; }
     }
 
     private async ValueTask<int> RecoverLeasesAsync(
@@ -206,6 +321,29 @@ public sealed class CollectionLedger : ICollectionLedger
         await using var db = _db();
         var entity = await db.CollectionRuns.AsNoTracking().SingleOrDefaultAsync(x => x.Id == runId, ct);
         return entity is null ? null : ToContract(entity);
+    }
+
+    public async ValueTask<bool> SetRunInstanceAsync(
+        string runId, string instanceId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(instanceId)) return false;
+        await using var db = _db();
+        var rows = await Exec(db,
+            """
+            UPDATE CollectionRuns SET InstanceId = {0}
+            WHERE Id = {1} AND (InstanceId IS NULL OR InstanceId = '' OR InstanceId = {0})
+            """,
+            instanceId, runId, ct);
+        return rows == 1;
+    }
+
+    public async ValueTask<string?> GetRunInstanceAsync(string runId, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        return await db.CollectionRuns.AsNoTracking()
+            .Where(x => x.Id == runId)
+            .Select(x => x.InstanceId)
+            .SingleOrDefaultAsync(ct);
     }
 
     public async ValueTask<IReadOnlyList<CollectionRun>> ListRunsAsync(CancellationToken ct = default)
@@ -589,7 +727,8 @@ public sealed class CollectionLedger : ICollectionLedger
     }
 
     private static CollectionRun ToContract(CollectionRunEntity entity) =>
-        new(entity.Id, entity.WorkflowId, entity.StartedAt, entity.Status, entity.Error, entity.FinishedAt);
+        new(entity.Id, entity.WorkflowId, entity.StartedAt, entity.Status, entity.Error,
+            entity.FinishedAt, entity.InstanceId);
 
     private static CollectionFile ToContract(CollectionFileEntity entity) =>
         new(entity.Id, entity.CollectionId,

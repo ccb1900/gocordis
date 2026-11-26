@@ -31,13 +31,14 @@ run builtin-control-plane bash -c 'cd src/Gocordis.Builtin.ControlPlaneUi/fronte
 run builtin-insight bash -c 'cd src/Gocordis.Builtin.InsightUi/frontend && npm test && npm run build'
 run plugin-kit bash -c 'cd web/plugin-kit && npm test'
 
-python3 - "$OUT" <<'PY'
+python3 - "$OUT" "$ROOT" <<'PY'
 import json
 import pathlib
 import re
 import sys
 
 out = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[2])
 suites = []
 for code_path in sorted(out.glob("*.code")):
     name = code_path.stem
@@ -49,10 +50,13 @@ for code_path in sorted(out.glob("*.code")):
     playwright = [int(x) for x in re.findall(r"^\s*(\d+)\s+passed(?:\s*,|\s+\(|\s*$)", log, re.M)]
     skipped = [int(x) for x in re.findall(r"(?:Passed|Skipped)!.*?Skipped:\s*(\d+)", log)]
     skipped += [int(x) for x in re.findall(r"^\s*\d+\s+passed\b.*?\b(\d+)\s+skipped\b", log, re.M)]
+    counts = dotnet + vitest + node + playwright
     suites.append({
         "suite": name,
         "exitCode": exit_code,
-        "passed": sum(dotnet + vitest + node + playwright),
+        # null means the suite ran successfully but its log has no parseable
+        # per-test count (shell-driven E2E). Exit code remains the gate.
+        "passed": sum(counts) if counts else None,
         "skipped": sum(skipped),
         "log": f"{name}.log",
     })
@@ -62,14 +66,20 @@ unc_evidence = json.loads(unc_evidence_path.read_text()) if unc_evidence_path.ex
     "status": "blocked", "url": "artifacts/windows-unc-blocker.md"
 }
 
+import subprocess
+commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root,
+                        capture_output=True, text=True).stdout.strip()
+
 report = {
     "generatedAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
     "source": "tools/release/test-report.sh",
+    "commit": commit,
     "suites": suites,
     "totals": {
-        "passed": sum(s["passed"] for s in suites),
+        "passed": sum(s["passed"] or 0 for s in suites),
         "skipped": sum(s["skipped"] for s in suites),
         "failedSuites": [s["suite"] for s in suites if s["exitCode"] != 0],
+        "unparsedSuites": [s["suite"] for s in suites if s["passed"] is None],
     },
     "environmentBlockers": [],
     "windowsUnc": unc_evidence,
@@ -83,6 +93,9 @@ report = {
         {"requirement": "node configuration reaches runtime (CSV delimiter/header/id/time; SQL write strategy)", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
         {"requirement": "resource edit preserves connection config and credential binding", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; IndustrialUiPluginTests"},
         {"requirement": "delivery retry reuses published mapping and validation", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; CrashRecoveryTests.DeliveryRetryReusesPublishedMappingAndValidation"},
+        {"requirement": "multi-run retry resolves delivery→run→Elsa instance and never reuses another run's stages", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; CrashRecoveryTests.DeliveryRetryResumesTheRunThatOwnsTheFailedDelivery"},
+        {"requirement": "schedule fires separate claim from completion, compensate missed fires and recover failed fires", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; DeliveryLeaseTests.ScheduleFireLifecycleSeparatesClaimCompletionAndRecovery; RunningScheduleFireIsFailedOnRestartAndRetriedWithinAttemptLimit"},
+        {"requirement": "G6 native gestures: palette drag-drop, port drag connect, node move, canvas pan, save/reload", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; industrial/web/e2e/designer-gestures.spec.ts"},
         {"requirement": "schedule fire claim is durable and at-most-once across restarts", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; DeliveryLeaseTests.ScheduleFireIsClaimedAtMostOnceAcrossRestarts"},
         {"requirement": "backfill preview uses published sink target set", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; ElsaPocTests.BackfillPreviewUsesPublishedSinkTargets"},
         {"requirement": "newly added sink backfills historical files without duplicating existing targets", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; CrashRecoveryTests.PublishANewSinkBackfillsOnlyThatTargetForHistoricalFiles"},
@@ -101,10 +114,13 @@ report = {
 }
 (out / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
 lines = ["# Local test report", "", f"Generated by `{report['source']}`.", "",
+         f"Tested commit: `{report['commit']}`", "",
          "| Suite | Exit | Passed | Skipped |", "|---|---:|---:|---:|"]
 for s in suites:
-    lines.append(f"| {s['suite']} | {s['exitCode']} | {s['passed']} | {s['skipped']} |")
+    passed = "unknown" if s["passed"] is None else str(s["passed"])
+    lines.append(f"| {s['suite']} | {s['exitCode']} | {passed} | {s['skipped']} |")
 lines += ["", f"Total passed: **{report['totals']['passed']}**, skipped: **{report['totals']['skipped']}**.",
+          f"Unparsed suites (exit-code gated): {', '.join(report['totals']['unparsedSuites']) or 'none'}.",
           "", "| Acceptance requirement | Status | Evidence |", "|---|---|---|"]
 for item in report["acceptance"]:
     lines.append(f"| {item['requirement']} | {item['status']} | {item['evidence']} |")

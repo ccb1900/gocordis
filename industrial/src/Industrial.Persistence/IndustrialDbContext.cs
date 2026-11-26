@@ -49,6 +49,7 @@ public sealed class IndustrialDbContext : DbContext
         {
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => x.WorkflowId);
+            entity.HasIndex(x => x.InstanceId);
         });
 
         model.Entity<CollectionRunEntity>(entity =>
@@ -139,6 +140,10 @@ public sealed class CollectionRunEntity
     public string? Error { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
     public long Version { get; set; }
+    /// <summary>The Elsa instance that produced this run. Retry resolves the
+    /// original instance through this field instead of guessing by instance id
+    /// string order.</summary>
+    public string? InstanceId { get; set; }
 }
 
 public sealed class CollectionFileEntity
@@ -275,15 +280,39 @@ public static class IndustrialStore
     private static void EnsureScheduleFireTable(IndustrialDbContext context)
     {
         // Read by raw SQL from CollectionLedger; kept outside EF migrations so
-        // both fresh and legacy ledger files get the same at-most-once claim.
+        // both fresh and legacy ledger files get the same lifecycle semantics.
         Execute(context, """
             CREATE TABLE IF NOT EXISTS ScheduleFires (
                 Key TEXT NOT NULL PRIMARY KEY,
                 WorkflowId TEXT NOT NULL,
                 Version INTEGER NOT NULL,
                 DueAtUtc TEXT NOT NULL,
-                FiredAtUtc TEXT NOT NULL);
+                FiredAtUtc TEXT NOT NULL,
+                Status TEXT NOT NULL DEFAULT 'Pending',
+                Attempts INTEGER NOT NULL DEFAULT 0,
+                ClaimToken TEXT NULL,
+                LeaseExpiresAtUnixMs INTEGER NOT NULL DEFAULT 0,
+                Error TEXT NULL,
+                FinishedAtUtc TEXT NULL,
+                PlannedAtUtc TEXT NULL);
             """);
+        // Legacy ledger files created the five-column shape; bring them up to
+        // the same lifecycle schema without losing already-fired rows.
+        Execute(context, "ALTER TABLE ScheduleFires ADD COLUMN Status TEXT NOT NULL DEFAULT 'Pending';");
+        Execute(context, "ALTER TABLE ScheduleFires ADD COLUMN Attempts INTEGER NOT NULL DEFAULT 0;");
+        Execute(context, "ALTER TABLE ScheduleFires ADD COLUMN ClaimToken TEXT NULL;");
+        Execute(context, "ALTER TABLE ScheduleFires ADD COLUMN LeaseExpiresAtUnixMs INTEGER NOT NULL DEFAULT 0;");
+        Execute(context, "ALTER TABLE ScheduleFires ADD COLUMN Error TEXT NULL;");
+        Execute(context, "ALTER TABLE ScheduleFires ADD COLUMN FinishedAtUtc TEXT NULL;");
+        Execute(context, "ALTER TABLE ScheduleFires ADD COLUMN PlannedAtUtc TEXT NULL;");
+        // Rows without PlannedAtUtc were claimed by the old at-most-once
+        // scheduler; mark them terminal so upgrading never re-executes a fire.
+        Execute(context,
+            "UPDATE ScheduleFires SET Status = 'Succeeded' WHERE PlannedAtUtc IS NULL OR PlannedAtUtc = '';");
+        Execute(context,
+            "CREATE INDEX IF NOT EXISTS IX_ScheduleFires_Status_Due ON ScheduleFires(Status, DueAtUtc);");
+        Execute(context,
+            "CREATE UNIQUE INDEX IF NOT EXISTS IX_ScheduleFires_ClaimToken ON ScheduleFires(ClaimToken) WHERE ClaimToken IS NOT NULL;");
     }
 
     private static void UpgradeLedgerSchema(IndustrialDbContext context)
@@ -302,6 +331,8 @@ public static class IndustrialStore
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN Rejected INTEGER NOT NULL DEFAULT 0;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN Warnings INTEGER NOT NULL DEFAULT 0;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN StatisticsJson TEXT NULL;");
+        Execute(context, "ALTER TABLE CollectionRuns ADD COLUMN InstanceId TEXT NULL;");
+        Execute(context, "CREATE INDEX IF NOT EXISTS IX_CollectionRuns_InstanceId ON CollectionRuns(InstanceId);");
         Execute(context, """
             CREATE TABLE IF NOT EXISTS CollectionRunDeliveries (
                 RunId TEXT NOT NULL,

@@ -53,9 +53,12 @@ React/antd instance and no frontend-owned page registry.
   preservation, triggered/backfill UIs, file diagnosis and a real failed-target
   repair+retry. A separate blank-environment suite (`bash industrial/e2e-user-flow.sh`)
   builds the whole graph in the browser and covers failure/repair/retry without
-  API seeding. The designer also supports click-to-add nodes and an explicit
-  edge form because G6's native drop gesture is not reliable in the packaged
-  headless browser.
+  API seeding. A separate real-browser gesture suite
+  (`bash industrial/e2e-browser.sh`, `designer-gestures.spec.ts`) verifies native
+  palette drag/drop, port-to-node drag connection, node movement, canvas
+  panning, node selection and save/reload persistence. The click-to-add and
+  edge-form controls remain as accessibility fallbacks; the gesture suite does
+  not use them.
 - `bash industrial/e2e-packaged.sh` builds and installs real `.gocordis-plugin`
   packages, starts `Industrial.PackagedHost`, and drives save/publish/run plus
   the execution-center query over HTTP.

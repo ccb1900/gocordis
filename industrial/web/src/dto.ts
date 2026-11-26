@@ -358,6 +358,10 @@ export function parseTriggerStatus(raw: unknown): TriggerStatusRow[] {
       nextRun: nullable("nextRun"),
       lastStatus: nullable("lastStatus"),
       lastStartedAt: nullable("lastStartedAt"),
+      lastFireStatus: nullable("lastFireStatus"),
+      lastFireDueAt: nullable("lastFireDueAt"),
+      lastFireAttempts: pick(o, "lastFireAttempts") == null
+        ? null : number(pick(o, "lastFireAttempts")),
       lastError: nullable("lastError"),
     };
   });

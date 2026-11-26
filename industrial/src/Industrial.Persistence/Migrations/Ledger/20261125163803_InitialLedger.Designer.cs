@@ -114,6 +114,9 @@ namespace Industrial.Persistence.Migrations.Ledger
                     b.Property<DateTimeOffset?>("FinishedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("InstanceId")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTimeOffset>("StartedAt")
                         .HasColumnType("TEXT");
 
@@ -130,6 +133,8 @@ namespace Industrial.Persistence.Migrations.Ledger
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("InstanceId");
 
                     b.HasIndex("WorkflowId");
 

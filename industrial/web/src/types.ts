@@ -168,6 +168,9 @@ export interface TriggerStatusRow {
   nextRun: string | null;
   lastStatus: string | null;
   lastStartedAt: string | null;
+  lastFireStatus: string | null;
+  lastFireDueAt: string | null;
+  lastFireAttempts: number | null;
   lastError: string | null;
 }
 

@@ -59,7 +59,8 @@ namespace Industrial.Persistence.Migrations.Ledger
                     Status = table.Column<string>(type: "TEXT", nullable: false),
                     Error = table.Column<string>(type: "TEXT", nullable: true),
                     FinishedAt = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    Version = table.Column<long>(type: "INTEGER", nullable: false)
+                    Version = table.Column<long>(type: "INTEGER", nullable: false),
+                    InstanceId = table.Column<string>(type: "TEXT", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -186,6 +187,11 @@ namespace Industrial.Persistence.Migrations.Ledger
                 name: "IX_CollectionRuns_WorkflowId",
                 table: "CollectionRuns",
                 column: "WorkflowId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CollectionRuns_InstanceId",
+                table: "CollectionRuns",
+                column: "InstanceId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_FileDeliveries_ClaimToken",

@@ -261,6 +261,22 @@ public static class CollectionStatus
         status is Succeeded or PartialFailure or Failed or Cancelled;
 }
 
+public static class ScheduleFireStatus
+{
+    public const string Pending = "Pending";
+    public const string Running = "Running";
+    public const string Succeeded = "Succeeded";
+    public const string Failed = "Failed";
+
+    public static bool IsTerminal(string status) => status is Succeeded or Failed;
+}
+
+public sealed record ScheduleFireClaim(string Key, string Token, int Attempts);
+
+public sealed record ScheduleFireView(
+    string Key, string WorkflowId, int Version, DateTimeOffset DueAtUtc,
+    string Status, int Attempts, string? Error, DateTimeOffset? FinishedAtUtc);
+
 public sealed record FileIdentity(
     string Key,
     string RelativePath,
@@ -333,7 +349,8 @@ public sealed record CollectionRun(
     DateTimeOffset StartedAt,
     string Status,
     string? Error,
-    DateTimeOffset? FinishedAt = null);
+    DateTimeOffset? FinishedAt = null,
+    string? InstanceId = null);
 
 public sealed record CollectionFile(
     string Id,
@@ -434,9 +451,29 @@ public interface ICollectionLedger
     /// The durable row survives restarts and multiple hosts.</summary>
     ValueTask<bool> TryClaimScheduleFireAsync(
         string workflowId, int version, DateTimeOffset dueAtUtc, CancellationToken ct = default);
+    /// <summary>Materialize planned cron instants before claiming them. Rows are
+    /// insert-or-ignore so a restart never duplicates a planned fire.</summary>
+    ValueTask EnsureScheduleFiresAsync(
+        string workflowId, int version, IEnumerable<DateTimeOffset> dueInstants,
+        CancellationToken ct = default);
+    /// <summary>Atomically acquire a renewable claim on a planned fire. The
+    /// caller must CompleteScheduleFireAsync with the returned token.</summary>
+    ValueTask<ScheduleFireClaim?> TryStartScheduleFireAsync(
+        string workflowId, int version, DateTimeOffset dueAtUtc, TimeSpan lease,
+        CancellationToken ct = default);
+    ValueTask CompleteScheduleFireAsync(
+        string key, string token, string status, string? error, CancellationToken ct = default);
+    /// <summary>Startup-only: turn claims whose owner died into recoverable failures.</summary>
+    ValueTask<int> AbandonScheduleFiresAsync(CancellationToken ct = default);
+    ValueTask<IReadOnlyList<ScheduleFireView>> ListScheduleFiresAsync(CancellationToken ct = default);
     ValueTask MarkDeliveryContestedAsync(
         string runId, string deliveryId, string reason, CancellationToken ct = default);
     ValueTask<CollectionRun?> GetRunAsync(string runId, CancellationToken ct = default);
+    /// <summary>Bind a run to the Elsa instance that produced it. Idempotent:
+    /// rebinding a different instance is rejected so a run can never be
+    /// silently repointed at another execution's stage data.</summary>
+    ValueTask<bool> SetRunInstanceAsync(string runId, string instanceId, CancellationToken ct = default);
+    ValueTask<string?> GetRunInstanceAsync(string runId, CancellationToken ct = default);
     ValueTask<IReadOnlyList<CollectionRun>> ListRunsAsync(CancellationToken ct = default);
     ValueTask<CollectionFile> DiscoverAsync(string collectionId, DiscoveredFile file, CancellationToken ct = default);
     ValueTask<CollectionFile?> GetFileByIdentityAsync(string identityKey, CancellationToken ct = default);

@@ -154,6 +154,62 @@ public sealed class DeliveryLeaseTests
     }
 
     [Fact]
+    public async Task ScheduleFireLifecycleSeparatesClaimCompletionAndRecovery()
+    {
+        using var fixture = new Fixture();
+        var due = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var second = due.AddMinutes(-1);
+        await fixture.Ledger.EnsureScheduleFiresAsync("flow", 1, new[] { due, second });
+        await fixture.Ledger.EnsureScheduleFiresAsync("flow", 1, new[] { due, second });
+        var fires = await fixture.Ledger.ListScheduleFiresAsync();
+        Assert.Equal(2, fires.Count);
+        Assert.All(fires, fire => Assert.Equal(ScheduleFireStatus.Pending, fire.Status));
+
+        var claim = await fixture.Ledger.TryStartScheduleFireAsync("flow", 1, due, TimeSpan.FromMinutes(5));
+        Assert.NotNull(claim);
+        Assert.Equal(1, claim!.Attempts);
+        Assert.Null(await fixture.Ledger.TryStartScheduleFireAsync("flow", 1, due, TimeSpan.FromMinutes(5)));
+
+        // A stale token cannot turn another host's running fire terminal.
+        await fixture.Ledger.CompleteScheduleFireAsync(
+            claim.Key, "stale-token", ScheduleFireStatus.Succeeded, null);
+        Assert.Equal(ScheduleFireStatus.Running,
+            (await fixture.Ledger.ListScheduleFiresAsync()).Single(fire => fire.Key == claim.Key).Status);
+
+        await fixture.Ledger.CompleteScheduleFireAsync(
+            claim.Key, claim.Token, ScheduleFireStatus.Succeeded, null);
+        Assert.Equal(ScheduleFireStatus.Succeeded,
+            (await fixture.Ledger.ListScheduleFiresAsync()).Single(fire => fire.Key == claim.Key).Status);
+        Assert.Null(await fixture.Ledger.TryStartScheduleFireAsync("flow", 1, due, TimeSpan.FromMinutes(5)));
+    }
+
+    [Fact]
+    public async Task RunningScheduleFireIsFailedOnRestartAndRetriedWithinAttemptLimit()
+    {
+        using var fixture = new Fixture();
+        var due = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var claim = await fixture.Ledger.TryStartScheduleFireAsync("flow", 1, due, TimeSpan.FromMinutes(5));
+        Assert.NotNull(claim);
+
+        var restarted = new CollectionLedger(fixture.NewDb);
+        Assert.Equal(1, await restarted.AbandonScheduleFiresAsync());
+        var fire = (await restarted.ListScheduleFiresAsync()).Single();
+        Assert.Equal(ScheduleFireStatus.Failed, fire.Status);
+        Assert.Contains("restarted", fire.Error, StringComparison.Ordinal);
+
+        var retry = await restarted.TryStartScheduleFireAsync("flow", 1, due, TimeSpan.FromMinutes(5));
+        Assert.NotNull(retry);
+        Assert.Equal(2, retry!.Attempts);
+        await restarted.CompleteScheduleFireAsync(retry.Key, retry.Token, ScheduleFireStatus.Failed, "boom");
+
+        var last = await restarted.TryStartScheduleFireAsync("flow", 1, due, TimeSpan.FromMinutes(5));
+        Assert.NotNull(last);
+        Assert.Equal(3, last!.Attempts);
+        await restarted.CompleteScheduleFireAsync(last.Key, last.Token, ScheduleFireStatus.Failed, "boom");
+        Assert.Null(await restarted.TryStartScheduleFireAsync("flow", 1, due, TimeSpan.FromMinutes(5)));
+    }
+
+    [Fact]
     public async Task ManyIndependentWritersClaimTheSameDeliveryExactlyOnce()
     {
         using var fixture = new Fixture();

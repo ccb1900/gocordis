@@ -1,6 +1,7 @@
 using Industrial.Contracts;
 using Industrial.Core;
 using Industrial.Persistence;
+using Microsoft.Data.Sqlite;
 
 namespace Industrial.Database.Tests;
 
@@ -59,6 +60,9 @@ public sealed class WindowsUncIntegrationTests
         }
         finally
         {
+            // Windows keeps pooled SQLite handles alive briefly; release them
+            // before removing the temporary database directory.
+            SqliteConnection.ClearAllPools();
             Directory.Delete(dbRoot, recursive: true);
         }
     }

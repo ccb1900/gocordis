@@ -184,6 +184,10 @@ export interface GraphBehaviorHandlers {
   };
   /** Space held or middle button: pan even when the pointer is over a node. */
   isPanModifier?: () => boolean;
+  /** G6 emits node:dragstart only after the pointer has moved past a threshold,
+   * so the drag-start event position is no longer on the port. The pointerdown
+   * origin is the reliable signal for a port-origin connect gesture. */
+  gestureOrigin?: () => { x: number; y: number } | null;
   /** Shared arm state so a port-origin drag remains a connect gesture until pointerup. */
   connectionState?: { armed: boolean };
   onPositions?: (positions: Record<string, { x: number; y: number }>) => void;
@@ -204,7 +208,7 @@ const isPanGesture = (handlers: GraphBehaviorHandlers, event: GestureEvent): boo
  * the most reliable signal across renderer versions. */
 const isPortGesture = (handlers: GraphBehaviorHandlers, event: GestureEvent): boolean => {
   if (event.targetType !== "node" || !event.target?.id) return false;
-  const point = event.client ?? event.canvas;
+  const point = handlers.gestureOrigin?.() ?? event.client ?? event.canvas;
   if (!point || !handlers.graph) return false;
   const nodeId = String(event.target.id);
   const node = handlers.graph.getNodeData().find((item) => String(item.id) === nodeId);

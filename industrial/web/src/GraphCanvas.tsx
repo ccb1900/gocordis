@@ -38,6 +38,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const readyRef = useRef(false);
   const panModifierRef = useRef(false);
   const connectionStateRef = useRef({ armed: false });
+  const gestureOriginRef = useRef<{ x: number; y: number } | null>(null);
   const callbacks = useRef<Callbacks>({ onSelect, onDropNode, onCreateEdge, onPositions });
   callbacks.current = { onSelect, onDropNode, onCreateEdge, onPositions };
 
@@ -85,6 +86,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
             },
           },
           isPanModifier: () => panModifierRef.current,
+          gestureOrigin: () => gestureOriginRef.current,
           connectionState: connectionStateRef.current,
           allowedIds: () => allowedRef.current,
           onPositions: (positions) => callbacks.current.onPositions(positions),
@@ -97,7 +99,18 @@ export function GraphCanvas(props: GraphCanvasProps) {
       });
       graph.on("edge:click", () => callbacks.current.onSelect(null));
       graph.on("canvas:click", () => callbacks.current.onSelect(null));
-      graph.on("pointerup", () => { connectionStateRef.current.armed = false; });
+      graph.on("pointerdown", (event: unknown) => {
+        const e = event as { client?: { x: number; y: number } };
+        gestureOriginRef.current = e.client ? { x: e.client.x, y: e.client.y } : null;
+      });
+      graph.on("pointerup", () => {
+        // create-edge finishes its own drop gesture inside this same event;
+        // clearing armed synchronously would cancel an in-flight connection.
+        queueMicrotask(() => {
+          connectionStateRef.current.armed = false;
+          gestureOriginRef.current = null;
+        });
+      });
       graphRef.current = graph;
       // Expose the live instance on its container for real-browser E2E.
       (container as HTMLElement & { __industrialGraph?: Graph }).__industrialGraph = graph;

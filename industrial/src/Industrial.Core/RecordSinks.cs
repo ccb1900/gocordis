@@ -59,11 +59,16 @@ public sealed class SqlServerRecordSink : IRecordSink
 {
     private readonly string _connectionString;
     private readonly string _table;
+    private readonly string _writeMode;
+    private readonly string? _businessKey;
 
-    public SqlServerRecordSink(string connectionString, string table = "IndustrialRecords", string? targetId = null)
+    public SqlServerRecordSink(string connectionString, string table = "IndustrialRecords",
+        string? targetId = null, string writeMode = "append", string? businessKey = null)
     {
         _connectionString = connectionString;
-        _table = table;
+        _table = SqlIdentifier.QuoteTable(table);
+        _writeMode = writeMode is "append" or "upsert" or "replace" ? writeMode : "append";
+        _businessKey = string.IsNullOrWhiteSpace(businessKey) ? null : businessKey;
         TargetId = targetId ?? "sqlserver";
     }
 
@@ -79,8 +84,8 @@ public sealed class SqlServerRecordSink : IRecordSink
         await connection.OpenAsync(ct);
         var command = connection.CreateCommand();
         command.CommandText = $"""
-            IF OBJECT_ID(N'dbo.{_table}', N'U') IS NULL
-            CREATE TABLE dbo.{_table} (
+            IF OBJECT_ID(N'{_table}', N'U') IS NULL
+            CREATE TABLE {_table} (
                 record_id NVARCHAR(256) NOT NULL PRIMARY KEY,
                 source_identity NVARCHAR(512) NOT NULL,
                 record_time DATETIMEOFFSET NOT NULL,
@@ -92,13 +97,38 @@ public sealed class SqlServerRecordSink : IRecordSink
         var count = 0;
         await foreach (var record in records.WithCancellation(ct))
         {
-            var recordId = record.Values.GetValueOrDefault("record_id")?.ToString()
-                           ?? throw new InvalidOperationException("record_id is required for idempotent delivery");
-            command.CommandText = $"""
-                IF NOT EXISTS (SELECT 1 FROM dbo.{_table} WHERE record_id = @id)
-                INSERT INTO dbo.{_table}(record_id, source_identity, record_time, payload)
-                VALUES (@id, @source, @time, @payload);
-                """;
+            var recordId = _businessKey is not null &&
+                           record.Values.TryGetValue(_businessKey, out var businessValue) &&
+                           businessValue is not null
+                ? businessValue.ToString()
+                : record.Values.GetValueOrDefault("record_id")?.ToString();
+            if (string.IsNullOrWhiteSpace(recordId))
+            {
+                throw new InvalidOperationException("record_id is required for idempotent delivery");
+            }
+
+            command.CommandText = _writeMode switch
+            {
+                "upsert" => $"""
+                    MERGE {_table} AS target
+                    USING (SELECT @id AS record_id) AS source
+                    ON target.record_id = source.record_id
+                    WHEN MATCHED THEN UPDATE SET source_identity = @source,
+                        record_time = @time, payload = @payload
+                    WHEN NOT MATCHED THEN INSERT(record_id, source_identity, record_time, payload)
+                        VALUES (@id, @source, @time, @payload);
+                    """,
+                "replace" => $"""
+                    DELETE FROM {_table} WHERE source_identity = @source;
+                    INSERT INTO {_table}(record_id, source_identity, record_time, payload)
+                    VALUES (@id, @source, @time, @payload);
+                    """,
+                _ => $"""
+                    IF NOT EXISTS (SELECT 1 FROM {_table} WHERE record_id = @id)
+                    INSERT INTO {_table}(record_id, source_identity, record_time, payload)
+                    VALUES (@id, @source, @time, @payload);
+                    """,
+            };
             command.Parameters.Clear();
             command.Parameters.AddWithValue("@id", recordId);
             command.Parameters.AddWithValue("@source", record.Source.Key);

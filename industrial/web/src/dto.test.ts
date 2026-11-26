@@ -1,10 +1,32 @@
 import { describe, expect, it } from "vitest";
 import {
-  canonicalPortType, parseCollections, parseCommandResult, parseNodeDescriptors,
+  canonicalPortType, parseCollections, parseCommandResult, parseExecution, parseNodeDescriptors,
   parseResourceOptions, parseValidationIssues, parseWorkflow, parseWorkflowSummaries, unwrapData,
 } from "./dto";
 
 describe("hub envelope parsing", () => {
+  it("parses bounded node execution diagnostics from the same execution payload", () => {
+    const state = parseExecution({ data: {
+      status: "Finished",
+      error: null,
+      executed: ["src", "read"],
+      instanceId: "instance-1",
+      definitionId: "flow:v1",
+      nodes: [
+        { nodeId: "read", status: "Succeeded", records: 6, files: 0, error: null,
+          samples: ["1", "2", "3", "4"] },
+        { nodeId: "storeB", status: "Failed", records: 1, files: 0,
+          error: "connection reset", samples: [] },
+      ],
+    } });
+    expect(state).not.toBeNull();
+    expect(state!.nodes).toHaveLength(2);
+    expect(state!.nodes[0]).toMatchObject({ records: 6, status: "Succeeded" });
+    expect(state!.nodes[0].samples).toEqual(["1", "2", "3"]);
+    expect(state!.nodes[1].error).toBe("connection reset");
+    expect(parseExecution(null)).toBeNull();
+  });
+
   it("unwraps {data} and rejects an error envelope", () => {
     expect(unwrapData({ data: { ok: true } })).toEqual({ ok: true });
     expect(() => unwrapData({ code: "not_found", message: "unknown query" })).toThrow(/not_found/);

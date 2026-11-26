@@ -1,5 +1,6 @@
-using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Industrial.Contracts;
 
@@ -14,27 +15,26 @@ public interface INativeNetworkConnection
     int Cancel(string remote);
 }
 
-/// <summary>One shared SMB session per UNC share and credential.</summary>
+/// <summary>One shared SMB session per UNC share and credential. Session
+/// identity is derived from a normalized share root plus the credential, never
+/// from a caller-supplied cache key, so acquire/remove always use the same key.</summary>
 public sealed class UncConnectionLease : IAsyncDisposable
 {
-    private static readonly ConcurrentDictionary<string, UncConnectionLease> Sessions = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, UncConnectionLease> Sessions = new(StringComparer.Ordinal);
     private static readonly object Gate = new();
+    private readonly string _key;
     private readonly string _remote;
     private readonly INativeNetworkConnection _native;
     private int _references;
+    private bool _disposed;
 
-    public UncConnectionLease(string uncPath, string userName, string password,
-        string? domain = null, INativeNetworkConnection? native = null)
+    private UncConnectionLease(string key, string remote,
+        string account, string password, INativeNetworkConnection native)
     {
-        if (!uncPath.StartsWith(@"\\", StringComparison.Ordinal))
-        {
-            throw new ArgumentException("UNC path must start with \\\\server\\share", nameof(uncPath));
-        }
-
-        _remote = uncPath;
-        _native = native ?? new WindowsNetworkConnection();
-        var account = string.IsNullOrWhiteSpace(domain) ? userName : $"{domain}\\{userName}";
-        var result = _native.Add(uncPath, account, password);
+        _key = key;
+        _remote = remote;
+        _native = native;
+        var result = native.Add(remote, account, password);
         // 2250 means another handle in this logon session already mapped it.
         if (result is not (0 or 2250))
         {
@@ -48,9 +48,27 @@ public sealed class UncConnectionLease : IAsyncDisposable
     public static string LocalPath(string uncPath, string relativePath) =>
         Path.Combine(uncPath, relativePath);
 
-    public static UncConnectionLease Acquire(string key, string uncPath, string userName,
-        string password, string? domain = null, INativeNetworkConnection? native = null)
+    /// <summary>Acquire a shared session for the UNC share root. Equivalent
+    /// spellings of the same share and account share one native connection;
+    /// a different credential gets its own session (or fails at WNet with 1219).</summary>
+    public static UncConnectionLease Acquire(string uncPath, string userName, string password,
+        string? domain = null, INativeNetworkConnection? native = null)
     {
+        var remote = NormalizeShareRoot(uncPath);
+        if (string.IsNullOrWhiteSpace(userName))
+        {
+            throw new ArgumentException("UNC credential requires a user name", nameof(userName));
+        }
+        password ??= string.Empty;
+
+        var account = string.IsNullOrWhiteSpace(domain) ? userName.Trim() : $"{domain.Trim()}\\{userName.Trim()}";
+        // The cache key is the only session identity. It binds the normalized
+        // share root, case-insensitive account and password without retaining
+        // the secret on the lease, so a different credential can never reuse
+        // (or remove) another credential's session.
+        var identity = $"{remote}|{account.ToUpperInvariant()}|{password}";
+        var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
+
         lock (Gate)
         {
             if (Sessions.TryGetValue(key, out var existing))
@@ -59,7 +77,8 @@ public sealed class UncConnectionLease : IAsyncDisposable
                 return existing;
             }
 
-            var created = new UncConnectionLease(uncPath, userName, password, domain, native);
+            var created = new UncConnectionLease(
+                key, remote, account, password, native ?? new WindowsNetworkConnection());
             created._references = 1;
             Sessions[key] = created;
             return created;
@@ -70,9 +89,20 @@ public sealed class UncConnectionLease : IAsyncDisposable
     {
         lock (Gate)
         {
-            if (--_references > 0) return ValueTask.CompletedTask;
-            Sessions.TryRemove(KeyOf(_remote), out _);
+            if (_references > 1)
+            {
+                _references--;
+                return ValueTask.CompletedTask;
+            }
+            if (_disposed) return ValueTask.CompletedTask;
+            _disposed = true;
+            _references = 0;
+            if (Sessions.TryGetValue(_key, out var current) && ReferenceEquals(current, this))
+            {
+                Sessions.Remove(_key);
+            }
         }
+
         _native.Cancel(_remote);
         return ValueTask.CompletedTask;
     }
@@ -81,13 +111,32 @@ public sealed class UncConnectionLease : IAsyncDisposable
     {
         lock (Gate)
         {
-            foreach (var lease in Sessions.Values) lease._native.Cancel(lease._remote);
+            foreach (var lease in Sessions.Values)
+            {
+                lease._references = 0;
+                lease._disposed = true;
+                lease._native.Cancel(lease._remote);
+            }
             Sessions.Clear();
         }
     }
 
-    private static string KeyOf(string remote) => Convert.ToHexString(
-        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(remote)));
+    private static string NormalizeShareRoot(string uncPath)
+    {
+        if (string.IsNullOrWhiteSpace(uncPath) || !uncPath.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            throw new ArgumentException("UNC path must start with \\\\server\\share", nameof(uncPath));
+        }
+
+        var parts = uncPath.Trim().TrimEnd('\\', '/')[2..]
+            .Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 ||
+            string.IsNullOrWhiteSpace(parts[0]) || string.IsNullOrWhiteSpace(parts[1]))
+        {
+            throw new ArgumentException("UNC path must include server and share", nameof(uncPath));
+        }
+        return $@"\\{parts[0].ToLowerInvariant()}\{parts[1].ToLowerInvariant()}";
+    }
 }
 
 public sealed class WindowsNetworkConnection : INativeNetworkConnection
@@ -176,9 +225,7 @@ public sealed class UncFileSource : IFileSource
         UncConnectionLease? lease = null;
         if (!string.IsNullOrWhiteSpace(user))
         {
-            var key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-                System.Text.Encoding.UTF8.GetBytes($"{root}|{user}|{domain}|{password}")));
-            lease = UncConnectionLease.Acquire(key, root!, user, password!, domain);
+            lease = UncConnectionLease.Acquire(root!, user, password!, domain);
         }
 
         try
@@ -214,10 +261,13 @@ public sealed class UncFileSource : IFileSource
         {
             using var document = JsonDocument.Parse(secret);
             var root = document.RootElement;
+            string? Pick(params string[] names) => names
+                .Select(name => root.TryGetProperty(name, out var value) ? value.GetString() : null)
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
             return (
-                root.TryGetProperty("user", out var user) ? user.GetString() : null,
-                root.TryGetProperty("password", out var password) ? password.GetString() : null,
-                root.TryGetProperty("domain", out var domain) ? domain.GetString() : null);
+                Pick("user", "username", "uid"),
+                Pick("password", "pwd"),
+                Pick("domain"));
         }
         catch (JsonException)
         {

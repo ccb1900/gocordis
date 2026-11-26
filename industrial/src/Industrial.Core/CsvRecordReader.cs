@@ -1,12 +1,14 @@
 using System.Globalization;
+using System.Text;
 using CsvHelper;
 using CsvHelper.Configuration;
 using Industrial.Contracts;
 
 namespace Industrial.Core;
 
-/// <summary>Streaming CSV reader based on CsvHelper. It yields record refs, not
-/// bulk variables; large files never enter the workflow engine's variable bag.</summary>
+/// <summary>Streaming CSV reader driven by the node's own configuration, so the
+/// designer's delimiter/encoding/header/column settings are real runtime
+/// settings rather than display-only metadata.</summary>
 public sealed class CsvRecordReader : IRecordReader
 {
     private readonly IReadOnlyDictionary<string, object?> _config;
@@ -14,38 +16,74 @@ public sealed class CsvRecordReader : IRecordReader
     public CsvRecordReader(IReadOnlyDictionary<string, object?>? config = null) =>
         _config = config ?? new Dictionary<string, object?>();
 
+    public int Warnings { get; private set; }
+
     public async IAsyncEnumerable<RecordEnvelope> ReadAsync(
         DiscoveredFile file, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
-        var delimiter = _config.TryGetValue("delimiter", out var separator) && separator is string text && text.Length > 0
-            ? text[0]
-            : ',';
-        var config = new CsvConfiguration(CultureInfo.InvariantCulture)
+        var config = new NodeConfigReader(_config);
+        var delimiter = config.GetString("delimiter", ",");
+        if (delimiter.Length != 1) delimiter = ",";
+        var hasHeader = config.GetBool("hasHeaderRecord", true);
+        var encoding = Encoding.UTF8;
+        try { encoding = Encoding.GetEncoding(config.GetString("encoding", "utf-8")); }
+        catch (ArgumentException) { /* fall back to UTF-8 */ }
+        var recordIdColumn = config.GetString("recordIdColumn", "record_id");
+        var recordTimeColumn = config.GetString("recordTimeColumn", "record_time");
+        var onBadData = config.GetString("onBadData", "drop");
+
+        Warnings = 0;
+        var csvConfig = new CsvConfiguration(CultureInfo.InvariantCulture)
         {
-            Delimiter = delimiter.ToString(),
-            HasHeaderRecord = true,
+            Delimiter = delimiter,
+            HasHeaderRecord = hasHeader,
             MissingFieldFound = null,
+            BadDataFound = _ =>
+            {
+                Warnings++;
+                if (onBadData == "fail") throw new InvalidDataException("malformed CSV row");
+            },
         };
 
         await using var stream = File.OpenRead(file.FullPath);
-        using var reader = new StreamReader(stream);
-        using var csv = new CsvReader(reader, config);
-        await csv.ReadAsync();
-        csv.ReadHeader();
-        var headers = csv.HeaderRecord ?? [];
+        using var reader = new StreamReader(stream, encoding);
+        using var csv = new CsvReader(reader, csvConfig);
+        if (!await csv.ReadAsync()) yield break;
+        string[] headers;
+        if (hasHeader)
+        {
+            csv.ReadHeader();
+            headers = csv.HeaderRecord ?? [];
+            if (!await csv.ReadAsync()) yield break;
+        }
+        else
+        {
+            headers = Enumerable.Range(1, 64)
+                .Select(index => $"Column{index}").ToArray();
+        }
+
         var index = 0;
-        while (await csv.ReadAsync())
+        while (true)
         {
             ct.ThrowIfCancellationRequested();
             var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
             foreach (var header in headers)
             {
-                values[header] = csv.GetField(header);
+                if (hasHeader)
+                {
+                    values[header] = csv.GetField(header);
+                }
+                else if (csv.TryGetField<string>(header, out var field))
+                {
+                    values[header] = field;
+                }
             }
 
-            values.TryGetValue("record_id", out var recordId);
-            values["record_id"] = recordId?.ToString() ?? $"{file.Identity.Key}#{index}";
-            var recordTime = values.TryGetValue("record_time", out var rawTime) &&
+            values.TryGetValue(recordIdColumn, out var recordId);
+            var generatedId = recordId?.ToString();
+            if (string.IsNullOrWhiteSpace(generatedId)) generatedId = $"{file.Identity.Key}#{index}";
+            values["record_id"] = generatedId;
+            var recordTime = values.TryGetValue(recordTimeColumn, out var rawTime) &&
                              DateTimeOffset.TryParse(rawTime?.ToString(), CultureInfo.InvariantCulture,
                                  DateTimeStyles.None, out var parsed)
                 ? parsed
@@ -54,6 +92,7 @@ public sealed class CsvRecordReader : IRecordReader
 
             yield return new RecordEnvelope(values, file.Identity, recordTime);
             index++;
+            if (!await csv.ReadAsync()) break;
         }
     }
 }

@@ -140,6 +140,81 @@ public sealed class DeliveryLeaseTests
         Assert.Equal(CollectionStatus.Succeeded, (await fixture.Ledger.GetRunAsync(run.Id))!.Status);
     }
 
+    [Fact]
+    public async Task ManyIndependentWritersClaimTheSameDeliveryExactlyOnce()
+    {
+        using var fixture = new Fixture();
+        var run = await fixture.Ledger.StartAsync("workflow");
+        await fixture.Ledger.BeginRunAsync(run.Id);
+        var delivery = await SeedDeliveryAsync(fixture, run.Id);
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var attempts = Enumerable.Range(0, 12).Select(_ => Task.Run(async () =>
+        {
+            await gate.Task;
+            var ledger = new CollectionLedger(fixture.NewDb);
+            return await ledger.TryClaimDeliveryAsync(run.Id, delivery.Id, TimeSpan.FromMinutes(1));
+        })).ToArray();
+        gate.SetResult();
+        var claims = await Task.WhenAll(attempts);
+
+        Assert.Single(claims.Where(claim => claim is not null).ToArray());
+        await using var db = fixture.NewDb();
+        var row = await db.FileDeliveries.SingleAsync(x => x.Id == delivery.Id);
+        Assert.Equal(CollectionStatus.InProgress, row.Status);
+        Assert.Equal(1, row.Attempts);
+        Assert.Equal(claims.Single(claim => claim is not null)!.ClaimToken, row.ClaimToken);
+    }
+
+    [Fact]
+    public async Task LeaseRenewalExtendsOnlyTheCurrentClaim()
+    {
+        using var fixture = new Fixture();
+        var run = await fixture.Ledger.StartAsync("workflow");
+        await fixture.Ledger.BeginRunAsync(run.Id);
+        var delivery = await SeedDeliveryAsync(fixture, run.Id);
+        var claim = await fixture.Ledger.TryClaimDeliveryAsync(run.Id, delivery.Id, TimeSpan.FromMilliseconds(1));
+        Assert.NotNull(claim);
+
+        await using (var db = fixture.NewDb())
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                "UPDATE FileDeliveries SET LeaseExpiresAtUnixMs = 1 WHERE Id = {0}", delivery.Id);
+        }
+
+        Assert.True(await fixture.Ledger.RenewDeliveryLeaseAsync(
+            delivery.Id, claim!.ClaimToken, TimeSpan.FromMinutes(2)));
+        Assert.False(await fixture.Ledger.RenewDeliveryLeaseAsync(
+            delivery.Id, "wrong-token", TimeSpan.FromMinutes(2)));
+        Assert.True((await fixture.Ledger.CompleteDeliveryAsync(
+            delivery.Id, claim.ClaimToken, 1)).Accepted);
+        Assert.False(await fixture.Ledger.RenewDeliveryLeaseAsync(
+            delivery.Id, claim.ClaimToken, TimeSpan.FromMinutes(2)));
+
+        await using var final = fixture.NewDb();
+        var row = await final.FileDeliveries.SingleAsync(x => x.Id == delivery.Id);
+        Assert.True(row.LeaseExpiresAtUnixMs > DateTimeOffset.UtcNow.AddMinutes(1).ToUnixTimeMilliseconds() ||
+                    row.Status == CollectionStatus.Succeeded);
+    }
+
+    [Fact]
+    public async Task StartupRecoveryReleasesEvenAnUnexpiredAbandonedClaim()
+    {
+        using var fixture = new Fixture();
+        var run = await fixture.Ledger.StartAsync("workflow");
+        await fixture.Ledger.BeginRunAsync(run.Id);
+        var delivery = await SeedDeliveryAsync(fixture, run.Id);
+        var claim = await fixture.Ledger.TryClaimDeliveryAsync(run.Id, delivery.Id, TimeSpan.FromMinutes(30));
+        Assert.NotNull(claim);
+
+        Assert.Equal(1, await fixture.Ledger.RecoverAbandonedLeasesAsync());
+        var recovered = await fixture.Ledger.GetRunAsync(run.Id);
+        Assert.Equal(CollectionStatus.Interrupted, recovered!.Status);
+        var retry = await fixture.Ledger.TryClaimDeliveryAsync(run.Id, delivery.Id, TimeSpan.FromMinutes(1));
+        Assert.NotNull(retry);
+        Assert.NotEqual(claim!.ClaimToken, retry!.ClaimToken);
+    }
+
     private static async ValueTask<FileDelivery> SeedDeliveryAsync(Fixture fixture, string runId)
     {
         var identity = FileIdentityFactory.Create(

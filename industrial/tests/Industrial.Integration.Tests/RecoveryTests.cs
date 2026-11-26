@@ -64,6 +64,22 @@ public sealed class RecoveryTests
         Assert.Equal(20_000, target.Records.AsNoTracking().Select(row => row.RecordId).Distinct().Count());
     }
 
+    [Fact]
+    public async Task ReusingAStagedSourceAfterOverwriteIsRejected()
+    {
+        using var fixture = new Fixture();
+        var path = Path.Combine(fixture.SourceRoot, "20261125.csv");
+        var staged = FileIdentityFactory.Create(path, fixture.SourceRoot, "source-1");
+        var refFile = new BatchFileRef(
+            staged.Key, "source-1", staged.Key, staged.RelativePath,
+            staged.ContentHash, fixture.Range.FromInclusive, staged.Length, staged.LastWriteUtc);
+
+        await File.WriteAllTextAsync(path, "record_id,reading\n1,999\n");
+        var changed = FileIdentityFactory.Create(path, fixture.SourceRoot, "source-1");
+        var error = Assert.Throws<InvalidOperationException>(() => StagedFileIdentity.Verify(refFile, changed));
+        Assert.Contains("changed on disk", error.Message, StringComparison.Ordinal);
+    }
+
     private sealed class DelegateSink : IRecordSink
     {
         private readonly Func<string, IAsyncEnumerable<RecordEnvelope>, string, CancellationToken,

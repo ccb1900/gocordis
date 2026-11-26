@@ -294,6 +294,22 @@ public sealed class RuntimeGapTests
     }
 
     [Fact]
+    public void DiagnoseAcceptsFourPartNuGetConstraintForThreePartHostVersion()
+    {
+        var service = new DiagnosticsService("1.0.0");
+        ModuleDeclaration[] modules =
+        [
+            new("normalized", "1.0.0", HostVersionConstraint: ">=1.0.0.0"),
+        ];
+
+        var diagnostics = service.Diagnose(modules, []);
+
+        Assert.DoesNotContain(diagnostics, d =>
+            d.Code == DiagnosticCode.VersionMismatch &&
+            d.Message.Contains("normalized", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void DiagnoseReportsUnknownDependencyAndIsDeterministic()
     {
         var service = new DiagnosticsService("2.0.0");

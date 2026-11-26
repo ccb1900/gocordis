@@ -124,17 +124,31 @@ public sealed class CollectionLedger : ICollectionLedger
         string runId, string reason, CancellationToken ct = default) =>
         await CompleteRunAsync(runId, CollectionStatus.Cancelled, reason, ct);
 
-    public async ValueTask<int> RecoverExpiredLeasesAsync(
+    public ValueTask<int> RecoverExpiredLeasesAsync(
         DateTimeOffset now, CancellationToken ct = default)
     {
-        await using var db = _db();
         var nowMs = now.ToUnixTimeMilliseconds();
+        return RecoverLeasesAsync(
+            row => row.LeaseExpiresAtUnixMs > 0 && row.LeaseExpiresAtUnixMs <= nowMs,
+            "lease expired before completion", ct);
+    }
+
+    /// <summary>Startup-only recovery: after a hard process exit no claim owner
+    /// is alive, so even an unexpired lease must be released before its Elsa
+    /// instance can be resumed. Never call this while a run is executing.</summary>
+    public ValueTask<int> RecoverAbandonedLeasesAsync(CancellationToken ct = default) =>
+        RecoverLeasesAsync(_ => true, "process restarted before delivery completed", ct);
+
+    private async ValueTask<int> RecoverLeasesAsync(
+        Func<FileDeliveryEntity, bool> predicate, string reason, CancellationToken ct)
+    {
+        await using var db = _db();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var expired = await db.FileDeliveries.AsNoTracking()
-            .Where(row => row.Status == CollectionStatus.InProgress &&
-                          row.LeaseExpiresAtUnixMs > 0 && row.LeaseExpiresAtUnixMs <= nowMs)
+        var held = await db.FileDeliveries.AsNoTracking()
+            .Where(row => row.Status == CollectionStatus.InProgress)
             .ToListAsync(ct);
-        if (expired.Count == 0) return 0;
+        var expired = held.Where(predicate).ToArray();
+        if (expired.Length == 0) return 0;
 
         foreach (var delivery in expired)
         {
@@ -145,14 +159,14 @@ public sealed class CollectionLedger : ICollectionLedger
                     Error = {1}, Version = Version + 1
                 WHERE Id = {2} AND Status = {3} AND ClaimToken = {4}
                 """,
-                CollectionStatus.Interrupted, "lease expired before completion",
+                CollectionStatus.Interrupted, reason,
                 delivery.Id, CollectionStatus.InProgress, delivery.ClaimToken ?? string.Empty, ct);
             await Exec(db,
                 """
                 UPDATE CollectionRunDeliveries SET Status = {0}, ClaimToken = NULL, LastError = {1}
                 WHERE DeliveryId = {2} AND ClaimToken = {3}
                 """,
-                CollectionStatus.Interrupted, "lease expired before completion",
+                CollectionStatus.Interrupted, reason,
                 delivery.Id, delivery.ClaimToken ?? string.Empty, ct);
             var runIds = await db.CollectionRunDeliveries.AsNoTracking()
                 .Where(row => row.DeliveryId == delivery.Id)
@@ -163,13 +177,13 @@ public sealed class CollectionLedger : ICollectionLedger
                 var run = await db.CollectionRuns.SingleOrDefaultAsync(x => x.Id == runId, ct);
                 if (run is null || CollectionStatus.IsTerminal(run.Status)) continue;
                 run.Status = CollectionStatus.Interrupted;
-                run.Error = "lease expired before completion";
+                run.Error = reason;
                 run.FinishedAt = null;
             }
         }
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
-        return expired.Count;
+        return expired.Length;
     }
 
     public async ValueTask<CollectionRun?> GetRunAsync(string runId, CancellationToken ct = default)
@@ -320,6 +334,25 @@ public sealed class CollectionLedger : ICollectionLedger
 
     public async ValueTask<bool> TryClaimDeliveryAsync(string deliveryId, CancellationToken ct = default) =>
         await TryClaimDeliveryAsync("legacy", deliveryId, DefaultLease, ct) is not null;
+
+    /// <summary>Extends a long-running delivery while its token still owns it.
+    /// A lost or superseded token cannot renew, so a fenced-out writer never
+    /// keeps a claim alive.</summary>
+    public async ValueTask<bool> RenewDeliveryLeaseAsync(
+        string deliveryId, string claimToken, TimeSpan lease, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var leaseEnd = DateTimeOffset.UtcNow + lease;
+        var rows = await Exec(db,
+            """
+            UPDATE FileDeliveries SET LeaseExpiresAt = {0}, LeaseExpiresAtUnixMs = {1},
+                Version = Version + 1
+            WHERE Id = {2} AND Status = {3} AND ClaimToken = {4}
+            """,
+            leaseEnd, leaseEnd.ToUnixTimeMilliseconds(), deliveryId,
+            CollectionStatus.InProgress, claimToken, ct);
+        return rows == 1;
+    }
 
     public async ValueTask<DeliveryOutcome> CompleteDeliveryAsync(
         string deliveryId, string claimToken, int records, CancellationToken ct = default)

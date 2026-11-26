@@ -275,6 +275,11 @@ public static class IndustrialStore
     {
         // EnsureCreated never alters an existing SQLite file. Keep the ledger
         // upgrade idempotent so older local databases keep working.
+        Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN TargetKind TEXT NOT NULL DEFAULT 'record';");
+        Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN Records INTEGER NOT NULL DEFAULT 0;");
+        Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN IdempotencyKey TEXT NOT NULL DEFAULT '';");
+        Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN Version INTEGER NOT NULL DEFAULT 0;");
+        Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN ClaimedAt TEXT NULL;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN ClaimToken TEXT NULL;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN LeaseExpiresAt TEXT NULL;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN LeaseExpiresAtUnixMs INTEGER NOT NULL DEFAULT 0;");

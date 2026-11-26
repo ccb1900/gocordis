@@ -271,11 +271,12 @@ public sealed record RecordEnvelope(
 
 public sealed record BatchFileRef(
     string CollectionFileId, string ResourceId, string IdentityKey,
-    string RelativePath, string ContentHash, DateTimeOffset SourceDate);
+    string RelativePath, string ContentHash, DateTimeOffset SourceDate,
+    long Length = 0, DateTimeOffset? LastWriteUtc = null);
 
 public sealed record FileBatchRef(
     string Id, string InstanceId, string NodeId, string Fingerprint,
-    IReadOnlyList<BatchFileRef> Files);
+    IReadOnlyList<BatchFileRef> Files, string? RunId = null);
 
 public sealed record DatasetRef(
     string Id, string InstanceId, string NodeId, string Fingerprint,
@@ -396,7 +397,8 @@ public interface IRecordSinkFactory
 {
     string ResourceType { get; }
     ValueTask<IRecordSink> CreateAsync(
-        ResourceDefinition resource, ICredentialVault vault, CancellationToken ct = default);
+        ResourceDefinition resource, ICredentialVault vault,
+        IReadOnlyDictionary<string, object?>? nodeConfig = null, CancellationToken ct = default);
 }
 
 public interface IArchiveSink
@@ -414,6 +416,7 @@ public interface ICollectionLedger
     ValueTask<CollectionRun> FinalizeRunAsync(string runId, CancellationToken ct = default);
     ValueTask<CollectionRun> CancelRunAsync(string runId, string reason, CancellationToken ct = default);
     ValueTask<int> RecoverExpiredLeasesAsync(DateTimeOffset now, CancellationToken ct = default);
+    ValueTask<int> RecoverAbandonedLeasesAsync(CancellationToken ct = default);
     ValueTask MarkDeliveryContestedAsync(
         string runId, string deliveryId, string reason, CancellationToken ct = default);
     ValueTask<CollectionRun?> GetRunAsync(string runId, CancellationToken ct = default);
@@ -429,6 +432,8 @@ public interface ICollectionLedger
         string targetKind = "record", string? runId = null, CancellationToken ct = default);
     ValueTask<DeliveryClaim?> TryClaimDeliveryAsync(
         string runId, string deliveryId, TimeSpan lease, CancellationToken ct = default);
+    ValueTask<bool> RenewDeliveryLeaseAsync(
+        string deliveryId, string claimToken, TimeSpan lease, CancellationToken ct = default);
     ValueTask<bool> TryClaimDeliveryAsync(string deliveryId, CancellationToken ct = default);
     ValueTask<DeliveryOutcome> CompleteDeliveryAsync(
         string deliveryId, string claimToken, int records, CancellationToken ct = default);

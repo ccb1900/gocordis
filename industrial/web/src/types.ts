@@ -108,3 +108,21 @@ export interface CommandResult {
   code?: string;
   error?: string;
 }
+
+export interface ExecutionNodeView {
+  nodeId: string;
+  status: string;
+  records: number;
+  files: number;
+  error: string | null;
+  samples: string[];
+}
+
+export interface ExecutionStateView {
+  status: string;
+  error: string | null;
+  executed: string[];
+  instanceId: string | null;
+  definitionId: string | null;
+  nodes: ExecutionNodeView[];
+}

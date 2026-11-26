@@ -12,6 +12,8 @@ import {
   PORT_TYPES,
   type CollectionRow,
   type CommandResult,
+  type ExecutionNodeView,
+  type ExecutionStateView,
   type JsonSchemaLike,
   type NodeDescriptor,
   type NodePort,
@@ -291,6 +293,34 @@ export function parseValidationIssues(raw: unknown): ValidationIssue[] {
 
 /** Command POST responses are `{data: ...}`; "accepted:false" inside data is
  * an unaccepted mutation, NOT a transport success to be ignored. */
+/** Execution diagnostics are read-only. Node views are bounded by the server,
+ * but the parser still caps samples so untrusted payloads cannot flood the UI. */
+export function parseExecution(raw: unknown): ExecutionStateView | null {
+  if (raw === null || raw === undefined) return null;
+  const data = unwrapData(raw);
+  const o = asObj(data);
+  if (Object.keys(o).length === 0) return null;
+  const nodes: ExecutionNodeView[] = asArray(pick(o, "nodes")).slice(0, 64).map((item) => {
+    const node = asObj(item);
+    return {
+      nodeId: text(pick(node, "nodeId", "node_id"), "—"),
+      status: text(pick(node, "status"), "—"),
+      records: number(pick(node, "records")),
+      files: number(pick(node, "files")),
+      error: pick(node, "error") == null ? null : text(pick(node, "error"), undefined),
+      samples: asArray(pick(node, "samples")).slice(0, 3).map((sample) => text(sample)),
+    };
+  });
+  return {
+    status: text(pick(o, "status"), "—"),
+    error: pick(o, "error") == null ? null : text(pick(o, "error"), undefined),
+    executed: asArray(pick(o, "executed")).map((step) => text(step)),
+    instanceId: pick(o, "instanceId") == null ? null : text(pick(o, "instanceId"), undefined),
+    definitionId: pick(o, "definitionId") == null ? null : text(pick(o, "definitionId"), undefined),
+    nodes,
+  };
+}
+
 export function parseCommandResult(raw: unknown): CommandResult {
   const data = unwrapData(raw);
   const o = asObj(data);

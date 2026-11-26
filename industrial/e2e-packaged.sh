@@ -8,6 +8,11 @@ OUT="${1:-/tmp/gocordis-industrial-packaged-e2e}"
 PORT="${PACKAGED_E2E_PORT:-8189}"
 URL="http://127.0.0.1:${PORT}"
 
+if lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "port ${PORT} is already in use by a stale E2E host" >&2
+  exit 1
+fi
+
 rm -rf "$OUT"
 mkdir -p "$OUT/source"
 printf 'record_id,reading\npackaged-1,42\n' > "$OUT/source/recent.csv"
@@ -24,13 +29,19 @@ GOCORDIS_INDUSTRIAL_SOURCE_ROOT="$OUT/source" \
     "$ROOT/industrial/src/Industrial.PackagedHost/bin/Debug/net10.0/Industrial.PackagedHost.dll" \
     "$OUT/gocordis.app.json" "$OUT/store" "$URL" >"$OUT/host.log" 2>&1 &
 HOST_PID=$!
-trap 'kill "$HOST_PID" 2>/dev/null || true' EXIT
+trap 'kill -9 "$HOST_PID" 2>/dev/null || true' EXIT
 
+# industrial/nodes becomes available before industrial.elsa finishes applying.
+# industrial/recovery is Elsa-owned and always returns a payload, so it proves
+# both the query and command registrations are live (unlike the execution query,
+# which legitimately returns null/404 until the first run).
 for _ in $(seq 1 30); do
-  if curl -fsS "$URL/api/query/industrial/nodes" >/dev/null 2>&1; then break; fi
+  if curl -fsS "$URL/api/query/industrial/recovery" >/dev/null 2>&1; then break; fi
   sleep 1
 done
-if ! curl -fsS "$URL/api/query/industrial/nodes" >/dev/null 2>&1; then
+if ! curl -fsS "$URL/api/query/industrial/recovery" >/dev/null 2>&1; then
+  echo "==> packaged host diagnostics"
+  curl -s "$URL/api/query/devtools/diagnostics" || true
   cat "$OUT/host.log"
   exit 1
 fi

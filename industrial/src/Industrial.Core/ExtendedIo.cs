@@ -12,16 +12,27 @@ namespace Industrial.Core;
 /// contract as CSV; no workflow or registry core changes needed to add it.</summary>
 public sealed class ExcelRecordReader : IRecordReader
 {
+    private readonly IReadOnlyDictionary<string, object?> _config;
+
+    public ExcelRecordReader(IReadOnlyDictionary<string, object?>? config = null) =>
+        _config = config ?? new Dictionary<string, object?>();
+
     public async IAsyncEnumerable<RecordEnvelope> ReadAsync(
         DiscoveredFile file, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
+        var config = new NodeConfigReader(_config);
+        var headerRow = Math.Max(1, config.GetInt("headerRow", 1));
         await using var stream = File.OpenRead(file.FullPath);
         using var reader = ExcelReaderFactory.CreateOpenXmlReader(stream);
+        for (var skipped = 1; skipped < headerRow; skipped++)
+        {
+            if (!reader.Read()) yield break;
+        }
         if (!reader.Read()) yield break;
         var headers = new List<string>();
         for (var index = 0; index < reader.FieldCount; index++)
         {
-            headers.Add(reader.GetString(index));
+            headers.Add(reader.IsDBNull(index) ? $"Column{index + 1}" : reader.GetString(index));
         }
 
         var row = 0;

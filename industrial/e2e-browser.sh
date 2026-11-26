@@ -7,6 +7,11 @@ OUT="${1:-/tmp/gocordis-industrial-browser-e2e}"
 PORT="${E2E_PORT:-8188}"
 URL="http://127.0.0.1:${PORT}"
 
+if lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "port ${PORT} is already in use by a stale E2E host" >&2
+  exit 1
+fi
+
 rm -rf "$OUT"
 mkdir -p "$OUT/source"
 printf 'record_id,reading\n1,42\n' > "$OUT/source/recent.csv"
@@ -22,10 +27,10 @@ GOCORDIS_INDUSTRIAL_ROOT="$OUT" \
 GOCORDIS_INDUSTRIAL_ALLOW_DEV_KEY=true \
 GOCORDIS_INDUSTRIAL_SEED_RESOURCE=true \
 GOCORDIS_INDUSTRIAL_SOURCE_ROOT="$OUT/source" \
-  dotnet run --project "$ROOT/industrial/src/Industrial.Host/Industrial.Host.csproj" --no-build -- \
+  dotnet "$ROOT/industrial/src/Industrial.Host/bin/Debug/net10.0/Industrial.Host.dll" \
     "$OUT" "$URL" >"$OUT/host.log" 2>&1 &
 HOST_PID=$!
-trap 'kill "$HOST_PID" 2>/dev/null || true' EXIT
+trap 'kill -9 "$HOST_PID" 2>/dev/null || true' EXIT
 
 for _ in $(seq 1 30); do
   if curl -fsS "$URL/api/ui/pages" >/dev/null 2>&1; then break; fi

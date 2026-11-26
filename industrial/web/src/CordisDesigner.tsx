@@ -3,12 +3,12 @@
 // facade. WorkflowDefinition is the single editable source of truth.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Button, Drawer, InputNumber, Layout, Select, Space, Spin, Tag, Typography, message } from "antd";
+import { Alert, Button, Drawer, InputNumber, Layout, Select, Space, Spin, Table, Tag, Typography, message } from "antd";
 import { GraphCanvas } from "./GraphCanvas";
 import { NodePalette } from "./NodePalette";
 import { PropertyEditor } from "./PropertyEditor";
 import {
-  parseNodeDescriptors, parseResourceOptions, parseWorkflow, parseWorkflowSummaries, unwrapData,
+  parseExecution, parseNodeDescriptors, parseResourceOptions, parseWorkflow, parseWorkflowSummaries, unwrapData,
 } from "./dto";
 import { getFacade } from "./facade";
 import {
@@ -16,7 +16,8 @@ import {
   removeEdge, removeNode, resolveEdgePorts, setNodeConfig, validateWorkflow,
 } from "./workflow-model";
 import type {
-  NodeDescriptor, ResourceOption, ValidationIssue, WorkflowDefinition, WorkflowEdge, WorkflowSummary,
+  ExecutionStateView, NodeDescriptor, ResourceOption, ValidationIssue,
+  WorkflowDefinition, WorkflowEdge, WorkflowSummary,
 } from "./types";
 
 export interface DesignerContext {
@@ -25,12 +26,6 @@ export interface DesignerContext {
 }
 
 const { Header, Content } = Layout;
-
-interface ExecutionState {
-  status: string;
-  error?: string | null;
-  executed?: string[];
-}
 
 export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const [messageApi, contextHolder] = message.useMessage();
@@ -49,7 +44,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const [libraryOpen, setLibraryOpen] = useState(true);
   const [propertiesOpen, setPropertiesOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [execution, setExecution] = useState<ExecutionState | null>(null);
+  const [execution, setExecution] = useState<ExecutionStateView | null>(null);
   const idRef = useRef(1);
 
   useEffect(() => {
@@ -133,10 +128,9 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
 
   const refreshExecution = useCallback(async () => {
     try {
-      const raw = await ctx.hubQuery("industrial/execution");
-      if (raw === null || raw === undefined) return;
-      const row = raw as ExecutionState;
-      setExecution({ status: String(row.status ?? ""), error: row.error, executed: row.executed ?? [] });
+      const row = parseExecution(await ctx.hubQuery("industrial/execution"));
+      if (row === null) return;
+      setExecution(row);
     } catch {
       // Execution history is diagnostics; a missing query must not block editing.
     }
@@ -363,8 +357,34 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
             type={execution.error ? "error" : "success"}
             showIcon
             message={`执行状态: ${execution.status}`}
-            description={execution.error ?? (execution.executed?.length
-              ? `已执行节点: ${execution.executed.join(", ")}` : undefined)}
+            description={
+              <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                {execution.error && <span>{execution.error}</span>}
+                {execution.executed.length > 0 && (
+                  <span>已执行节点: {execution.executed.join(", ")}</span>
+                )}
+                {execution.nodes.length > 0 && (
+                  <Table
+                    size="small"
+                    pagination={false}
+                    rowKey="nodeId"
+                    dataSource={execution.nodes}
+                    columns={[
+                      { title: "节点", dataIndex: "nodeId", key: "nodeId" },
+                      { title: "状态", dataIndex: "status", key: "status" },
+                      { title: "记录", dataIndex: "records", key: "records" },
+                      { title: "文件", dataIndex: "files", key: "files" },
+                      {
+                        title: "错误 / 样本",
+                        key: "detail",
+                        render: (_, node) => node.error
+                          ?? (node.samples.length > 0 ? node.samples.join(", ") : "—"),
+                      },
+                    ]}
+                  />
+                )}
+              </Space>
+            }
           />
         )}
         <PropertyEditor

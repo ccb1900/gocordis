@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-25T16:47:06.635194+00:00",
+  "generatedAt": "2026-11-26T01:11:50.114976+00:00",
   "source": "tools/release/test-report.sh",
   "suites": [
     {
@@ -47,14 +47,14 @@
     {
       "suite": "industrial-dotnet",
       "exitCode": 0,
-      "passed": 52,
+      "passed": 62,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
     {
       "suite": "industrial-frontend",
       "exitCode": 0,
-      "passed": 35,
+      "passed": 36,
       "skipped": 0,
       "log": "industrial-frontend.log"
     },
@@ -75,7 +75,7 @@
     {
       "suite": "platform-dotnet",
       "exitCode": 0,
-      "passed": 684,
+      "passed": 685,
       "skipped": 1,
       "log": "platform-dotnet.log"
     },
@@ -95,7 +95,7 @@
     }
   ],
   "totals": {
-    "passed": 883,
+    "passed": 895,
     "skipped": 3,
     "failedSuites": []
   },
@@ -125,6 +125,16 @@
       "evidence": "artifacts/windows-unc-blocker.md",
       "runner": ".github/workflows/windows-unc.yml",
       "script": "industrial/e2e-windows-unc.ps1"
+    },
+    {
+      "requirement": "two-target mid-write crash resumes original instance and retries only incomplete delivery",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log"
+    },
+    {
+      "requirement": "concurrent claims, lease renewal and staged-file identity guard",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log"
     },
     {
       "requirement": "ledger claim/lease/retry state machine",

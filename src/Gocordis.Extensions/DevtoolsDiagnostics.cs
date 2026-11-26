@@ -169,6 +169,9 @@ public sealed class DiagnosticsService : IDiagnosticsService
         }
     }
 
+    private static Version Normalize(Version version) =>
+        new(version.Major, version.Minor, Math.Max(version.Build, 0), Math.Max(version.Revision, 0));
+
     private static bool TrySatisfies(string constraint, string hostVersion, out bool satisfied)
     {
         satisfied = false;
@@ -198,11 +201,15 @@ public sealed class DiagnosticsService : IDiagnosticsService
             return false;
         }
 
+        // NuGet normalizes "1.0" to "1.0.0.0"; System.Version treats an
+        // unspecified Build/Revision as -1, which would make 1.0.0 < 1.0.0.0.
+        var normalizedExpected = Normalize(expected);
+        var normalizedHost = Normalize(host);
         satisfied = comparison switch
         {
-            "<=" => host <= expected,
-            "==" => host == expected,
-            _ => host >= expected,
+            "<=" => normalizedHost <= normalizedExpected,
+            "==" => normalizedHost == normalizedExpected,
+            _ => normalizedHost >= normalizedExpected,
         };
         return true;
     }

@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Text.Json.Nodes;
 using Elsa.Workflows.Models;
 using Gocordis.Core;
+using Gocordis.Extensions;
 using Gocordis.Plugins;
 using Gocordis.Platform;
 using Gocordis.Builtin.WebConsole;
@@ -35,7 +36,9 @@ public sealed class ElsaPocTests
         console.AttachRegistry(registry);
         registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
         registry.ExternalCapabilities.Add(ApiGateway.Key);
+        registry.ExternalCapabilities.Add(TimerKeys.Service);
         await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
+        await runtime.LoadAsync(new TimerExtensionComponent());
         IndustrialComponents.RegisterFactories(registry, new Dictionary<string, object?>
         {
             ["allowDevelopmentKey"] = "true",
@@ -57,7 +60,9 @@ public sealed class ElsaPocTests
         console.AttachRegistry(registry);
         registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
         registry.ExternalCapabilities.Add(ApiGateway.Key);
+        registry.ExternalCapabilities.Add(TimerKeys.Service);
         await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
+        await runtime.LoadAsync(new TimerExtensionComponent());
 
         IndustrialComponents.RegisterFactories(registry, new Dictionary<string, object?>
         {
@@ -112,7 +117,9 @@ public sealed class ElsaPocTests
         console.AttachRegistry(registry);
         registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
         registry.ExternalCapabilities.Add(ApiGateway.Key);
+        registry.ExternalCapabilities.Add(TimerKeys.Service);
         await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
+        await runtime.LoadAsync(new TimerExtensionComponent());
 
         IndustrialComponents.RegisterFactories(registry, new Dictionary<string, object?>
         {
@@ -412,7 +419,9 @@ public sealed class ElsaPocTests
         console.AttachRegistry(registry);
         registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
         registry.ExternalCapabilities.Add(ApiGateway.Key);
+        registry.ExternalCapabilities.Add(TimerKeys.Service);
         await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
+        await runtime.LoadAsync(new TimerExtensionComponent());
         IndustrialComponents.RegisterFactories(registry, new Dictionary<string, object?>
         {
             ["allowDevelopmentKey"] = "true",

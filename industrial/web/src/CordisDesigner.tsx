@@ -7,6 +7,8 @@ import { Alert, Button, Drawer, InputNumber, Layout, Select, Space, Spin, Table,
 import { GraphCanvas } from "./GraphCanvas";
 import { NodePalette } from "./NodePalette";
 import { PropertyEditor } from "./PropertyEditor";
+import { TriggerEditor } from "./TriggerEditor";
+import { BackfillPreview } from "./BackfillPreview";
 import {
   parseExecution, parseNodeDescriptors, parseResourceOptions, parseWorkflow, parseWorkflowSummaries, unwrapData,
 } from "./dto";
@@ -16,7 +18,7 @@ import {
   removeEdge, removeNode, resolveEdgePorts, setNodeConfig, validateWorkflow,
 } from "./workflow-model";
 import type {
-  ExecutionStateView, NodeDescriptor, ResourceOption, ValidationIssue,
+  ExecutionStateView, NodeDescriptor, ResourceOption, TriggerDefinition, ValidationIssue,
   WorkflowDefinition, WorkflowEdge, WorkflowSummary,
 } from "./types";
 
@@ -45,7 +47,12 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const [propertiesOpen, setPropertiesOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [execution, setExecution] = useState<ExecutionStateView | null>(null);
+  const [triggerOpen, setTriggerOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const idRef = useRef(1);
+  const triggerRef = useRef<TriggerDefinition>(definition.trigger);
+
+  useEffect(() => { triggerRef.current = definition.trigger; }, [definition.trigger]);
 
   useEffect(() => {
     let alive = true;
@@ -146,6 +153,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
     }
     const withPolicy = {
       ...definition,
+      trigger: triggerRef.current,
       resourceReferences: [...referenced],
       layout: { ...definition.layout, lookbackDays: backfillDays },
     };
@@ -278,6 +286,9 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
           </Button>
           <Button size="small" data-testid="toggle-properties"
             onClick={() => setPropertiesOpen((open) => !open)}>属性</Button>
+          <Button size="small" data-testid="open-trigger" onClick={() => setTriggerOpen(true)}>触发器</Button>
+          <Button size="small" data-testid="open-backfill-preview"
+            onClick={() => setPreviewOpen(true)}>补采预览</Button>
           <span className="industrial-toolbar-divider" />
           <Space size={4}>
             <Button size="small" loading={busy} onClick={() => void save()}>保存</Button>
@@ -424,6 +435,27 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
           }}
         />
       </Drawer>
+      {triggerOpen && <TriggerEditor
+        open={triggerOpen}
+        onClose={() => setTriggerOpen(false)}
+        trigger={definition.trigger}
+        resourceIds={resourceIds}
+        workflowId={definition.workflowId}
+        ctx={ctx}
+        onSave={(trigger: TriggerDefinition) => {
+          triggerRef.current = trigger;
+          setDefinition((current) => ({ ...current, trigger }));
+          setDirty(true);
+        }}
+      />}
+      {previewOpen && <BackfillPreview
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        ctx={ctx}
+        workflowId={definition.workflowId}
+        resourceId={resourceId}
+        lookbackDays={backfillDays}
+      />}
     </div>
   );
 }

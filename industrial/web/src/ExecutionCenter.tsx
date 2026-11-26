@@ -78,7 +78,16 @@ export function ExecutionCenter({ block, ctx }: { block?: { query?: string }; ct
           { title: "状态", dataIndex: "status", render: (v: string) => <Tag color={statusColor(v)}>{v}</Tag> },
           { title: "记录数", dataIndex: "records" },
           { title: "尝试次数", dataIndex: "attempts" },
-          { title: "错误", dataIndex: "error", render: (v: string | null) => v ?? "—" },
+          {
+            title: "原因与下一步",
+            key: "diagnosis",
+            render: (_: unknown, row: DeliveryRow) => row.diagnosis ? (
+              <Space direction="vertical" size={0}>
+                <Typography.Text>{row.diagnosis.message}</Typography.Text>
+                <Typography.Text type="secondary">{row.diagnosis.action}</Typography.Text>
+              </Space>
+            ) : (row.error ?? "—"),
+          },
           {
             title: "操作",
             key: "actions",

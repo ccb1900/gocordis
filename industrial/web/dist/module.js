@@ -1,39 +1,39 @@
-let ge = null;
-function dt(e) {
-  ge = e;
+let ye = null;
+function mt(e) {
+  ye = e;
 }
-function J() {
-  if (!ge && typeof globalThis < "u" && (ge = globalThis.__CORDIS_CONSOLE ?? null), !ge)
+function H() {
+  if (!ye && typeof globalThis < "u" && (ye = globalThis.__CORDIS_CONSOLE ?? null), !ye)
     throw new Error("[industrial-designer] console facade is not available");
-  return ge;
+  return ye;
 }
-const i = (...e) => J().jsxRuntime.jsx(...e), b = (...e) => J().jsxRuntime.jsxs(...e), ve = (e) => J().jsxRuntime.jsx(J().jsxRuntime.Fragment, e), ke = (...e) => J().React.createElement(...e), O = (...e) => J().React.useCallback(...e), Y = (...e) => J().React.useEffect(...e), Be = (...e) => J().React.useMemo(...e), re = (...e) => J().React.useRef(...e), w = (...e) => J().React.useState(...e), R = (e) => {
+const a = (...e) => H().jsxRuntime.jsx(...e), h = (...e) => H().jsxRuntime.jsxs(...e), be = (e) => H().jsxRuntime.jsx(H().jsxRuntime.Fragment, e), Ce = (...e) => H().React.createElement(...e), _ = (...e) => H().React.useCallback(...e), G = (...e) => H().React.useEffect(...e), Je = (...e) => H().React.useMemo(...e), se = (...e) => H().React.useRef(...e), b = (...e) => H().React.useState(...e), z = (e) => {
   const t = (r) => {
-    const n = e.split(".").reduce((o, a) => o == null ? void 0 : o[a], J().antd);
+    const n = e.split(".").reduce((s, l) => s == null ? void 0 : s[l], H().antd);
     if (!n) throw new Error(`[industrial-designer] antd.${e} is unavailable`);
-    return ke(n, r ?? {});
+    return Ce(n, r ?? {});
   };
   return t.displayName = `facade.${e}`, t;
-}, pe = R("Alert"), A = R("Button"), Re = R("Divider"), ut = R("Drawer"), Ge = R("Empty"), Se = Object.assign(R("Form"), {
-  Item: R("Form.Item"),
-  useForm: (...e) => J().antd.Form.useForm(...e)
-}), F = Object.assign(R("Input"), {
-  Number: R("InputNumber"),
-  TextArea: R("Input.TextArea")
-}), Ue = R("InputNumber"), pt = Object.assign(R("Layout"), {
-  Header: R("Layout.Header"),
-  Content: R("Layout.Content")
-}), Pe = R("Modal"), oe = R("Select"), Q = R("Space"), We = R("Spin"), Qe = R("Switch"), de = R("Table"), ne = R("Tag"), P = Object.assign(R("Typography"), {
-  Title: R("Typography.Title"),
-  Text: R("Typography.Text")
-}), ft = new Proxy({}, {
+}, ie = z("Alert"), $ = z("Button"), Fe = z("Divider"), ht = z("Drawer"), Ye = z("Empty"), Ne = Object.assign(z("Form"), {
+  Item: z("Form.Item"),
+  useForm: (...e) => H().antd.Form.useForm(...e)
+}), K = Object.assign(z("Input"), {
+  Number: z("InputNumber"),
+  TextArea: z("Input.TextArea")
+}), He = z("InputNumber"), wt = Object.assign(z("Layout"), {
+  Header: z("Layout.Header"),
+  Content: z("Layout.Content")
+}), me = z("Modal"), ae = z("Select"), O = z("Space"), Ve = z("Spin"), Xe = z("Switch"), ne = z("Table"), oe = z("Tag"), N = Object.assign(z("Typography"), {
+  Title: z("Typography.Title"),
+  Text: z("Typography.Text")
+}), vt = new Proxy({}, {
   get: (e, t) => (...r) => {
-    var o;
-    const n = (o = J().antd.message) == null ? void 0 : o[t];
+    var s;
+    const n = (s = H().antd.message) == null ? void 0 : s[t];
     if (typeof n != "function") throw new Error(`[industrial-designer] message.${t} unavailable`);
     return n(...r);
   }
-}), Ke = 148, Je = 46, Ae = {
+}), Ze = 148, et = 46, Me = {
   trigger: "#52c41a",
   Trigger: "#52c41a",
   filesystem: "#1677ff",
@@ -46,44 +46,44 @@ const i = (...e) => J().jsxRuntime.jsx(...e), b = (...e) => J().jsxRuntime.jsxs(
   delivery: "#13a8a8",
   Delivery: "#13a8a8",
   sink: "#13a8a8"
-}, ze = (e) => Ae[e] ?? Ae[e.split(".")[0]] ?? "#4d6bfe";
-function gt(e) {
+}, Be = (e) => Me[e] ?? Me[e.split(".")[0]] ?? "#4d6bfe";
+function bt(e) {
   return `e:${e.source}:${e.sourcePort}>${e.target}:${e.targetPort}`;
 }
-function yt(e, t = /* @__PURE__ */ new Map(), r) {
+function It(e, t = /* @__PURE__ */ new Map(), r) {
   return {
     nodes: e.nodes.map((n) => {
-      const o = t.get(n.type), a = (o == null ? void 0 : o.category) ?? "General", s = r === n.id;
+      const s = t.get(n.type), l = (s == null ? void 0 : s.category) ?? "General", o = r === n.id;
       return {
         id: n.id,
         data: {
-          label: (o == null ? void 0 : o.name) ?? n.type,
+          label: (s == null ? void 0 : s.name) ?? n.type,
           nodeTypeId: n.type,
-          category: a,
-          icon: (o == null ? void 0 : o.icon) ?? "AppstoreOutlined",
+          category: l,
+          icon: (s == null ? void 0 : s.icon) ?? "AppstoreOutlined",
           config: { ...n.config }
         },
         style: {
           x: n.x,
           y: n.y,
-          fill: ze(a),
-          stroke: s ? "#111111" : ze(a),
-          lineWidth: s ? 3 : 1.5,
+          fill: Be(l),
+          stroke: o ? "#111111" : Be(l),
+          lineWidth: o ? 3 : 1.5,
           radius: 10,
           port: !0,
           ports: [
-            ...((o == null ? void 0 : o.inputs) ?? []).map((l, c, p) => ({
-              key: `in:${l.name}`,
-              placement: [0, (c + 1) / (p.length + 1)],
+            ...((s == null ? void 0 : s.inputs) ?? []).map((c, d, f) => ({
+              key: `in:${c.name}`,
+              placement: [0, (d + 1) / (f.length + 1)],
               r: 5,
-              stroke: l.required ? "#fa541c" : "#8a93a6",
+              stroke: c.required ? "#fa541c" : "#8a93a6",
               fill: "#fff"
             })),
-            ...((o == null ? void 0 : o.outputs) ?? []).map((l, c, p) => ({
-              key: `out:${l.name}`,
-              placement: [1, (c + 1) / (p.length + 1)],
+            ...((s == null ? void 0 : s.outputs) ?? []).map((c, d, f) => ({
+              key: `out:${c.name}`,
+              placement: [1, (d + 1) / (f.length + 1)],
               r: 5,
-              stroke: l.type === "Control" ? "#52c41a" : "#1677ff",
+              stroke: c.type === "Control" ? "#52c41a" : "#1677ff",
               fill: "#fff"
             }))
           ]
@@ -91,7 +91,7 @@ function yt(e, t = /* @__PURE__ */ new Map(), r) {
       };
     }),
     edges: e.edges.map((n) => ({
-      id: gt(n),
+      id: bt(n),
       source: n.source,
       sourcePort: `out:${n.sourcePort}`,
       target: n.target,
@@ -105,16 +105,16 @@ function yt(e, t = /* @__PURE__ */ new Map(), r) {
     }))
   };
 }
-function mt(e, t, r) {
-  const n = r && r.length > 0 ? new Set(r) : null, o = {};
-  for (const a of e.nodes) {
-    if (!t.has(a.id) || n && !n.has(a.id)) continue;
-    const s = a.style.x, l = a.style.y;
-    typeof s == "number" && typeof l == "number" && (o[a.id] = { x: s, y: l });
+function xt(e, t, r) {
+  const n = r && r.length > 0 ? new Set(r) : null, s = {};
+  for (const l of e.nodes) {
+    if (!t.has(l.id) || n && !n.has(l.id)) continue;
+    const o = l.style.x, c = l.style.y;
+    typeof o == "number" && typeof c == "number" && (s[l.id] = { x: o, y: c });
   }
-  return o;
+  return s;
 }
-function ht(e, t) {
+function kt(e, t) {
   return {
     container: t,
     autoFit: "view",
@@ -127,7 +127,7 @@ function ht(e, t) {
           return ((n = r == null ? void 0 : r.data) == null ? void 0 : n.label) ?? "";
         },
         labelPlacement: "bottom",
-        size: [Ke, Je],
+        size: [Ze, et],
         radius: 10,
         fill: "#f8fbff",
         stroke: "#4d6bfe",
@@ -147,224 +147,224 @@ function ht(e, t) {
         endArrow: !0
       }
     },
-    behaviors: Ye()
+    behaviors: tt()
   };
 }
-const wt = "__industrial_drag_target__", bt = "__industrial_connect_source__", Ie = (e, t) => {
+const St = "__industrial_drag_target__", Tt = "__industrial_connect_source__", Se = (e, t) => {
   var r;
   return (((r = e.isPanModifier) == null ? void 0 : r.call(e)) ?? !1) || t.button === 1 || t.buttons === 4;
-}, je = (e, t) => {
-  var h;
-  if (t.targetType !== "node" || !((h = t.target) != null && h.id)) return !1;
+}, Ke = (e, t) => {
+  var y;
+  if (t.targetType !== "node" || !((y = t.target) != null && y.id)) return !1;
   const r = t.client ?? t.canvas;
   if (!r || !e.graph) return !1;
-  const n = String(t.target.id), o = e.graph.getNodeData().find((I) => String(I.id) === n), a = o == null ? void 0 : o.style;
-  if (typeof (a == null ? void 0 : a.x) != "number" || typeof a.y != "number") return !1;
-  const [s, l] = e.graph.getCanvasByClient([r.x, r.y]), c = Math.abs(s - a.x), p = Math.abs(l - a.y);
-  return Math.abs(c - Ke / 2) <= 14 && p <= Je / 2 + 10;
+  const n = String(t.target.id), s = e.graph.getNodeData().find((x) => String(x.id) === n), l = s == null ? void 0 : s.style;
+  if (typeof (l == null ? void 0 : l.x) != "number" || typeof l.y != "number") return !1;
+  const [o, c] = e.graph.getCanvasByClient([r.x, r.y]), d = Math.abs(o - l.x), f = Math.abs(c - l.y);
+  return Math.abs(d - Ze / 2) <= 14 && f <= et / 2 + 10;
 };
-function Ye(e = {}) {
+function tt(e = {}) {
   const t = e.connectionState ?? { armed: !1 };
   return [
     "zoom-canvas",
     {
       type: "drag-canvas",
-      enable: (r) => r.targetType === "canvas" || Ie(e, r),
+      enable: (r) => r.targetType === "canvas" || Se(e, r),
       range: 0.9
     },
     {
       type: "drag-element",
-      state: wt,
-      enable: (r) => (r.targetType === "node" || r.targetType === "combo") && !je(e, r) && !Ie(e, r),
+      state: St,
+      enable: (r) => (r.targetType === "node" || r.targetType === "combo") && !Ke(e, r) && !Se(e, r),
       onFinish: (r) => {
-        var s, l;
+        var o, c;
         const n = e.graph;
         if (!n) return;
-        const o = Array.isArray(r) ? r : r ? [String(r)] : void 0, a = n.getNodeData().map((c) => ({
-          id: String(c.id),
-          data: c.data ?? {},
-          style: c.style ?? {}
+        const s = Array.isArray(r) ? r : r ? [String(r)] : void 0, l = n.getNodeData().map((d) => ({
+          id: String(d.id),
+          data: d.data ?? {},
+          style: d.style ?? {}
         }));
-        (l = e.onPositions) == null || l.call(e, mt(
-          { nodes: a },
-          ((s = e.allowedIds) == null ? void 0 : s.call(e)) ?? /* @__PURE__ */ new Set(),
-          o
+        (c = e.onPositions) == null || c.call(e, xt(
+          { nodes: l },
+          ((o = e.allowedIds) == null ? void 0 : o.call(e)) ?? /* @__PURE__ */ new Set(),
+          s
         ));
       }
     },
     {
       type: "create-edge",
       trigger: "drag",
-      state: bt,
-      enable: (r) => Ie(e, r) ? (t.armed = !1, !1) : t.armed ? r.targetType === "node" || r.targetType === "combo" : je(e, r) ? (t.armed = !0, !0) : !1,
+      state: Tt,
+      enable: (r) => Se(e, r) ? (t.armed = !1, !1) : t.armed ? r.targetType === "node" || r.targetType === "combo" : Ke(e, r) ? (t.armed = !0, !0) : !1,
       onCreate: (r) => {
-        var s;
+        var o;
         t.armed = !1;
-        const n = String(r.source ?? ""), o = String(r.target ?? "");
-        if (!n || !o || n === o) return;
-        const a = (s = e.onCreateEdge) == null ? void 0 : s.call(e, n, o);
-        if (a)
+        const n = String(r.source ?? ""), s = String(r.target ?? "");
+        if (!n || !s || n === s) return;
+        const l = (o = e.onCreateEdge) == null ? void 0 : o.call(e, n, s);
+        if (l)
           return {
             ...r,
-            sourcePort: `out:${a.sourcePort}`,
-            targetPort: `in:${a.targetPort}`
+            sourcePort: `out:${l.sourcePort}`,
+            targetPort: `in:${l.targetPort}`
           };
       }
     }
   ];
 }
-const vt = (e) => {
+const Ct = (e) => {
   var r;
   const t = e;
   return (t == null ? void 0 : t.targetType) === "node" ? (r = t.target) == null ? void 0 : r.id : void 0;
 };
-function It(e) {
+function Nt(e) {
   const {
     definition: t,
     catalog: r,
     selectedId: n,
-    onSelect: o,
-    onDropNode: a,
-    onCreateEdge: s,
-    onPositions: l
-  } = e, c = re(null), p = re(null), h = re(!1), I = re(!1), T = re({ armed: !1 }), v = re({ onSelect: o, onDropNode: a, onCreateEdge: s, onPositions: l });
-  v.current = { onSelect: o, onDropNode: a, onCreateEdge: s, onPositions: l };
-  const f = Be(
-    () => yt(t, r, n),
+    onSelect: s,
+    onDropNode: l,
+    onCreateEdge: o,
+    onPositions: c
+  } = e, d = se(null), f = se(null), y = se(!1), x = se(!1), k = se({ armed: !1 }), v = se({ onSelect: s, onDropNode: l, onCreateEdge: o, onPositions: c });
+  v.current = { onSelect: s, onDropNode: l, onCreateEdge: o, onPositions: c };
+  const m = Je(
+    () => It(t, r, n),
     [t, r, n]
-  ), x = re(f);
-  x.current = f;
-  const S = re(/* @__PURE__ */ new Set());
-  return S.current = new Set(t.nodes.map((C) => C.id)), Y(() => {
-    const C = (j) => {
-      j.code === "Space" && !j.repeat && (I.current = !0);
-    }, N = (j) => {
-      j.code === "Space" && (I.current = !1);
-    }, $ = () => {
-      I.current = !1;
+  ), p = se(m);
+  p.current = m;
+  const C = se(/* @__PURE__ */ new Set());
+  return C.current = new Set(t.nodes.map((E) => E.id)), G(() => {
+    const E = (L) => {
+      L.code === "Space" && !L.repeat && (x.current = !0);
+    }, S = (L) => {
+      L.code === "Space" && (x.current = !1);
+    }, R = () => {
+      x.current = !1;
     };
-    return window.addEventListener("keydown", C), window.addEventListener("keyup", N), window.addEventListener("blur", $), () => {
-      window.removeEventListener("keydown", C), window.removeEventListener("keyup", N), window.removeEventListener("blur", $);
+    return window.addEventListener("keydown", E), window.addEventListener("keyup", S), window.addEventListener("blur", R), () => {
+      window.removeEventListener("keydown", E), window.removeEventListener("keyup", S), window.removeEventListener("blur", R);
     };
-  }, []), Y(() => {
-    const C = c.current;
-    if (!C || h.current) return;
-    let N = !1;
-    return import("./esm-iA-ueG44.js").then(({ Graph: $ }) => {
-      if (N || !c.current || h.current) return;
-      const j = ht(x.current, C), u = new $({
-        ...j,
-        behaviors: Ye({
+  }, []), G(() => {
+    const E = d.current;
+    if (!E || y.current) return;
+    let S = !1;
+    return import("./esm-iA-ueG44.js").then(({ Graph: R }) => {
+      if (S || !d.current || y.current) return;
+      const L = kt(p.current, E), u = new R({
+        ...L,
+        behaviors: tt({
           graph: {
             getNodeData: () => {
-              var g;
-              return ((g = p.current) == null ? void 0 : g.getNodeData()) ?? [];
+              var I;
+              return ((I = f.current) == null ? void 0 : I.getNodeData()) ?? [];
             },
-            getCanvasByClient: (g) => {
-              var H;
-              const k = ((H = p.current) == null ? void 0 : H.getCanvasByClient(g)) ?? g;
-              return [k[0], k[1]];
+            getCanvasByClient: (I) => {
+              var X;
+              const T = ((X = f.current) == null ? void 0 : X.getCanvasByClient(I)) ?? I;
+              return [T[0], T[1]];
             }
           },
-          isPanModifier: () => I.current,
-          connectionState: T.current,
-          allowedIds: () => S.current,
-          onPositions: (g) => v.current.onPositions(g),
-          onCreateEdge: (g, k) => v.current.onCreateEdge(g, k)
+          isPanModifier: () => x.current,
+          connectionState: k.current,
+          allowedIds: () => C.current,
+          onPositions: (I) => v.current.onPositions(I),
+          onCreateEdge: (I, T) => v.current.onCreateEdge(I, T)
         })
       });
-      u.on("node:click", (g) => {
-        const k = vt(g);
-        k && v.current.onSelect(k);
+      u.on("node:click", (I) => {
+        const T = Ct(I);
+        T && v.current.onSelect(T);
       }), u.on("edge:click", () => v.current.onSelect(null)), u.on("canvas:click", () => v.current.onSelect(null)), u.on("pointerup", () => {
-        T.current.armed = !1;
-      }), p.current = u, C.__industrialGraph = u, h.current = !0, u.render();
+        k.current.armed = !1;
+      }), f.current = u, E.__industrialGraph = u, y.current = !0, u.render();
     }), () => {
-      N = !0;
+      S = !0;
     };
-  }, []), Y(() => {
-    const C = p.current;
-    !C || !h.current || (C.setData(f), C.draw());
-  }, [f]), Y(() => () => {
-    var C;
-    (C = p.current) == null || C.destroy(), p.current = null, h.current = !1;
-  }, []), /* @__PURE__ */ i("div", { className: "industrial-canvas-wrap", children: /* @__PURE__ */ b("div", { className: "industrial-graph", children: [
-    /* @__PURE__ */ i(
+  }, []), G(() => {
+    const E = f.current;
+    !E || !y.current || (E.setData(m), E.draw());
+  }, [m]), G(() => () => {
+    var E;
+    (E = f.current) == null || E.destroy(), f.current = null, y.current = !1;
+  }, []), /* @__PURE__ */ a("div", { className: "industrial-canvas-wrap", children: /* @__PURE__ */ h("div", { className: "industrial-graph", children: [
+    /* @__PURE__ */ a(
       "div",
       {
-        ref: c,
+        ref: d,
         className: "industrial-graph-host",
-        onDragOver: (C) => C.preventDefault(),
-        onDrop: (C) => {
-          C.preventDefault();
-          const N = C.dataTransfer.getData("application/x-industrial-node") || C.dataTransfer.getData("text/plain");
-          if (!N) return;
-          const $ = p.current, j = c.current;
-          if (!$ || !j) return;
-          const u = j.getBoundingClientRect(), g = $.getCanvasByViewport([
-            C.clientX - u.left,
-            C.clientY - u.top
+        onDragOver: (E) => E.preventDefault(),
+        onDrop: (E) => {
+          E.preventDefault();
+          const S = E.dataTransfer.getData("application/x-industrial-node") || E.dataTransfer.getData("text/plain");
+          if (!S) return;
+          const R = f.current, L = d.current;
+          if (!R || !L) return;
+          const u = L.getBoundingClientRect(), I = R.getCanvasByViewport([
+            E.clientX - u.left,
+            E.clientY - u.top
           ]);
-          v.current.onDropNode(N, g[0], g[1]);
+          v.current.onDropNode(S, I[0], I[1]);
         },
         "data-testid": "industrial-graph"
       }
     ),
-    /* @__PURE__ */ i("div", { className: "industrial-graph-hint", children: "拖动节点移动 · 从端口拖出连线 · 拖动画布平移（空格或中键可在节点上平移）" })
+    /* @__PURE__ */ a("div", { className: "industrial-graph-hint", children: "拖动节点移动 · 从端口拖出连线 · 拖动画布平移（空格或中键可在节点上平移）" })
   ] }) });
 }
-function xt({ descriptors: e, loading: t, error: r }) {
+function Et({ descriptors: e, loading: t, error: r }) {
   const n = /* @__PURE__ */ new Map();
-  for (const a of e) {
-    const s = a.category.split(".")[0] || "General", l = n.get(s) ?? [];
-    l.push(a), n.set(s, l);
+  for (const l of e) {
+    const o = l.category.split(".")[0] || "General", c = n.get(o) ?? [];
+    c.push(l), n.set(o, c);
   }
-  const o = (a, s) => {
-    a.dataTransfer.setData("application/x-industrial-node", s.nodeTypeId), a.dataTransfer.setData("text/plain", s.nodeTypeId), a.dataTransfer.effectAllowed = "copy";
+  const s = (l, o) => {
+    l.dataTransfer.setData("application/x-industrial-node", o.nodeTypeId), l.dataTransfer.setData("text/plain", o.nodeTypeId), l.dataTransfer.effectAllowed = "copy";
   };
-  return /* @__PURE__ */ b("div", { className: "industrial-palette-content", children: [
-    /* @__PURE__ */ i(P.Title, { level: 5, style: { marginTop: 0 }, children: "节点面板" }),
-    /* @__PURE__ */ i(P.Text, { type: "secondary", style: { fontSize: 12 }, children: "拖入画布 · 连线按端口类型校验" }),
-    t && /* @__PURE__ */ i(We, { size: "small", style: { display: "block", marginTop: 16 } }),
-    r && /* @__PURE__ */ i(P.Text, { type: "danger", style: { display: "block", marginTop: 12 }, children: r }),
-    !t && !r && e.length === 0 && /* @__PURE__ */ i(Ge, { description: "industrial/nodes 暂无节点描述", style: { marginTop: 24 } }),
-    Array.from(n.entries()).map(([a, s]) => /* @__PURE__ */ b("section", { className: "industrial-palette-group", children: [
-      /* @__PURE__ */ i(P.Text, { strong: !0, style: { fontSize: 12 }, children: a }),
-      s.map((l) => /* @__PURE__ */ b(
+  return /* @__PURE__ */ h("div", { className: "industrial-palette-content", children: [
+    /* @__PURE__ */ a(N.Title, { level: 5, style: { marginTop: 0 }, children: "节点面板" }),
+    /* @__PURE__ */ a(N.Text, { type: "secondary", style: { fontSize: 12 }, children: "拖入画布 · 连线按端口类型校验" }),
+    t && /* @__PURE__ */ a(Ve, { size: "small", style: { display: "block", marginTop: 16 } }),
+    r && /* @__PURE__ */ a(N.Text, { type: "danger", style: { display: "block", marginTop: 12 }, children: r }),
+    !t && !r && e.length === 0 && /* @__PURE__ */ a(Ye, { description: "industrial/nodes 暂无节点描述", style: { marginTop: 24 } }),
+    Array.from(n.entries()).map(([l, o]) => /* @__PURE__ */ h("section", { className: "industrial-palette-group", children: [
+      /* @__PURE__ */ a(N.Text, { strong: !0, style: { fontSize: 12 }, children: l }),
+      o.map((c) => /* @__PURE__ */ h(
         "div",
         {
           className: "industrial-palette-node",
           draggable: !0,
-          onDragStart: (c) => o(c, l),
-          title: l.description || l.nodeTypeId,
+          onDragStart: (d) => s(d, c),
+          title: c.description || c.nodeTypeId,
           children: [
-            /* @__PURE__ */ i("div", { className: "industrial-palette-node-title", children: l.name }),
-            /* @__PURE__ */ b("div", { className: "industrial-palette-node-meta", children: [
-              /* @__PURE__ */ i(ne, { bordered: !1, color: "blue", children: l.version }),
-              /* @__PURE__ */ i(P.Text, { type: "secondary", style: { fontSize: 11 }, children: l.nodeTypeId })
+            /* @__PURE__ */ a("div", { className: "industrial-palette-node-title", children: c.name }),
+            /* @__PURE__ */ h("div", { className: "industrial-palette-node-meta", children: [
+              /* @__PURE__ */ a(oe, { bordered: !1, color: "blue", children: c.version }),
+              /* @__PURE__ */ a(N.Text, { type: "secondary", style: { fontSize: 11 }, children: c.nodeTypeId })
             ] }),
-            /* @__PURE__ */ b("div", { className: "industrial-palette-node-ports", children: [
-              l.inputs.map((c) => /* @__PURE__ */ b(ne, { bordered: !1, color: "default", children: [
+            /* @__PURE__ */ h("div", { className: "industrial-palette-node-ports", children: [
+              c.inputs.map((d) => /* @__PURE__ */ h(oe, { bordered: !1, color: "default", children: [
                 "in ",
-                c.name,
+                d.name,
                 ": ",
-                c.type
-              ] }, `in-${c.name}`)),
-              l.outputs.map((c) => /* @__PURE__ */ b(ne, { bordered: !1, color: "green", children: [
+                d.type
+              ] }, `in-${d.name}`)),
+              c.outputs.map((d) => /* @__PURE__ */ h(oe, { bordered: !1, color: "green", children: [
                 "out ",
-                c.name,
+                d.name,
                 ": ",
-                c.type
-              ] }, `out-${c.name}`))
+                d.type
+              ] }, `out-${d.name}`))
             ] })
           ]
         },
-        l.nodeTypeId
+        c.nodeTypeId
       ))
-    ] }, a))
+    ] }, l))
   ] });
 }
-const Te = (e = "daily-collection") => ({
+const Ee = (e = "daily-collection") => ({
   workflowId: e,
   name: e,
   version: 1,
@@ -374,77 +374,77 @@ const Te = (e = "daily-collection") => ({
   resourceReferences: [],
   layout: {}
 });
-function kt(e) {
+function Pt(e) {
   const t = {};
   for (const [r, n] of Object.entries(e.configurationSchema.properties ?? {}))
     n.default !== void 0 && (t[r] = n.default);
   return t;
 }
-function St(e, t, r = 0, n = 0) {
-  return { id: t, type: e.nodeTypeId, config: kt(e), x: r, y: n };
+function Dt(e, t, r = 0, n = 0) {
+  return { id: t, type: e.nodeTypeId, config: Pt(e), x: r, y: n };
 }
-function ce(e, t) {
+function ue(e, t) {
   return e.get(t);
 }
-function we(e, t, r) {
+function Ie(e, t, r) {
   return e[r].find((n) => n.name === t);
 }
-function $e(e, t) {
+function Re(e, t) {
   return e !== "Unknown" && t !== "Unknown" && e === t;
 }
-function Le(e, t) {
+function Ge(e, t) {
   for (const r of e.outputs)
     for (const n of t.inputs)
-      if ($e(r.type, n.type))
+      if (Re(r.type, n.type))
         return { sourcePort: r.name, targetPort: n.name };
   return null;
 }
-const W = (e, t, r) => ({ path: e, code: t, message: r });
-function Tt(e, t) {
+const J = (e, t, r) => ({ path: e, code: t, message: r });
+function $t(e, t) {
   return e.source === t.source && e.sourcePort === t.sourcePort && e.target === t.target && e.targetPort === t.targetPort;
 }
-function Nt(e, t, r) {
-  const n = `edges.${e.edges.length}`, o = e.nodes.find((h) => h.id === t.source), a = e.nodes.find((h) => h.id === t.target);
-  if (!o || !a)
-    return { definition: e, issue: W(n, "ENDPOINT_MISSING", "edge endpoint is not on the canvas") };
-  if (e.edges.some((h) => Tt(h, t)))
-    return { definition: e };
-  const s = ce(r, o.type), l = ce(r, a.type);
+function Rt(e, t, r) {
+  const n = `edges.${e.edges.length}`, s = e.nodes.find((y) => y.id === t.source), l = e.nodes.find((y) => y.id === t.target);
   if (!s || !l)
-    return { definition: e, issue: W(n, "NODE_TYPE_UNKNOWN", "endpoint has no node descriptor") };
-  const c = we(s, t.sourcePort, "outputs"), p = we(l, t.targetPort, "inputs");
-  return !c || !p ? { definition: e, issue: W(n, "PORT_MISSING", "declared port does not exist") } : $e(c.type, p.type) ? { definition: { ...e, edges: [...e.edges, t] } } : {
+    return { definition: e, issue: J(n, "ENDPOINT_MISSING", "edge endpoint is not on the canvas") };
+  if (e.edges.some((y) => $t(y, t)))
+    return { definition: e };
+  const o = ue(r, s.type), c = ue(r, l.type);
+  if (!o || !c)
+    return { definition: e, issue: J(n, "NODE_TYPE_UNKNOWN", "endpoint has no node descriptor") };
+  const d = Ie(o, t.sourcePort, "outputs"), f = Ie(c, t.targetPort, "inputs");
+  return !d || !f ? { definition: e, issue: J(n, "PORT_MISSING", "declared port does not exist") } : Re(d.type, f.type) ? { definition: { ...e, edges: [...e.edges, t] } } : {
     definition: e,
-    issue: W(
+    issue: J(
       n,
       "PORT_TYPE_INCOMPATIBLE",
-      `${c.type} → ${p.type} is not a legal connection`
+      `${d.type} → ${f.type} is not a legal connection`
     )
   };
 }
-function Ct(e, t) {
+function _t(e, t) {
   return {
     ...e,
     nodes: e.nodes.filter((r) => r.id !== t),
     edges: e.edges.filter((r) => r.source !== t && r.target !== t)
   };
 }
-function Et(e, t) {
+function Ot(e, t) {
   return { ...e, edges: e.edges.filter((r, n) => n !== t) };
 }
-function Pt(e, t) {
+function At(e, t) {
   const r = { ...e };
-  for (const [n, o] of Object.entries(t))
-    o === void 0 ? delete r[n] : r[n] = o;
+  for (const [n, s] of Object.entries(t))
+    s === void 0 ? delete r[n] : r[n] = s;
   return r;
 }
-function $t(e, t, r) {
+function zt(e, t, r) {
   return {
     ...e,
     nodes: e.nodes.map((n) => n.id === t ? { ...n, config: r } : n)
   };
 }
-function Dt(e, t) {
+function jt(e, t) {
   return {
     ...e,
     nodes: e.nodes.map((r) => {
@@ -456,400 +456,400 @@ function Dt(e, t) {
     layout: { ...e.layout, positions: { ...t } }
   };
 }
-function _t(e) {
-  var a;
+function Lt(e) {
+  var l;
   const t = /* @__PURE__ */ new Map();
-  for (const s of e.nodes) t.set(s.id, []);
-  for (const s of e.edges)
-    (a = t.get(s.source)) == null || a.push(s.target);
-  const r = /* @__PURE__ */ new Map(), n = [], o = (s) => {
-    r.set(s, 1), n.push(s);
-    for (const l of t.get(s) ?? []) {
-      if (r.get(l) === 1)
-        return [...n.slice(n.indexOf(l)), l];
-      if (r.get(l) !== 2) {
-        const c = o(l);
-        if (c) return c;
+  for (const o of e.nodes) t.set(o.id, []);
+  for (const o of e.edges)
+    (l = t.get(o.source)) == null || l.push(o.target);
+  const r = /* @__PURE__ */ new Map(), n = [], s = (o) => {
+    r.set(o, 1), n.push(o);
+    for (const c of t.get(o) ?? []) {
+      if (r.get(c) === 1)
+        return [...n.slice(n.indexOf(c)), c];
+      if (r.get(c) !== 2) {
+        const d = s(c);
+        if (d) return d;
       }
     }
-    return n.pop(), r.set(s, 2), null;
+    return n.pop(), r.set(o, 2), null;
   };
-  for (const s of e.nodes)
-    if (r.get(s.id) !== 2) {
-      const l = o(s.id);
-      if (l) return l;
+  for (const o of e.nodes)
+    if (r.get(o.id) !== 2) {
+      const c = s(o.id);
+      if (c) return c;
     }
   return null;
 }
-function Ot(e, t, r) {
+function qt(e, t, r) {
   const n = [];
-  e.workflowId.trim() || n.push(W("workflow", "INVALID_IDENTITY", "workflowId is required")), e.version < 1 && n.push(W("workflow", "INVALID_VERSION", "version must be positive"));
-  const o = /* @__PURE__ */ new Map();
-  for (const l of e.nodes)
-    o.has(l.id) && n.push(W(`nodes.${l.id}`, "DUPLICATE_NODE_ID", `duplicate node '${l.id}'`)), o.set(l.id, l);
-  const a = /* @__PURE__ */ new Map();
-  for (const l of e.nodes) {
-    const c = ce(t, l.type);
-    if (!c) {
-      n.push(W(
-        `nodes.${l.id}`,
+  e.workflowId.trim() || n.push(J("workflow", "INVALID_IDENTITY", "workflowId is required")), e.version < 1 && n.push(J("workflow", "INVALID_VERSION", "version must be positive"));
+  const s = /* @__PURE__ */ new Map();
+  for (const c of e.nodes)
+    s.has(c.id) && n.push(J(`nodes.${c.id}`, "DUPLICATE_NODE_ID", `duplicate node '${c.id}'`)), s.set(c.id, c);
+  const l = /* @__PURE__ */ new Map();
+  for (const c of e.nodes) {
+    const d = ue(t, c.type);
+    if (!d) {
+      n.push(J(
+        `nodes.${c.id}`,
         "UNKNOWN_NODE_TYPE",
-        `node type '${l.type}' is not registered`
+        `node type '${c.type}' is not registered`
       ));
       continue;
     }
-    a.set(l.id, c);
-    const p = c.configurationSchema.required ?? [];
-    for (const h of p) {
-      const I = l.config[h];
-      (I == null || I === "") && n.push(W(
-        `nodes.${l.id}.config.${h}`,
+    l.set(c.id, d);
+    const f = d.configurationSchema.required ?? [];
+    for (const y of f) {
+      const x = c.config[y];
+      (x == null || x === "") && n.push(J(
+        `nodes.${c.id}.config.${y}`,
         "REQUIRED_CONFIG_MISSING",
-        `required configuration '${h}' is missing`
+        `required configuration '${y}' is missing`
       ));
     }
-    r && typeof l.config.resourceId == "string" && (r.has(l.config.resourceId) || n.push(W(
-      `nodes.${l.id}.config.resourceId`,
+    r && typeof c.config.resourceId == "string" && (r.has(c.config.resourceId) || n.push(J(
+      `nodes.${c.id}.config.resourceId`,
       "RESOURCE_MISSING",
-      `resource '${l.config.resourceId}' does not exist`
+      `resource '${c.config.resourceId}' does not exist`
     )));
   }
-  e.edges.forEach((l, c) => {
-    const p = o.get(l.source), h = o.get(l.target);
-    if (!p || !h) {
-      n.push(W(`edges.${c}`, "ENDPOINT_MISSING", "edge endpoint is missing"));
+  e.edges.forEach((c, d) => {
+    const f = s.get(c.source), y = s.get(c.target);
+    if (!f || !y) {
+      n.push(J(`edges.${d}`, "ENDPOINT_MISSING", "edge endpoint is missing"));
       return;
     }
-    const I = a.get(l.source), T = a.get(l.target);
-    if (!I || !T) return;
-    const v = we(I, l.sourcePort, "outputs"), f = we(T, l.targetPort, "inputs");
-    if (!v || !f) {
-      n.push(W(`edges.${c}`, "PORT_MISSING", "edge references an unknown port"));
+    const x = l.get(c.source), k = l.get(c.target);
+    if (!x || !k) return;
+    const v = Ie(x, c.sourcePort, "outputs"), m = Ie(k, c.targetPort, "inputs");
+    if (!v || !m) {
+      n.push(J(`edges.${d}`, "PORT_MISSING", "edge references an unknown port"));
       return;
     }
-    $e(v.type, f.type) || n.push(W(
-      `edges.${c}`,
+    Re(v.type, m.type) || n.push(J(
+      `edges.${d}`,
       "PORT_TYPE_INCOMPATIBLE",
-      `${v.type} → ${f.type} is not a legal connection`
+      `${v.type} → ${m.type} is not a legal connection`
     ));
   });
-  for (const l of e.nodes) {
-    const c = a.get(l.id);
-    if (c)
-      for (const p of c.inputs.filter((h) => h.required))
-        e.edges.some((h) => h.target === l.id && h.targetPort === p.name && o.has(h.source)) || n.push(W(
-          `nodes.${l.id}.inputs.${p.name}`,
+  for (const c of e.nodes) {
+    const d = l.get(c.id);
+    if (d)
+      for (const f of d.inputs.filter((y) => y.required))
+        e.edges.some((y) => y.target === c.id && y.targetPort === f.name && s.has(y.source)) || n.push(J(
+          `nodes.${c.id}.inputs.${f.name}`,
           "MISSING_INPUT",
-          `required input '${p.name}' is not connected`
+          `required input '${f.name}' is not connected`
         ));
   }
-  const s = _t(e);
-  return s && n.push(W(`nodes.${s[0]}`, "GRAPH_CYCLE", `cycle: ${s.join(" → ")}`)), n;
+  const o = Lt(e);
+  return o && n.push(J(`nodes.${o[0]}`, "GRAPH_CYCLE", `cycle: ${o.join(" → ")}`)), n;
 }
-const Ne = (e) => e !== null && typeof e == "object" && !Array.isArray(e) ? e : {};
-function Rt(e) {
-  const t = Ne(e.additionalProperties).enum;
+const Pe = (e) => e !== null && typeof e == "object" && !Array.isArray(e) ? e : {};
+function Ft(e) {
+  const t = Pe(e.additionalProperties).enum;
   if (!Array.isArray(t)) return null;
   const r = t.filter((n) => typeof n == "string");
   return r.length > 0 ? r : null;
 }
-function He(e) {
-  return e.format === "resource" ? "resource" : Array.isArray(e.enum) && e.enum.length > 0 ? "enum" : e.type === "number" || e.type === "integer" ? "number" : e.type === "boolean" ? "boolean" : e.type === "array" && Ne(e.items).type === "string" ? "string-list" : e.type === "object" && Ne(e.additionalProperties).type === "string" ? "key-value" : e.type === "object" || e.type === "array" ? "json" : "text";
+function rt(e) {
+  return e.format === "resource" ? "resource" : Array.isArray(e.enum) && e.enum.length > 0 ? "enum" : e.type === "number" || e.type === "integer" ? "number" : e.type === "boolean" ? "boolean" : e.type === "array" && Pe(e.items).type === "string" ? "string-list" : e.type === "object" && Pe(e.additionalProperties).type === "string" ? "key-value" : e.type === "object" || e.type === "array" ? "json" : "text";
 }
-function Ce(e) {
+function De(e) {
   return e === null || typeof e != "object" || Array.isArray(e) ? [] : Object.entries(e).filter(([, t]) => t != null && typeof t != "object").map(([t, r]) => ({ key: t, value: String(r) }));
 }
-function qe(e) {
+function Ue(e) {
   const t = {}, r = [];
   for (const n of e) {
-    const o = n.key.trim();
-    o && (Object.prototype.hasOwnProperty.call(t, o) && r.push(o), t[o] = n.value);
+    const s = n.key.trim();
+    s && (Object.prototype.hasOwnProperty.call(t, s) && r.push(s), t[s] = n.value);
   }
   return { record: t, duplicateKeys: r };
 }
-function he(e) {
+function ve(e) {
   if (!Array.isArray(e)) return [];
   const t = /* @__PURE__ */ new Set(), r = [];
   for (const n of e) {
     if (typeof n != "string") continue;
-    const o = n.trim();
-    !o || t.has(o) || (t.add(o), r.push(o));
+    const s = n.trim();
+    !s || t.has(s) || (t.add(s), r.push(s));
   }
   return r;
 }
-function At(e, t) {
+function Mt(e, t) {
   const r = /* @__PURE__ */ new Set();
-  for (const [n, o] of Object.entries(e))
-    if (He(o) === "key-value")
-      for (const a of Ce(t[n]))
-        a.key.trim() && r.add(a.key.trim());
+  for (const [n, s] of Object.entries(e))
+    if (rt(s) === "key-value")
+      for (const l of De(t[n]))
+        l.key.trim() && r.add(l.key.trim());
   return [...r];
 }
-function zt({
+function Bt({
   value: e,
   onChange: t,
   valueOptions: r,
   keyTitle: n = "目标字段",
-  valueTitle: o = "来源字段",
-  testId: a
+  valueTitle: s = "来源字段",
+  testId: l
 }) {
-  const s = JSON.stringify(e ?? {}), [l, c] = w(() => Ce(e)), [p, h] = w(s);
-  Y(() => {
-    s !== p && (c(Ce(e)), h(s));
-  }, [s, p, e]);
-  const I = (v) => {
-    c(v), t == null || t(qe(v).record);
-  }, { duplicateKeys: T } = qe(l);
-  return /* @__PURE__ */ b("div", { "data-testid": a, className: "industrial-kv-editor", children: [
-    l.map((v, f) => /* @__PURE__ */ b("div", { className: "industrial-kv-row", children: [
-      /* @__PURE__ */ i(
-        F,
+  const o = JSON.stringify(e ?? {}), [c, d] = b(() => De(e)), [f, y] = b(o);
+  G(() => {
+    o !== f && (d(De(e)), y(o));
+  }, [o, f, e]);
+  const x = (v) => {
+    d(v), t == null || t(Ue(v).record);
+  }, { duplicateKeys: k } = Ue(c);
+  return /* @__PURE__ */ h("div", { "data-testid": l, className: "industrial-kv-editor", children: [
+    c.map((v, m) => /* @__PURE__ */ h("div", { className: "industrial-kv-row", children: [
+      /* @__PURE__ */ a(
+        K,
         {
-          "aria-label": `${n} ${f + 1}`,
+          "aria-label": `${n} ${m + 1}`,
           value: v.key,
           placeholder: n,
-          onChange: (x) => I(l.map((S, _) => _ === f ? { ...S, key: x.target.value } : S))
+          onChange: (p) => x(c.map((C, A) => A === m ? { ...C, key: p.target.value } : C))
         }
       ),
-      r && r.length > 0 ? /* @__PURE__ */ i(
-        oe,
+      r && r.length > 0 ? /* @__PURE__ */ a(
+        ae,
         {
-          "aria-label": `${o} ${f + 1}`,
+          "aria-label": `${s} ${m + 1}`,
           value: v.value || void 0,
-          placeholder: o,
-          options: r.map((x) => ({ label: x, value: x })),
-          onChange: (x) => I(l.map((S, _) => _ === f ? { ...S, value: x ?? "" } : S))
+          placeholder: s,
+          options: r.map((p) => ({ label: p, value: p })),
+          onChange: (p) => x(c.map((C, A) => A === m ? { ...C, value: p ?? "" } : C))
         }
-      ) : /* @__PURE__ */ i(
-        F,
+      ) : /* @__PURE__ */ a(
+        K,
         {
-          "aria-label": `${o} ${f + 1}`,
+          "aria-label": `${s} ${m + 1}`,
           value: v.value,
-          placeholder: o,
-          onChange: (x) => I(l.map((S, _) => _ === f ? { ...S, value: x.target.value } : S))
+          placeholder: s,
+          onChange: (p) => x(c.map((C, A) => A === m ? { ...C, value: p.target.value } : C))
         }
       ),
-      /* @__PURE__ */ i(
-        A,
+      /* @__PURE__ */ a(
+        $,
         {
           size: "small",
           type: "text",
           danger: !0,
-          "aria-label": `删除 ${f + 1}`,
-          onClick: () => I(l.filter((x, S) => S !== f)),
+          "aria-label": `删除 ${m + 1}`,
+          onClick: () => x(c.filter((p, C) => C !== m)),
           children: "删"
         }
       )
-    ] }, f)),
-    /* @__PURE__ */ i(
-      A,
+    ] }, m)),
+    /* @__PURE__ */ a(
+      $,
       {
         size: "small",
         type: "dashed",
         block: !0,
-        onClick: () => I([...l, { key: "", value: "" }]),
+        onClick: () => x([...c, { key: "", value: "" }]),
         children: "添加字段"
       }
     ),
-    T.length > 0 && /* @__PURE__ */ b(P.Text, { type: "danger", className: "industrial-editor-error", children: [
+    k.length > 0 && /* @__PURE__ */ h(N.Text, { type: "danger", className: "industrial-editor-error", children: [
       "重复字段：",
-      T.join("、")
+      k.join("、")
     ] })
   ] });
 }
-function jt({ value: e, onChange: t, suggestions: r = [], testId: n }) {
-  const o = JSON.stringify(he(e)), [a, s] = w(() => he(e)), [l, c] = w(o);
-  Y(() => {
-    o !== l && (s(he(e)), c(o));
-  }, [o, l, e]);
-  const p = (h) => {
-    s(h), t == null || t(he(h));
+function Kt({ value: e, onChange: t, suggestions: r = [], testId: n }) {
+  const s = JSON.stringify(ve(e)), [l, o] = b(() => ve(e)), [c, d] = b(s);
+  G(() => {
+    s !== c && (o(ve(e)), d(s));
+  }, [s, c, e]);
+  const f = (y) => {
+    o(y), t == null || t(ve(y));
   };
-  return /* @__PURE__ */ b("div", { "data-testid": n, className: "industrial-list-editor", children: [
-    /* @__PURE__ */ i("datalist", { id: `${n ?? "list"}-suggestions`, children: r.map((h) => /* @__PURE__ */ i("option", { value: h }, h)) }),
-    a.map((h, I) => /* @__PURE__ */ b("div", { className: "industrial-list-row", children: [
-      /* @__PURE__ */ i(
-        F,
+  return /* @__PURE__ */ h("div", { "data-testid": n, className: "industrial-list-editor", children: [
+    /* @__PURE__ */ a("datalist", { id: `${n ?? "list"}-suggestions`, children: r.map((y) => /* @__PURE__ */ a("option", { value: y }, y)) }),
+    l.map((y, x) => /* @__PURE__ */ h("div", { className: "industrial-list-row", children: [
+      /* @__PURE__ */ a(
+        K,
         {
-          "aria-label": `字段 ${I + 1}`,
-          value: h,
+          "aria-label": `字段 ${x + 1}`,
+          value: y,
           list: `${n ?? "list"}-suggestions`,
-          onChange: (T) => p(a.map((v, f) => f === I ? T.target.value : v))
+          onChange: (k) => f(l.map((v, m) => m === x ? k.target.value : v))
         }
       ),
-      /* @__PURE__ */ i(
-        A,
+      /* @__PURE__ */ a(
+        $,
         {
           size: "small",
           type: "text",
           danger: !0,
-          "aria-label": `删除 ${I + 1}`,
-          onClick: () => p(a.filter((T, v) => v !== I)),
+          "aria-label": `删除 ${x + 1}`,
+          onClick: () => f(l.filter((k, v) => v !== x)),
           children: "删"
         }
       )
-    ] }, I)),
-    /* @__PURE__ */ i(A, { size: "small", type: "dashed", block: !0, onClick: () => p([...a, ""]), children: "添加字段" }),
-    a.length === 0 && /* @__PURE__ */ i(P.Text, { type: "secondary", className: "industrial-editor-error", children: "尚未添加字段" })
+    ] }, x)),
+    /* @__PURE__ */ a($, { size: "small", type: "dashed", block: !0, onClick: () => f([...l, ""]), children: "添加字段" }),
+    l.length === 0 && /* @__PURE__ */ a(N.Text, { type: "secondary", className: "industrial-editor-error", children: "尚未添加字段" })
   ] });
 }
-function Lt({ value: e, onChange: t }) {
-  const r = e === void 0 ? "{}" : JSON.stringify(e, null, 2), [n, o] = w(r), [a, s] = w(null);
-  Y(() => {
-    o(r), s(null);
+function Gt({ value: e, onChange: t }) {
+  const r = e === void 0 ? "{}" : JSON.stringify(e, null, 2), [n, s] = b(r), [l, o] = b(null);
+  G(() => {
+    s(r), o(null);
   }, [r]);
-  const l = (c) => {
-    o(c);
+  const c = (d) => {
+    s(d);
     try {
-      const p = JSON.parse(c);
-      s(null), t == null || t(p);
-    } catch (p) {
-      s(p.message);
+      const f = JSON.parse(d);
+      o(null), t == null || t(f);
+    } catch (f) {
+      o(f.message);
     }
   };
-  return /* @__PURE__ */ b("div", { children: [
-    /* @__PURE__ */ i(F.TextArea, { rows: 5, value: n, onChange: (c) => l(c.target.value) }),
-    a && /* @__PURE__ */ i(P.Text, { type: "danger", style: { fontSize: 11 }, children: a })
+  return /* @__PURE__ */ h("div", { children: [
+    /* @__PURE__ */ a(K.TextArea, { rows: 5, value: n, onChange: (d) => c(d.target.value) }),
+    l && /* @__PURE__ */ a(N.Text, { type: "danger", style: { fontSize: 11 }, children: l })
   ] });
 }
-function qt({ value: e, onChange: t, resources: r, resourceType: n }) {
-  const o = r.filter((s) => s.enabled !== !1 && (!n || s.type === n)).map((s) => ({
-    value: s.id,
-    label: `${s.name} (${s.type})`
-  })), a = r.find((s) => s.id === e);
-  return /* @__PURE__ */ b("div", { children: [
-    /* @__PURE__ */ i(oe, { allowClear: !0, value: e, onChange: t, options: o }),
-    (a == null ? void 0 : a.credentialId) && /* @__PURE__ */ b(P.Text, { type: "secondary", style: { fontSize: 11, display: "block" }, children: [
+function Ut({ value: e, onChange: t, resources: r, resourceType: n }) {
+  const s = r.filter((o) => o.enabled !== !1 && (!n || o.type === n)).map((o) => ({
+    value: o.id,
+    label: `${o.name} (${o.type})`
+  })), l = r.find((o) => o.id === e);
+  return /* @__PURE__ */ h("div", { children: [
+    /* @__PURE__ */ a(ae, { allowClear: !0, value: e, onChange: t, options: s }),
+    (l == null ? void 0 : l.credentialId) && /* @__PURE__ */ h(N.Text, { type: "secondary", style: { fontSize: 11, display: "block" }, children: [
       "凭证：",
-      a.credentialName ?? a.credentialId
+      l.credentialName ?? l.credentialId
     ] })
   ] });
 }
-function Ft({ name: e, schema: t, required: r, resources: n, resourceType: o, properties: a, config: s }) {
-  let l, c = "value";
-  switch (He(t)) {
+function Wt({ name: e, schema: t, required: r, resources: n, resourceType: s, properties: l, config: o }) {
+  let c, d = "value";
+  switch (rt(t)) {
     case "resource":
-      l = /* @__PURE__ */ i(qt, { resources: n, resourceType: o });
+      c = /* @__PURE__ */ a(Ut, { resources: n, resourceType: s });
       break;
     case "enum":
-      l = /* @__PURE__ */ i(
-        oe,
+      c = /* @__PURE__ */ a(
+        ae,
         {
           allowClear: !0,
-          options: (t.enum ?? []).map((p) => ({ label: String(p), value: p }))
+          options: (t.enum ?? []).map((f) => ({ label: String(f), value: f }))
         }
       );
       break;
     case "number":
-      l = /* @__PURE__ */ i(Ue, { style: { width: "100%" } });
+      c = /* @__PURE__ */ a(He, { style: { width: "100%" } });
       break;
     case "boolean":
-      l = /* @__PURE__ */ i(Qe, {}), c = "checked";
+      c = /* @__PURE__ */ a(Xe, {}), d = "checked";
       break;
     case "key-value":
-      l = /* @__PURE__ */ i(
-        zt,
+      c = /* @__PURE__ */ a(
+        Bt,
         {
           testId: `field-${e}`,
-          valueOptions: Rt(t) ?? void 0,
+          valueOptions: Ft(t) ?? void 0,
           keyTitle: e === "mapping" ? "目标字段" : "字段名",
           valueTitle: e === "mapping" ? "来源字段" : "类型"
         }
       );
       break;
     case "string-list":
-      l = /* @__PURE__ */ i(jt, { testId: `field-${e}`, suggestions: At(a, s) });
+      c = /* @__PURE__ */ a(Kt, { testId: `field-${e}`, suggestions: Mt(l, o) });
       break;
     case "json":
-      l = /* @__PURE__ */ i(Lt, {});
+      c = /* @__PURE__ */ a(Gt, {});
       break;
     default:
-      l = /* @__PURE__ */ i(F, { placeholder: t.description });
+      c = /* @__PURE__ */ a(K, { placeholder: t.description });
       break;
   }
-  return /* @__PURE__ */ i(
-    Se.Item,
+  return /* @__PURE__ */ a(
+    Ne.Item,
     {
       name: e,
       label: t.title ?? e,
       tooltip: t.description,
-      valuePropName: c,
-      rules: r && c === "value" ? [{ required: !0, message: `请填写 ${t.title ?? e}` }] : [],
-      children: l
+      valuePropName: d,
+      rules: r && d === "value" ? [{ required: !0, message: `请填写 ${t.title ?? e}` }] : [],
+      children: c
     },
     e
   );
 }
-function Mt(e) {
+function Qt(e) {
   const {
     node: t,
     descriptor: r,
     edges: n,
-    catalog: o,
-    resources: a,
-    issues: s,
-    onApplyConfig: l,
-    onDeleteNode: c,
-    onDeleteEdge: p,
-    onUpdateEdge: h,
-    onSelectNode: I
-  } = e, [T] = Se.useForm(), [v, f] = w("{}"), [x, S] = w(null);
-  Y(() => {
-    T.setFieldsValue((t == null ? void 0 : t.config) ?? {}), f(JSON.stringify((t == null ? void 0 : t.config) ?? {}, null, 2)), S(null);
-  }, [T, t == null ? void 0 : t.id, t == null ? void 0 : t.config]);
-  const _ = new Set((r == null ? void 0 : r.configurationSchema.required) ?? []), C = Object.entries((r == null ? void 0 : r.configurationSchema.properties) ?? {}), N = () => {
-    if (C.length > 0) {
-      T.validateFields().then((u) => l(Pt((t == null ? void 0 : t.config) ?? {}, u)));
+    catalog: s,
+    resources: l,
+    issues: o,
+    onApplyConfig: c,
+    onDeleteNode: d,
+    onDeleteEdge: f,
+    onUpdateEdge: y,
+    onSelectNode: x
+  } = e, [k] = Ne.useForm(), [v, m] = b("{}"), [p, C] = b(null);
+  G(() => {
+    k.setFieldsValue((t == null ? void 0 : t.config) ?? {}), m(JSON.stringify((t == null ? void 0 : t.config) ?? {}, null, 2)), C(null);
+  }, [k, t == null ? void 0 : t.id, t == null ? void 0 : t.config]);
+  const A = new Set((r == null ? void 0 : r.configurationSchema.required) ?? []), E = Object.entries((r == null ? void 0 : r.configurationSchema.properties) ?? {}), S = () => {
+    if (E.length > 0) {
+      k.validateFields().then((u) => c(At((t == null ? void 0 : t.config) ?? {}, u)));
       return;
     }
     try {
       const u = JSON.parse(v);
       if (u === null || typeof u != "object" || Array.isArray(u))
         throw new Error("配置必须是 JSON 对象");
-      S(null), l(u);
+      C(null), c(u);
     } catch (u) {
-      S(u.message);
+      C(u.message);
     }
-  }, $ = n.map((u, g) => ({
+  }, R = n.map((u, I) => ({
     ...u,
-    index: g,
-    key: `${g}:${u.source}->${u.target}`
-  })), j = [
+    index: I,
+    key: `${I}:${u.source}->${u.target}`
+  })), L = [
     {
       title: "连线",
       dataIndex: "source",
       key: "source",
       width: 110,
-      render: (u, g) => /* @__PURE__ */ b(P.Text, { style: { fontSize: 11 }, children: [
-        g.source,
+      render: (u, I) => /* @__PURE__ */ h(N.Text, { style: { fontSize: 11 }, children: [
+        I.source,
         " → ",
-        g.target
+        I.target
       ] })
     },
     {
       title: "端口",
       key: "ports",
-      render: (u, g) => {
-        const k = o.get(g.source), H = o.get(g.target);
-        return /* @__PURE__ */ b("div", { className: "industrial-edge-ports", children: [
-          /* @__PURE__ */ i(
-            oe,
+      render: (u, I) => {
+        const T = s.get(I.source), X = s.get(I.target);
+        return /* @__PURE__ */ h("div", { className: "industrial-edge-ports", children: [
+          /* @__PURE__ */ a(
+            ae,
             {
               size: "small",
-              value: g.sourcePort,
+              value: I.sourcePort,
               style: { width: 110 },
-              onChange: (K) => h(g.index, { ...g, sourcePort: K }),
-              options: ((k == null ? void 0 : k.outputs) ?? []).map((K) => ({ label: `${K.name} (${K.type})`, value: K.name }))
+              onChange: (Y) => y(I.index, { ...I, sourcePort: Y }),
+              options: ((T == null ? void 0 : T.outputs) ?? []).map((Y) => ({ label: `${Y.name} (${Y.type})`, value: Y.name }))
             }
           ),
-          /* @__PURE__ */ i(
-            oe,
+          /* @__PURE__ */ a(
+            ae,
             {
               size: "small",
-              value: g.targetPort,
+              value: I.targetPort,
               style: { width: 110 },
-              onChange: (K) => h(g.index, { ...g, targetPort: K }),
-              options: ((H == null ? void 0 : H.inputs) ?? []).map((K) => ({ label: `${K.name} (${K.type})`, value: K.name }))
+              onChange: (Y) => y(I.index, { ...I, targetPort: Y }),
+              options: ((X == null ? void 0 : X.inputs) ?? []).map((Y) => ({ label: `${Y.name} (${Y.type})`, value: Y.name }))
             }
           )
         ] });
@@ -859,65 +859,65 @@ function Mt(e) {
       title: "",
       key: "actions",
       width: 44,
-      render: (u, g) => /* @__PURE__ */ i(A, { danger: !0, size: "small", type: "text", onClick: () => p(g.index), children: "删" })
+      render: (u, I) => /* @__PURE__ */ a($, { danger: !0, size: "small", type: "text", onClick: () => f(I.index), children: "删" })
     }
   ];
-  return /* @__PURE__ */ b("div", { className: "industrial-properties-body", children: [
-    !t && /* @__PURE__ */ i(Ge, { description: "在画布中选中节点以编辑配置", style: { marginTop: 24 } }),
-    t && /* @__PURE__ */ b(ve, { children: [
-      /* @__PURE__ */ i(P.Text, { strong: !0, children: (r == null ? void 0 : r.name) ?? t.type }),
-      /* @__PURE__ */ i(ne, { color: "blue", style: { marginLeft: 8 }, children: t.id }),
-      /* @__PURE__ */ i(Se, { form: T, layout: "vertical", size: "small", style: { marginTop: 12 }, children: C.map(([u, g]) => /* @__PURE__ */ i(
-        Ft,
+  return /* @__PURE__ */ h("div", { className: "industrial-properties-body", children: [
+    !t && /* @__PURE__ */ a(Ye, { description: "在画布中选中节点以编辑配置", style: { marginTop: 24 } }),
+    t && /* @__PURE__ */ h(be, { children: [
+      /* @__PURE__ */ a(N.Text, { strong: !0, children: (r == null ? void 0 : r.name) ?? t.type }),
+      /* @__PURE__ */ a(oe, { color: "blue", style: { marginLeft: 8 }, children: t.id }),
+      /* @__PURE__ */ a(Ne, { form: k, layout: "vertical", size: "small", style: { marginTop: 12 }, children: E.map(([u, I]) => /* @__PURE__ */ a(
+        Wt,
         {
           name: u,
-          schema: g,
-          required: _.has(u),
-          resources: a,
+          schema: I,
+          required: A.has(u),
+          resources: l,
           resourceType: typeof (r == null ? void 0 : r.configurationSchema.resourceType) == "string" ? r.configurationSchema.resourceType : void 0,
           properties: (r == null ? void 0 : r.configurationSchema.properties) ?? {},
           config: (t == null ? void 0 : t.config) ?? {}
         },
         u
       )) }),
-      C.length === 0 && /* @__PURE__ */ b(ve, { children: [
-        /* @__PURE__ */ i(P.Text, { type: "secondary", style: { fontSize: 12 }, children: "配置 (JSON)" }),
-        /* @__PURE__ */ i(
-          F.TextArea,
+      E.length === 0 && /* @__PURE__ */ h(be, { children: [
+        /* @__PURE__ */ a(N.Text, { type: "secondary", style: { fontSize: 12 }, children: "配置 (JSON)" }),
+        /* @__PURE__ */ a(
+          K.TextArea,
           {
             rows: 8,
             value: v,
             style: { marginTop: 6 },
-            onChange: (u) => f(u.target.value)
+            onChange: (u) => m(u.target.value)
           }
         ),
-        x && /* @__PURE__ */ i(P.Text, { type: "danger", style: { fontSize: 12 }, children: x })
+        p && /* @__PURE__ */ a(N.Text, { type: "danger", style: { fontSize: 12 }, children: p })
       ] }),
-      /* @__PURE__ */ i(A, { type: "primary", block: !0, onClick: N, children: "应用配置" }),
-      /* @__PURE__ */ i(A, { danger: !0, block: !0, style: { marginTop: 8 }, onClick: c, children: "删除节点" }),
-      (r == null ? void 0 : r.activityType) && /* @__PURE__ */ i(P.Text, { type: "secondary", style: { fontSize: 11, display: "block", marginTop: 8 }, children: r.activityType })
+      /* @__PURE__ */ a($, { type: "primary", block: !0, onClick: S, children: "应用配置" }),
+      /* @__PURE__ */ a($, { danger: !0, block: !0, style: { marginTop: 8 }, onClick: d, children: "删除节点" }),
+      (r == null ? void 0 : r.activityType) && /* @__PURE__ */ a(N.Text, { type: "secondary", style: { fontSize: 11, display: "block", marginTop: 8 }, children: r.activityType })
     ] }),
-    /* @__PURE__ */ b(Re, { plain: !0, style: { margin: "16px 0 8px" }, children: [
+    /* @__PURE__ */ h(Fe, { plain: !0, style: { margin: "16px 0 8px" }, children: [
       "连线 (",
       n.length,
       ")"
     ] }),
-    n.length === 0 ? /* @__PURE__ */ i(P.Text, { type: "secondary", style: { fontSize: 12 }, children: "从节点端口拖到另一个节点即可连线；也可以在这里编辑端口。" }) : /* @__PURE__ */ i(de, { size: "small", columns: j, dataSource: $, pagination: !1 }),
-    s.length > 0 && /* @__PURE__ */ b(ve, { children: [
-      /* @__PURE__ */ b(Re, { plain: !0, style: { margin: "16px 0 8px" }, children: [
+    n.length === 0 ? /* @__PURE__ */ a(N.Text, { type: "secondary", style: { fontSize: 12 }, children: "从节点端口拖到另一个节点即可连线；也可以在这里编辑端口。" }) : /* @__PURE__ */ a(ne, { size: "small", columns: L, dataSource: R, pagination: !1 }),
+    o.length > 0 && /* @__PURE__ */ h(be, { children: [
+      /* @__PURE__ */ h(Fe, { plain: !0, style: { margin: "16px 0 8px" }, children: [
         "校验定位 (",
-        s.length,
+        o.length,
         ")"
       ] }),
-      s.map((u, g) => /* @__PURE__ */ b("div", { className: "industrial-issue", children: [
-        /* @__PURE__ */ i(ne, { color: "red", children: u.code }),
-        /* @__PURE__ */ b(
-          P.Text,
+      o.map((u, I) => /* @__PURE__ */ h("div", { className: "industrial-issue", children: [
+        /* @__PURE__ */ a(oe, { color: "red", children: u.code }),
+        /* @__PURE__ */ h(
+          N.Text,
           {
             style: { fontSize: 12, cursor: "pointer" },
             onClick: () => {
-              const k = /^nodes\.([^.]+)/.exec(u.path);
-              k && I(k[1]);
+              const T = /^nodes\.([^.]+)/.exec(u.path);
+              T && x(T[1]);
             },
             children: [
               u.path,
@@ -926,11 +926,11 @@ function Mt(e) {
             ]
           }
         )
-      ] }, `${u.path}-${g}`))
+      ] }, `${u.path}-${I}`))
     ] })
   ] });
 }
-const Bt = [
+const Jt = [
   "Control",
   "File",
   "FileBatch",
@@ -940,496 +940,816 @@ const Bt = [
   "Text",
   "Unknown"
 ];
-class Gt extends Error {
+class Yt extends Error {
   constructor(t) {
     super(t), this.name = "DtoError";
   }
 }
-const D = (e) => e !== null && typeof e == "object" && !Array.isArray(e) ? e : {}, B = (e) => Array.isArray(e) ? e : [], m = (e, t = "") => typeof e == "string" ? e : typeof e == "number" || typeof e == "boolean" ? String(e) : t ?? "", ie = (e, t = 0) => {
+const P = (e) => e !== null && typeof e == "object" && !Array.isArray(e) ? e : {}, M = (e) => Array.isArray(e) ? e : [], g = (e, t = "") => typeof e == "string" ? e : typeof e == "number" || typeof e == "boolean" ? String(e) : t ?? "", q = (e, t = 0) => {
   const r = typeof e == "string" ? Number(e) : e;
   return typeof r == "number" && Number.isFinite(r) ? r : t;
-}, d = (e, ...t) => {
+}, i = (e, ...t) => {
   for (const r of t)
     if (e[r] !== void 0 && e[r] !== null) return e[r];
 };
-function te(e) {
-  const t = D(e);
+function V(e) {
+  const t = P(e);
   if (Object.prototype.hasOwnProperty.call(t, "data")) return t.data;
   if (typeof t.code == "string" && typeof t.message == "string")
-    throw new Gt(`${t.code}: ${t.message}`);
+    throw new Yt(`${t.code}: ${t.message}`);
   return e;
 }
-function Ut(e) {
-  const t = m(e).trim().toLowerCase();
-  return Bt.find((n) => n.toLowerCase() === t) ?? "Unknown";
-}
-function Wt(e) {
-  if (typeof e == "string")
-    return { name: e, type: "Unknown", required: !1 };
-  const t = D(e), r = m(d(t, "name", "port", "id")).trim();
-  return r ? {
-    name: r,
-    type: Ut(d(t, "type", "portType", "dataType")),
-    required: d(t, "required", "isRequired") === !0
-  } : null;
-}
-function Fe(e) {
-  const t = B(e).map(Wt).filter((n) => n !== null), r = /* @__PURE__ */ new Set();
-  return t.filter((n) => r.has(n.name) ? !1 : (r.add(n.name), !0));
-}
-const Qt = (e) => {
-  const t = D(e);
-  return Object.keys(t).length === 0 ? { type: "object", properties: {} } : t;
-};
-function Kt(e) {
-  const t = D(e), r = m(d(t, "nodeTypeId", "node_type_id", "type", "id")).trim();
-  return r ? {
-    nodeTypeId: r,
-    name: m(d(t, "name", "title"), r),
-    description: m(d(t, "description", "desc")),
-    category: m(d(t, "category", "group"), "General"),
-    icon: m(d(t, "icon"), "AppstoreOutlined"),
-    version: m(d(t, "version"), "1.0.0"),
-    inputs: Fe(d(t, "inputs", "inputPorts", "input_ports")),
-    outputs: Fe(d(t, "outputs", "outputPorts", "output_ports")),
-    configurationSchema: Qt(d(t, "configurationSchema", "configSchema", "schema")),
-    activityType: m(d(t, "activityType", "activity_type")),
-    dependencies: B(d(t, "dependencies")).map((n) => m(n)).filter(Boolean)
-  } : null;
-}
-function Jt(e) {
-  const t = te(e), r = Array.isArray(t) ? t : B(d(D(t), "nodes", "items")), n = /* @__PURE__ */ new Set();
-  return r.map(Kt).filter((o) => o !== null).filter((o) => n.has(o.nodeTypeId) ? !1 : (n.add(o.nodeTypeId), !0));
-}
-function Yt(e) {
-  const t = te(e), r = Array.isArray(t) ? t : B(d(D(t), "resources", "items")), n = /* @__PURE__ */ new Set();
-  return r.map((o) => {
-    const a = D(o), s = m(d(a, "id")).trim();
-    return !s || n.has(s) ? null : (n.add(s), {
-      id: s,
-      name: m(d(a, "name"), s),
-      type: m(d(a, "type"), "unknown"),
-      enabled: a.enabled !== !1,
-      credentialId: typeof a.credentialId == "string" ? a.credentialId : null,
-      credentialName: typeof a.credentialName == "string" ? a.credentialName : null
-    });
-  }).filter((o) => o !== null);
-}
-function Ve(e) {
-  const t = D(e), r = m(d(t, "workflowId", "workflow_id", "id")).trim();
-  return r ? {
-    workflowId: r,
-    name: m(d(t, "name", "title"), r),
-    version: ie(d(t, "version"), 1)
-  } : null;
-}
-function Xe(e) {
-  const t = te(e);
-  return (Array.isArray(t) ? t : B(d(D(t), "workflows", "items"))).map(Ve).filter((n) => n !== null);
-}
-function Ee(e) {
-  const t = D(e), r = {};
-  for (const [n, o] of Object.entries(t))
-    o !== void 0 && (r[n] = o);
-  return r;
-}
 function Ht(e) {
-  const t = D(e), r = m(d(t, "id", "nodeId", "node_id")).trim();
-  if (!r) return null;
-  const n = D(d(t, "position", "layout"));
-  return {
-    id: r,
-    type: m(d(t, "type", "nodeType", "nodeTypeId"), "unknown"),
-    config: Ee(d(t, "config", "configuration")),
-    x: ie(d(t, "x") ?? d(n, "x"), 0),
-    y: ie(d(t, "y") ?? d(n, "y"), 0)
-  };
+  const t = g(e).trim().toLowerCase();
+  return Jt.find((n) => n.toLowerCase() === t) ?? "Unknown";
 }
 function Vt(e) {
-  const t = D(e), r = m(d(t, "source", "from", "sourceId")).trim(), n = m(d(t, "target", "to", "targetId")).trim();
-  return !r || !n ? null : {
-    source: r,
-    sourcePort: m(d(t, "sourcePort", "source_port", "fromPort"), "out"),
-    target: n,
-    targetPort: m(d(t, "targetPort", "target_port", "toPort"), "in")
+  if (typeof e == "string")
+    return { name: e, type: "Unknown", required: !1 };
+  const t = P(e), r = g(i(t, "name", "port", "id")).trim();
+  return r ? {
+    name: r,
+    type: Ht(i(t, "type", "portType", "dataType")),
+    required: i(t, "required", "isRequired") === !0
+  } : null;
+}
+function We(e) {
+  const t = M(e).map(Vt).filter((n) => n !== null), r = /* @__PURE__ */ new Set();
+  return t.filter((n) => r.has(n.name) ? !1 : (r.add(n.name), !0));
+}
+const Xt = (e) => {
+  const t = P(e);
+  return Object.keys(t).length === 0 ? { type: "object", properties: {} } : t;
+};
+function Zt(e) {
+  const t = P(e), r = g(i(t, "nodeTypeId", "node_type_id", "type", "id")).trim();
+  return r ? {
+    nodeTypeId: r,
+    name: g(i(t, "name", "title"), r),
+    description: g(i(t, "description", "desc")),
+    category: g(i(t, "category", "group"), "General"),
+    icon: g(i(t, "icon"), "AppstoreOutlined"),
+    version: g(i(t, "version"), "1.0.0"),
+    inputs: We(i(t, "inputs", "inputPorts", "input_ports")),
+    outputs: We(i(t, "outputs", "outputPorts", "output_ports")),
+    configurationSchema: Xt(i(t, "configurationSchema", "configSchema", "schema")),
+    activityType: g(i(t, "activityType", "activity_type")),
+    dependencies: M(i(t, "dependencies")).map((n) => g(n)).filter(Boolean)
+  } : null;
+}
+function er(e) {
+  const t = V(e), r = Array.isArray(t) ? t : M(i(P(t), "nodes", "items")), n = /* @__PURE__ */ new Set();
+  return r.map(Zt).filter((s) => s !== null).filter((s) => n.has(s.nodeTypeId) ? !1 : (n.add(s.nodeTypeId), !0));
+}
+function tr(e) {
+  const t = V(e), r = Array.isArray(t) ? t : M(i(P(t), "resources", "items")), n = /* @__PURE__ */ new Set();
+  return r.map((s) => {
+    const l = P(s), o = g(i(l, "id")).trim();
+    return !o || n.has(o) ? null : (n.add(o), {
+      id: o,
+      name: g(i(l, "name"), o),
+      type: g(i(l, "type"), "unknown"),
+      enabled: l.enabled !== !1,
+      credentialId: typeof l.credentialId == "string" ? l.credentialId : null,
+      credentialName: typeof l.credentialName == "string" ? l.credentialName : null
+    });
+  }).filter((s) => s !== null);
+}
+function nt(e) {
+  const t = P(e), r = g(i(t, "workflowId", "workflow_id", "id")).trim();
+  return r ? {
+    workflowId: r,
+    name: g(i(t, "name", "title"), r),
+    version: q(i(t, "version"), 1)
+  } : null;
+}
+function st(e) {
+  const t = V(e);
+  return (Array.isArray(t) ? t : M(i(P(t), "workflows", "items"))).map(nt).filter((n) => n !== null);
+}
+function $e(e) {
+  const t = P(e), r = {};
+  for (const [n, s] of Object.entries(t))
+    s !== void 0 && (r[n] = s);
+  return r;
+}
+function rr(e) {
+  const t = P(e), r = g(i(t, "id", "nodeId", "node_id")).trim();
+  if (!r) return null;
+  const n = P(i(t, "position", "layout"));
+  return {
+    id: r,
+    type: g(i(t, "type", "nodeType", "nodeTypeId"), "unknown"),
+    config: $e(i(t, "config", "configuration")),
+    x: q(i(t, "x") ?? i(n, "x"), 0),
+    y: q(i(t, "y") ?? i(n, "y"), 0)
   };
 }
-function Xt(e) {
-  const t = te(e), r = D(t), n = Ve(r) ?? { workflowId: "", name: "", version: 1 }, o = B(d(r, "nodes")).map(Ht).filter((c) => c !== null), a = B(d(r, "edges")).map(Vt).filter((c) => c !== null), s = D(d(r, "trigger")), l = {
-    kind: m(d(s, "kind", "type"), "manual"),
-    cron: d(s, "cron") === void 0 ? null : m(s.cron),
-    eventName: d(s, "eventName", "event_name") === void 0 ? null : m(d(s, "eventName", "event_name")),
-    config: Ee(d(s, "config"))
+function nr(e) {
+  const t = P(e), r = g(i(t, "source", "from", "sourceId")).trim(), n = g(i(t, "target", "to", "targetId")).trim();
+  return !r || !n ? null : {
+    source: r,
+    sourcePort: g(i(t, "sourcePort", "source_port", "fromPort"), "out"),
+    target: n,
+    targetPort: g(i(t, "targetPort", "target_port", "toPort"), "in")
+  };
+}
+function sr(e) {
+  const t = V(e), r = P(t), n = nt(r) ?? { workflowId: "", name: "", version: 1 }, s = M(i(r, "nodes")).map(rr).filter((d) => d !== null), l = M(i(r, "edges")).map(nr).filter((d) => d !== null), o = P(i(r, "trigger")), c = {
+    kind: g(i(o, "kind", "type"), "manual"),
+    cron: i(o, "cron") === void 0 ? null : g(o.cron),
+    eventName: i(o, "eventName", "event_name") === void 0 ? null : g(i(o, "eventName", "event_name")),
+    config: $e(i(o, "config"))
   };
   return {
     workflowId: n.workflowId,
     name: n.name,
     version: n.version,
-    nodes: o,
-    edges: a,
-    trigger: l,
-    resourceReferences: B(d(r, "resourceReferences", "resource_references")).map((c) => m(c)).filter(Boolean),
-    layout: Ee(d(r, "layout"))
+    nodes: s,
+    edges: l,
+    trigger: c,
+    resourceReferences: M(i(r, "resourceReferences", "resource_references")).map((d) => g(d)).filter(Boolean),
+    layout: $e(i(r, "layout"))
   };
 }
-const Ze = (e) => e === !0 || typeof e == "string" && e.toLowerCase() === "true";
-function Zt(e) {
-  const t = te(e);
-  return (Array.isArray(t) ? t : B(d(D(t), "resources", "items"))).map((n) => {
-    const o = D(n), a = d(o, "credentialId", "credential_id");
+const fe = (e) => e === !0 || typeof e == "string" && e.toLowerCase() === "true";
+function or(e) {
+  const t = V(e);
+  return (Array.isArray(t) ? t : M(i(P(t), "resources", "items"))).map((n) => {
+    const s = P(n), l = i(s, "credentialId", "credential_id");
     return {
-      id: m(d(o, "id"), "—"),
-      name: m(d(o, "name"), "—"),
-      type: m(d(o, "type"), "—"),
-      provider: m(d(o, "provider"), "—"),
-      enabled: Ze(d(o, "enabled")),
-      credentialId: a == null ? null : m(a),
-      credentialName: d(o, "credentialName") == null ? null : m(d(o, "credentialName"))
+      id: g(i(s, "id"), "—"),
+      name: g(i(s, "name"), "—"),
+      type: g(i(s, "type"), "—"),
+      provider: g(i(s, "provider"), "—"),
+      enabled: fe(i(s, "enabled")),
+      credentialId: l == null ? null : g(l),
+      credentialName: i(s, "credentialName") == null ? null : g(i(s, "credentialName"))
     };
   });
 }
-function et(e) {
-  const t = te(e);
-  return (Array.isArray(t) ? t : B(d(D(t), "credentials", "items"))).map((n) => {
-    const o = D(n);
+function ot(e) {
+  const t = V(e);
+  return (Array.isArray(t) ? t : M(i(P(t), "credentials", "items"))).map((n) => {
+    const s = P(n);
     return {
-      id: m(d(o, "id"), "—"),
-      name: m(d(o, "name"), "—"),
-      kind: m(d(o, "kind"), "—"),
-      version: ie(d(o, "version"))
+      id: g(i(s, "id"), "—"),
+      name: g(i(s, "name"), "—"),
+      kind: g(i(s, "kind"), "—"),
+      version: q(i(s, "version"))
     };
   });
 }
-function er(e) {
-  const t = te(e);
-  return (Array.isArray(t) ? t : B(d(D(t), "tests", "items"))).map((n) => {
-    const o = D(n);
+function ar(e) {
+  const t = V(e);
+  return (Array.isArray(t) ? t : M(i(P(t), "tests", "items"))).map((n) => {
+    const s = P(n);
     return {
-      resourceId: m(d(o, "resourceId", "resource_id"), "—"),
-      ok: Ze(d(o, "ok")),
-      detail: m(d(o, "detail"), "")
+      resourceId: g(i(s, "resourceId", "resource_id"), "—"),
+      ok: fe(i(s, "ok")),
+      detail: g(i(s, "detail"), "")
     };
   });
 }
-function tr(e) {
-  const t = te(e), r = D(t), n = B(d(r, "runs")).map((a) => {
-    const s = D(a);
-    return {
-      id: m(d(s, "id"), "—"),
-      workflowId: m(d(s, "workflowId", "workflow_id"), "—"),
-      status: m(d(s, "status"), "—"),
-      startedAt: m(d(s, "startedAt", "started_at"), ""),
-      finishedAt: d(s, "finishedAt", "finished_at") == null ? null : m(d(s, "finishedAt", "finished_at")),
-      error: d(s, "error") == null ? null : m(d(s, "error"))
-    };
-  }), o = B(d(r, "deliveries")).map((a) => {
-    const s = D(a);
-    return {
-      id: m(d(s, "id"), "—"),
-      collectionFileId: m(d(s, "collectionFileId", "collection_file_id"), ""),
-      targetId: m(d(s, "targetId", "target_id"), "—"),
-      targetKind: m(d(s, "targetKind", "target_kind"), "record"),
-      status: m(d(s, "status"), "—"),
-      attempts: ie(d(s, "attempts")),
-      records: ie(d(s, "records")),
-      error: d(s, "error") == null ? null : m(d(s, "error"))
-    };
-  });
-  return { runs: n, deliveries: o };
-}
-function rr(e) {
+const at = (e) => {
   if (e == null) return null;
-  const t = te(e), r = D(t);
-  if (Object.keys(r).length === 0) return null;
-  const n = B(d(r, "nodes")).slice(0, 64).map((o) => {
-    const a = D(o);
+  const t = P(e);
+  return Object.keys(t).length === 0 ? null : {
+    code: g(i(t, "code"), "OTHER"),
+    message: g(i(t, "message"), ""),
+    action: g(i(t, "action"), "")
+  };
+};
+function ir(e) {
+  const t = V(e);
+  return M(i(P(t), "triggers", "items")).map((n) => {
+    const s = P(n), l = (o) => i(s, o) == null ? null : g(i(s, o));
     return {
-      nodeId: m(d(a, "nodeId", "node_id"), "—"),
-      status: m(d(a, "status"), "—"),
-      records: ie(d(a, "records")),
-      files: ie(d(a, "files")),
-      error: d(a, "error") == null ? null : m(d(a, "error"), void 0),
-      samples: B(d(a, "samples")).slice(0, 3).map((s) => m(s))
+      workflowId: g(i(s, "workflowId", "workflow_id"), "—"),
+      version: q(i(s, "version")),
+      kind: g(i(s, "kind"), "manual"),
+      cron: l("cron"),
+      eventName: l("eventName"),
+      resourceId: l("resourceId"),
+      nextRun: l("nextRun"),
+      lastStatus: l("lastStatus"),
+      lastStartedAt: l("lastStartedAt"),
+      lastError: l("lastError")
+    };
+  });
+}
+function lr(e) {
+  if (e == null) return null;
+  const t = V(e), r = P(t);
+  if (Object.keys(r).length === 0) return null;
+  const n = M(i(r, "files")).map((l) => {
+    const o = P(l);
+    return {
+      path: g(i(o, "path"), "—"),
+      sourceDate: g(i(o, "sourceDate"), ""),
+      inLedger: fe(i(o, "inLedger")),
+      succeededTargets: q(i(o, "succeededTargets")),
+      incompleteTargets: q(i(o, "incompleteTargets")),
+      wouldSkip: fe(i(o, "wouldSkip")),
+      wouldCollect: fe(i(o, "wouldCollect")),
+      duplicateRisk: fe(i(o, "duplicateRisk"))
+    };
+  }), s = P(i(r, "summary"));
+  return {
+    resourceId: g(i(r, "resourceId"), "—"),
+    from: g(i(r, "from"), ""),
+    to: g(i(r, "to"), ""),
+    files: n,
+    summary: {
+      discovered: q(i(s, "discovered")),
+      alreadyComplete: q(i(s, "alreadyComplete")),
+      needsCollection: q(i(s, "needsCollection")),
+      duplicateRisk: q(i(s, "duplicateRisk"))
+    }
+  };
+}
+function cr(e) {
+  const t = V(e);
+  return (Array.isArray(t) ? t : M(i(P(t), "files", "items"))).map((n) => {
+    const s = P(n);
+    return {
+      id: g(i(s, "id"), "—"),
+      path: g(i(s, "path"), "—"),
+      identityKey: g(i(s, "identityKey"), ""),
+      sourceResourceId: g(i(s, "sourceResourceId"), ""),
+      length: q(i(s, "length")),
+      sourceDate: g(i(s, "sourceDate"), ""),
+      collectedAt: g(i(s, "collectedAt"), ""),
+      status: g(i(s, "status"), "—"),
+      deliveries: M(i(s, "deliveries")).map((l) => {
+        const o = P(l);
+        return {
+          id: g(i(o, "id"), "—"),
+          collectionFileId: g(i(o, "collectionFileId"), ""),
+          targetId: g(i(o, "targetId"), "—"),
+          targetKind: g(i(o, "targetKind"), "record"),
+          status: g(i(o, "status"), "—"),
+          attempts: q(i(o, "attempts")),
+          records: q(i(o, "records")),
+          error: i(o, "error") == null ? null : g(i(o, "error")),
+          accepted: q(i(o, "accepted")),
+          rejected: q(i(o, "rejected")),
+          warnings: q(i(o, "warnings")),
+          diagnosis: at(i(o, "diagnosis"))
+        };
+      })
+    };
+  });
+}
+function dr(e) {
+  const t = V(e), r = P(t), n = M(i(r, "runs")).map((l) => {
+    const o = P(l);
+    return {
+      id: g(i(o, "id"), "—"),
+      workflowId: g(i(o, "workflowId", "workflow_id"), "—"),
+      status: g(i(o, "status"), "—"),
+      startedAt: g(i(o, "startedAt", "started_at"), ""),
+      finishedAt: i(o, "finishedAt", "finished_at") == null ? null : g(i(o, "finishedAt", "finished_at")),
+      error: i(o, "error") == null ? null : g(i(o, "error"))
+    };
+  }), s = M(i(r, "deliveries")).map((l) => {
+    const o = P(l);
+    return {
+      id: g(i(o, "id"), "—"),
+      collectionFileId: g(i(o, "collectionFileId", "collection_file_id"), ""),
+      targetId: g(i(o, "targetId", "target_id"), "—"),
+      targetKind: g(i(o, "targetKind", "target_kind"), "record"),
+      status: g(i(o, "status"), "—"),
+      attempts: q(i(o, "attempts")),
+      records: q(i(o, "records")),
+      error: i(o, "error") == null ? null : g(i(o, "error")),
+      diagnosis: at(i(o, "diagnosis"))
+    };
+  });
+  return { runs: n, deliveries: s };
+}
+function ur(e) {
+  if (e == null) return null;
+  const t = V(e), r = P(t);
+  if (Object.keys(r).length === 0) return null;
+  const n = M(i(r, "nodes")).slice(0, 64).map((s) => {
+    const l = P(s);
+    return {
+      nodeId: g(i(l, "nodeId", "node_id"), "—"),
+      status: g(i(l, "status"), "—"),
+      records: q(i(l, "records")),
+      files: q(i(l, "files")),
+      error: i(l, "error") == null ? null : g(i(l, "error"), void 0),
+      samples: M(i(l, "samples")).slice(0, 3).map((o) => g(o))
     };
   });
   return {
-    status: m(d(r, "status"), "—"),
-    error: d(r, "error") == null ? null : m(d(r, "error"), void 0),
-    executed: B(d(r, "executed")).map((o) => m(o)),
-    instanceId: d(r, "instanceId") == null ? null : m(d(r, "instanceId"), void 0),
-    definitionId: d(r, "definitionId") == null ? null : m(d(r, "definitionId"), void 0),
+    status: g(i(r, "status"), "—"),
+    error: i(r, "error") == null ? null : g(i(r, "error"), void 0),
+    executed: M(i(r, "executed")).map((s) => g(s)),
+    instanceId: i(r, "instanceId") == null ? null : g(i(r, "instanceId"), void 0),
+    definitionId: i(r, "definitionId") == null ? null : g(i(r, "definitionId"), void 0),
     nodes: n
   };
 }
-const { Header: nr, Content: or } = pt;
-function sr({ ctx: e }) {
-  const [t, r] = ft.useMessage(), [n, o] = w([]), [a, s] = w([]), [l, c] = w([]), [p, h] = w([]), [I, T] = w(""), [v, f] = w(1), [x, S] = w(!0), [_, C] = w([]), [N, $] = w(() => Te()), [j, u] = w(null), [g, k] = w([]), [H, K] = w(!1), [ye, De] = w(!0), [tt, le] = w(!1), [fe, ee] = w(!1), [V, rt] = w(null), _e = re(1);
-  Y(() => {
-    let y = !0;
+const pr = [
+  { value: "manual", label: "手动运行" },
+  { value: "schedule", label: "定时运行" },
+  { value: "event", label: "事件触发" }
+], fr = [
+  { label: "每天 02:00", cron: "0 2 * * *" },
+  { label: "每小时", cron: "0 * * * *" },
+  { label: "每 5 分钟", cron: "*/5 * * * *" },
+  { label: "工作日 08:30", cron: "30 8 * * 1-5" }
+];
+function gr({
+  open: e,
+  onClose: t,
+  trigger: r,
+  resourceIds: n,
+  onSave: s,
+  ctx: l,
+  workflowId: o
+}) {
+  const [c, d] = b(r), [f, y] = b([]), [x, k] = b(null);
+  G(() => {
+    d(r);
+  }, [r]), G(() => {
+    e && l.hubQuery("industrial/trigger-status").then((p) => y(ir(p))).catch((p) => k(p instanceof Error ? p.message : String(p)));
+  }, [l, e]);
+  const v = f.find((p) => p.workflowId === o);
+  return /* @__PURE__ */ a(
+    me,
+    {
+      open: e,
+      title: "触发器配置",
+      okText: "保存触发器",
+      cancelText: "取消",
+      onCancel: t,
+      onOk: () => {
+        var p, C;
+        if (c.kind === "schedule" && !((p = c.cron) != null && p.trim())) {
+          k("定时运行需要填写 cron 表达式");
+          return;
+        }
+        if (c.kind === "event" && !((C = c.eventName) != null && C.trim())) {
+          k("事件触发需要填写事件名称");
+          return;
+        }
+        k(null), s(c), t();
+      },
+      width: 720,
+      children: /* @__PURE__ */ h(O, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
+        /* @__PURE__ */ h(O, { direction: "vertical", style: { width: "100%" }, children: [
+          /* @__PURE__ */ a(N.Text, { children: "触发方式" }),
+          /* @__PURE__ */ a(O, { wrap: !0, children: pr.map((p) => /* @__PURE__ */ a(
+            $,
+            {
+              type: c.kind === p.value ? "primary" : "default",
+              onClick: () => d({ ...c, kind: p.value }),
+              children: p.label
+            },
+            p.value
+          )) })
+        ] }),
+        /* @__PURE__ */ a(O, { wrap: !0, children: /* @__PURE__ */ a(
+          ae,
+          {
+            "aria-label": "运行资源",
+            allowClear: !0,
+            placeholder: "运行资源",
+            value: yr(c),
+            options: n.map((p) => ({ value: p, label: p })),
+            onChange: (p) => d({
+              ...c,
+              config: { ...c.config, resourceId: p ?? "" }
+            })
+          }
+        ) }),
+        /* @__PURE__ */ h(O, { direction: "vertical", style: { width: "100%" }, children: [
+          /* @__PURE__ */ a(N.Text, { type: "secondary", children: "Cron 与事件名称始终可编辑；只有所选触发方式会生效。" }),
+          /* @__PURE__ */ h(O, { wrap: !0, children: [
+            /* @__PURE__ */ a(N.Text, { children: "常用" }),
+            fr.map((p) => /* @__PURE__ */ a(
+              $,
+              {
+                size: "small",
+                onClick: () => d({ ...c, cron: p.cron }),
+                children: p.label
+              },
+              p.cron
+            ))
+          ] }),
+          /* @__PURE__ */ a(
+            K,
+            {
+              "aria-label": "Cron 表达式",
+              placeholder: "分 时 日 月 周，例如 0 2 * * *",
+              value: c.cron ?? "",
+              onChange: (p) => d({ ...c, cron: p.target.value })
+            }
+          ),
+          /* @__PURE__ */ a(
+            K,
+            {
+              "aria-label": "事件名称",
+              placeholder: "事件名称",
+              value: c.eventName ?? "",
+              onChange: (p) => d({ ...c, eventName: p.target.value })
+            }
+          ),
+          /* @__PURE__ */ h(N.Text, { type: "secondary", children: [
+            "下次运行：",
+            (v == null ? void 0 : v.nextRun) ?? "尚未发布定时触发器"
+          ] })
+        ] }),
+        v && /* @__PURE__ */ a(
+          ne,
+          {
+            rowKey: "workflowId",
+            dataSource: [v],
+            pagination: !1,
+            columns: [
+              { title: "状态", dataIndex: "lastStatus", render: (p) => p ?? "未运行" },
+              { title: "上次运行", dataIndex: "lastStartedAt", render: (p) => p ?? "—" },
+              { title: "错误", dataIndex: "lastError", render: (p) => p ?? "—" }
+            ]
+          }
+        ),
+        x && /* @__PURE__ */ a(ie, { type: "error", showIcon: !0, message: x })
+      ] })
+    }
+  );
+}
+function yr(e) {
+  const t = e.config.resourceId;
+  return typeof t == "string" && t.trim() ? t : void 0;
+}
+function mr({
+  open: e,
+  onClose: t,
+  ctx: r,
+  workflowId: n,
+  resourceId: s,
+  lookbackDays: l
+}) {
+  const [o, c] = b(null), [d, f] = b(null), [y, x] = b(!1), k = _(async () => {
+    x(!0), f(null);
+    try {
+      await r.hubCommand("industrial/preview-backfill", {
+        workflowId: n,
+        resourceId: s,
+        lookbackDays: l
+      }), c(lr(await r.hubQuery("industrial/backfill-preview")));
+    } catch (v) {
+      f(v instanceof Error ? v.message : String(v));
+    } finally {
+      x(!1);
+    }
+  }, [r, l, s, n]);
+  return /* @__PURE__ */ a(
+    me,
+    {
+      open: e,
+      title: "补采预览",
+      onCancel: t,
+      width: 820,
+      footer: [
+        /* @__PURE__ */ a($, { loading: y, onClick: () => void k(), children: "重新扫描" }, "refresh"),
+        /* @__PURE__ */ a($, { type: "primary", onClick: t, children: "关闭" }, "close")
+      ],
+      children: /* @__PURE__ */ h(O, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
+        /* @__PURE__ */ h(O, { children: [
+          /* @__PURE__ */ h($, { type: "primary", loading: y, onClick: () => void k(), children: [
+            "扫描最近 ",
+            l,
+            " 天"
+          ] }),
+          /* @__PURE__ */ h(N.Text, { type: "secondary", children: [
+            "资源：",
+            s || "未选择"
+          ] })
+        ] }),
+        d && /* @__PURE__ */ a(ie, { type: "error", showIcon: !0, message: d }),
+        o && /* @__PURE__ */ h(be, { children: [
+          /* @__PURE__ */ h(N.Text, { children: [
+            "发现 ",
+            o.summary.discovered,
+            " 个文件；已完成 ",
+            o.summary.alreadyComplete,
+            "； 待采集 ",
+            o.summary.needsCollection,
+            "；重复风险 ",
+            o.summary.duplicateRisk,
+            "。"
+          ] }),
+          /* @__PURE__ */ a(
+            ne,
+            {
+              rowKey: "path",
+              dataSource: o.files,
+              pagination: !1,
+              size: "small",
+              columns: [
+                { title: "文件", dataIndex: "path" },
+                { title: "源日期", dataIndex: "sourceDate" },
+                { title: "账本", dataIndex: "inLedger", render: (v) => v ? "已登记" : "新文件" },
+                { title: "成功目标", dataIndex: "succeededTargets" },
+                { title: "未完成目标", dataIndex: "incompleteTargets" },
+                {
+                  title: "预计动作",
+                  render: (v, m) => m.wouldSkip ? "跳过" : m.duplicateRisk ? "仅补缺失目标" : "采集"
+                }
+              ]
+            }
+          )
+        ] })
+      ] })
+    }
+  );
+}
+const { Header: hr, Content: wr } = wt;
+function vr({ ctx: e }) {
+  const [t, r] = vt.useMessage(), [n, s] = b([]), [l, o] = b([]), [c, d] = b([]), [f, y] = b([]), [x, k] = b(""), [v, m] = b(1), [p, C] = b(!0), [A, E] = b([]), [S, R] = b(() => Ee()), [L, u] = b(null), [I, T] = b([]), [X, Y] = b(!1), [he, _e] = b(!0), [it, de] = b(!1), [ge, te] = b(!1), [Z, lt] = b(null), [Oe, Ae] = b(!1), [ze, je] = b(!1), Le = se(1), xe = se(S.trigger);
+  G(() => {
+    xe.current = S.trigger;
+  }, [S.trigger]), G(() => {
+    let w = !0;
     return Promise.allSettled([
       e.hubQuery("industrial/nodes"),
       e.hubQuery("industrial/workflows"),
       e.hubQuery("industrial/resources")
-    ]).then(([E, q, z]) => {
-      var M;
-      if (!y) return;
-      const L = [];
-      if (E.status === "fulfilled" ? o(Jt(E.value)) : L.push(`节点描述: ${String(E.reason)}`), q.status === "fulfilled") {
-        const G = Xe(q.value);
-        s(G);
-        const U = new URLSearchParams(window.location.search).get("workflowId"), X = U && G.some((se) => se.workflowId === U) ? U : (M = G[0]) == null ? void 0 : M.workflowId;
-        X && Oe(X);
-      } else L.push(`工作流: ${String(q.reason)}`);
-      if (z.status === "fulfilled") {
-        const G = Yt(z.value);
-        h(G);
-        const U = G.map((X) => X.id);
-        c(U), T((X) => X || U[0] || "");
-      } else L.push(`资源: ${String(z.reason)}`);
-      C(L);
+    ]).then(([D, B, j]) => {
+      var U;
+      if (!w) return;
+      const F = [];
+      if (D.status === "fulfilled" ? s(er(D.value)) : F.push(`节点描述: ${String(D.reason)}`), B.status === "fulfilled") {
+        const W = st(B.value);
+        o(W);
+        const Q = new URLSearchParams(window.location.search).get("workflowId"), ee = Q && W.some((le) => le.workflowId === Q) ? Q : (U = W[0]) == null ? void 0 : U.workflowId;
+        ee && qe(ee);
+      } else F.push(`工作流: ${String(B.reason)}`);
+      if (j.status === "fulfilled") {
+        const W = tr(j.value);
+        y(W);
+        const Q = W.map((ee) => ee.id);
+        d(Q), k((ee) => ee || Q[0] || "");
+      } else F.push(`资源: ${String(j.reason)}`);
+      E(F);
     }).finally(() => {
-      y && S(!1);
+      w && C(!1);
     }), () => {
-      y = !1;
+      w = !1;
     };
   }, [e]);
-  const Z = Be(
-    () => new Map(n.map((y) => [y.nodeTypeId, y])),
+  const re = Je(
+    () => new Map(n.map((w) => [w.nodeTypeId, w])),
     [n]
-  ), be = N.nodes.find((y) => y.id === j) ?? null, ue = O(async (y, E, q) => {
-    K(!0);
+  ), ke = S.nodes.find((w) => w.id === L) ?? null, pe = _(async (w, D, B) => {
+    Y(!0);
     try {
-      return await J().api.hubCommand(y, E), t.success(q), !0;
-    } catch (z) {
-      return t.error(`${y} failed: ${z instanceof Error ? z.message : String(z)}`), !1;
+      return await H().api.hubCommand(w, D), t.success(B), !0;
+    } catch (j) {
+      return t.error(`${w} failed: ${j instanceof Error ? j.message : String(j)}`), !1;
     } finally {
-      K(!1);
+      Y(!1);
     }
-  }, [t]), Oe = O(async (y) => {
+  }, [t]), qe = _(async (w) => {
     try {
-      const E = await e.hubQuery("industrial/workflow-definitions"), z = (te(E) ?? []).find((G) => {
-        const U = G;
-        return String((U == null ? void 0 : U.workflowId) ?? "") === y;
-      }), L = z === void 0 ? { ...Te(y), name: y } : Xt(z);
-      $(L), f(Number(L.layout.lookbackDays ?? 1) || 1);
-      const M = L.nodes.map((G) => /^n(\d+)$/.exec(G.id)).filter(Boolean).reduce((G, U) => Math.max(G, Number(U[1])), 0);
-      _e.current = M + 1, u(null), le(!1), k([]), ee(!1);
-    } catch (E) {
-      t.error(`加载工作流失败: ${E instanceof Error ? E.message : String(E)}`);
+      const D = await e.hubQuery("industrial/workflow-definitions"), j = (V(D) ?? []).find((W) => {
+        const Q = W;
+        return String((Q == null ? void 0 : Q.workflowId) ?? "") === w;
+      }), F = j === void 0 ? { ...Ee(w), name: w } : sr(j);
+      R(F), m(Number(F.layout.lookbackDays ?? 1) || 1);
+      const U = F.nodes.map((W) => /^n(\d+)$/.exec(W.id)).filter(Boolean).reduce((W, Q) => Math.max(W, Number(Q[1])), 0);
+      Le.current = U + 1, u(null), de(!1), T([]), te(!1);
+    } catch (D) {
+      t.error(`加载工作流失败: ${D instanceof Error ? D.message : String(D)}`);
     }
-  }, [e, t]), me = O(async () => {
+  }, [e, t]), we = _(async () => {
     try {
-      const y = rr(await e.hubQuery("industrial/execution"));
-      if (y === null) return;
-      rt(y);
+      const w = ur(await e.hubQuery("industrial/execution"));
+      if (w === null) return;
+      lt(w);
     } catch {
     }
-  }, [e]), nt = O(async () => {
-    var q;
-    const y = new Set(N.resourceReferences ?? []);
-    for (const z of N.nodes)
-      for (const L of ["resourceId", "targetResourceId"]) {
-        const M = (q = z.config) == null ? void 0 : q[L];
-        typeof M == "string" && M.trim() && y.add(M.trim());
+  }, [e]), ct = _(async () => {
+    var B;
+    const w = new Set(S.resourceReferences ?? []);
+    for (const j of S.nodes)
+      for (const F of ["resourceId", "targetResourceId"]) {
+        const U = (B = j.config) == null ? void 0 : B[F];
+        typeof U == "string" && U.trim() && w.add(U.trim());
       }
-    const E = {
-      ...N,
-      resourceReferences: [...y],
-      layout: { ...N.layout, lookbackDays: v }
+    const D = {
+      ...S,
+      trigger: xe.current,
+      resourceReferences: [...w],
+      layout: { ...S.layout, lookbackDays: v }
     };
-    await ue("industrial/save-workflow", E, "已保存") && ($(E), ee(!1));
-  }, [ue, N, v]), ot = O(async () => {
-    if (fe) {
+    await pe("industrial/save-workflow", D, "已保存") && (R(D), te(!1));
+  }, [pe, S, v]), dt = _(async () => {
+    if (ge) {
       t.warning("草稿尚未保存，请先保存再发布");
       return;
     }
-    await ue("industrial/publish-workflow", { workflowId: N.workflowId }, "已发布") && await me();
-  }, [ue, N.workflowId, fe, t, me]), st = O(async () => {
-    if (fe) {
+    await pe("industrial/publish-workflow", { workflowId: S.workflowId }, "已发布") && await we();
+  }, [pe, S.workflowId, ge, t, we]), ut = _(async () => {
+    if (ge) {
       t.warning("草稿尚未保存，请先保存再运行");
       return;
     }
-    await ue(
+    await pe(
       "industrial/run-workflow",
-      { workflowId: N.workflowId, resourceId: I },
+      { workflowId: S.workflowId, resourceId: x },
       "采集已启动"
-    ) && await me();
-  }, [ue, N.workflowId, fe, t, me, I]), at = O((y, E, q) => {
-    const z = ce(Z, y);
-    if (!z) return;
-    const L = `n${_e.current++}`;
-    $((M) => ({
-      ...M,
-      nodes: [...M.nodes, St(z, L, E, q)]
-    })), u(L), le(!0), k([]), ee(!0);
-  }, [Z]), it = O((y, E) => {
-    const q = N.nodes.find((ae) => ae.id === y), z = N.nodes.find((ae) => ae.id === E);
-    if (!q || !z)
+    ) && await we();
+  }, [pe, S.workflowId, ge, t, we, x]), pt = _((w, D, B) => {
+    const j = ue(re, w);
+    if (!j) return;
+    const F = `n${Le.current++}`;
+    R((U) => ({
+      ...U,
+      nodes: [...U.nodes, Dt(j, F, D, B)]
+    })), u(F), de(!0), T([]), te(!0);
+  }, [re]), ft = _((w, D) => {
+    const B = S.nodes.find((ce) => ce.id === w), j = S.nodes.find((ce) => ce.id === D);
+    if (!B || !j)
       return t.warning("连线失败：端点不在画布上"), null;
-    const L = ce(Z, q.type), M = ce(Z, z.type);
-    if (!L || !M) return null;
-    let G = q, U = z, X = Le(L, M);
-    if (!X) {
-      const ae = Le(M, L);
-      if (!ae)
-        return t.warning(`端口类型不兼容：${L.name} → ${M.name}`), null;
-      G = z, U = q, X = ae;
+    const F = ue(re, B.type), U = ue(re, j.type);
+    if (!F || !U) return null;
+    let W = B, Q = j, ee = Ge(F, U);
+    if (!ee) {
+      const ce = Ge(U, F);
+      if (!ce)
+        return t.warning(`端口类型不兼容：${F.name} → ${U.name}`), null;
+      W = j, Q = B, ee = ce;
     }
-    const se = Nt(N, {
-      source: G.id,
-      sourcePort: X.sourcePort,
-      target: U.id,
-      targetPort: X.targetPort
-    }, Z);
-    return se.issue ? (t.warning(`${se.issue.code}: ${se.issue.message}`), k((ae) => [...ae, se.issue]), null) : se.definition === N ? (t.info("这条连线已经存在"), null) : ($(se.definition), ee(!0), X);
-  }, [Z, N, t]), lt = O(() => {
-    const y = Ot(N, Z, new Set(l));
-    k(y), y.length === 0 ? t.success("本地校验通过（发布时服务端仍会复核）") : (t.warning(`发现 ${y.length} 个问题，见属性抽屉定位列表`), le(!0));
-  }, [N, Z, l, t]), ct = O((y, E) => {
-    $((q) => ({
-      ...q,
-      edges: q.edges.map((z, L) => L === y ? E : z)
-    })), ee(!0);
+    const le = Rt(S, {
+      source: W.id,
+      sourcePort: ee.sourcePort,
+      target: Q.id,
+      targetPort: ee.targetPort
+    }, re);
+    return le.issue ? (t.warning(`${le.issue.code}: ${le.issue.message}`), T((ce) => [...ce, le.issue]), null) : le.definition === S ? (t.info("这条连线已经存在"), null) : (R(le.definition), te(!0), ee);
+  }, [re, S, t]), gt = _(() => {
+    const w = qt(S, re, new Set(c));
+    T(w), w.length === 0 ? t.success("本地校验通过（发布时服务端仍会复核）") : (t.warning(`发现 ${w.length} 个问题，见属性抽屉定位列表`), de(!0));
+  }, [S, re, c, t]), yt = _((w, D) => {
+    R((B) => ({
+      ...B,
+      edges: B.edges.map((j, F) => F === w ? D : j)
+    })), te(!0);
   }, []);
-  return x ? /* @__PURE__ */ i(We, { tip: "加载节点描述与资源…" }) : /* @__PURE__ */ b("div", { className: "industrial-designer", children: [
+  return p ? /* @__PURE__ */ a(Ve, { tip: "加载节点描述与资源…" }) : /* @__PURE__ */ h("div", { className: "industrial-designer", children: [
     r,
-    /* @__PURE__ */ b(nr, { className: "industrial-header", children: [
-      /* @__PURE__ */ b("div", { className: "industrial-title", children: [
-        /* @__PURE__ */ i(P.Text, { strong: !0, children: "Industrial Workflow" }),
-        /* @__PURE__ */ i(P.Text, { type: "secondary", children: N.name || N.workflowId }),
-        fe && /* @__PURE__ */ i(ne, { color: "orange", children: "未保存" }),
-        V && /* @__PURE__ */ i(ne, { color: V.error ? "error" : "success", children: V.status })
+    /* @__PURE__ */ h(hr, { className: "industrial-header", children: [
+      /* @__PURE__ */ h("div", { className: "industrial-title", children: [
+        /* @__PURE__ */ a(N.Text, { strong: !0, children: "Industrial Workflow" }),
+        /* @__PURE__ */ a(N.Text, { type: "secondary", children: S.name || S.workflowId }),
+        ge && /* @__PURE__ */ a(oe, { color: "orange", children: "未保存" }),
+        Z && /* @__PURE__ */ a(oe, { color: Z.error ? "error" : "success", children: Z.status })
       ] }),
-      /* @__PURE__ */ b("div", { className: "industrial-toolbar", children: [
-        /* @__PURE__ */ i(
-          A,
+      /* @__PURE__ */ h("div", { className: "industrial-toolbar", children: [
+        /* @__PURE__ */ a(
+          $,
           {
             size: "small",
             "data-testid": "toggle-library",
-            "aria-expanded": ye,
-            onClick: () => De((y) => !y),
-            children: ye ? "收起节点库" : "节点库"
+            "aria-expanded": he,
+            onClick: () => _e((w) => !w),
+            children: he ? "收起节点库" : "节点库"
           }
         ),
-        /* @__PURE__ */ i(
-          A,
+        /* @__PURE__ */ a(
+          $,
           {
             size: "small",
             "data-testid": "toggle-properties",
-            onClick: () => le((y) => !y),
+            onClick: () => de((w) => !w),
             children: "属性"
           }
         ),
-        /* @__PURE__ */ i("span", { className: "industrial-toolbar-divider" }),
-        /* @__PURE__ */ b(Q, { size: 4, children: [
-          /* @__PURE__ */ i(A, { size: "small", loading: H, onClick: () => void nt(), children: "保存" }),
-          /* @__PURE__ */ i(A, { size: "small", onClick: lt, children: "校验" }),
-          /* @__PURE__ */ i(A, { size: "small", loading: H, onClick: () => void ot(), children: "发布" }),
-          /* @__PURE__ */ i(A, { size: "small", type: "primary", loading: H, onClick: () => void st(), children: "运行" })
+        /* @__PURE__ */ a($, { size: "small", "data-testid": "open-trigger", onClick: () => Ae(!0), children: "触发器" }),
+        /* @__PURE__ */ a(
+          $,
+          {
+            size: "small",
+            "data-testid": "open-backfill-preview",
+            onClick: () => je(!0),
+            children: "补采预览"
+          }
+        ),
+        /* @__PURE__ */ a("span", { className: "industrial-toolbar-divider" }),
+        /* @__PURE__ */ h(O, { size: 4, children: [
+          /* @__PURE__ */ a($, { size: "small", loading: X, onClick: () => void ct(), children: "保存" }),
+          /* @__PURE__ */ a($, { size: "small", onClick: gt, children: "校验" }),
+          /* @__PURE__ */ a($, { size: "small", loading: X, onClick: () => void dt(), children: "发布" }),
+          /* @__PURE__ */ a($, { size: "small", type: "primary", loading: X, onClick: () => void ut(), children: "运行" })
         ] }),
-        /* @__PURE__ */ i(
-          oe,
+        /* @__PURE__ */ a(
+          ae,
           {
             className: "industrial-resource-select",
             size: "small",
-            value: I,
-            onChange: T,
+            value: x,
+            onChange: k,
             placeholder: "运行资源",
-            options: l.map((y) => ({ value: y, label: y }))
+            options: c.map((w) => ({ value: w, label: w }))
           }
         ),
-        /* @__PURE__ */ i(
-          Ue,
+        /* @__PURE__ */ a(
+          He,
           {
             className: "industrial-backfill-input",
             size: "small",
             min: 1,
             max: 365,
             value: v,
-            onChange: (y) => {
-              f(Number(y) || 1), ee(!0);
+            onChange: (w) => {
+              m(Number(w) || 1), te(!0);
             },
             addonBefore: "补采"
           }
         )
       ] })
     ] }),
-    /* @__PURE__ */ b(or, { className: `industrial-body${ye ? "" : " industrial-body--collapsed"}`, children: [
-      ye ? /* @__PURE__ */ b("aside", { className: "industrial-palette", children: [
-        a.length > 0 && /* @__PURE__ */ i(
-          oe,
+    /* @__PURE__ */ h(wr, { className: `industrial-body${he ? "" : " industrial-body--collapsed"}`, children: [
+      he ? /* @__PURE__ */ h("aside", { className: "industrial-palette", children: [
+        l.length > 0 && /* @__PURE__ */ a(
+          ae,
           {
             className: "industrial-workflow-select",
             size: "small",
-            value: N.workflowId,
+            value: S.workflowId,
             placeholder: "选择工作流",
-            onChange: (y) => void Oe(y),
-            options: a.map((y) => ({ value: y.workflowId, label: y.name }))
+            onChange: (w) => void qe(w),
+            options: l.map((w) => ({ value: w.workflowId, label: w.name }))
           }
         ),
-        /* @__PURE__ */ i(xt, { descriptors: n, loading: !1 })
-      ] }) : /* @__PURE__ */ i("div", { className: "industrial-palette-rail", children: /* @__PURE__ */ i(A, { type: "text", size: "small", onClick: () => De(!0), children: "节点库" }) }),
-      /* @__PURE__ */ b("section", { className: "industrial-center", children: [
-        _.length > 0 && /* @__PURE__ */ i(
-          pe,
+        /* @__PURE__ */ a(Et, { descriptors: n, loading: !1 })
+      ] }) : /* @__PURE__ */ a("div", { className: "industrial-palette-rail", children: /* @__PURE__ */ a($, { type: "text", size: "small", onClick: () => _e(!0), children: "节点库" }) }),
+      /* @__PURE__ */ h("section", { className: "industrial-center", children: [
+        A.length > 0 && /* @__PURE__ */ a(
+          ie,
           {
             type: "warning",
             showIcon: !0,
             style: { marginBottom: 8 },
             message: "部分设计器数据未加载",
-            description: _.join("；")
+            description: A.join("；")
           }
         ),
-        /* @__PURE__ */ i(
-          It,
+        /* @__PURE__ */ a(
+          Nt,
           {
-            definition: N,
-            catalog: Z,
-            selectedId: j,
-            onSelect: (y) => {
-              u(y), y && le(!0);
+            definition: S,
+            catalog: re,
+            selectedId: L,
+            onSelect: (w) => {
+              u(w), w && de(!0);
             },
-            onDropNode: at,
-            onCreateEdge: it,
-            onPositions: (y) => {
-              $((E) => Dt(E, y)), ee(!0);
+            onDropNode: pt,
+            onCreateEdge: ft,
+            onPositions: (w) => {
+              R((D) => jt(D, w)), te(!0);
             }
           }
         )
       ] })
     ] }),
-    /* @__PURE__ */ b(
-      ut,
+    /* @__PURE__ */ h(
+      ht,
       {
         className: "industrial-properties-drawer",
         title: "节点属性",
         placement: "right",
         width: 420,
-        open: tt,
+        open: it,
         mask: !1,
         getContainer: !1,
-        onClose: () => le(!1),
+        onClose: () => de(!1),
         children: [
-          V && /* @__PURE__ */ i(
-            pe,
+          Z && /* @__PURE__ */ a(
+            ie,
             {
               style: { marginBottom: 12 },
-              type: V.error ? "error" : "success",
+              type: Z.error ? "error" : "success",
               showIcon: !0,
-              message: `执行状态: ${V.status}`,
-              description: /* @__PURE__ */ b(Q, { direction: "vertical", size: 8, style: { width: "100%" }, children: [
-                V.error && /* @__PURE__ */ i("span", { children: V.error }),
-                V.executed.length > 0 && /* @__PURE__ */ b("span", { children: [
+              message: `执行状态: ${Z.status}`,
+              description: /* @__PURE__ */ h(O, { direction: "vertical", size: 8, style: { width: "100%" }, children: [
+                Z.error && /* @__PURE__ */ a("span", { children: Z.error }),
+                Z.executed.length > 0 && /* @__PURE__ */ h("span", { children: [
                   "已执行节点: ",
-                  V.executed.join(", ")
+                  Z.executed.join(", ")
                 ] }),
-                V.nodes.length > 0 && /* @__PURE__ */ i(
-                  de,
+                Z.nodes.length > 0 && /* @__PURE__ */ a(
+                  ne,
                   {
                     size: "small",
                     pagination: !1,
                     rowKey: "nodeId",
-                    dataSource: V.nodes,
+                    dataSource: Z.nodes,
                     columns: [
                       { title: "节点", dataIndex: "nodeId", key: "nodeId" },
                       { title: "状态", dataIndex: "status", key: "status" },
@@ -1438,7 +1758,7 @@ function sr({ ctx: e }) {
                       {
                         title: "错误 / 样本",
                         key: "detail",
-                        render: (y, E) => E.error ?? (E.samples.length > 0 ? E.samples.join(", ") : "—")
+                        render: (w, D) => D.error ?? (D.samples.length > 0 ? D.samples.join(", ") : "—")
                       }
                     ]
                   }
@@ -1446,78 +1766,103 @@ function sr({ ctx: e }) {
               ] })
             }
           ),
-          /* @__PURE__ */ i(
-            Mt,
+          /* @__PURE__ */ a(
+            Qt,
             {
-              node: be,
-              descriptor: be ? ce(Z, be.type) ?? null : null,
-              edges: N.edges,
-              catalog: Z,
-              resources: p,
-              issues: g,
-              onApplyConfig: (y) => {
-                j && ($((E) => $t(E, j, y)), ee(!0));
+              node: ke,
+              descriptor: ke ? ue(re, ke.type) ?? null : null,
+              edges: S.edges,
+              catalog: re,
+              resources: f,
+              issues: I,
+              onApplyConfig: (w) => {
+                L && (R((D) => zt(D, L, w)), te(!0));
               },
               onDeleteNode: () => {
-                $((y) => Ct(y, j ?? "")), u(null), ee(!0);
+                R((w) => _t(w, L ?? "")), u(null), te(!0);
               },
-              onDeleteEdge: (y) => {
-                $((E) => Et(E, y)), ee(!0);
+              onDeleteEdge: (w) => {
+                R((D) => Ot(D, w)), te(!0);
               },
-              onUpdateEdge: ct,
-              onSelectNode: (y) => {
-                u(y), le(!0);
+              onUpdateEdge: yt,
+              onSelectNode: (w) => {
+                u(w), de(!0);
               }
             }
           )
         ]
       }
+    ),
+    Oe && /* @__PURE__ */ a(
+      gr,
+      {
+        open: Oe,
+        onClose: () => Ae(!1),
+        trigger: S.trigger,
+        resourceIds: c,
+        workflowId: S.workflowId,
+        ctx: e,
+        onSave: (w) => {
+          xe.current = w, R((D) => ({ ...D, trigger: w })), te(!0);
+        }
+      }
+    ),
+    ze && /* @__PURE__ */ a(
+      mr,
+      {
+        open: ze,
+        onClose: () => je(!1),
+        ctx: e,
+        workflowId: S.workflowId,
+        resourceId: x,
+        lookbackDays: v
+      }
     )
   ] });
 }
-function ar({ block: e, ctx: t }) {
-  const [r, n] = w([]), [o, a] = w(!1), [s, l] = w(""), [c, p] = w(null), [h, I] = w(!1), T = O(async () => {
+function br({ block: e, ctx: t }) {
+  const [r, n] = b([]), [s, l] = b(!1), [o, c] = b(""), [d, f] = b(null), [y, x] = b(!1), k = _(async () => {
     try {
-      n(Xe(await t.hubQuery((e == null ? void 0 : e.query) ?? "industrial/workflows")));
-    } catch (x) {
-      p(x instanceof Error ? x.message : String(x));
+      n(st(await t.hubQuery((e == null ? void 0 : e.query) ?? "industrial/workflows")));
+    } catch (p) {
+      f(p instanceof Error ? p.message : String(p));
     }
   }, [e == null ? void 0 : e.query, t]);
-  Y(() => {
-    T();
-  }, [T]);
-  const v = O(async () => {
-    var S;
-    const x = s.trim();
-    if (!x) {
-      p("请输入工作流名称");
+  G(() => {
+    k();
+  }, [k]);
+  const v = _(async () => {
+    var C;
+    const p = o.trim();
+    if (!p) {
+      f("请输入工作流名称");
       return;
     }
-    I(!0), p(null);
+    x(!0), f(null);
     try {
-      const C = `workflow-${typeof crypto < "u" && "randomUUID" in crypto ? crypto.randomUUID().replace(/-/g, "").slice(0, 10) : Date.now().toString(36)}`;
+      const E = `workflow-${typeof crypto < "u" && "randomUUID" in crypto ? crypto.randomUUID().replace(/-/g, "").slice(0, 10) : Date.now().toString(36)}`;
       await t.hubCommand("industrial/save-workflow", {
-        ...Te(C),
-        name: x,
+        ...Ee(E),
+        name: p,
         layout: { lookbackDays: 1 }
-      }), a(!1), l(""), await T(), (S = t.navigate) == null || S.call(t, `/industrial/designer?workflowId=${encodeURIComponent(C)}`);
-    } catch (_) {
-      p(_ instanceof Error ? _.message : String(_));
+      }), l(!1), c(""), await k(), (C = t.navigate) == null || C.call(t, `/industrial/designer?workflowId=${encodeURIComponent(E)}`);
+    } catch (A) {
+      f(A instanceof Error ? A.message : String(A));
     } finally {
-      I(!1);
+      x(!1);
     }
-  }, [t, T, s]), f = O((x) => {
-    var S;
-    (S = t.navigate) == null || S.call(t, `/industrial/designer?workflowId=${encodeURIComponent(x)}`);
+  }, [t, k, o]), m = _((p) => {
+    var C;
+    (C = t.navigate) == null || C.call(t, `/industrial/designer?workflowId=${encodeURIComponent(p)}`);
   }, [t]);
-  return /* @__PURE__ */ b(Q, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
-    /* @__PURE__ */ b(Q, { style: { width: "100%", justifyContent: "space-between" }, children: [
-      /* @__PURE__ */ i(P.Title, { level: 4, style: { margin: 0 }, children: "采集工作流" }),
-      /* @__PURE__ */ i(A, { type: "primary", onClick: () => a(!0), children: "新建工作流" })
+  return /* @__PURE__ */ h(O, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
+    /* @__PURE__ */ h(O, { style: { width: "100%", justifyContent: "space-between" }, children: [
+      /* @__PURE__ */ a(N.Title, { level: 4, style: { margin: 0 }, children: "采集工作流" }),
+      /* @__PURE__ */ a($, { type: "primary", onClick: () => l(!0), children: "新建工作流" })
     ] }),
-    c && /* @__PURE__ */ i(P.Text, { type: "danger", children: c }),
-    /* @__PURE__ */ i(
-      de,
+    d && /* @__PURE__ */ a(N.Text, { type: "danger", children: d }),
+    /* @__PURE__ */ a(
+      ne,
       {
         rowKey: "workflowId",
         dataSource: r,
@@ -1526,41 +1871,41 @@ function ar({ block: e, ctx: t }) {
           {
             title: "ID",
             dataIndex: "workflowId",
-            render: (x) => /* @__PURE__ */ i(A, { type: "link", style: { padding: 0 }, onClick: () => f(x), children: x })
+            render: (p) => /* @__PURE__ */ a($, { type: "link", style: { padding: 0 }, onClick: () => m(p), children: p })
           },
           { title: "名称", dataIndex: "name" },
           { title: "版本", dataIndex: "version" }
         ]
       }
     ),
-    /* @__PURE__ */ i(
-      Pe,
+    /* @__PURE__ */ a(
+      me,
       {
-        open: o,
+        open: s,
         title: "新建采集工作流",
         okText: "创建",
         cancelText: "取消",
-        confirmLoading: h,
-        onCancel: () => a(!1),
+        confirmLoading: y,
+        onCancel: () => l(!1),
         onOk: () => void v(),
-        children: /* @__PURE__ */ b(Q, { direction: "vertical", style: { width: "100%" }, children: [
-          /* @__PURE__ */ i(P.Text, { children: "输入名称后会生成唯一 ID，并直接进入设计器。" }),
-          /* @__PURE__ */ i(
-            F,
+        children: /* @__PURE__ */ h(O, { direction: "vertical", style: { width: "100%" }, children: [
+          /* @__PURE__ */ a(N.Text, { children: "输入名称后会生成唯一 ID，并直接进入设计器。" }),
+          /* @__PURE__ */ a(
+            K,
             {
               "aria-label": "工作流名称",
               placeholder: "例如：每日设备数据采集",
-              value: s,
-              onChange: (x) => l(x.target.value ?? "")
+              value: o,
+              onChange: (p) => c(p.target.value ?? "")
             }
           ),
-          c && /* @__PURE__ */ i(P.Text, { type: "danger", children: c })
+          d && /* @__PURE__ */ a(N.Text, { type: "danger", children: d })
         ] })
       }
     )
   ] });
 }
-const xe = {
+const Te = {
   id: "",
   name: "",
   type: "filesystem.local",
@@ -1572,7 +1917,7 @@ const xe = {
   table: "",
   credentialId: "",
   enabled: !0
-}, ir = [
+}, Ir = [
   { value: "filesystem.local", label: "本地目录" },
   { value: "filesystem.unc", label: "Windows UNC 共享" },
   { value: "sqlserver", label: "SQL Server" },
@@ -1580,7 +1925,7 @@ const xe = {
   { value: "mysql", label: "MySQL" },
   { value: "sqlite", label: "SQLite" }
 ];
-function lr(e) {
+function xr(e) {
   switch (e.type) {
     case "filesystem.local":
     case "filesystem.unc":
@@ -1596,24 +1941,24 @@ function lr(e) {
       return {};
   }
 }
-function cr({ block: e, ctx: t }) {
-  const [r, n] = w([]), [o, a] = w([]), [s, l] = w([]), [c, p] = w(xe), [h, I] = w(!1), [T, v] = w(null), [f, x] = w(!1), S = O(async () => {
+function kr({ block: e, ctx: t }) {
+  const [r, n] = b([]), [s, l] = b([]), [o, c] = b([]), [d, f] = b(Te), [y, x] = b(!1), [k, v] = b(null), [m, p] = b(!1), C = _(async () => {
     try {
-      const [u, g, k] = await Promise.all([
+      const [u, I, T] = await Promise.all([
         t.hubQuery((e == null ? void 0 : e.query) ?? "industrial/resources"),
         t.hubQuery("industrial/credentials"),
         t.hubQuery("industrial/resource-tests")
       ]);
-      n(Zt(u)), a(et(g)), l(er(k));
+      n(or(u)), l(ot(I)), c(ar(T));
     } catch (u) {
       v(u instanceof Error ? u.message : String(u));
     }
   }, [e == null ? void 0 : e.query, t]);
-  Y(() => {
-    S();
-  }, [S]);
-  const _ = O((u) => {
-    p({
+  G(() => {
+    C();
+  }, [C]);
+  const A = _((u) => {
+    f({
       id: u.id,
       name: u.name,
       type: u.type,
@@ -1625,55 +1970,55 @@ function cr({ block: e, ctx: t }) {
       table: "",
       credentialId: u.credentialId ?? "",
       enabled: u.enabled
-    }), I(!0);
-  }, []), C = O(async () => {
-    const u = c.id.trim();
+    }), x(!0);
+  }, []), E = _(async () => {
+    const u = d.id.trim();
     if (!u) {
       v("请输入资源 ID");
       return;
     }
-    x(!0), v(null);
+    p(!0), v(null);
     try {
       await t.hubCommand("industrial/save-resource", {
         id: u,
-        name: c.name || u,
-        type: c.type,
-        provider: c.provider || "manual",
-        config: lr(c),
-        credentialId: c.credentialId || null,
-        enabled: c.enabled
-      }), I(!1), p(xe), await S();
-    } catch (g) {
-      v(g instanceof Error ? g.message : String(g));
+        name: d.name || u,
+        type: d.type,
+        provider: d.provider || "manual",
+        config: xr(d),
+        credentialId: d.credentialId || null,
+        enabled: d.enabled
+      }), x(!1), f(Te), await C();
+    } catch (I) {
+      v(I instanceof Error ? I.message : String(I));
     } finally {
-      x(!1);
+      p(!1);
     }
-  }, [t, c, S]), N = O(async (u) => {
+  }, [t, d, C]), S = _(async (u) => {
     v(null);
     try {
       await t.hubCommand("industrial/test-resource", { id: u });
-    } catch (g) {
-      v(g instanceof Error ? g.message : String(g));
+    } catch (I) {
+      v(I instanceof Error ? I.message : String(I));
     }
-    await S();
-  }, [t, S]), $ = O(async (u) => {
+    await C();
+  }, [t, C]), R = _(async (u) => {
     v(null);
     try {
-      await t.hubCommand("industrial/delete-resource", { id: u }), await S();
-    } catch (g) {
-      v(g instanceof Error ? g.message : String(g));
+      await t.hubCommand("industrial/delete-resource", { id: u }), await C();
+    } catch (I) {
+      v(I instanceof Error ? I.message : String(I));
     }
-  }, [t, S]), j = new Map(s.map((u) => [u.resourceId, u]));
-  return /* @__PURE__ */ b(Q, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
-    /* @__PURE__ */ b(Q, { style: { width: "100%", justifyContent: "space-between" }, children: [
-      /* @__PURE__ */ i(P.Title, { level: 4, style: { margin: 0 }, children: "数据源与目标" }),
-      /* @__PURE__ */ i(A, { type: "primary", onClick: () => {
-        p(xe), I(!0);
+  }, [t, C]), L = new Map(o.map((u) => [u.resourceId, u]));
+  return /* @__PURE__ */ h(O, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
+    /* @__PURE__ */ h(O, { style: { width: "100%", justifyContent: "space-between" }, children: [
+      /* @__PURE__ */ a(N.Title, { level: 4, style: { margin: 0 }, children: "数据源与目标" }),
+      /* @__PURE__ */ a($, { type: "primary", onClick: () => {
+        f(Te), x(!0);
       }, children: "新建资源" })
     ] }),
-    T && /* @__PURE__ */ i(pe, { type: "error", showIcon: !0, message: T }),
-    /* @__PURE__ */ i(
-      de,
+    k && /* @__PURE__ */ a(ie, { type: "error", showIcon: !0, message: k }),
+    /* @__PURE__ */ a(
+      ne,
       {
         rowKey: "id",
         dataSource: r,
@@ -1686,176 +2031,176 @@ function cr({ block: e, ctx: t }) {
           {
             title: "连接测试",
             key: "test",
-            render: (u, g) => {
-              const k = j.get(g.id);
-              return k ? /* @__PURE__ */ i(P.Text, { type: k.ok ? "success" : "danger", children: k.detail }) : "未测试";
+            render: (u, I) => {
+              const T = L.get(I.id);
+              return T ? /* @__PURE__ */ a(N.Text, { type: T.ok ? "success" : "danger", children: T.detail }) : "未测试";
             }
           },
           {
             title: "操作",
             key: "actions",
-            render: (u, g) => /* @__PURE__ */ b(Q, { size: 4, children: [
-              /* @__PURE__ */ i(A, { size: "small", onClick: () => void N(g.id), children: "测试连接" }),
-              /* @__PURE__ */ i(A, { size: "small", onClick: () => _(g), children: "编辑" }),
-              /* @__PURE__ */ i(A, { size: "small", danger: !0, onClick: () => void $(g.id), children: "删除" })
+            render: (u, I) => /* @__PURE__ */ h(O, { size: 4, children: [
+              /* @__PURE__ */ a($, { size: "small", onClick: () => void S(I.id), children: "测试连接" }),
+              /* @__PURE__ */ a($, { size: "small", onClick: () => A(I), children: "编辑" }),
+              /* @__PURE__ */ a($, { size: "small", danger: !0, onClick: () => void R(I.id), children: "删除" })
             ] })
           }
         ]
       }
     ),
-    /* @__PURE__ */ i(
-      Pe,
+    /* @__PURE__ */ a(
+      me,
       {
-        open: h,
-        title: c.id ? "编辑资源" : "新建资源",
+        open: y,
+        title: d.id ? "编辑资源" : "新建资源",
         okText: "保存资源",
         cancelText: "取消",
-        confirmLoading: f,
-        onCancel: () => I(!1),
-        onOk: () => void C(),
-        children: /* @__PURE__ */ b(Q, { direction: "vertical", style: { width: "100%" }, children: [
-          /* @__PURE__ */ i(
-            F,
+        confirmLoading: m,
+        onCancel: () => x(!1),
+        onOk: () => void E(),
+        children: /* @__PURE__ */ h(O, { direction: "vertical", style: { width: "100%" }, children: [
+          /* @__PURE__ */ a(
+            K,
             {
               "aria-label": "资源 ID",
               placeholder: "资源 ID（唯一）",
-              value: c.id,
-              onChange: (u) => p({ ...c, id: u.target.value })
+              value: d.id,
+              onChange: (u) => f({ ...d, id: u.target.value })
             }
           ),
-          /* @__PURE__ */ i(
-            F,
+          /* @__PURE__ */ a(
+            K,
             {
               "aria-label": "资源名称",
               placeholder: "显示名称",
-              value: c.name,
-              onChange: (u) => p({ ...c, name: u.target.value })
+              value: d.name,
+              onChange: (u) => f({ ...d, name: u.target.value })
             }
           ),
-          /* @__PURE__ */ i(
-            oe,
+          /* @__PURE__ */ a(
+            ae,
             {
               "aria-label": "资源类型",
-              value: c.type,
-              options: ir,
-              onChange: (u) => p({ ...c, type: u })
+              value: d.type,
+              options: Ir,
+              onChange: (u) => f({ ...d, type: u })
             }
           ),
-          (c.type === "filesystem.local" || c.type === "filesystem.unc") && /* @__PURE__ */ i(
-            F,
+          (d.type === "filesystem.local" || d.type === "filesystem.unc") && /* @__PURE__ */ a(
+            K,
             {
               "aria-label": "目录路径",
-              placeholder: c.type === "filesystem.unc" ? "\\\\server\\share" : "/data/csv",
-              value: c.root,
-              onChange: (u) => p({ ...c, root: u.target.value })
+              placeholder: d.type === "filesystem.unc" ? "\\\\server\\share" : "/data/csv",
+              value: d.root,
+              onChange: (u) => f({ ...d, root: u.target.value })
             }
           ),
-          (c.type === "sqlserver" || c.type === "postgresql" || c.type === "mysql") && /* @__PURE__ */ b(Q, { children: [
-            /* @__PURE__ */ i(
-              F,
+          (d.type === "sqlserver" || d.type === "postgresql" || d.type === "mysql") && /* @__PURE__ */ h(O, { children: [
+            /* @__PURE__ */ a(
+              K,
               {
                 "aria-label": "主机或服务器",
                 placeholder: "主机 / 服务器",
-                value: c.host,
-                onChange: (u) => p({ ...c, host: u.target.value })
+                value: d.host,
+                onChange: (u) => f({ ...d, host: u.target.value })
               }
             ),
-            /* @__PURE__ */ i(
-              F,
+            /* @__PURE__ */ a(
+              K,
               {
                 "aria-label": "数据库",
                 placeholder: "数据库",
-                value: c.database,
-                onChange: (u) => p({ ...c, database: u.target.value })
+                value: d.database,
+                onChange: (u) => f({ ...d, database: u.target.value })
               }
             ),
-            /* @__PURE__ */ i(
-              F,
+            /* @__PURE__ */ a(
+              K,
               {
                 "aria-label": "端口",
                 placeholder: "端口",
-                value: c.port,
-                onChange: (u) => p({ ...c, port: u.target.value })
+                value: d.port,
+                onChange: (u) => f({ ...d, port: u.target.value })
               }
             )
           ] }),
-          c.type === "sqlite" && /* @__PURE__ */ i(
-            F,
+          d.type === "sqlite" && /* @__PURE__ */ a(
+            K,
             {
               "aria-label": "数据库文件",
               placeholder: "数据库文件路径",
-              value: c.database,
-              onChange: (u) => p({ ...c, database: u.target.value })
+              value: d.database,
+              onChange: (u) => f({ ...d, database: u.target.value })
             }
           ),
-          /* @__PURE__ */ i(
-            oe,
+          /* @__PURE__ */ a(
+            ae,
             {
               "aria-label": "凭证",
               allowClear: !0,
               placeholder: "凭证（可选）",
-              value: c.credentialId || void 0,
-              options: o.map((u) => ({ value: u.id, label: u.name })),
-              onChange: (u) => p({ ...c, credentialId: u ?? "" })
+              value: d.credentialId || void 0,
+              options: s.map((u) => ({ value: u.id, label: u.name })),
+              onChange: (u) => f({ ...d, credentialId: u ?? "" })
             }
           ),
-          /* @__PURE__ */ b(Q, { children: [
-            /* @__PURE__ */ i(
-              Qe,
+          /* @__PURE__ */ h(O, { children: [
+            /* @__PURE__ */ a(
+              Xe,
               {
                 "aria-label": "启用资源",
-                checked: c.enabled,
-                onChange: (u) => p({ ...c, enabled: u })
+                checked: d.enabled,
+                onChange: (u) => f({ ...d, enabled: u })
               }
             ),
-            /* @__PURE__ */ i(P.Text, { children: "启用" })
+            /* @__PURE__ */ a(N.Text, { children: "启用" })
           ] })
         ] })
       }
     )
   ] });
 }
-function dr({ block: e, ctx: t }) {
-  const [r, n] = w([]), [o, a] = w(!1), [s, l] = w(""), [c, p] = w(""), [h, I] = w("username-password"), [T, v] = w(""), [f, x] = w(!1), [S, _] = w(null), [C, N] = w(!1), $ = O(async () => {
+function Sr({ block: e, ctx: t }) {
+  const [r, n] = b([]), [s, l] = b(!1), [o, c] = b(""), [d, f] = b(""), [y, x] = b("username-password"), [k, v] = b(""), [m, p] = b(!1), [C, A] = b(null), [E, S] = b(!1), R = _(async () => {
     try {
-      n(et(await t.hubQuery((e == null ? void 0 : e.query) ?? "industrial/credentials")));
-    } catch (k) {
-      _(k instanceof Error ? k.message : String(k));
+      n(ot(await t.hubQuery((e == null ? void 0 : e.query) ?? "industrial/credentials")));
+    } catch (T) {
+      A(T instanceof Error ? T.message : String(T));
     }
   }, [e == null ? void 0 : e.query, t]);
-  Y(() => {
-    $();
-  }, [$]);
-  const j = O(() => {
-    l(""), p(""), I("username-password"), v(""), x(!1), a(!0);
-  }, []), u = O((k) => {
-    l(k.id), p(k.name), I(k.kind), v(""), x(!0), a(!0);
-  }, []), g = O(async () => {
-    if (!s.trim()) {
-      _("请输入凭证 ID");
+  G(() => {
+    R();
+  }, [R]);
+  const L = _(() => {
+    c(""), f(""), x("username-password"), v(""), p(!1), l(!0);
+  }, []), u = _((T) => {
+    c(T.id), f(T.name), x(T.kind), v(""), p(!0), l(!0);
+  }, []), I = _(async () => {
+    if (!o.trim()) {
+      A("请输入凭证 ID");
       return;
     }
-    if (!T.trim()) {
-      _("请输入凭证内容");
+    if (!k.trim()) {
+      A("请输入凭证内容");
       return;
     }
-    N(!0), _(null);
+    S(!0), A(null);
     try {
-      f ? await t.hubCommand("industrial/rotate-credential", { id: s, secret: T }) : await t.hubCommand("industrial/save-credential", { id: s, name: c || s, kind: h, secret: T }), a(!1), await $();
-    } catch (k) {
-      _(k instanceof Error ? k.message : String(k));
+      m ? await t.hubCommand("industrial/rotate-credential", { id: o, secret: k }) : await t.hubCommand("industrial/save-credential", { id: o, name: d || o, kind: y, secret: k }), l(!1), await R();
+    } catch (T) {
+      A(T instanceof Error ? T.message : String(T));
     } finally {
-      N(!1);
+      S(!1);
     }
-  }, [t, s, h, $, c, f, T]);
-  return /* @__PURE__ */ b(Q, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
-    /* @__PURE__ */ b(Q, { style: { width: "100%", justifyContent: "space-between" }, children: [
-      /* @__PURE__ */ i(P.Title, { level: 4, style: { margin: 0 }, children: "凭证" }),
-      /* @__PURE__ */ i(A, { type: "primary", onClick: j, children: "新建凭证" })
+  }, [t, o, y, R, d, m, k]);
+  return /* @__PURE__ */ h(O, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
+    /* @__PURE__ */ h(O, { style: { width: "100%", justifyContent: "space-between" }, children: [
+      /* @__PURE__ */ a(N.Title, { level: 4, style: { margin: 0 }, children: "凭证" }),
+      /* @__PURE__ */ a($, { type: "primary", onClick: L, children: "新建凭证" })
     ] }),
-    S && /* @__PURE__ */ i(pe, { type: "error", showIcon: !0, message: S }),
-    /* @__PURE__ */ i(
-      de,
+    C && /* @__PURE__ */ a(ie, { type: "error", showIcon: !0, message: C }),
+    /* @__PURE__ */ a(
+      ne,
       {
         rowKey: "id",
         dataSource: r,
@@ -1868,85 +2213,85 @@ function dr({ block: e, ctx: t }) {
           {
             title: "操作",
             key: "actions",
-            render: (k, H) => /* @__PURE__ */ i(A, { size: "small", onClick: () => u(H), children: "轮换" })
+            render: (T, X) => /* @__PURE__ */ a($, { size: "small", onClick: () => u(X), children: "轮换" })
           }
         ]
       }
     ),
-    /* @__PURE__ */ i(
-      Pe,
+    /* @__PURE__ */ a(
+      me,
       {
-        open: o,
-        title: f ? "轮换凭证" : "新建凭证",
-        okText: f ? "轮换" : "保存凭证",
+        open: s,
+        title: m ? "轮换凭证" : "新建凭证",
+        okText: m ? "轮换" : "保存凭证",
         cancelText: "取消",
-        confirmLoading: C,
-        onCancel: () => a(!1),
-        onOk: () => void g(),
-        children: /* @__PURE__ */ b(Q, { direction: "vertical", style: { width: "100%" }, children: [
-          /* @__PURE__ */ i(
-            F,
+        confirmLoading: E,
+        onCancel: () => l(!1),
+        onOk: () => void I(),
+        children: /* @__PURE__ */ h(O, { direction: "vertical", style: { width: "100%" }, children: [
+          /* @__PURE__ */ a(
+            K,
             {
               "aria-label": "凭证 ID",
               placeholder: "凭证 ID",
-              value: s,
-              disabled: f,
-              onChange: (k) => l(k.target.value)
+              value: o,
+              disabled: m,
+              onChange: (T) => c(T.target.value)
             }
           ),
-          !f && /* @__PURE__ */ i(
-            F,
+          !m && /* @__PURE__ */ a(
+            K,
             {
               "aria-label": "凭证名称",
               placeholder: "显示名称",
-              value: c,
-              onChange: (k) => p(k.target.value)
+              value: d,
+              onChange: (T) => f(T.target.value)
             }
           ),
-          /* @__PURE__ */ i(
-            F,
+          /* @__PURE__ */ a(
+            K,
             {
               "aria-label": "凭证内容",
-              placeholder: f ? "新凭证内容" : "凭证内容",
-              value: T,
-              onChange: (k) => v(k.target.value)
+              placeholder: m ? "新凭证内容" : "凭证内容",
+              value: k,
+              onChange: (T) => v(T.target.value)
             }
           ),
-          S && /* @__PURE__ */ i(P.Text, { type: "danger", children: S })
+          C && /* @__PURE__ */ a(N.Text, { type: "danger", children: C })
         ] })
       }
     )
   ] });
 }
-const Me = (e) => e === "Succeeded" || e === "Completed" ? "success" : e === "Failed" || e === "PartialFailure" ? "error" : e === "Running" || e === "Interrupted" ? "processing" : "default";
-function ur({ block: e, ctx: t }) {
-  const [r, n] = w([]), [o, a] = w([]), [s, l] = w(null), [c, p] = w(null), [h, I] = w(!1), T = O(async () => {
+const Qe = (e) => e === "Succeeded" || e === "Completed" ? "success" : e === "Failed" || e === "PartialFailure" ? "error" : e === "Running" || e === "Interrupted" ? "processing" : "default";
+function Tr({ block: e, ctx: t }) {
+  const [r, n] = b([]), [s, l] = b([]), [o, c] = b(null), [d, f] = b(null), [y, x] = b(!1), k = _(async () => {
     try {
-      const f = tr(await t.hubQuery((e == null ? void 0 : e.query) ?? "industrial/execution-center"));
-      n(f.runs), a(f.deliveries);
-    } catch (f) {
-      l(f instanceof Error ? f.message : String(f));
+      const m = dr(await t.hubQuery((e == null ? void 0 : e.query) ?? "industrial/execution-center"));
+      n(m.runs), l(m.deliveries);
+    } catch (m) {
+      c(m instanceof Error ? m.message : String(m));
     }
   }, [e == null ? void 0 : e.query, t]);
-  Y(() => {
-    T();
-  }, [T]);
-  const v = O(async (f) => {
-    I(!0), l(null), p(null);
+  G(() => {
+    k();
+  }, [k]);
+  const v = _(async (m) => {
+    x(!0), c(null), f(null);
     try {
-      await t.hubCommand("industrial/retry-failed", { targetId: f.targetId }), p(`已提交目标 ${f.targetId} 的重试`), await T();
-    } catch (x) {
-      l(x instanceof Error ? x.message : String(x));
+      await t.hubCommand("industrial/retry-failed", { targetId: m.targetId }), f(`已提交目标 ${m.targetId} 的重试`), await k();
+    } catch (p) {
+      c(p instanceof Error ? p.message : String(p));
     } finally {
-      I(!1);
+      x(!1);
     }
-  }, [t, T]);
-  return /* @__PURE__ */ b(Q, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
-    /* @__PURE__ */ i(P.Title, { level: 4, style: { margin: 0 }, children: "执行记录" }),
-    s && /* @__PURE__ */ i(pe, { type: "error", showIcon: !0, message: s }),
-    c && /* @__PURE__ */ i(pe, { type: "success", showIcon: !0, message: c }),
-    /* @__PURE__ */ i(
-      de,
+  }, [t, k]);
+  return /* @__PURE__ */ h(O, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
+    /* @__PURE__ */ a(N.Title, { level: 4, style: { margin: 0 }, children: "执行记录" }),
+    o && /* @__PURE__ */ a(ie, { type: "error", showIcon: !0, message: o }),
+    d && /* @__PURE__ */ a(ie, { type: "success", showIcon: !0, message: d }),
+    /* @__PURE__ */ a(
+      ne,
       {
         rowKey: "id",
         dataSource: r,
@@ -1954,35 +2299,42 @@ function ur({ block: e, ctx: t }) {
         title: () => "采集运行",
         columns: [
           { title: "工作流", dataIndex: "workflowId" },
-          { title: "状态", dataIndex: "status", render: (f) => /* @__PURE__ */ i(ne, { color: Me(f), children: f }) },
+          { title: "状态", dataIndex: "status", render: (m) => /* @__PURE__ */ a(oe, { color: Qe(m), children: m }) },
           { title: "开始", dataIndex: "startedAt" },
-          { title: "结束", dataIndex: "finishedAt", render: (f) => f ?? "—" },
-          { title: "错误", dataIndex: "error", render: (f) => f ?? "—" }
+          { title: "结束", dataIndex: "finishedAt", render: (m) => m ?? "—" },
+          { title: "错误", dataIndex: "error", render: (m) => m ?? "—" }
         ]
       }
     ),
-    /* @__PURE__ */ i(
-      de,
+    /* @__PURE__ */ a(
+      ne,
       {
         rowKey: "id",
-        dataSource: o,
+        dataSource: s,
         pagination: !1,
         title: () => "交付目标",
         columns: [
           { title: "目标", dataIndex: "targetId" },
-          { title: "状态", dataIndex: "status", render: (f) => /* @__PURE__ */ i(ne, { color: Me(f), children: f }) },
+          { title: "状态", dataIndex: "status", render: (m) => /* @__PURE__ */ a(oe, { color: Qe(m), children: m }) },
           { title: "记录数", dataIndex: "records" },
           { title: "尝试次数", dataIndex: "attempts" },
-          { title: "错误", dataIndex: "error", render: (f) => f ?? "—" },
+          {
+            title: "原因与下一步",
+            key: "diagnosis",
+            render: (m, p) => p.diagnosis ? /* @__PURE__ */ h(O, { direction: "vertical", size: 0, children: [
+              /* @__PURE__ */ a(N.Text, { children: p.diagnosis.message }),
+              /* @__PURE__ */ a(N.Text, { type: "secondary", children: p.diagnosis.action })
+            ] }) : p.error ?? "—"
+          },
           {
             title: "操作",
             key: "actions",
-            render: (f, x) => /* @__PURE__ */ i(
-              A,
+            render: (m, p) => /* @__PURE__ */ a(
+              $,
               {
                 size: "small",
-                disabled: h || x.status !== "Failed" && x.status !== "Interrupted",
-                onClick: () => void v(x),
+                disabled: y || p.status !== "Failed" && p.status !== "Interrupted",
+                onClick: () => void v(p),
                 children: "重试此目标"
               }
             )
@@ -1992,7 +2344,71 @@ function ur({ block: e, ctx: t }) {
     )
   ] });
 }
-const pr = `
+function Cr({ block: e, ctx: t }) {
+  const [r, n] = b([]), [s, l] = b(null), o = _(async () => {
+    try {
+      n(cr(await t.hubQuery((e == null ? void 0 : e.query) ?? "industrial/file-details")));
+    } catch (d) {
+      l(d instanceof Error ? d.message : String(d));
+    }
+  }, [e == null ? void 0 : e.query, t]);
+  G(() => {
+    o();
+  }, [o]);
+  const c = (d) => /* @__PURE__ */ a(
+    ne,
+    {
+      rowKey: "id",
+      dataSource: d.deliveries,
+      pagination: !1,
+      size: "small",
+      columns: [
+        { title: "目标", dataIndex: "targetId" },
+        { title: "状态", dataIndex: "status", render: (f) => /* @__PURE__ */ a(oe, { children: f }) },
+        { title: "记录", dataIndex: "records" },
+        {
+          title: "接受/拒绝/警告",
+          key: "counts",
+          render: (f, y) => `${y.accepted} / ${y.rejected} / ${y.warnings}`
+        },
+        {
+          title: "原因与下一步",
+          key: "diagnosis",
+          render: (f, y) => y.diagnosis ? /* @__PURE__ */ h(O, { direction: "vertical", size: 0, children: [
+            /* @__PURE__ */ a(N.Text, { children: y.diagnosis.message }),
+            /* @__PURE__ */ a(N.Text, { type: "secondary", children: y.diagnosis.action }),
+            y.error && /* @__PURE__ */ a(N.Text, { type: "secondary", children: y.error })
+          ] }) : y.error ?? "—"
+        }
+      ]
+    }
+  );
+  return /* @__PURE__ */ h(O, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
+    /* @__PURE__ */ a(N.Title, { level: 4, style: { margin: 0 }, children: "文件处理详情" }),
+    s && /* @__PURE__ */ a(ie, { type: "error", showIcon: !0, message: s }),
+    /* @__PURE__ */ a(
+      ne,
+      {
+        rowKey: "id",
+        dataSource: r,
+        pagination: !1,
+        expandable: { expandedRowRender: c },
+        columns: [
+          { title: "文件", dataIndex: "path" },
+          { title: "源日期", dataIndex: "sourceDate" },
+          { title: "状态", dataIndex: "status" },
+          { title: "大小", dataIndex: "length", render: (d) => `${d} B` },
+          {
+            title: "目标数",
+            key: "targets",
+            render: (d, f) => f.deliveries.length
+          }
+        ]
+      }
+    )
+  ] });
+}
+const Nr = `
 .industrial-designer{display:flex;flex-direction:column;width:100%;height:calc(100vh - 152px);min-height:520px;background:transparent;overflow:hidden}
 .industrial-header{height:auto;min-height:52px;padding:8px 14px;background:#102542;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:nowrap;line-height:normal;border-radius:10px}
 .industrial-title{display:flex;align-items:center;gap:8px;min-width:0;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -2029,28 +2445,29 @@ const pr = `
 .industrial-editor-error{display:block;font-size:11px}
 @media(max-width:1180px){.industrial-body{grid-template-columns:224px minmax(0,1fr)}.industrial-resource-select{width:104px}.industrial-backfill-input{width:104px}}
 `;
-function fr(e) {
-  dt(e);
+function Er(e) {
+  mt(e);
   const t = typeof document > "u" ? null : document.createElement("style");
-  t && (t.dataset.industrialDesigner = "true", t.textContent = pr, document.head.appendChild(t));
-  const r = ({ ctx: a }) => ke(sr, { ctx: a });
+  t && (t.dataset.industrialDesigner = "true", t.textContent = Nr, document.head.appendChild(t));
+  const r = ({ ctx: l }) => Ce(vr, { ctx: l });
   r.displayName = "IndustrialWorkflowCanvas";
-  const n = (a, s) => {
-    const l = ({ block: c, ctx: p }) => ke(s, { block: c, ctx: p });
-    return l.displayName = a, e.blocks.register(a, l);
-  }, o = [
+  const n = (l, o) => {
+    const c = ({ block: d, ctx: f }) => Ce(o, { block: d, ctx: f });
+    return c.displayName = l, e.blocks.register(l, c);
+  }, s = [
     e.blocks.register("industrial-workflow-canvas", r),
-    n("industrial-workflow-list", ar),
-    n("industrial-resource-console", cr),
-    n("industrial-credential-console", dr),
-    n("industrial-execution-center", ur)
+    n("industrial-workflow-list", br),
+    n("industrial-resource-console", kr),
+    n("industrial-credential-console", Sr),
+    n("industrial-execution-center", Tr),
+    n("industrial-file-details", Cr)
   ];
   return () => {
-    for (const a of o) a == null || a();
+    for (const l of s) l == null || l();
     t == null || t.remove();
   };
 }
 export {
-  fr as default,
-  fr as register
+  Er as default,
+  Er as register
 };

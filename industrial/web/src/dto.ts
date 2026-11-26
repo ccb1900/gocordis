@@ -12,14 +12,19 @@ import {
   PORT_TYPES,
   type CollectionRow,
   type CommandResult,
+  type BackfillPreviewRow,
+  type BackfillPreviewView,
   type CredentialRow,
   type DeliveryRow,
+  type DiagnosisView,
+  type FileDetailRow,
   type ExecutionCenterView,
   type ExecutionNodeView,
   type ExecutionRunRow,
   type ExecutionStateView,
   type ResourceRow,
   type ResourceTestRow,
+  type TriggerStatusRow,
   type JsonSchemaLike,
   type NodeDescriptor,
   type NodePort,
@@ -324,6 +329,106 @@ export function parseResourceTests(raw: unknown): ResourceTestRow[] {
   });
 }
 
+const diagnosisOf = (value: unknown): DiagnosisView | null => {
+  if (value === null || value === undefined) return null;
+  const o = asObj(value);
+  if (Object.keys(o).length === 0) return null;
+  return {
+    code: text(pick(o, "code"), "OTHER"),
+    message: text(pick(o, "message"), ""),
+    action: text(pick(o, "action"), ""),
+  };
+};
+
+export function parseTriggerStatus(raw: unknown): TriggerStatusRow[] {
+  const data = unwrapData(raw);
+  const list = asArray(pick(asObj(data), "triggers", "items"));
+  return list.map((item) => {
+    const o = asObj(item);
+    const nullable = (key: string) => pick(o, key) == null ? null : text(pick(o, key));
+    return {
+      workflowId: text(pick(o, "workflowId", "workflow_id"), "—"),
+      version: number(pick(o, "version")),
+      kind: text(pick(o, "kind"), "manual"),
+      cron: nullable("cron"),
+      eventName: nullable("eventName"),
+      resourceId: nullable("resourceId"),
+      nextRun: nullable("nextRun"),
+      lastStatus: nullable("lastStatus"),
+      lastStartedAt: nullable("lastStartedAt"),
+      lastError: nullable("lastError"),
+    };
+  });
+}
+
+export function parseBackfillPreview(raw: unknown): BackfillPreviewView | null {
+  if (raw === null || raw === undefined) return null;
+  const data = unwrapData(raw);
+  const o = asObj(data);
+  if (Object.keys(o).length === 0) return null;
+  const files: BackfillPreviewRow[] = asArray(pick(o, "files")).map((item) => {
+    const row = asObj(item);
+    return {
+      path: text(pick(row, "path"), "—"),
+      sourceDate: text(pick(row, "sourceDate"), ""),
+      inLedger: bool(pick(row, "inLedger")),
+      succeededTargets: number(pick(row, "succeededTargets")),
+      incompleteTargets: number(pick(row, "incompleteTargets")),
+      wouldSkip: bool(pick(row, "wouldSkip")),
+      wouldCollect: bool(pick(row, "wouldCollect")),
+      duplicateRisk: bool(pick(row, "duplicateRisk")),
+    };
+  });
+  const summary = asObj(pick(o, "summary"));
+  return {
+    resourceId: text(pick(o, "resourceId"), "—"),
+    from: text(pick(o, "from"), ""),
+    to: text(pick(o, "to"), ""),
+    files,
+    summary: {
+      discovered: number(pick(summary, "discovered")),
+      alreadyComplete: number(pick(summary, "alreadyComplete")),
+      needsCollection: number(pick(summary, "needsCollection")),
+      duplicateRisk: number(pick(summary, "duplicateRisk")),
+    },
+  };
+}
+
+export function parseFileDetails(raw: unknown): FileDetailRow[] {
+  const data = unwrapData(raw);
+  const list = Array.isArray(data) ? data : asArray(pick(asObj(data), "files", "items"));
+  return list.map((item) => {
+    const o = asObj(item);
+    return {
+      id: text(pick(o, "id"), "—"),
+      path: text(pick(o, "path"), "—"),
+      identityKey: text(pick(o, "identityKey"), ""),
+      sourceResourceId: text(pick(o, "sourceResourceId"), ""),
+      length: number(pick(o, "length")),
+      sourceDate: text(pick(o, "sourceDate"), ""),
+      collectedAt: text(pick(o, "collectedAt"), ""),
+      status: text(pick(o, "status"), "—"),
+      deliveries: asArray(pick(o, "deliveries")).map((entry) => {
+        const d = asObj(entry);
+        return {
+          id: text(pick(d, "id"), "—"),
+          collectionFileId: text(pick(d, "collectionFileId"), ""),
+          targetId: text(pick(d, "targetId"), "—"),
+          targetKind: text(pick(d, "targetKind"), "record"),
+          status: text(pick(d, "status"), "—"),
+          attempts: number(pick(d, "attempts")),
+          records: number(pick(d, "records")),
+          error: pick(d, "error") == null ? null : text(pick(d, "error")),
+          accepted: number(pick(d, "accepted")),
+          rejected: number(pick(d, "rejected")),
+          warnings: number(pick(d, "warnings")),
+          diagnosis: diagnosisOf(pick(d, "diagnosis")),
+        };
+      }),
+    };
+  });
+}
+
 export function parseExecutionCenter(raw: unknown): ExecutionCenterView {
   const data = unwrapData(raw);
   const o = asObj(data);
@@ -350,6 +455,7 @@ export function parseExecutionCenter(raw: unknown): ExecutionCenterView {
       attempts: number(pick(delivery, "attempts")),
       records: number(pick(delivery, "records")),
       error: pick(delivery, "error") == null ? null : text(pick(delivery, "error")),
+      diagnosis: diagnosisOf(pick(delivery, "diagnosis")),
     };
   });
   return { runs, deliveries };

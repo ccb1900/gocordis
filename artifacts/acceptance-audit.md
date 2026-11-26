@@ -21,6 +21,9 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Browser user configures/tests source and target resources | `ResourceConsole.tsx`, `ResourceConnectionTester`, `industrial/test-resource`, `user-stories.spec.ts` | Pass |
 | Browser user manages credentials without exposing secrets | `CredentialConsole.tsx`, `industrial/save-credential`, `industrial/rotate-credential`, `user-stories.spec.ts` | Pass |
 | Execution center shows ledger runs/deliveries with target-level retry | `ExecutionCenter.tsx`, `industrial/execution-center`, `industrial/retry-failed`, `user-stories.spec.ts` | Pass |
+| Browser user configures triggers and cron runs automatically | `TriggerEditor.tsx`, `industrial/trigger-status`, Timer-backed scheduler, `user-stories.spec.ts` | Pass |
+| Browser user previews backfill impact before execution | `BackfillPreview.tsx`, `industrial/preview-backfill`, `industrial/backfill-preview`, `user-stories.spec.ts` | Pass |
+| File-level processing detail with classified failure diagnosis | `FileDetails.tsx`, `industrial/file-details`, `FailureDiagnoses`, `user-stories.spec.ts` | Pass |
 | Node configuration schemas and typed validation | `IndustrialNodesComponent.cs`, `WorkflowValidator.cs`, `NodeConfigReader.cs` | Pass |
 | Validation strategies and ProcessingResult statistics | `ValidationTransform.cs`, `ProcessingResult`, ledger statistics columns | Pass |
 | Normalized ref-counted WNet UNC leases with credential identity (native seam) | `UncConnectionLease.cs`, `UncLeaseTests.cs`, real Windows runner row below | Pass |
@@ -29,6 +32,6 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Unified test report fact source | `tools/release/test-report.sh`, `report.json`, `report.md` | Pass |
 | Windows UNC/SMB real-share acceptance | `.github/workflows/windows-unc.yml`, `e2e-windows-unc.ps1`, `artifacts/windows-unc-result.json`, passing run https://github.com/ccb1900/gocordis/actions/runs/45744239226 | Pass on real `windows-latest` runner with a real SMB share |
 
-Unified report: 900 passed, 3 explicitly skipped, 0 failed suites. Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+Unified report: 908 passed, 3 explicitly skipped, 0 failed suites. Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

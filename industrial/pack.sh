@@ -58,7 +58,8 @@ JSON
     --id "$id" --version 1.0.0 --type "$id" --host-range '[1.0,)' \
     --backend managed --entry-assembly "$assembly" --entry-type "$type" \
     --shared-assembly Industrial.Contracts \
-    --shared-assembly Gocordis.Extensions "$@"
+    --shared-assembly Gocordis.Extensions \
+    --shared-assembly Gocordis.Extensions.Contracts.Timer "$@"
   "${CLI[@]}" plugin install "$package" --store "$STORE" --host-version 1.0.0
 }
 

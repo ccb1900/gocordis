@@ -24,6 +24,7 @@ describe("industrial console client module", () => {
       "industrial-resource-console",
       "industrial-credential-console",
       "industrial-execution-center",
+      "industrial-file-details",
     ]);
     expect(registrations.every((entry) => typeof entry.component === "function")).toBe(true);
     expect(getFacade()).toBe(api);

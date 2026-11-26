@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using Elsa.Extensions;
@@ -6,6 +7,7 @@ using System.Text.Json.Nodes;
 using Gocordis.Core;
 using Gocordis.Extensions;
 using Gocordis.Plugins;
+using Cronos;
 using Elsa.Workflows;
 using Elsa.Workflows.Activities;
 using Elsa.Workflows.Activities.Flowchart.Activities;
@@ -78,6 +80,9 @@ public sealed class IndustrialElsaComponent : Component
     private string? _lastRecovery;
     private IReadOnlyList<NodeExecutionView> _lastNodeViews = [];
     private readonly SemaphoreSlim _recoveryLock = new(1, 1);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastScheduleFire = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, string> _lastScheduleError = new(StringComparer.Ordinal);
+    private JsonObject? _lastBackfillPreview;
 
     public IndustrialElsaComponent() : this(null) { }
 
@@ -100,7 +105,7 @@ public sealed class IndustrialElsaComponent : Component
          IndustrialKeys.ResourceRegistry, IndustrialKeys.CredentialVault,
          IndustrialKeys.HistoricalRangePlanner, IndustrialKeys.FileSource,
          IndustrialKeys.RecordReader, IndustrialKeys.RecordSinkFactories,
-         IndustrialKeys.StageOutputStore,
+         IndustrialKeys.StageOutputStore, TimerKeys.Service,
          IndustrialKeys.RecordSink, IndustrialKeys.ArchiveSink];
     public override IReadOnlyList<ICapabilityKey> Provide() => [IndustrialKeys.ElsaActivityCatalog];
 
@@ -121,6 +126,7 @@ public sealed class IndustrialElsaComponent : Component
         var sinkFactories = context.Require(IndustrialKeys.RecordSinkFactories);
         var sink = context.Require(IndustrialKeys.RecordSink);
         var archive = context.Require(IndustrialKeys.ArchiveSink);
+        var timers = context.Require(TimerKeys.Service);
         var owner = ContributionOwner.ForContext(context, "industrial", "elsa-publish");
         foreach (var type in IndustrialActivityTypes.All)
         {
@@ -176,6 +182,10 @@ public sealed class IndustrialElsaComponent : Component
                 }
             },
             () => ValueTask.CompletedTask);
+        timers.IntervalOwned(context, TimeSpan.FromSeconds(15), () =>
+            RunDueSchedulesAsync(workflows, coordinator, ledger, resources, vault,
+                planner, source, reader, stage, sinkFactories, sink, archive,
+                context.CancellationToken));
         await context.EffectAsync(
             () =>
             {
@@ -284,6 +294,22 @@ public sealed class IndustrialElsaComponent : Component
                             stage, sinkFactories, sink, archive, ElsaDbPath);
                     }
                 }, owner);
+                api.RegisterQuery("industrial/trigger-status", () =>
+                    TriggerStatus(workflows, ledger), owner);
+                api.RegisterCommand("industrial/preview-backfill", async payload =>
+                {
+                    var body = payload as JsonObject ?? new JsonObject();
+                    var workflowId = body["workflowId"]?.GetValue<string>() ?? string.Empty;
+                    var resourceId = body["resourceId"]?.GetValue<string>() ?? string.Empty;
+                    var days = body["lookbackDays"] is JsonValue number &&
+                               number.TryGetValue<int>(out var parsed)
+                        ? parsed
+                        : 1;
+                    _lastBackfillPreview = await PreviewBackfillAsync(
+                        workflows, source, ledger, planner, workflowId, resourceId, days,
+                        context.CancellationToken);
+                }, owner);
+                api.RegisterQuery("industrial/backfill-preview", () => _lastBackfillPreview, owner);
                 api.RegisterQuery("industrial/instance", () => _lastInstanceId is null
                     ? null
                     : new JsonObject
@@ -325,6 +351,166 @@ public sealed class IndustrialElsaComponent : Component
             () => { api.UnregisterAll(owner); return ValueTask.CompletedTask; });
         return null;
     }
+
+    private static string? TriggerResource(WorkflowDefinition definition) =>
+        definition.Trigger.Config.TryGetValue("resourceId", out var configured) &&
+        configured is not null && !string.IsNullOrWhiteSpace(configured.ToString())
+            ? configured.ToString()
+            : definition.ResourceReferences.FirstOrDefault();
+
+    private JsonObject TriggerStatus(
+        IWorkflowRegistry workflows, ICollectionLedger ledger)
+    {
+        var runs = ledger.ListRunsAsync().GetAwaiter().GetResult();
+        var rows = workflows.ListAllPublishedAsync().GetAwaiter().GetResult()
+            .GroupBy(item => item.WorkflowId, StringComparer.Ordinal)
+            .Select(group => group.OrderByDescending(item => item.Version).First())
+            .Select(item =>
+            {
+                var trigger = item.Definition.Trigger;
+                string? next = null;
+                if (trigger.Kind == "schedule" &&
+                    CronExpression.TryParse(trigger.Cron ?? string.Empty, out var expression))
+                {
+                    next = expression.GetNextOccurrence(DateTimeOffset.UtcNow, TimeZoneInfo.Utc)
+                        ?.ToString("O");
+                }
+                var last = runs.Where(run => run.WorkflowId == item.WorkflowId)
+                    .OrderByDescending(run => run.StartedAt).FirstOrDefault();
+                var key = $"{item.WorkflowId}:v{item.Version}";
+                return (JsonNode)new JsonObject
+                {
+                    ["workflowId"] = item.WorkflowId,
+                    ["version"] = item.Version,
+                    ["kind"] = trigger.Kind,
+                    ["cron"] = trigger.Cron is null ? null : JsonValue.Create(trigger.Cron),
+                    ["eventName"] = trigger.EventName is null ? null : JsonValue.Create(trigger.EventName),
+                    ["resourceId"] = TriggerResource(item.Definition) is { } resource
+                        ? JsonValue.Create(resource) : null,
+                    ["nextRun"] = next is null ? null : JsonValue.Create(next),
+                    ["lastStatus"] = last is null ? null : JsonValue.Create(last.Status),
+                    ["lastStartedAt"] = last is null ? null : JsonValue.Create(last.StartedAt.ToString("O")),
+                    ["lastError"] = last?.Error is { } error ? JsonValue.Create(error)
+                        : _lastScheduleError.TryGetValue(key, out var scheduleError)
+                            ? JsonValue.Create(scheduleError) : null,
+                };
+            }).ToArray();
+        return new JsonObject { ["triggers"] = new JsonArray(rows) };
+    }
+
+    private async ValueTask RunDueSchedulesAsync(
+        IWorkflowRegistry workflows, ICollectionCoordinator coordinator,
+        ICollectionLedger ledger, IResourceRegistry resources, ICredentialVault vault,
+        IHistoricalRangePlanner planner, IFileSource source, IRecordReader reader,
+        IStageOutputStore stage, Broker<IRecordSinkFactory> factories,
+        IRecordSink sink, IArchiveSink archive, CancellationToken ct)
+    {
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var published = (await workflows.ListAllPublishedAsync())
+                .GroupBy(item => item.WorkflowId, StringComparer.Ordinal)
+                .Select(group => group.OrderByDescending(item => item.Version).First())
+                .Where(item => item.Definition.Trigger.Kind == "schedule" &&
+                               CronExpression.TryParse(item.Definition.Trigger.Cron ?? string.Empty,
+                                   out var _))
+                .ToArray();
+            foreach (var item in published)
+            {
+                ct.ThrowIfCancellationRequested();
+                var trigger = item.Definition.Trigger;
+                var expression = CronExpression.Parse(trigger.Cron!);
+                var due = expression.GetNextOccurrence(now.AddMinutes(-1), TimeZoneInfo.Utc, true);
+                if (due is null || due > now) continue;
+                var key = $"{item.WorkflowId}:v{item.Version}";
+                if (_lastScheduleFire.TryGetValue(key, out var last) && last >= due) continue;
+                _lastScheduleFire[key] = due.Value;
+                try
+                {
+                    await RunWorkflowAsync(new JsonObject
+                    {
+                        ["workflowId"] = item.WorkflowId,
+                        ["version"] = item.Version,
+                        ["resourceId"] = TriggerResource(item.Definition)
+                                         ?? Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_RESOURCE")
+                                         ?? "source-1",
+                    }, workflows, coordinator, ledger, resources, vault, planner, source, reader,
+                        stage, factories, sink, archive, ElsaDbPath);
+                    _lastScheduleError.TryRemove(key, out _);
+                }
+                catch (Exception ex)
+                {
+                    _lastScheduleError[key] = ex.Message;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _lastScheduleError["scheduler"] = ex.Message;
+        }
+    }
+
+    private async ValueTask<JsonObject> PreviewBackfillAsync(
+        IWorkflowRegistry workflows, IFileSource source, ICollectionLedger ledger,
+        IHistoricalRangePlanner planner, string workflowId, string resourceId,
+        int days, CancellationToken ct)
+    {
+        var definition = string.IsNullOrWhiteSpace(workflowId)
+            ? null
+            : await workflows.GetAsync(workflowId);
+        var resource = string.IsNullOrWhiteSpace(resourceId)
+            ? TriggerResource(definition ?? EmptyDefinition())
+              ?? Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_RESOURCE")
+              ?? "source-1"
+            : resourceId;
+        var lookback = TimeSpan.FromDays(Math.Clamp(days, 1, 365));
+        var range = planner.Plan(DateTimeOffset.UtcNow, lookback);
+        var discovered = await source.DiscoverAsync(resource, range, ct);
+        var known = (await ledger.ListAllFilesAsync(ct)).ToDictionary(
+            file => file.Identity.Key, file => file, StringComparer.Ordinal);
+        var deliveries = await ledger.ListAllDeliveriesAsync(ct);
+
+        var rows = discovered.Select(file =>
+        {
+            known.TryGetValue(file.Identity.Key, out var ledgerFile);
+            var fileDeliveries = ledgerFile is null
+                ? []
+                : deliveries.Where(delivery => delivery.CollectionFileId == ledgerFile.Id).ToArray();
+            var succeeded = fileDeliveries.Count(delivery => delivery.Status == CollectionStatus.Succeeded);
+            var incomplete = fileDeliveries.Count(delivery =>
+                delivery.Status is CollectionStatus.Failed or CollectionStatus.Interrupted or CollectionStatus.Pending);
+            return (JsonNode)new JsonObject
+            {
+                ["path"] = file.Identity.RelativePath,
+                ["sourceDate"] = file.SourceDate.ToString("O"),
+                ["inLedger"] = ledgerFile is not null,
+                ["succeededTargets"] = succeeded,
+                ["incompleteTargets"] = incomplete,
+                ["wouldSkip"] = ledgerFile is not null && incomplete == 0,
+                ["wouldCollect"] = ledgerFile is null || incomplete > 0,
+                ["duplicateRisk"] = ledgerFile is not null && succeeded > 0 && incomplete > 0,
+            };
+        }).ToArray();
+        return new JsonObject
+        {
+            ["resourceId"] = resource,
+            ["from"] = range.FromInclusive.ToString("O"),
+            ["to"] = range.ToExclusive.ToString("O"),
+            ["files"] = new JsonArray(rows),
+            ["summary"] = new JsonObject
+            {
+                ["discovered"] = discovered.Count,
+                ["alreadyComplete"] = rows.Count(row => row!["wouldSkip"]!.GetValue<bool>()),
+                ["needsCollection"] = rows.Count(row => row!["wouldCollect"]!.GetValue<bool>()),
+                ["duplicateRisk"] = rows.Count(row => row!["duplicateRisk"]!.GetValue<bool>()),
+            },
+        };
+    }
+
+    private static WorkflowDefinition EmptyDefinition() => new(
+        string.Empty, string.Empty, 1, [], [],
+        new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+        [], new Dictionary<string, object?>());
 
     private static PublishedNodeExecutor CreateExecutor(
         WorkflowDefinition definition, string resourceId, ICollectionLedger ledger,

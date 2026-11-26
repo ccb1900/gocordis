@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-26T02:50:16.582758+00:00",
+  "generatedAt": "2026-11-26T04:26:33.907690+00:00",
   "source": "tools/release/test-report.sh",
   "suites": [
     {
@@ -47,14 +47,14 @@
     {
       "suite": "industrial-dotnet",
       "exitCode": 0,
-      "passed": 66,
+      "passed": 73,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
     {
       "suite": "industrial-frontend",
       "exitCode": 0,
-      "passed": 37,
+      "passed": 38,
       "skipped": 0,
       "log": "industrial-frontend.log"
     },
@@ -95,7 +95,7 @@
     }
   ],
   "totals": {
-    "passed": 900,
+    "passed": 908,
     "skipped": 3,
     "failedSuites": []
   },
@@ -124,6 +124,21 @@
     },
     {
       "requirement": "browser user stories: create workflow, configure/test resource, manage credential, read execution center and retry action",
+      "status": "passed",
+      "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts"
+    },
+    {
+      "requirement": "schedule trigger configuration and automatic cron run",
+      "status": "passed",
+      "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts"
+    },
+    {
+      "requirement": "backfill preview before execution",
+      "status": "passed",
+      "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts"
+    },
+    {
+      "requirement": "file-level processing detail and classified failure diagnosis",
       "status": "passed",
       "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts"
     },

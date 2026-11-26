@@ -150,6 +150,68 @@ export interface ExecutionRunRow {
   error: string | null;
 }
 
+export interface DiagnosisView {
+  code: string;
+  message: string;
+  action: string;
+}
+
+export interface TriggerStatusRow {
+  workflowId: string;
+  version: number;
+  kind: string;
+  cron: string | null;
+  eventName: string | null;
+  resourceId: string | null;
+  nextRun: string | null;
+  lastStatus: string | null;
+  lastStartedAt: string | null;
+  lastError: string | null;
+}
+
+export interface BackfillPreviewRow {
+  path: string;
+  sourceDate: string;
+  inLedger: boolean;
+  succeededTargets: number;
+  incompleteTargets: number;
+  wouldSkip: boolean;
+  wouldCollect: boolean;
+  duplicateRisk: boolean;
+}
+
+export interface BackfillPreviewView {
+  resourceId: string;
+  from: string;
+  to: string;
+  files: BackfillPreviewRow[];
+  summary: {
+    discovered: number;
+    alreadyComplete: number;
+    needsCollection: number;
+    duplicateRisk: number;
+  };
+}
+
+export interface FileDeliveryDetail extends DeliveryRow {
+  accepted: number;
+  rejected: number;
+  warnings: number;
+  diagnosis: DiagnosisView | null;
+}
+
+export interface FileDetailRow {
+  id: string;
+  path: string;
+  identityKey: string;
+  sourceResourceId: string;
+  length: number;
+  sourceDate: string;
+  collectedAt: string;
+  status: string;
+  deliveries: FileDeliveryDetail[];
+}
+
 export interface DeliveryRow {
   id: string;
   collectionFileId: string;
@@ -159,6 +221,7 @@ export interface DeliveryRow {
   attempts: number;
   records: number;
   error: string | null;
+  diagnosis?: DiagnosisView | null;
 }
 
 export interface ExecutionCenterView {

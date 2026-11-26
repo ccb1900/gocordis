@@ -1,5 +1,6 @@
 using Gocordis.Builtin.WebConsole;
 using Gocordis.Core;
+using Gocordis.Extensions;
 using Gocordis.Platform;
 using Gocordis.Plugins;
 using Industrial.Host;
@@ -14,7 +15,9 @@ await using var registry = new PluginRegistry(runtime);
 console.AttachRegistry(registry);
 registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
 registry.ExternalCapabilities.Add(ApiGateway.Key);
+registry.ExternalCapabilities.Add(TimerKeys.Service);
 await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
+await runtime.LoadAsync(new TimerExtensionComponent());
 
 var config = new Dictionary<string, object?>
 {

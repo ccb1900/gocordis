@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Real-browser designer E2E: build the dev host, start it in-process with a
-# fresh store, then drive the console with Chromium through Playwright.
+# Real-browser product E2E: install real .gocordis-plugin packages, start the
+# generic platform host, then drive the console with Chromium through Playwright.
+# The client module comes from the industrial.ui package UI resource, not from
+# a host-side pre-registration.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-/tmp/gocordis-industrial-browser-e2e}"
@@ -16,27 +18,26 @@ rm -rf "$OUT"
 mkdir -p "$OUT/source"
 printf 'record_id,reading\n1,42\n' > "$OUT/source/recent.csv"
 
-dotnet build "$ROOT/industrial/Industrial.slnx" --nologo -m:1 -v q >/dev/null
 (cd "$ROOT/industrial/web" && npm run build >/dev/null)
-HOST_MODULES="$ROOT/industrial/src/Industrial.Host/bin/Debug/net10.0/client-modules/industrial-designer"
-mkdir -p "$HOST_MODULES"
-cp -r "$ROOT/industrial/web/dist/." "$HOST_MODULES/"
+DOTNET_ROLL_FORWARD=LatestMajor bash "$ROOT/industrial/pack.sh" "$OUT" >/dev/null
 
 DOTNET_ROLL_FORWARD=LatestMajor \
-GOCORDIS_INDUSTRIAL_ROOT="$OUT" \
+GOCORDIS_INDUSTRIAL_ROOT="$OUT/runtime" \
 GOCORDIS_INDUSTRIAL_ALLOW_DEV_KEY=true \
 GOCORDIS_INDUSTRIAL_SEED_RESOURCE=true \
 GOCORDIS_INDUSTRIAL_SOURCE_ROOT="$OUT/source" \
-  dotnet "$ROOT/industrial/src/Industrial.Host/bin/Debug/net10.0/Industrial.Host.dll" \
-    "$OUT" "$URL" >"$OUT/host.log" 2>&1 &
+  dotnet "$ROOT/industrial/src/Industrial.PackagedHost/bin/Debug/net10.0/Industrial.PackagedHost.dll" \
+    "$OUT/gocordis.app.json" "$OUT/store" "$URL" >"$OUT/host.log" 2>&1 &
 HOST_PID=$!
 trap 'kill -9 "$HOST_PID" 2>/dev/null || true' EXIT
 
 for _ in $(seq 1 30); do
-  if curl -fsS "$URL/api/ui/pages" >/dev/null 2>&1; then break; fi
+  if curl -fsS "$URL/api/query/industrial/recovery" >/dev/null 2>&1 &&
+     curl -fsS "$URL/api/ui/client-modules" | grep -q 'industrial-designer'; then break; fi
   sleep 1
 done
-if ! curl -fsS "$URL/api/ui/pages" >/dev/null 2>&1; then
+if ! curl -fsS "$URL/api/query/industrial/recovery" >/dev/null 2>&1 ||
+   ! curl -fsS "$URL/api/ui/client-modules" | grep -q 'industrial-designer'; then
   cat "$OUT/host.log"
   exit 1
 fi

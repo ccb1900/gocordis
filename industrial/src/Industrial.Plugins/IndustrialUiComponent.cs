@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using Gocordis.Core;
 using Gocordis.Plugins;
 using Industrial.Contracts;
+using Industrial.Core;
 
 namespace Industrial.Plugins;
 
@@ -161,6 +162,15 @@ public sealed class IndustrialUiComponent : Component
                         }),
                     }),
                 Order: 60, Group: "Industrial"),
+            new UiPageDefinition(
+                "industrial.file-details", "File Details", "/industrial/files", "generic", "FileText",
+                "Per-file processing details and actionable failure diagnosis",
+                new JsonArray(new JsonObject
+                {
+                    ["kind"] = "industrial-file-details",
+                    ["query"] = "industrial/file-details",
+                }),
+                Order: 65, Group: "Industrial"),
             Page("industrial.machines", "Machine Management", "/industrial/machines", "generic", "Desktop",
                 "industrial/machines", 70, "Industrial",
                 [("id", "Id"), ("name", "Name"), ("endpoint", "Endpoint"), ("enabled", "Enabled")]),
@@ -275,6 +285,7 @@ public sealed class IndustrialUiComponent : Component
                     ["attempts"] = delivery.Attempts,
                     ["records"] = delivery.Records,
                     ["error"] = delivery.Error is null ? null : JsonValue.Create(delivery.Error),
+                    ["diagnosis"] = Diagnosis(delivery.Error),
                 }).ToArray())),
             ("industrial/machines", () => new JsonArray(machines.ListAsync()
                 .GetAwaiter().GetResult()
@@ -311,8 +322,42 @@ public sealed class IndustrialUiComponent : Component
                         ["attempts"] = delivery.Attempts,
                         ["records"] = delivery.Records,
                         ["error"] = delivery.Error is null ? null : JsonValue.Create(delivery.Error),
+                        ["diagnosis"] = Diagnosis(delivery.Error),
                     }).ToArray()),
             }),
+            ("industrial/file-details", () => new JsonArray(ledger.ListAllFilesAsync()
+                .GetAwaiter().GetResult()
+                .Select(file =>
+                {
+                    var rows = ledger.ListAllDeliveriesAsync().GetAwaiter().GetResult()
+                        .Where(delivery => delivery.CollectionFileId == file.Id)
+                        .Select(delivery => (JsonNode?)new JsonObject
+                        {
+                            ["id"] = delivery.Id,
+                            ["targetId"] = delivery.TargetId,
+                            ["targetKind"] = delivery.TargetKind,
+                            ["status"] = delivery.Status,
+                            ["attempts"] = delivery.Attempts,
+                            ["records"] = delivery.Records,
+                            ["accepted"] = delivery.Accepted,
+                            ["rejected"] = delivery.Rejected,
+                            ["warnings"] = delivery.Warnings,
+                            ["error"] = delivery.Error is null ? null : JsonValue.Create(delivery.Error),
+                            ["diagnosis"] = Diagnosis(delivery.Error),
+                        }).ToArray();
+                    return (JsonNode)new JsonObject
+                    {
+                        ["id"] = file.Id,
+                        ["path"] = file.Identity.RelativePath,
+                        ["identityKey"] = file.Identity.Key,
+                        ["sourceResourceId"] = file.Identity.SourceResourceId,
+                        ["length"] = file.Identity.Length,
+                        ["sourceDate"] = file.SourceDate.ToString("O"),
+                        ["collectedAt"] = file.CollectedAt.ToString("O"),
+                        ["status"] = file.Status,
+                        ["deliveries"] = new JsonArray(rows),
+                    };
+                }).ToArray())),
             ("industrial/resource-tests", () => new JsonArray(_resourceTests
                 .Select(pair => (JsonNode?)new JsonObject
                 {
@@ -442,6 +487,17 @@ public sealed class IndustrialUiComponent : Component
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var id = Text(body, "id") ?? throw new InvalidOperationException("credential id is required");
         await credentials.RotateAsync(id, Text(body, "secret") ?? string.Empty);
+    }
+
+    private static JsonObject Diagnosis(string? error)
+    {
+        var diagnosis = FailureDiagnoses.Classify(error);
+        return new JsonObject
+        {
+            ["code"] = diagnosis.Code,
+            ["message"] = diagnosis.Message,
+            ["action"] = diagnosis.Action,
+        };
     }
 
     private static async ValueTask TestResourceAsync(

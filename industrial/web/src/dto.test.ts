@@ -1,11 +1,34 @@
 import { describe, expect, it } from "vitest";
 import {
-  canonicalPortType, parseCollections, parseCommandResult, parseCredentials, parseExecution,
-  parseExecutionCenter, parseNodeDescriptors, parseResourceOptions, parseResourceTests,
-  parseResources, parseValidationIssues, parseWorkflow, parseWorkflowSummaries, unwrapData,
+  canonicalPortType, parseBackfillPreview, parseCollections, parseCommandResult, parseCredentials,
+  parseExecution, parseExecutionCenter, parseFileDetails, parseNodeDescriptors, parseResourceOptions,
+  parseResourceTests, parseResources, parseTriggerStatus, parseValidationIssues, parseWorkflow,
+  parseWorkflowSummaries, unwrapData,
 } from "./dto";
 
 describe("hub envelope parsing", () => {
+  it("parses trigger status, backfill preview and file-level diagnostics", () => {
+    expect(parseTriggerStatus({ triggers: [{ workflowId: "flow", kind: "schedule",
+      cron: "0 2 * * *", nextRun: "2026-11-27T02:00:00Z", lastStatus: "Succeeded" }] })[0])
+      .toMatchObject({ workflowId: "flow", kind: "schedule", nextRun: "2026-11-27T02:00:00Z" });
+
+    const preview = parseBackfillPreview({ resourceId: "source-1", from: "a", to: "b",
+      files: [{ path: "recent.csv", sourceDate: "2026-11-26", inLedger: true,
+        succeededTargets: 1, incompleteTargets: 1, wouldSkip: false, wouldCollect: true,
+        duplicateRisk: true }],
+      summary: { discovered: 1, alreadyComplete: 0, needsCollection: 1, duplicateRisk: 1 } });
+    expect(preview?.summary).toEqual({ discovered: 1, alreadyComplete: 0, needsCollection: 1, duplicateRisk: 1 });
+    expect(preview?.files[0].duplicateRisk).toBe(true);
+
+    const files = parseFileDetails([{ id: "f1", path: "recent.csv", status: "Succeeded",
+      deliveries: [{ id: "d1", targetId: "db", status: "Failed", attempts: 2, records: 1,
+        accepted: 0, rejected: 1, warnings: 0, error: "connection refused",
+        diagnosis: { code: "CONNECTION", message: "无法连接", action: "检查网络" } }] }]);
+    expect(files[0].deliveries[0].diagnosis).toEqual({
+      code: "CONNECTION", message: "无法连接", action: "检查网络",
+    });
+  });
+
   it("parses resource management and execution-center payloads", () => {
     const resources = parseResources([{ id: "src", name: "Source", type: "filesystem.local",
       enabled: true, credentialId: "cred", credentialName: "SMB" }]);

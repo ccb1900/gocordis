@@ -3,6 +3,7 @@ import { WorkflowList } from "./WorkflowList";
 import { ResourceConsole } from "./ResourceConsole";
 import { CredentialConsole } from "./CredentialConsole";
 import { ExecutionCenter } from "./ExecutionCenter";
+import { FileDetails } from "./FileDetails";
 import { setFacade } from "./facade";
 import { createElement } from "./facade-react";
 import { DESIGNER_CSS } from "./styles";
@@ -33,6 +34,7 @@ export function register(api: any) {
     wrap("industrial-resource-console", ResourceConsole),
     wrap("industrial-credential-console", CredentialConsole),
     wrap("industrial-execution-center", ExecutionCenter),
+    wrap("industrial-file-details", FileDetails),
   ];
   return () => {
     for (const dispose of disposers) dispose?.();

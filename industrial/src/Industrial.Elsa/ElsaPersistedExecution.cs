@@ -36,7 +36,9 @@ public static class ElsaPersistedExecution
         var rows = await instances.FindManyAsync(new WorkflowInstanceFilter
         {
             WorkflowStatus = WorkflowStatus.Running,
-            IsExecuting = false,
+            // A hard process exit leaves IsExecuting=true because no graceful
+            // shutdown flips it. At startup no local activity owns the instance,
+            // and token-fenced ledger claims still prevent double delivery.
         }, ct);
         var result = new List<RecoverableInstance>();
         foreach (var row in rows)

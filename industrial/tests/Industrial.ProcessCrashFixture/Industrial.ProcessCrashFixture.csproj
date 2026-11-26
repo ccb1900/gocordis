@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Industrial.Contracts/Industrial.Contracts.csproj" />
+    <ProjectReference Include="../../src/Industrial.Core/Industrial.Core.csproj" />
+    <ProjectReference Include="../../src/Industrial.Elsa/Industrial.Elsa.csproj" />
+    <ProjectReference Include="../../src/Industrial.Host/Industrial.Host.csproj" />
+    <ProjectReference Include="../../src/Industrial.Persistence/Industrial.Persistence.csproj" />
+    <ProjectReference Include="../../../src/Gocordis.Builtin.WebConsole/Gocordis.Builtin.WebConsole.csproj" />
+    <ProjectReference Include="../../../src/Gocordis.Core/Gocordis.Core.csproj" />
+    <ProjectReference Include="../../../src/Gocordis.Platform/Gocordis.Platform.csproj" />
+    <ProjectReference Include="../../../src/Gocordis.Plugins/Gocordis.Plugins.csproj" />
+  </ItemGroup>
+
+</Project>

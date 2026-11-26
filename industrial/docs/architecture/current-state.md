@@ -23,10 +23,10 @@ framework was not modified for industrial logic; all product code lives under
 
 Verification: `dotnet build Gocordis.sln` 0 warning/0 error; full solution tests
 green (685 passed / 1 skipped); industrial C# tests (Contract 2, Unit 15,
-Integration 39, E2E 6) green; `industrial/web` 36 frontend tests + production
+Integration 40, E2E 6) green; `industrial/web` 36 frontend tests + production
 build green. The unified local report
 (`bash tools/release/test-report.sh` → `artifacts/test-report/report.json`)
-records 895 passed / 3 explicitly skipped / 0 failed suites; Windows UNC/SMB
+records 896 passed / 3 explicitly skipped / 0 failed suites; Windows UNC/SMB
 is verified on a real `windows-latest` runner
 (https://github.com/ccb1900/gocordis/actions/runs/45735547780). Runs execute the published Elsa
 Flowchart with a distinct real Activity per node type and an Elsa-persisted

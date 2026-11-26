@@ -12,6 +12,7 @@
     <Project Path="tests/Industrial.Contract.Tests/Industrial.Contract.Tests.csproj" />
     <Project Path="tests/Industrial.E2E.Tests/Industrial.E2E.Tests.csproj" />
     <Project Path="tests/Industrial.Integration.Tests/Industrial.Integration.Tests.csproj" />
+    <Project Path="tests/Industrial.ProcessCrashFixture/Industrial.ProcessCrashFixture.csproj" />
     <Project Path="tests/Industrial.Unit.Tests/Industrial.Unit.Tests.csproj" />
   </Folder>
 </Solution>

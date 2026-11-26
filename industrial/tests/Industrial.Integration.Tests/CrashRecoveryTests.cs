@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Gocordis.Builtin.WebConsole;
@@ -137,6 +138,99 @@ public sealed class CrashRecoveryTests
             Assert.Equal(6, deliveries.Single(delivery => delivery.TargetId == "target-a").Records);
             Assert.Equal(5, deliveries.Single(delivery => delivery.TargetId == "target-b").Records);
         }
+    }
+
+    [Fact]
+    public async Task RealProcessKillRecoversOnlyTheIncompleteDelivery()
+    {
+        using var temp = new TempDir();
+        var sourceRoot = Path.Combine(temp.Root, "source");
+        Directory.CreateDirectory(sourceRoot);
+        var csv = string.Join('\n', new[] { "record_id,reading" }
+            .Concat(Enumerable.Range(1, 6).Select(index => $"{index},{index * 10}")));
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "20261126.csv"), csv);
+        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, "20261126.csv"),
+            DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
+
+        var targetA = Path.Combine(temp.Root, "target-a.db");
+        var targetB = Path.Combine(temp.Root, "target-b.db");
+        var ledgerPath = Path.Combine(temp.Root, "industrial-ledger.db");
+        var marker = Path.Combine(temp.Root, "crash-ready");
+        var fixtureProject = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory, "../../../../Industrial.ProcessCrashFixture/Industrial.ProcessCrashFixture.csproj"));
+
+        var start = new ProcessStartInfo("dotnet")
+        {
+            Arguments = $"run --project \"{fixtureProject}\" --no-build -- \"{temp.Root}\"",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        using var child = Process.Start(start)
+                           ?? throw new InvalidOperationException("failed to start crash fixture");
+        var stdout = child.StandardOutput.ReadToEndAsync();
+        var stderr = child.StandardError.ReadToEndAsync();
+        try
+        {
+            // Do not await stdout/stderr here: those tasks only complete after
+            // the child exits, and this child is intentionally still alive.
+            Assert.True(await WaitForMarkerAsync(marker, TimeSpan.FromSeconds(60)),
+                "crash fixture never reached its partial-write marker");
+        }
+        finally
+        {
+            if (!child.HasExited)
+            {
+                // Real OS process termination, not an exception injected into
+                // the workflow: no ledger completion, effect unwind or EOF.
+                child.Kill(entireProcessTree: true);
+            }
+            await child.WaitForExitAsync();
+        }
+        _ = await stdout;
+        _ = await stderr;
+
+        Assert.Equal(6, await CountRowsAsync(targetA));
+        Assert.Equal(1, await CountRowsAsync(targetB));
+        await using (var ledger = IndustrialStore.Create(ledgerPath))
+        {
+            var run = Assert.Single(ledger.CollectionRuns.AsNoTracking().ToList());
+            Assert.True(run.Status is CollectionStatus.Running or CollectionStatus.Interrupted);
+            var deliveries = ledger.FileDeliveries.AsNoTracking().ToList();
+            Assert.Equal(CollectionStatus.Succeeded,
+                deliveries.Single(delivery => delivery.TargetId == "target-a").Status);
+            Assert.Equal(CollectionStatus.InProgress,
+                deliveries.Single(delivery => delivery.TargetId == "target-b").Status);
+        }
+
+        // New process: startup recovery sees the orphaned Elsa instance and
+        // resumes it from committed stages; only target-b still needs work.
+        var factories = new FactorySet(targetA, targetB);
+        await Compose(temp.Root, factories, async (_, _, _, api) =>
+        {
+            var recovery = Assert.IsType<JsonObject>(api.Query("industrial/recovery"));
+            Assert.Equal(1, recovery["recovered"]?.GetValue<int>());
+            Assert.Empty(recovery["failures"]!.AsArray());
+        });
+
+        Assert.Equal(6, await CountRowsAsync(targetA));
+        Assert.Equal(6, await CountRowsAsync(targetB));
+        Assert.Equal(6, await DistinctRowCountAsync(targetA));
+        Assert.Equal(6, await DistinctRowCountAsync(targetB));
+        await using var finalLedger = IndustrialStore.Create(ledgerPath);
+        Assert.Equal(CollectionStatus.Succeeded,
+            Assert.Single(finalLedger.CollectionRuns.AsNoTracking().ToList()).Status);
+    }
+
+    private static async Task<bool> WaitForMarkerAsync(string path, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (File.Exists(path)) return true;
+            await Task.Delay(50);
+        }
+        return File.Exists(path);
     }
 
     private static async Task<int> CountRowsAsync(string path)

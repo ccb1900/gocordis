@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-26T01:33:10.616030+00:00",
+  "generatedAt": "2026-11-26T01:58:12.284555+00:00",
   "source": "tools/release/test-report.sh",
   "suites": [
     {
@@ -47,7 +47,7 @@
     {
       "suite": "industrial-dotnet",
       "exitCode": 0,
-      "passed": 62,
+      "passed": 63,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
@@ -95,7 +95,7 @@
     }
   ],
   "totals": {
-    "passed": 895,
+    "passed": 896,
     "skipped": 3,
     "failedSuites": []
   },
@@ -139,6 +139,11 @@
       "evidence": "artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/45735547780",
       "runner": "windows-latest",
       "script": "industrial/e2e-windows-unc.ps1"
+    },
+    {
+      "requirement": "real OS process kill mid-write resumes original instance and retries only incomplete delivery",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; industrial/tests/Industrial.ProcessCrashFixture"
     },
     {
       "requirement": "two-target mid-write crash resumes original instance and retries only incomplete delivery",

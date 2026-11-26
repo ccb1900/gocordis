@@ -54,6 +54,11 @@ for code_path in sorted(out.glob("*.code")):
         "log": f"{name}.log",
     })
 
+unc_evidence_path = out.parent / "windows-unc-result.json"
+unc_evidence = json.loads(unc_evidence_path.read_text()) if unc_evidence_path.exists() else {
+    "status": "blocked", "url": "artifacts/windows-unc-blocker.md"
+}
+
 report = {
     "generatedAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
     "source": "tools/release/test-report.sh",
@@ -63,14 +68,13 @@ report = {
         "skipped": sum(s["skipped"] for s in suites),
         "failedSuites": [s["suite"] for s in suites if s["exitCode"] != 0],
     },
-    "environmentBlockers": [
-        "Windows UNC/SMB session lease requires Windows net use; test skips explicitly on macOS/Linux (industrial/tests/Industrial.Database.Tests/WindowsUncIntegrationTests.cs).",
-    ],
+    "environmentBlockers": [],
+    "windowsUnc": unc_evidence,
     "acceptance": [
         {"requirement": "real-browser designer E2E", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log"},
         {"requirement": "real packaged-plugin E2E", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-packaged-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-packaged-e2e.log"},
         {"requirement": "PostgreSQL integration", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-postgresql")["exitCode"] == 0 else "failed", "evidence": "industrial-postgresql.log"},
-        {"requirement": "Windows UNC/SMB integration", "status": "blocked" if "Skipped!" in (out / "windows-unc.log").read_text(errors="replace") else "passed", "passingResult": None if "Skipped!" in (out / "windows-unc.log").read_text(errors="replace") else "windows-unc.log", "evidence": "artifacts/windows-unc-blocker.md", "runner": ".github/workflows/windows-unc.yml", "script": "industrial/e2e-windows-unc.ps1"},
+        {"requirement": "Windows UNC/SMB integration", "status": unc_evidence.get("status", "blocked"), "passingResult": unc_evidence.get("url") if unc_evidence.get("status") == "passed" else None, "evidence": "artifacts/windows-unc-result.json; " + unc_evidence.get("url", "artifacts/windows-unc-blocker.md"), "runner": "windows-latest", "script": "industrial/e2e-windows-unc.ps1"},
         {"requirement": "two-target mid-write crash resumes original instance and retries only incomplete delivery", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
         {"requirement": "concurrent claims, lease renewal and staged-file identity guard", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
         {"requirement": "ledger claim/lease/retry state machine", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
@@ -89,7 +93,7 @@ lines += ["", f"Total passed: **{report['totals']['passed']}**, skipped: **{repo
 for item in report["acceptance"]:
     lines.append(f"| {item['requirement']} | {item['status']} | {item['evidence']} |")
 lines += ["", "Environment blockers:"]
-lines += [f"- {item}" for item in report["environmentBlockers"]]
+lines += [f"- {item}" for item in report["environmentBlockers"]] or ["- none"]
 (out / "report.md").write_text("\n".join(lines) + "\n")
 print(json.dumps(report["totals"], ensure_ascii=False))
 PY

@@ -42,7 +42,8 @@ React/antd instance and no frontend-owned page registry.
 **Remaining honest limits (environment or operational, not hidden gaps):**
 - Managed packaged components use parameterless constructors, so declaration
   config is delivered through environment variables in the packaged path.
-- UNC session lease is Windows-only and cannot be exercised on this Linux host.
+- UNC session lease is Windows-only; it is verified on a real `windows-latest`
+  runner, not on this macOS/Linux host.
 - SQL Server / PostgreSQL / MySQL sinks are implemented with mature drivers but
   have no live-server integration test; SQLite is the tested target.
 - The G6 designer has a jsdom integration test using G6's SVG renderer plus a
@@ -53,21 +54,20 @@ React/antd instance and no frontend-owned page registry.
   the execution-center query over HTTP.
 - `bash industrial/e2e-database.sh` runs the PostgreSQL sink driver against a
   fresh local PostgreSQL database; SQLite is not substituted.
-- **Blocker:** Windows UNC/SMB session leases require Windows `net use`.
-  `WindowsUncIntegrationTests` records an explicit skip on macOS/Linux. The
-  acceptance path is configured in `.github/workflows/windows-unc.yml` and
-  `industrial/e2e-windows-unc.ps1`: a Windows runner must provide secrets
-  `GOCORDIS_UNC_PATH`, `GOCORDIS_UNC_USER`, `GOCORDIS_UNC_PASSWORD` and optional
-  `GOCORDIS_UNC_DOMAIN`. This host has no Windows runner, no `net use`, no
-  PowerShell and no UNC credentials, so the test cannot actually run here and
-  the item remains incomplete; probe evidence is recorded in
-  `artifacts/windows-unc-blocker.md`. MySQL and SQL Server also still need
-  external servers.
+- Windows UNC/SMB acceptance now passes on a real `windows-latest` runner through
+  `.github/workflows/windows-unc.yml` and `industrial/e2e-windows-unc.ps1`. When
+  external `GOCORDIS_UNC_*` secrets are absent, the script provisions an ephemeral
+  real SMB share and account on the runner and removes them after the test; see
+  `artifacts/windows-unc-result.json` and the passing run
+  https://github.com/ccb1900/gocordis/actions/runs/45735547780. The local
+  macOS/Linux suite row still records an explicit skip. MySQL and SQL Server
+  also still need external servers.
 - `bash tools/release/test-report.sh` is the single fact source for all local
   suite counts (`artifacts/test-report/report.json` and `report.md`).
-- Retry after restart is proven by a fresh coordinator reading the ledger; an
-  automatic startup sweep is intentionally not added (retry stays an explicit
-  command, avoiding a self-spinning loop).
+- Retry after restart is automatic: startup releases abandoned claims and resumes
+  the persisted Elsa instance from committed stages, proven by
+  `CrashRecoveryTests`; `industrial/recover-instances` remains available as an
+  explicit diagnostic command.
 
 Verification: `dotnet build Gocordis.sln` 0 warning/0 error; full solution tests
 green; industrial C# 41 tests green; `industrial/web` 35 tests + build green;

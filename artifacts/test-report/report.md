@@ -25,7 +25,7 @@ Total passed: **895**, skipped: **3**.
 | real-browser designer E2E | passed | industrial-browser-e2e.log |
 | real packaged-plugin E2E | passed | industrial-packaged-e2e.log |
 | PostgreSQL integration | passed | industrial-postgresql.log |
-| Windows UNC/SMB integration | blocked | artifacts/windows-unc-blocker.md |
+| Windows UNC/SMB integration | passed | artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/45735547780 |
 | two-target mid-write crash resumes original instance and retries only incomplete delivery | passed | industrial-dotnet.log |
 | concurrent claims, lease renewal and staged-file identity guard | passed | industrial-dotnet.log |
 | ledger claim/lease/retry state machine | passed | industrial-dotnet.log |
@@ -34,4 +34,4 @@ Total passed: **895**, skipped: **3**.
 | unified test report | passed | tools/release/test-report.sh |
 
 Environment blockers:
-- Windows UNC/SMB session lease requires Windows net use; test skips explicitly on macOS/Linux (industrial/tests/Industrial.Database.Tests/WindowsUncIntegrationTests.cs).
+- none

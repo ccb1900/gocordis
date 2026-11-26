@@ -21,8 +21,8 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | EF migrations for all industrial stores | `Migrations/Ledger`, `Migrations/Target`, `Migrations/Stages`, design-time factories | Pass |
 | Disconnect/large-file recovery tests | `RecoveryTests.cs` | Pass |
 | Unified test report fact source | `tools/release/test-report.sh`, `report.json`, `report.md` | Pass |
-| Windows UNC/SMB real-share acceptance | `.github/workflows/windows-unc.yml`, `e2e-windows-unc.ps1`, blocker evidence | Blocked on this macOS host; no passing result |
+| Windows UNC/SMB real-share acceptance | `.github/workflows/windows-unc.yml`, `e2e-windows-unc.ps1`, `artifacts/windows-unc-result.json`, passing run https://github.com/ccb1900/gocordis/actions/runs/45735547780 | Pass on real `windows-latest` runner with a real SMB share |
 
-Unified report: 895 passed, 3 explicitly skipped, 0 failed suites. Windows UNC remains `blocked` with `passingResult: null`.
+Unified report: 895 passed, 3 explicitly skipped, 0 failed suites. Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 Blocker details: `artifacts/windows-unc-blocker.md`.

@@ -14,7 +14,8 @@ function New-LocalSmbFixture {
         throw "Windows UNC/SMB acceptance requires a Windows runner"
     }
 
-    $suffix = [guid]::NewGuid().ToString("N").Substring(0, 12)
+    # SMB share and local account names are limited to 20 characters.
+    $suffix = [guid]::NewGuid().ToString("N").Substring(0, 6)
     $script:shareName = "gocordis-unc-$suffix"
     $script:userName = "gocordis_unc_$suffix"
     $password = "Gocordis!Unc$suffix!42"

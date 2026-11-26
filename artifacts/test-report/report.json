@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-26T04:26:33.907690+00:00",
+  "generatedAt": "2026-11-26T04:34:35.408388+00:00",
   "source": "tools/release/test-report.sh",
   "suites": [
     {
@@ -104,12 +104,12 @@
     "status": "passed",
     "runner": "windows-latest",
     "workflow": "windows-unc",
-    "runId": 45744239226,
-    "jobId": 139656313896,
-    "headSha": "a4b47f2f9079634808972f774049701004dd4723",
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/45744239226",
-    "startedAt": "2026-11-26T02:42:50Z",
-    "completedAt": "2026-11-26T02:44:22Z",
+    "runId": 45755264390,
+    "jobId": 139692300134,
+    "headSha": "6758d7e5af63cae2dce811e8ff62a8ee13767457",
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/45755264390",
+    "startedAt": "2026-11-26T04:26:59Z",
+    "completedAt": "2026-11-26T04:28:25Z",
     "conclusion": "success",
     "test": "Industrial.Database.Tests.WindowsUncIntegrationTests.UncSourceDiscoversFilesThroughARealSessionLease",
     "command": "pwsh ./industrial/e2e-windows-unc.ps1",
@@ -160,8 +160,8 @@
     {
       "requirement": "Windows UNC/SMB integration",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/45744239226",
-      "evidence": "artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/45744239226",
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/45755264390",
+      "evidence": "artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/45755264390",
       "runner": "windows-latest",
       "script": "industrial/e2e-windows-unc.ps1"
     },

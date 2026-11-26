@@ -59,7 +59,7 @@ React/antd instance and no frontend-owned page registry.
   external `GOCORDIS_UNC_*` secrets are absent, the script provisions an ephemeral
   real SMB share and account on the runner and removes them after the test; see
   `artifacts/windows-unc-result.json` and the passing run
-  https://github.com/ccb1900/gocordis/actions/runs/45744239226. The local
+  https://github.com/ccb1900/gocordis/actions/runs/45755264390. The local
   macOS/Linux suite row still records an explicit skip. MySQL and SQL Server
   also still need external servers.
 - `bash tools/release/test-report.sh` is the single fact source for all local

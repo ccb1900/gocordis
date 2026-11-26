@@ -28,7 +28,7 @@ build green. The unified local report
 (`bash tools/release/test-report.sh` → `artifacts/test-report/report.json`)
 records 908 passed / 3 explicitly skipped / 0 failed suites; Windows UNC/SMB
 is verified on a real `windows-latest` runner
-(https://github.com/ccb1900/gocordis/actions/runs/45744239226). Runs execute the published Elsa
+(https://github.com/ccb1900/gocordis/actions/runs/45755264390). Runs execute the published Elsa
 Flowchart with a distinct real Activity per node type and an Elsa-persisted
 workflow instance that can be inspected after restart; each node reads its
 inputs from predecessor nodes along the published edges. A hard exit after a

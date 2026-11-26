@@ -146,4 +146,20 @@ test("G6 native gestures: port drag connects, node drag moves, canvas drag pans,
   });
   const after = await graphState(page);
   expect(after!.edges).toHaveLength(3);
+
+  // --- palette → canvas HTML5 drag/drop adds a node (no click-to-add) ---
+  const beforeDrop = (await graphState(page))!.nodes.length;
+  const paletteItem = page.locator(".industrial-palette-node")
+    .filter({ has: page.locator(".industrial-palette-node-title", { hasText: /^Local Files$/ }) })
+    .first();
+  await paletteItem.scrollIntoViewIfNeeded();
+  expect(await paletteItem.locator(".industrial-palette-node-title").textContent()).toBe("Local Files");
+  await page.evaluate(() => new Promise<void>((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await paletteItem.locator(".industrial-palette-node-title").textContent()).toBe("Local Files");
+  await paletteItem.dragTo(page.getByTestId("industrial-graph"), { targetPosition: { x: 500, y: 420 } });
+  await page.waitForFunction((count: number) => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    return el?.__industrialGraph?.getNodeData()?.length === count + 1;
+  }, beforeDrop);
 });

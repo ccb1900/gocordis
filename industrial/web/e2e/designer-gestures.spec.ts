@@ -136,6 +136,22 @@ test("G6 native gestures: port drag connects, node drag moves, canvas drag pans,
     return Math.abs(el.__industrialGraph.getViewportByCanvas([0, 0])[0] - viewport) > 20;
   }, panBefore!.viewport);
 
+  // --- palette → canvas HTML5 drag/drop adds a node (no click-to-add) ---
+  const beforeDrop = (await graphState(page))!.nodes.length;
+  const paletteItem = page.locator(".industrial-palette-node")
+    .filter({ has: page.locator(".industrial-palette-node-title", { hasText: /^Local Files$/ }) })
+    .first();
+  await paletteItem.scrollIntoViewIfNeeded();
+  expect(await paletteItem.locator(".industrial-palette-node-title").textContent()).toBe("Local Files");
+  await page.evaluate(() => new Promise<void>((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await paletteItem.locator(".industrial-palette-node-title").textContent()).toBe("Local Files");
+  await paletteItem.dragTo(page.getByTestId("industrial-graph"), { targetPosition: { x: 500, y: 420 } });
+  await page.waitForFunction((count: number) => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    return el?.__industrialGraph?.getNodeData()?.length === count + 1;
+  }, beforeDrop);
+
   // --- save, reload and verify the gesture-created edge survived ---
   const saveRequest = page.waitForRequest(request =>
     request.method() === "POST" && request.url().includes("/api/command/industrial/save-workflow"));
@@ -154,20 +170,12 @@ test("G6 native gestures: port drag connects, node drag moves, canvas drag pans,
   });
   const after = await graphState(page);
   expect(after!.edges).toHaveLength(3);
+  expect(after!.nodes).toHaveLength(saved.nodes.length);
+  const movedAfter = after!.nodes.find((node) => node.id === "src")!;
+  expect(Math.abs(movedAfter.x - before!.nodes.find((node) => node.id === "src")!.x)).toBeGreaterThan(20);
+  expect(movedAfter.x).toBeCloseTo(
+    saved.nodes.find((node: any) => node.id === "src").x, 1);
+  expect(after!.nodes).toHaveLength(5);
 
-  // --- palette → canvas HTML5 drag/drop adds a node (no click-to-add) ---
-  const beforeDrop = (await graphState(page))!.nodes.length;
-  const paletteItem = page.locator(".industrial-palette-node")
-    .filter({ has: page.locator(".industrial-palette-node-title", { hasText: /^Local Files$/ }) })
-    .first();
-  await paletteItem.scrollIntoViewIfNeeded();
-  expect(await paletteItem.locator(".industrial-palette-node-title").textContent()).toBe("Local Files");
-  await page.evaluate(() => new Promise<void>((resolve) =>
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-  expect(await paletteItem.locator(".industrial-palette-node-title").textContent()).toBe("Local Files");
-  await paletteItem.dragTo(page.getByTestId("industrial-graph"), { targetPosition: { x: 500, y: 420 } });
-  await page.waitForFunction((count: number) => {
-    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
-    return el?.__industrialGraph?.getNodeData()?.length === count + 1;
-  }, beforeDrop);
+
 });

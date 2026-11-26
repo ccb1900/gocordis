@@ -122,7 +122,8 @@ export function TriggerEditor({
               { title: "触发点", dataIndex: "lastFireStatus",
                 render: (_: string | null, row: TriggerStatusRow) =>
                   row.lastFireStatus
-                    ? `${row.lastFireStatus} · ${row.lastFireDueAt ?? "—"} · ${row.lastFireAttempts ?? 0} 次`
+                    ? `${row.lastFireStatus} · ${row.lastFireDueAt ?? "—"} · ${row.lastFireAttempts ?? 0} 次` +
+                      (row.skippedFires ? ` · 超限 ${row.skippedFires}` : "")
                     : "—" },
               { title: "错误", dataIndex: "lastError", render: (v: string | null) => v ?? "—" },
             ]}

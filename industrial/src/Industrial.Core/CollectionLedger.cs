@@ -187,12 +187,13 @@ public sealed class CollectionLedger : ICollectionLedger
             UPDATE ScheduleFires
                SET Status = {0}, ClaimToken = {1}, LeaseExpiresAtUnixMs = {2}, Attempts = Attempts + 1
              WHERE Key = {3}
-               AND Status IN ({4}, {5})
+               AND Status IN ({4}, {5}, {8})
                AND (LeaseExpiresAtUnixMs = 0 OR LeaseExpiresAtUnixMs <= {6})
                AND Attempts < {7};
             """,
             ScheduleFireStatus.Running, token, leaseEnd, key,
-            ScheduleFireStatus.Pending, ScheduleFireStatus.Failed, now, MaxAttempts, ct);
+            ScheduleFireStatus.Pending, ScheduleFireStatus.Failed, now, MaxAttempts,
+            ScheduleFireStatus.Running, ct);
         if (rows != 1) return null;
         var attempts = await db.Database.SqlQueryRaw<ScheduleFireAttemptRow>(
             "SELECT Attempts FROM ScheduleFires WHERE Key = {0}", key).SingleAsync(ct);
@@ -238,7 +239,8 @@ public sealed class CollectionLedger : ICollectionLedger
         await using var db = _db();
         var rows = await db.Database.SqlQueryRaw<ScheduleFireRow>(
             """
-            SELECT Key, WorkflowId, Version, DueAtUtc, Status, Attempts, Error, FinishedAtUtc
+            SELECT Key, WorkflowId, Version, DueAtUtc, Status, Attempts, Error, FinishedAtUtc,
+                   LeaseExpiresAtUnixMs
               FROM ScheduleFires
              ORDER BY DueAtUtc DESC;
             """).ToListAsync(ct);
@@ -248,8 +250,46 @@ public sealed class CollectionLedger : ICollectionLedger
             row.Status, row.Attempts,
             string.IsNullOrEmpty(row.Error) ? null : row.Error,
             string.IsNullOrEmpty(row.FinishedAtUtc)
-                ? null : DateTimeOffset.Parse(row.FinishedAtUtc, CultureInfo.InvariantCulture)))
+                ? null : DateTimeOffset.Parse(row.FinishedAtUtc, CultureInfo.InvariantCulture),
+            row.LeaseExpiresAtUnixMs))
             .ToArray();
+    }
+
+    public async ValueTask<(DateTimeOffset? Checkpoint, int Skipped)> GetScheduleCheckpointAsync(
+        string workflowId, int version, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var rows = await db.Database.SqlQueryRaw<ScheduleCheckpointRow>(
+            """
+            SELECT CheckpointUtc, Skipped FROM ScheduleCheckpoints
+             WHERE WorkflowId = {0} AND Version = {1};
+            """, workflowId, version).ToListAsync(ct);
+        if (rows.Count == 0) return (null, 0);
+        var row = rows[0];
+        return (string.IsNullOrWhiteSpace(row.CheckpointUtc)
+            ? null : DateTimeOffset.Parse(row.CheckpointUtc, CultureInfo.InvariantCulture), row.Skipped);
+    }
+
+    public async ValueTask SetScheduleCheckpointAsync(
+        string workflowId, int version, DateTimeOffset checkpoint, int skippedIncrement,
+        CancellationToken ct = default)
+    {
+        await using var db = _db();
+        await Exec(db,
+            """
+            INSERT INTO ScheduleCheckpoints (WorkflowId, Version, CheckpointUtc, Skipped)
+            VALUES ({0}, {1}, {2}, {3})
+            ON CONFLICT(WorkflowId, Version) DO UPDATE SET
+                CheckpointUtc = excluded.CheckpointUtc,
+                Skipped = ScheduleCheckpoints.Skipped + excluded.Skipped;
+            """,
+            workflowId, version, checkpoint.ToUniversalTime().ToString("O"), skippedIncrement, ct);
+    }
+
+    private sealed class ScheduleCheckpointRow
+    {
+        public string CheckpointUtc { get; set; } = string.Empty;
+        public int Skipped { get; set; }
     }
 
     private sealed class ScheduleFireAttemptRow
@@ -267,6 +307,7 @@ public sealed class CollectionLedger : ICollectionLedger
         public int Attempts { get; set; }
         public string? Error { get; set; }
         public string? FinishedAtUtc { get; set; }
+        public long LeaseExpiresAtUnixMs { get; set; }
     }
 
     private async ValueTask<int> RecoverLeasesAsync(
@@ -467,7 +508,7 @@ public sealed class CollectionLedger : ICollectionLedger
             """
             UPDATE FileDeliveries SET Status = {0}, ClaimToken = {1}, ClaimedAt = {2},
                 LeaseExpiresAt = {3}, LeaseExpiresAtUnixMs = {4}, Attempts = Attempts + 1,
-                Error = NULL, Version = Version + 1
+                Error = NULL, Version = Version + 1, LastAttemptRunId = {12}
             WHERE Id = {5} AND Status IN ({6}, {7}, {8}, {9})
               AND (LeaseExpiresAtUnixMs = 0 OR LeaseExpiresAtUnixMs <= {10})
               AND Attempts < {11}
@@ -475,7 +516,7 @@ public sealed class CollectionLedger : ICollectionLedger
             CollectionStatus.InProgress, token, now, leaseEnd, leaseEnd.ToUnixTimeMilliseconds(),
             deliveryId, CollectionStatus.Pending, CollectionStatus.Failed,
             CollectionStatus.Interrupted, CollectionStatus.InProgress,
-            now.ToUnixTimeMilliseconds(), MaxAttempts, ct);
+            now.ToUnixTimeMilliseconds(), MaxAttempts, runId, ct);
         if (rows != 1) return null;
 
         await AttachRunDeliveryAsync(db, runId, deliveryId, "Claimed", token, ct);
@@ -741,5 +782,6 @@ public sealed class CollectionLedger : ICollectionLedger
             entity.Attempts, entity.Error, entity.IdempotencyKey,
             entity.Records, entity.TargetKind, entity.ClaimedAt,
             entity.ClaimToken, entity.LeaseExpiresAt, entity.Error,
-            entity.Accepted, entity.Rejected, entity.Warnings, entity.StatisticsJson);
+            entity.Accepted, entity.Rejected, entity.Warnings, entity.StatisticsJson,
+            entity.LastAttemptRunId);
 }

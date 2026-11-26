@@ -390,43 +390,56 @@ public sealed class IndustrialElsaComponent : Component
         var file = await ledger.GetFileAsync(delivery.CollectionFileId)
                    ?? throw new InvalidOperationException("the delivery source file was not found");
         var resourceId = file.Identity.SourceResourceId;
-        var runIds = await ledger.GetRunIdsByDeliveryAsync(delivery.Id);
         var instances = await ElsaPersistedExecution.ListInstancesAsync(ElsaDbPath);
-        var workflowId = string.Empty;
-
-        // Exact resolution: delivery → CollectionRun → persisted Elsa instance.
-        // Instance ids are arbitrary strings, so ordering them can never stand
-        // in for a durable association between a run and its execution.
-        ElsaPersistedExecution.RecoverableInstance? instance = null;
+        var runIds = await ledger.GetRunIdsByDeliveryAsync(delivery.Id);
+        var runs = new List<CollectionRun>();
         foreach (var runId in runIds)
         {
             var run = await ledger.GetRunAsync(runId);
-            if (run is null) continue;
-            if (string.IsNullOrWhiteSpace(workflowId)) workflowId = run.WorkflowId;
-            var linkedId = await ledger.GetRunInstanceAsync(runId);
-            if (string.IsNullOrWhiteSpace(linkedId)) continue;
+            if (run is not null) runs.Add(run);
+        }
+        var workflowId = runs.FirstOrDefault()?.WorkflowId ?? string.Empty;
+
+        // Exact resolution: delivery → LastAttemptRunId (the run that most
+        // recently actually attempted it) → CollectionRun.InstanceId → Elsa
+        // instance. Historical run associations are audit data, not a source
+        // of truth for which execution produced the current failure.
+        ElsaPersistedExecution.RecoverableInstance? instance = null;
+        var lastRunId = delivery.LastAttemptRunId;
+        if (!string.IsNullOrWhiteSpace(lastRunId))
+        {
+            var lastRun = await ledger.GetRunAsync(lastRunId!)
+                          ?? throw new InvalidOperationException(
+                              $"last attempt run '{lastRunId}' for delivery '{delivery.Id}' was not found");
+            workflowId = lastRun.WorkflowId;
+            var linkedId = await ledger.GetRunInstanceAsync(lastRunId!);
+            if (string.IsNullOrWhiteSpace(linkedId))
+                throw new InvalidOperationException(
+                    $"last attempt run '{lastRunId}' has no persisted Elsa instance; retry is ambiguous");
             instance = instances.FirstOrDefault(candidate =>
                 string.Equals(candidate.InstanceId, linkedId, StringComparison.Ordinal) &&
-                string.Equals(candidate.ResourceId, resourceId, StringComparison.Ordinal));
-            if (instance is not null) break;
+                string.Equals(candidate.ResourceId, resourceId, StringComparison.Ordinal))
+                ?? throw new InvalidOperationException(
+                    $"original instance '{linkedId}' was not found; refusing to retry with another execution");
         }
-
-        // Legacy runs predate the link. Only resolve when exactly one instance
-        // matches; never guess between several executions.
-        if (instance is null)
+        else
         {
-            var candidates = instances
+            // Legacy deliveries predate LastAttemptRunId. Fall back only when
+            // NO associated run carries an instance link; a missing instance
+            // must never be replaced by an unrelated unique candidate.
+            if (runs.Any(run => !string.IsNullOrWhiteSpace(run.InstanceId)))
+                throw new InvalidOperationException(
+                    $"delivery '{delivery.Id}' has no last-attempt run but associated runs carry instance links");
+            var compatible = instances
                 .Where(candidate => string.Equals(candidate.ResourceId, resourceId, StringComparison.Ordinal) &&
                                     (string.IsNullOrWhiteSpace(workflowId) ||
                                      string.Equals(candidate.WorkflowId, workflowId, StringComparison.Ordinal)))
                 .ToArray();
-            if (candidates.Length != 1)
-            {
+            if (compatible.Length != 1)
                 throw new InvalidOperationException(
                     $"cannot resolve the original instance for delivery '{delivery.Id}': " +
-                    $"{candidates.Length} candidates and no persisted run/instance link");
-            }
-            instance = candidates[0];
+                    $"{compatible.Length} candidates and no persisted last-attempt run");
+            instance = compatible[0];
         }
         var published = await workflows.GetPublishedVersionAsync(instance.WorkflowId, instance.Version)
                         ?? throw new InvalidOperationException(
@@ -480,6 +493,8 @@ public sealed class IndustrialElsaComponent : Component
                     .Where(fire => fire.WorkflowId == item.WorkflowId && fire.Version == item.Version)
                     .OrderByDescending(fire => fire.DueAtUtc).FirstOrDefault();
                 var key = $"{item.WorkflowId}:v{item.Version}";
+                var checkpoint = ledger.GetScheduleCheckpointAsync(item.WorkflowId, item.Version)
+                    .GetAwaiter().GetResult();
                 string? scheduleError = last?.Error ?? lastFire?.Error;
                 if (scheduleError is null && _lastScheduleError.TryGetValue(key, out var volatileError))
                     scheduleError = volatileError;
@@ -499,6 +514,7 @@ public sealed class IndustrialElsaComponent : Component
                     ["lastFireStatus"] = lastFire is null ? null : JsonValue.Create(lastFire.Status),
                     ["lastFireDueAt"] = lastFire is null ? null : JsonValue.Create(lastFire.DueAtUtc.ToString("O")),
                     ["lastFireAttempts"] = lastFire is null ? null : JsonValue.Create(lastFire.Attempts),
+                    ["skippedFires"] = checkpoint.Skipped == 0 ? null : JsonValue.Create(checkpoint.Skipped),
                     ["lastError"] = scheduleError is null ? null : JsonValue.Create(scheduleError),
                 };
             }).ToArray();
@@ -515,41 +531,70 @@ public sealed class IndustrialElsaComponent : Component
         try
         {
             var now = DateTimeOffset.UtcNow;
-            var published = (await workflows.ListAllPublishedAsync())
+            var allPublished = (await workflows.ListAllPublishedAsync()).ToArray();
+            var latest = allPublished
                 .GroupBy(item => item.WorkflowId, StringComparer.Ordinal)
-                .Select(group => group.OrderByDescending(item => item.Version).First())
-                .Where(item => item.Definition.Trigger.Kind == "schedule" &&
-                               CronExpression.TryParse(item.Definition.Trigger.Cron ?? string.Empty,
-                                   out var _))
-                .ToArray();
-            foreach (var item in published)
+                .ToDictionary(group => group.Key, group => group.Max(item => item.Version),
+                    StringComparer.Ordinal);
+            var existingFires = await ledger.ListScheduleFiresAsync();
+
+            foreach (var item in allPublished
+                         .OrderBy(item => item.WorkflowId, StringComparer.Ordinal)
+                         .ThenBy(item => item.Version))
             {
                 ct.ThrowIfCancellationRequested();
                 var trigger = item.Definition.Trigger;
-                var expression = CronExpression.Parse(trigger.Cron!);
-                var zone = ScheduleZone(trigger);
+                var isSchedule = trigger.Kind == "schedule" &&
+                                 CronExpression.TryParse(trigger.Cron ?? string.Empty, out var _);
                 var key = $"{item.WorkflowId}:v{item.Version}";
-
-                // Materialize a bounded set of recent instants. A host that was
-                // down for hours still executes the most recent missed fires,
-                // without turning downtime into an unbounded catch-up storm.
-                var cursor = now - TimeSpan.FromHours(24);
                 var dueInstants = new List<DateTimeOffset>();
-                while (true)
+
+                if (isSchedule && item.Version == latest[item.WorkflowId])
                 {
-                    var next = expression.GetNextOccurrence(cursor, zone, true);
-                    if (next is null) break;
-                    var instant = next.Value.ToUniversalTime();
-                    if (instant > now) break;
-                    // Keep only the most recent bounded window; taking the
-                    // first N after the lookback start would replay fires from
-                    // a full day ago instead of the ones actually missed.
-                    dueInstants.Add(instant);
-                    if (dueInstants.Count > 3) dueInstants.RemoveAt(0);
-                    cursor = next.Value.AddSeconds(1);
+                    // Scan from the persisted per-version checkpoint, never a
+                    // fixed lookback: weekly/monthly cron jobs must survive a
+                    // long outage as well as per-minute ones.
+                    var checkpoint = (await ledger.GetScheduleCheckpointAsync(
+                            item.WorkflowId, item.Version, ct)).Checkpoint
+                        ?? now - TimeSpan.FromDays(365);
+                    var expression = CronExpression.Parse(trigger.Cron!);
+                    var zone = ScheduleZone(trigger);
+                    var cursor = checkpoint;
+                    var overdue = new List<DateTimeOffset>();
+                    while (true)
+                    {
+                        var next = expression.GetNextOccurrence(cursor, zone, true);
+                        if (next is null) break;
+                        var instant = next.Value.ToUniversalTime();
+                        if (instant > now) break;
+                        overdue.Add(instant);
+                        cursor = next.Value.AddSeconds(1);
+                    }
+                    const int catchUpLimit = 3;
+                    dueInstants.AddRange(overdue.Skip(Math.Max(0, overdue.Count - catchUpLimit)));
+                    // Overdue points beyond the limit are counted and exposed
+                    // in trigger-status; they never disappear silently.
+                    await ledger.SetScheduleCheckpointAsync(
+                        item.WorkflowId, item.Version, now,
+                        Math.Max(0, overdue.Count - catchUpLimit), ct);
+                    await ledger.EnsureScheduleFiresAsync(
+                        item.WorkflowId, item.Version, dueInstants, ct);
+                }
+
+                // Fires from any version (including superseded ones) are
+                // recovered with their ORIGINAL published definition. Only the
+                // latest version generates new future fires.
+                foreach (var fire in existingFires
+                             .Where(fire => fire.WorkflowId == item.WorkflowId &&
+                                            fire.Version == item.Version &&
+                                            (fire.Status is ScheduleFireStatus.Pending
+                                                or ScheduleFireStatus.Failed) ||
+                                            (fire.Status == ScheduleFireStatus.Running &&
+                                             fire.LeaseExpiresAtUnixMs <= now.ToUnixTimeMilliseconds())))
+                {
+                    if (!dueInstants.Contains(fire.DueAtUtc)) dueInstants.Add(fire.DueAtUtc);
                 }
                 if (dueInstants.Count == 0) continue;
-                await ledger.EnsureScheduleFiresAsync(item.WorkflowId, item.Version, dueInstants, ct);
 
                 foreach (var instant in dueInstants)
                 {

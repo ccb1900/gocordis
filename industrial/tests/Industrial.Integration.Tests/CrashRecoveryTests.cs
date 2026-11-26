@@ -504,6 +504,98 @@ public sealed class CrashRecoveryTests
     }
 
     [Fact]
+    public async Task RetryUsesTheLastRunThatAttemptedTheSameDelivery()
+    {
+        using var temp = new TempDir();
+        var sourceRoot = Path.Combine(temp.Root, "source");
+        Directory.CreateDirectory(sourceRoot);
+        var now = DateTimeOffset.UtcNow;
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, $"{now:yyyyMMdd}.csv"),
+            "record_id,reading,reading2\n1,11,101\n2,22,202\n3,33,303\n");
+        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, $"{now:yyyyMMdd}.csv"),
+            now.AddHours(-1).UtcDateTime);
+        var target = Path.Combine(temp.Root, "target.db");
+        var factories = new FactorySet(Path.Combine(temp.Root, "unused.db"), target);
+
+        WorkflowDefinition Definition(int version, string sourceField) => new(
+            "last-attempt-flow", "Last attempt flow", version,
+            [
+                new WorkflowNode("src", "industrial.filesystem.local",
+                    new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
+                new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
+                new WorkflowNode("map", "industrial.transform.mapping",
+                    new Dictionary<string, object?>
+                    {
+                        ["mapping"] = JsonSerializer.SerializeToElement(
+                            new Dictionary<string, string> { ["value"] = sourceField }),
+                    }, 200, 0),
+                new WorkflowNode("store", "industrial.sink.sqlite",
+                    new Dictionary<string, object?> { ["targetResourceId"] = "target-b" }, 300, 0),
+            ],
+            [
+                new WorkflowEdge("src", "files", "read", "input"),
+                new WorkflowEdge("read", "records", "map", "input"),
+                new WorkflowEdge("map", "output", "store", "records"),
+            ],
+            new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            ["source-1"], new Dictionary<string, object?>());
+
+        string deliveryId = string.Empty;
+        string lastRunId = string.Empty;
+        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, api) =>
+        {
+            var registered = DateTimeOffset.UtcNow;
+            await resources.RegisterAsync(new ResourceDefinition(
+                "target-b", "target-b", "target-b", "fixture",
+                new Dictionary<string, object?> { ["database"] = target }, null, 0, true, registered, registered));
+
+            foreach (var (version, sourceField, instanceId) in new[]
+                     {
+                         (1, "reading", "aaa-old-mapping"),
+                         (2, "reading2", "zzz-new-mapping"),
+                     })
+            {
+                Assert.True(await api.ExecuteAsync("industrial/save-workflow",
+                    JsonSerializer.SerializeToNode(Definition(version, sourceField))));
+                Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
+                    new JsonObject { ["workflowId"] = "last-attempt-flow" }));
+                factories.FailTargetBOnce = true;
+                Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+                {
+                    ["workflowId"] = "last-attempt-flow", ["version"] = version,
+                    ["resourceId"] = "source-1", ["instanceId"] = instanceId,
+                }));
+                var failed = (await ledger.ListAllDeliveriesAsync()).Single(candidate =>
+                    candidate.TargetId == "target-b" && candidate.Status == CollectionStatus.Failed);
+                deliveryId = failed.Id;
+                lastRunId = (await ledger.GetRunIdsByDeliveryAsync(deliveryId)).Last();
+                Assert.Equal(instanceId, await ledger.GetRunInstanceAsync(lastRunId));
+                Assert.Equal(lastRunId, failed.LastAttemptRunId);
+            }
+
+            Assert.Single(await ledger.ListAllDeliveriesAsync());
+            Assert.True(await api.ExecuteAsync("industrial/retry-failed", new JsonObject
+            {
+                ["deliveryId"] = deliveryId,
+            }));
+        });
+
+        await using var db = IndustrialStore.CreateTarget(target);
+        var rows = db.Records.AsNoTracking().ToList();
+        Assert.Equal(3, rows.Count);
+        Assert.All(rows, row =>
+        {
+            Assert.DoesNotContain("reading", row.PayloadJson, StringComparison.Ordinal);
+            Assert.Contains("\"value\"", row.PayloadJson, StringComparison.Ordinal);
+        });
+        Assert.Equal(new[] { "101", "202", "303" }, rows
+            .Select(row => JsonDocument.Parse(row.PayloadJson).RootElement
+                .GetProperty("value").GetString() ?? string.Empty)
+            .OrderBy(value => value, StringComparer.Ordinal).ToArray());
+        Assert.False(string.IsNullOrWhiteSpace(lastRunId));
+    }
+
+    [Fact]
     public async Task PublishANewSinkBackfillsOnlyThatTargetForHistoricalFiles()
     {
         using var temp = new TempDir();

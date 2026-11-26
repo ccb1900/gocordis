@@ -174,6 +174,9 @@ public sealed class FileDeliveryEntity
     public string? Error { get; set; }
     public DateTimeOffset? ClaimedAt { get; set; }
     public string? ClaimToken { get; set; }
+    /// <summary>The run that most recently actually attempted this delivery.
+    /// Retry follows this field, not the historical run association set.</summary>
+    public string? LastAttemptRunId { get; set; }
     public DateTimeOffset? LeaseExpiresAt { get; set; }
     public long LeaseExpiresAtUnixMs { get; set; }
     public string IdempotencyKey { get; set; } = string.Empty;
@@ -313,6 +316,16 @@ public static class IndustrialStore
             "CREATE INDEX IF NOT EXISTS IX_ScheduleFires_Status_Due ON ScheduleFires(Status, DueAtUtc);");
         Execute(context,
             "CREATE UNIQUE INDEX IF NOT EXISTS IX_ScheduleFires_ClaimToken ON ScheduleFires(ClaimToken) WHERE ClaimToken IS NOT NULL;");
+        // Per-version scan position: catch-up starts where this workflow version
+        // last looked, so low-frequency cron jobs are not lost after downtime.
+        Execute(context, """
+            CREATE TABLE IF NOT EXISTS ScheduleCheckpoints (
+                WorkflowId TEXT NOT NULL,
+                Version INTEGER NOT NULL,
+                CheckpointUtc TEXT NOT NULL,
+                Skipped INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (WorkflowId, Version));
+            """);
     }
 
     private static void UpgradeLedgerSchema(IndustrialDbContext context)
@@ -332,6 +345,7 @@ public static class IndustrialStore
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN Warnings INTEGER NOT NULL DEFAULT 0;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN StatisticsJson TEXT NULL;");
         Execute(context, "ALTER TABLE CollectionRuns ADD COLUMN InstanceId TEXT NULL;");
+        Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN LastAttemptRunId TEXT NULL;");
         Execute(context, "CREATE INDEX IF NOT EXISTS IX_CollectionRuns_InstanceId ON CollectionRuns(InstanceId);");
         Execute(context, """
             CREATE TABLE IF NOT EXISTS CollectionRunDeliveries (

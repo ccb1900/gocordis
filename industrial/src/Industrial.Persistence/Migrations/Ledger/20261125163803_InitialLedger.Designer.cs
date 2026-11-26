@@ -212,6 +212,9 @@ namespace Industrial.Persistence.Migrations.Ledger
                     b.Property<long>("LeaseExpiresAtUnixMs")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("LastAttemptRunId")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("Records")
                         .HasColumnType("INTEGER");
 

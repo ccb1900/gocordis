@@ -101,6 +101,7 @@ namespace Industrial.Persistence.Migrations.Ledger
                     ClaimToken = table.Column<string>(type: "TEXT", nullable: true),
                     LeaseExpiresAt = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
                     LeaseExpiresAtUnixMs = table.Column<long>(type: "INTEGER", nullable: false),
+                    LastAttemptRunId = table.Column<string>(type: "TEXT", nullable: true),
                     IdempotencyKey = table.Column<string>(type: "TEXT", nullable: false),
                     Accepted = table.Column<int>(type: "INTEGER", nullable: false),
                     Rejected = table.Column<int>(type: "INTEGER", nullable: false),

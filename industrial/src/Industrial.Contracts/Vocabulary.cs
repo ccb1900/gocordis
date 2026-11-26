@@ -275,7 +275,8 @@ public sealed record ScheduleFireClaim(string Key, string Token, int Attempts);
 
 public sealed record ScheduleFireView(
     string Key, string WorkflowId, int Version, DateTimeOffset DueAtUtc,
-    string Status, int Attempts, string? Error, DateTimeOffset? FinishedAtUtc);
+    string Status, int Attempts, string? Error, DateTimeOffset? FinishedAtUtc,
+    long LeaseExpiresAtUnixMs = 0);
 
 public sealed record FileIdentity(
     string Key,
@@ -377,7 +378,8 @@ public sealed record FileDelivery(
     int Accepted = 0,
     int Rejected = 0,
     int Warnings = 0,
-    string? StatisticsJson = null);
+    string? StatisticsJson = null,
+    string? LastAttemptRunId = null);
 
 public sealed record DeliveryClaim(
     string DeliveryId,
@@ -466,6 +468,14 @@ public interface ICollectionLedger
     /// <summary>Startup-only: turn claims whose owner died into recoverable failures.</summary>
     ValueTask<int> AbandonScheduleFiresAsync(CancellationToken ct = default);
     ValueTask<IReadOnlyList<ScheduleFireView>> ListScheduleFiresAsync(CancellationToken ct = default);
+    /// <summary>Per-version scan position for cron catch-up. Skipped is the
+    /// cumulative count of overdue fires exceeding the bounded catch-up limit.
+    /// </summary>
+    ValueTask<(DateTimeOffset? Checkpoint, int Skipped)> GetScheduleCheckpointAsync(
+        string workflowId, int version, CancellationToken ct = default);
+    ValueTask SetScheduleCheckpointAsync(
+        string workflowId, int version, DateTimeOffset checkpoint, int skippedIncrement,
+        CancellationToken ct = default);
     ValueTask MarkDeliveryContestedAsync(
         string runId, string deliveryId, string reason, CancellationToken ct = default);
     ValueTask<CollectionRun?> GetRunAsync(string runId, CancellationToken ct = default);

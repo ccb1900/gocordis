@@ -13,7 +13,7 @@ vi.mock("antd", async () => {
       value: props.value ?? "",
       onChange: (event: any) => props.onChange?.({ target: { value: event.target.value } }),
     }),
-    { TextArea: (props: any) => React.createElement("textarea", { value: props.value ?? "" }) },
+    { TextArea: (props: any) => React.createElement("textarea", { value: props.value ?? "" }), Password: (props: any) => React.createElement("input", { type: "password", value: props.value ?? "" }) },
   );
   return {
     Button: (props: any) => React.createElement("button", { onClick: props.onClick }, props.children),

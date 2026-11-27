@@ -60,10 +60,12 @@ while IFS= read -r file; do
     tests/*) ROOT_TESTS=1 ;;
   esac
   case "$file" in
-    *BindingConsole*|*ConfigurationRegistries*|*IndustrialUiComponent*|*Vocabulary.cs|*IndustrialDbContext*|*Industrial.Elsa*|*BindingParameterTests*|*ImportPreviewTests*|*CollectionBindingTests*|*ConfigurationImportTests*|*ConfigPackageTests*|*ExcelImportTests*)
-      BACKEND_FILTER='FullyQualifiedName~BindingParameterTests|FullyQualifiedName~ImportPreviewTests|FullyQualifiedName~CollectionBindingTests|FullyQualifiedName~ConfigurationImportTests|FullyQualifiedName~ConfigPackageTests|FullyQualifiedName~ExcelImportTests|FullyQualifiedName~ResourceReferenceGuardTests' ;;
-    *Credential*|*ResourceConnectionTester*|*SinkFactories*|*CredentialBackendTests*)
+    *BindingConsole*|*ConfigurationRegistries*|*IndustrialUiComponent*|*Vocabulary.cs|*IndustrialDbContext*|*Industrial.Elsa*|*BindingParameterTests*|*ImportPreviewTests*|*CollectionBindingTests*|*ConfigurationImportTests*|*ConfigPackageTests*|*ExcelImportTests*|*FileProfileRuntimeTests*|*CsvImportTests*)
+      BACKEND_FILTER='FullyQualifiedName~BindingParameterTests|FullyQualifiedName~ImportPreviewTests|FullyQualifiedName~CollectionBindingTests|FullyQualifiedName~ConfigurationImportTests|FullyQualifiedName~ConfigPackageTests|FullyQualifiedName~ExcelImportTests|FullyQualifiedName~FileProfileRuntimeTests|FullyQualifiedName~CsvImportTests|FullyQualifiedName~ResourceReferenceGuardTests' ;;
+    industrial/src/*Credential*|industrial/tests/*Credential*|*ResourceConnectionTester*|*SinkFactories*)
       BACKEND_FILTER='FullyQualifiedName~CredentialBackendTests|FullyQualifiedName~ResourceReferenceGuardTests' ;;
+    *MachineConsole*|*ResourceReferenceGuardTests*)
+      BACKEND_FILTER='FullyQualifiedName~ResourceReferenceGuardTests' ;;
     *IndustrialNodesComponent*|*PropertyEditor*|*workflow-model*)
       BACKEND_FILTER='FullyQualifiedName~WorkflowValidatorTests|FullyQualifiedName~FeatureMatrixTests' ;;
   esac
@@ -123,7 +125,7 @@ if (( INDUSTRIAL_SRC || INDUSTRIAL_TESTS )); then
 fi
 
 if (( WEB_SRC )); then
-  run "cd industrial/web && npx tsc --noEmit && npm test -- --run"
+  run "(cd industrial/web && npx tsc --noEmit && npm test -- --run)"
 fi
 
 if [[ -n "$SPECS" ]]; then

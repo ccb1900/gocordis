@@ -24,6 +24,7 @@ using Industrial.Contracts;
 using Industrial.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.FileSystemGlobbing;
 
 namespace Industrial.Elsa;
 
@@ -1319,7 +1320,8 @@ public sealed class IndustrialElsaComponent : Component
 
         _lastBindingValues = new JsonObject(values
             .Select(pair => KeyValuePair.Create<string, JsonNode?>(pair.Key, JsonValue.Create(pair.Value))));
-        var bound = WorkflowBinding.BindParameters(published.Definition, values);
+        var bound = WorkflowBinding.ApplyFileProfile(
+            WorkflowBinding.BindParameters(published.Definition, values), profile);
         var layout = new Dictionary<string, object?>(bound.Layout, StringComparer.Ordinal)
         {
             ["lookbackDays"] = days,
@@ -1700,6 +1702,15 @@ public sealed class IndustrialElsaComponent : Component
                 : _resourceId;
             var discovered = await _source.DiscoverAsync(
                 resourceId, _planner.Plan(DateTimeOffset.UtcNow, Lookback()), ct);
+            var pattern = new NodeConfigReader(node.Config).GetString("fileNamePattern", string.Empty);
+            if (!string.IsNullOrWhiteSpace(pattern))
+            {
+                var matcher = new Matcher();
+                matcher.AddInclude(pattern);
+                discovered = discovered.Where(file =>
+                    matcher.Match(Path.GetDirectoryName(file.FullPath) ?? string.Empty,
+                        Path.GetFileName(file.FullPath)).HasMatches).ToArray();
+            }
             var discoveredFiles = new List<DiscoveredFile>();
             var batchFiles = new List<BatchFileRef>();
             foreach (var file in discovered)
@@ -2099,6 +2110,49 @@ public sealed class CollectFileActivity : CodeActivity
 /// </summary>
 public static class WorkflowBinding
 {
+    /// <summary>Apply a reusable FileProfile to the immutable bound snapshot.
+    /// It only writes config keys the existing readers/transforms already
+    /// understand; no second parsing or mapping engine is introduced.
+    /// </summary>
+    public static WorkflowDefinition ApplyFileProfile(
+        WorkflowDefinition definition, FileProfileDefinition? profile)
+    {
+        if (profile is null) return definition;
+        return definition with
+        {
+            Nodes = definition.Nodes.Select(node => ApplyToFile(node, profile)).ToArray(),
+        };
+    }
+
+    private static WorkflowNode ApplyToFile(WorkflowNode node, FileProfileDefinition profile)
+    {
+        var type = node.Type.ToLowerInvariant();
+        var config = new Dictionary<string, object?>(node.Config, StringComparer.Ordinal);
+        if (type.Contains("source"))
+        {
+            config["fileNamePattern"] = profile.FileNamePattern;
+            config["format"] = profile.Format;
+        }
+        if (type.Contains("reader"))
+        {
+            config["delimiter"] = profile.Delimiter;
+            config["hasHeaderRecord"] = profile.HasHeader;
+            config["encoding"] = profile.Encoding;
+            config["format"] = profile.Format;
+        }
+        if (type.Contains("mapping"))
+        {
+            config["mapping"] = profile.Mapping.ToDictionary(
+                pair => pair.Key, pair => pair.Value?.ToString() ?? string.Empty,
+                StringComparer.OrdinalIgnoreCase);
+        }
+        if (type.Contains("validate"))
+        {
+            config["required"] = profile.RequiredFields.ToArray();
+        }
+        return node with { Config = config };
+    }
+
     public static WorkflowDefinition BindParameters(
         WorkflowDefinition definition, IReadOnlyDictionary<string, string> values)
     {

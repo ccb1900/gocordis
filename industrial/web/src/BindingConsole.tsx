@@ -36,6 +36,7 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
   const [targetIds, setTargetIds] = useState<string[]>([]);
   const [csv, setCsv] = useState("");
   const [packageText, setPackageText] = useState("");
+  const [packageMeta, setPackageMeta] = useState<any>(null);
   const [resourceMap, setResourceMap] = useState("");
   const [credentialMap, setCredentialMap] = useState("");
   const [status, setStatus] = useState<any>(null);
@@ -83,19 +84,26 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
     if (!workflowId || machineIds.length === 0 || profileIds.length === 0 || targetIds.length === 0) {
       setError("请选择工作流、机台、文件配置和目标资源"); return;
     }
-    // The preview is advisory; the registry repeats the same validation on the
-    // server so a stale client snapshot can never silently create bad bindings.
+    const payload = {
+      machineIds, fileProfileIds: profileIds, workflowId, workflowVersion: version,
+      sourceResourcePattern: sourcePattern, targetResourceIds: targetIds,
+      triggerKind, cron: cron || null,
+      parameters: Object.fromEntries(runParameters.split(";").map((pair) => pair.split("="))
+        .filter((parts) => parts.length === 2 && parts[0].trim() && parts[1].trim())
+        .map((parts) => [parts[0].trim(), parts[1].trim()])),
+      exclusions: exclusions.split(/[,\n;]/).map((item: string) => item.trim()).filter(Boolean),
+    };
     setBusy(true); setError(null);
     try {
-      await ctx.hubCommand("industrial/create-bindings", {
-        machineIds, fileProfileIds: profileIds, workflowId, workflowVersion: version,
-        sourceResourcePattern: sourcePattern, targetResourceIds: targetIds,
-        triggerKind, cron: cron || null,
-        parameters: Object.fromEntries(runParameters.split(";").map((pair) => pair.split("="))
-          .filter((parts) => parts.length === 2 && parts[0].trim() && parts[1].trim())
-          .map((parts) => [parts[0].trim(), parts[1].trim()])),
-        exclusions: exclusions.split(/[,\n;]/).map((item: string) => item.trim()).filter(Boolean),
-      });
+      await ctx.hubCommand("industrial/preview-bindings", payload);
+      const report = await ctx.hubQuery("industrial/binding-preview") as any;
+      setBindingPreviewReport(report);
+      if ((report?.errors?.length ?? 0) > 0 || (report?.missing?.length ?? 0) > 0 ||
+          (report?.conflicts?.length ?? 0) > 0) {
+        setError("服务端预览发现问题，请检查冲突、缺失资源或例外规则后再创建");
+        return;
+      }
+      await ctx.hubCommand("industrial/create-bindings", payload);
       await load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
@@ -200,7 +208,16 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
     try {
       const raw = await ctx.hubQuery("industrial/export-config");
       const payload = (raw as any)?.data ?? raw;
-      setPackageText(JSON.stringify(payload, null, 2));
+      const text = JSON.stringify(payload, null, 2);
+      setPackageText(text);
+      setPackageMeta(payload);
+      const blob = new Blob([text], { type: "application/json" });
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `gocordis-industrial-config-v${payload?.formatVersion ?? 1}.json`;
+      anchor.click();
+      window.URL.revokeObjectURL(url);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   }, [ctx]);
 
@@ -212,6 +229,18 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
     }
     return result;
   };
+
+  const loadPackageFile = useCallback(async (file?: File) => {
+    if (!file) return;
+    setError(null);
+    try {
+      const text = await file.text();
+      setPackageText(text);
+      setPackageMeta(JSON.parse(text));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, []);
 
   const importConfig = useCallback(async () => {
     setBusy(true); setError(null);
@@ -230,20 +259,6 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
       <Typography.Title level={4} style={{ margin: 0 }}>采集任务绑定</Typography.Title>
       {error && <Alert type="error" showIcon message={error} />}
       <Space wrap>
-        <Input aria-label="工作流 ID" placeholder="工作流 ID" value={workflowId ?? ""}
-          onChange={(e: any) => setWorkflowId(e.target.value)} />
-        <Input aria-label="机台 ID 列表" placeholder="机台 ID，逗号分隔"
-          value={machineIds.join(",")}
-          onChange={(e: any) => setMachineIds(e.target.value.split(",")
-            .map((item: string) => item.trim()).filter(Boolean))} />
-        <Input aria-label="文件配置 ID 列表" placeholder="文件配置 ID，逗号分隔"
-          value={profileIds.join(",")}
-          onChange={(e: any) => setProfileIds(e.target.value.split(",")
-            .map((item: string) => item.trim()).filter(Boolean))} />
-        <Input aria-label="目标资源 ID 列表" placeholder="目标资源 ID，逗号分隔"
-          value={targetIds.join(",")}
-          onChange={(e: any) => setTargetIds(e.target.value.split(",")
-            .map((item: string) => item.trim()).filter(Boolean))} />
         <Select aria-label="工作流模板" mode="single" style={{ width: 220 }} value={workflowId}
           onChange={(value: string) => setWorkflowId(value)}
           options={workflows.map((item) => ({ value: item.workflowId, label: item.name }))} />
@@ -258,11 +273,6 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
         <Select aria-label="目标资源" mode="multiple" style={{ width: 300 }} value={targetIds}
           onChange={(values: string[]) => setTargetIds(values)}
           options={resources.map((item) => ({ value: item.id, label: `${item.name} (${item.type})` }))} />
-        <select aria-label="绑定触发策略选择" value={triggerKind}
-          onChange={(e: any) => setTriggerKind(e.target.value)}>
-          <option value="manual">手动</option>
-          <option value="schedule">定时</option>
-        </select>
         <Select aria-label="绑定触发策略" style={{ width: 160 }} value={triggerKind}
           onChange={(value: string) => setTriggerKind(value)}
           options={[{ value: "manual", label: "手动" }, { value: "schedule", label: "定时" }]} />
@@ -341,7 +351,18 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
       <Space wrap>
         <Button onClick={() => void exportConfig()}>导出配置</Button>
         <Button loading={busy} onClick={() => void importConfig()}>导入配置</Button>
+        <label>
+          上传配置文件
+          <input type="file" accept=".json,application/json" aria-label="上传配置文件"
+            onChange={(event: any) => void loadPackageFile(event.target.files?.[0])} />
+        </label>
       </Space>
+      {packageMeta?.dependencies && (
+        <Alert type="info" showIcon data-testid="package-dependencies"
+          message={`配置包 v${packageMeta.formatVersion ?? 1} · ${packageMeta.dependencies.length} 项依赖`}
+          description={packageMeta.dependencies.map((item: any, index: number) =>
+            <div key={index}>{item.kind}: {item.id}{item.version ? ` @ ${item.version}` : ""}</div>)} />
+      )}
       <Input aria-label="资源 ID 映射" placeholder="旧资源ID=新资源ID，逗号或换行分隔" value={resourceMap}
         onChange={(e: any) => setResourceMap(e.target.value)} />
       <Input aria-label="凭证别名映射" placeholder="旧凭证ID=新凭证ID" value={credentialMap}

@@ -267,9 +267,11 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
         const descriptor = descriptorOf(catalog, clipboardRef.current.type);
         if (!descriptor) return;
         const id = `n${idRef.current++}`;
-        const spot = freePosition(definition, clipboardRef.current.x + 40, clipboardRef.current.y + 40);
+        const source = clipboardRef.current;
+        const spot = freePosition(definition, source.x + 40, source.y + 40);
+        const cloned = makeNode(descriptor, id, spot.x, spot.y);
         commit({ ...definition,
-          nodes: [...definition.nodes, makeNode(descriptor, id, spot.x, spot.y)] });
+          nodes: [...definition.nodes, { ...cloned, config: { ...source.config } }] });
         setSelectedId(id);
       }
     };

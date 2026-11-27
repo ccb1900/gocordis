@@ -147,13 +147,13 @@ export function CredentialConsole({ block, ctx }: { block?: { query?: string }; 
             onChange={(value: string) => setKind(value)}
             options={kinds.map((item) => ({ value: item, label: item }))} />
           {kind === "api-token" ? (
-            <Input aria-label="令牌" placeholder="令牌" value={token}
+            <Input.Password aria-label="令牌" placeholder="令牌" value={token}
               onChange={(e: any) => setToken(e.target.value)} />
           ) : (
             <>
               <Input aria-label="用户名" placeholder="用户名" value={username}
                 onChange={(e: any) => setUsername(e.target.value)} />
-              <Input aria-label="密码" placeholder="密码" value={password}
+              <Input.Password aria-label="密码" placeholder="密码" value={password}
                 onChange={(e: any) => setPassword(e.target.value)} />
               {kind === "domain-account" && (
                 <Input aria-label="域" placeholder="域（可选）" value={domain}
@@ -161,7 +161,7 @@ export function CredentialConsole({ block, ctx }: { block?: { query?: string }; 
               )}
             </>
           )}
-          <Input aria-label="凭证内容" placeholder="高级：直接提供凭证内容（优先）"
+          <Input.Password aria-label="凭证内容" placeholder="高级：直接提供凭证内容（优先）"
             value={secret} onChange={(e: any) => setSecret(e.target.value)} />
           {error && <Typography.Text type="danger">{error}</Typography.Text>}
         </Space>

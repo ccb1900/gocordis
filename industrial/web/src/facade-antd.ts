@@ -23,6 +23,7 @@ export const Form = Object.assign(component("Form"), {
 export const Input = Object.assign(component("Input"), {
   Number: component("InputNumber"),
   TextArea: component("Input.TextArea"),
+  Password: component("Input.Password"),
 }) as any;
 export const InputNumber = component("InputNumber");
 export const Layout = Object.assign(component("Layout"), {

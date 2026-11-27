@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { chooseAntd, chooseAntdMany } from "./selectors";
 
 test("import preview reports row errors and bulk exclusions skip invalid combinations", async ({ page }) => {
   const template = {
@@ -25,10 +26,10 @@ test("import preview reports row errors and bulk exclusions skip invalid combina
   } })).ok()).toBe(true);
 
   await page.goto("/industrial/bindings");
-  await page.getByLabel("工作流 ID").fill(template.workflowId);
-  await page.getByLabel("机台 ID 列表").fill("pv-m1,pv-m2");
-  await page.getByLabel("文件配置 ID 列表").fill("pv-p1,pv-p2");
-  await page.getByLabel("目标资源 ID 列表").fill("pv-target");
+  await chooseAntd(page, "工作流模板", "Preview template");
+  await chooseAntdMany(page, "机台范围", ["M1", "M2"]);
+  await chooseAntdMany(page, "文件配置范围", ["P1", "P2"]);
+  await chooseAntd(page, "目标资源", "Preview target (sqlite)");
   await page.getByLabel("来源资源模板").fill("source-1");
   await page.getByLabel("例外规则").fill("pv-m2:pv-p2");
   await page.getByRole("button", { name: "预览绑定" }).click();

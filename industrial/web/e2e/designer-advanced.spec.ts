@@ -25,7 +25,7 @@ const graphState = (page: any) => page.evaluate(() => {
   const options = graph.getOptions?.() ?? {};
   return {
     nodes: graph.getNodeData().map((node: any) => ({
-      id: String(node.id), x: node.style.x, y: node.style.y,
+      id: String(node.id), x: node.style.x, y: node.style.y, config: node.data?.config ?? {},
     })),
     edges: graph.getEdgeData().map((edge: any) => ({
       id: String(edge.id), source: String(edge.source), target: String(edge.target),
@@ -52,13 +52,16 @@ test("designer guides, snapping, copy/paste, edge reconnect and deletion", async
   // Native node click + Ctrl+C / Ctrl+V from the keyboard shortcut path.
   const sourcePoint = await page.evaluate(() => {
     const graph = (document.querySelector('[data-testid="industrial-graph"]') as any).__industrialGraph;
-    const node = graph.getNodeData().find((item: any) => item.id === "read");
+    const node = graph.getNodeData().find((item: any) => item.id === "src");
     return graph.getClientByCanvas([node.style.x, node.style.y]);
   });
   await page.mouse.click(sourcePoint[0], sourcePoint[1]);
   await page.keyboard.press("Control+c");
   await page.keyboard.press("Control+v");
   await expect.poll(async () => (await graphState(page))?.nodes.length).toBe(4);
+  const pasted = (await graphState(page)).nodes.find((node: any) => node.id !== "src" &&
+    node.id !== "read" && node.id !== "store")!;
+  expect(pasted.config.resourceId).toBe("source-1");
 
   // The visible snap command and a native drag both commit grid-aligned
   // positions; the alignment guide is observable in the real canvas.

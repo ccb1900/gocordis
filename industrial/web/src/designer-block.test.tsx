@@ -35,7 +35,7 @@ const antd = {
     Item: Box,
     useForm: () => [{ setFieldsValue: () => undefined, validateFields: async () => ({}) }],
   }),
-  Input: Object.assign(Box, { TextArea: Box, Number: Box }),
+  Input: Object.assign(Box, { TextArea: Box, Number: Box, Password: Box }),
   InputNumber: Box,
   message: {
     useMessage: () => [{ success: () => undefined, error: () => undefined, warning: () => undefined }, null],

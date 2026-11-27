@@ -2,6 +2,9 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Globalization;
+using CsvHelper;
+using CsvHelper.Configuration;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Gocordis.Core;
@@ -536,7 +539,7 @@ public sealed class IndustrialUiComponent : Component
                 api.RegisterCommand("industrial/save-machine", payload =>
                     new ValueTask(SaveMachineAsync(payload, machines).AsTask()), owner);
                 api.RegisterCommand("industrial/delete-machine", payload =>
-                    new ValueTask(DeleteMachineAsync(payload, machines).AsTask()), owner);
+                    new ValueTask(DeleteMachineAsync(payload, machines, bindings).AsTask()), owner);
                 api.RegisterCommand("industrial/save-resource", payload =>
                     new ValueTask(SaveResourceAsync(payload, resources).AsTask()), owner);
                 api.RegisterCommand("industrial/delete-resource", payload =>
@@ -612,10 +615,23 @@ public sealed class IndustrialUiComponent : Component
         }
 
         var csv = Text(body, "csv") ?? string.Empty;
-        var lines = csv.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
-        if (lines.Length == 0) return ([], []);
-        return (lines[0].Split(',').Select(part => part.Trim()).ToArray(),
-            lines.Skip(1).Select(line => line.Split(',')).ToList());
+        if (string.IsNullOrWhiteSpace(csv)) return ([], []);
+        using var text = new StringReader(csv);
+        var configuration = new CsvConfiguration(CultureInfo.InvariantCulture)
+        {
+            HeaderValidated = null,
+            MissingFieldFound = null,
+            TrimOptions = TrimOptions.Trim,
+        };
+        using var parser = new CsvParser(text, configuration);
+        if (!parser.Read()) return ([], []);
+        var csvHeader = parser.Record?.Select(value => value.Trim()).ToArray() ?? [];
+        var csvRows = new List<string[]>();
+        while (parser.Read())
+        {
+            csvRows.Add(parser.Record?.ToArray() ?? []);
+        }
+        return (csvHeader, csvRows);
     }
 
     private static string Cell(string[] header, string[] cells, string name, string fallback = "")
@@ -738,10 +754,18 @@ public sealed class IndustrialUiComponent : Component
             DateTimeOffset.UtcNow));
     }
 
-    private static async ValueTask DeleteMachineAsync(JsonNode? payload, IMachineRegistry machines)
+    private static async ValueTask DeleteMachineAsync(
+        JsonNode? payload, IMachineRegistry machines, ICollectionBindingRegistry bindings)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var id = Text(body, "id") ?? throw new InvalidOperationException("machine id is required");
+        var references = (await bindings.ListAsync())
+            .Where(binding => string.Equals(binding.MachineId, id, StringComparison.Ordinal))
+            .Select(binding => binding.Id).Take(5).ToArray();
+        if (references.Length > 0)
+            throw new InvalidOperationException(
+                $"machine '{id}' is still referenced by bindings: {string.Join(", ", references)}; " +
+                "remove those bindings before deleting it");
         await machines.RemoveAsync(id);
     }
 

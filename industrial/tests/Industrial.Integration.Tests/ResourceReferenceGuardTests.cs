@@ -69,6 +69,33 @@ public sealed class ResourceReferenceGuardTests
         }
     }
 
+    [Fact]
+    public async Task MachineReferencedByBindingCannotBeDeleted()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"industrial-machine-guard-{Guid.NewGuid():N}");
+        try
+        {
+            await using var runtime = CreateRuntime(root, out var api, out _);
+            await api.ExecuteAsync("industrial/save-machine", new JsonObject
+            {
+                ["id"] = "guarded-machine", ["name"] = "Guarded", ["endpoint"] = "10.0.0.1",
+                ["enabled"] = true,
+            });
+            await api.ExecuteAsync("industrial/import-bindings", new JsonObject
+            {
+                ["csv"] = "id,name,machineId,workflowId,workflowVersion,fileProfileId,sourceResourceId,targetResourceIds,triggerKind,cron\n" +
+                          "machine-binding,Binding,guarded-machine,flow,1,profile,source,target,manual,\n",
+            });
+            var rejection = await Assert.ThrowsAnyAsync<Exception>(async () =>
+                await api.ExecuteAsync("industrial/delete-machine", new JsonObject { ["id"] = "guarded-machine" }));
+            Assert.Contains("machine-binding", rejection.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch (IOException) { }
+        }
+    }
+
     private static async ValueTask SaveResource(ApiGateway api, string id) =>
         Assert.True(await api.ExecuteAsync("industrial/save-resource", new JsonObject
         {

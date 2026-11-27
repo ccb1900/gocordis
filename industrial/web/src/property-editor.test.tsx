@@ -28,7 +28,7 @@ vi.mock("antd", async () => {
     },
     useForm: () => [{ setFieldsValue: () => undefined, validateFields: async () => ({ resourceId: "new", enabled: false }) }],
   }),
-  Input: Object.assign(Box, { TextArea: Box }),
+  Input: Object.assign(Box, { TextArea: Box, Password: Box }),
   InputNumber: Box,
   Select: (props: any) => {
     selects.push(props);

@@ -129,6 +129,12 @@ One host-owned `CapabilityCatalog` (`Gocordis.Core`) allocates a single `ICapabi
 - Paper §5.2.2 HMR is reachable in the product through `POST /api/hmr` → `PlatformApplication.HmrAsync` → `HmrEngine`; the three-phase plan (accepted/declined/stale/restart-required) is returned over HTTP. Cancellation is **preflight-only**: once the single Registry transaction starts it is not interrupted. The read→plan→commit window is guarded by `DeclarationVersion`: a stale expected version fails before staging or touching any fiber. Replacement sources are resolved segment by segment and must land inside the real store root; changed modules/imports/externals are supplied by the caller, so this is an HMR coordination engine with a product entry, not automatic file-watch/build HMR. Package upgrade via `plugin upgrade` remains a distinct revision/packaging operation.
 - Paper C38 (`VersionedKey<T>` + NuGet ranges instead of nominal `K×P`) remains the single accepted difference; C34 is covered via `Runtime.RehomeAsync`.
 
+## Verification workflow
+
+- **Incremental (default during implementation):** `BASE=<commit> DRY_RUN=1 bash tools/release/fast-check.sh` lists exactly the affected suites; without `DRY_RUN` it runs only those. It maps changed source/spec files to a backend test filter, frontend unit tests and an explicit `E2E_SPECS` subset. `industrial/e2e-browser.sh` honors `E2E_SPECS` and no longer defaults to every spec for a small change.
+- **Final acceptance (only when the change is complete):** `bash tools/release/test-report.sh artifacts/test-report`. This is the single full gate: all .NET solutions/frontend packages, the complete browser suite, packaged/blank-environment flows, real database integrations, and the evidence-bound Windows UNC backend + browser runs. External evidence workflows are triggered only by a product commit, never by an incremental local loop.
+- The 800-fire scheduler test and real external runner jobs are deliberately excluded from the incremental loop because they are slow; the final report includes them.
+
 ## Doc layers
 
 1. **Current engineering spec**: root `AGENTS.md`, `docs/guide/csharp-developer-manual.md`.

@@ -42,5 +42,10 @@ if ! curl -fsS "$URL/api/query/industrial/recovery" >/dev/null 2>&1 ||
   exit 1
 fi
 
-(cd "$ROOT/industrial/web" && E2E_BASE_URL="$URL" npm run test:e2e -- e2e/designer.spec.ts e2e/user-stories.spec.ts e2e/designer-gestures.spec.ts e2e/designer-usability.spec.ts e2e/designer-advanced.spec.ts e2e/scale-e2e.spec.ts e2e/excel-e2e.spec.ts e2e/parameters-e2e.spec.ts e2e/import-preview-e2e.spec.ts)
+# Incremental runs pass an explicit subset via E2E_SPECS; final acceptance uses
+# the full default list. Never silently fall back to "all specs" for a small
+# change: that is what made earlier verification rounds unnecessarily slow.
+DEFAULT_SPECS="e2e/designer.spec.ts e2e/user-stories.spec.ts e2e/designer-gestures.spec.ts e2e/designer-usability.spec.ts e2e/designer-advanced.spec.ts e2e/scale-e2e.spec.ts e2e/excel-e2e.spec.ts e2e/parameters-e2e.spec.ts e2e/import-preview-e2e.spec.ts"
+SPECS="${E2E_SPECS:-$DEFAULT_SPECS}"
+(cd "$ROOT/industrial/web" && E2E_BASE_URL="$URL" npm run test:e2e -- $SPECS)
 echo "==> real-browser designer E2E passed: $URL"

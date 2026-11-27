@@ -327,7 +327,7 @@ test("a quick wizard creates and publishes a standard workflow", async ({ page }
   expect(source && target).toBeTruthy();
   await page.getByLabel("任务名称").fill("Wizard flow");
   await chooseAntd(page, "数据来源", `${source.name} (${source.type})`);
-  await chooseAntd(page, "目标资源", `${target.name} (${target.type})`);
+  await chooseAntdByTyping(page, "目标资源", `${target.name} (${target.type})`);
   const savedRequest = page.waitForRequest(request =>
     request.method() === "POST" && request.url().includes("/api/command/industrial/save-workflow"));
   const publishedResponse = page.waitForResponse(response =>
@@ -498,7 +498,7 @@ test("a user generates bulk bindings instead of copying workflows", async ({ pag
   await chooseAntd(page, "文件配置范围", "Profile B");
   const available = (await (await page.request.get("/api/query/industrial/resources")).json()).data;
   const target = available.find((row: { type: string }) => row.type === "sqlite") ?? available[0];
-  await chooseAntd(page, "目标资源", `${target.name} (${target.type})`);
+  await page.getByLabel("目标资源 ID 列表").fill(target.id);
   await expect(page.getByText(/预计生成 4 条绑定/)).toBeVisible();
   await page.getByLabel("资源 ID 映射").fill("old-source=resource-bulk-1");
   await page.getByLabel("凭证别名映射").fill("old-cred=machine-credential");

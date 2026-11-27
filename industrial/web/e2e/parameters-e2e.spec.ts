@@ -39,7 +39,7 @@ test("binding run parameters reach the published template at runtime", async ({ 
   await chooseAntd(page, "工作流模板", "Parameter E2E");
   await chooseAntd(page, "机台范围", "Param machine");
   await chooseAntd(page, "文件配置范围", "Param profile");
-  await chooseAntd(page, "目标资源", "Param target (sqlite)");
+  await page.getByLabel("目标资源 ID 列表").fill("params-target");
   await page.getByLabel("来源资源模板").fill("params-source");
   await page.getByLabel("运行参数").fill("lookbackDays=7;shift=night");
   await page.getByRole("button", { name: "生成绑定" }).click();

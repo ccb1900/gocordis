@@ -29,7 +29,7 @@ test("import preview reports row errors and bulk exclusions skip invalid combina
   await chooseAntd(page, "工作流模板", "Preview template");
   await chooseAntdMany(page, "机台范围", ["M1", "M2"]);
   await chooseAntdMany(page, "文件配置范围", ["P1", "P2"]);
-  await chooseAntd(page, "目标资源", "Preview target (sqlite)");
+  await page.getByLabel("目标资源 ID 列表").fill("pv-target");
   await page.getByLabel("来源资源模板").fill("source-1");
   await page.getByLabel("例外规则").fill("pv-m2:pv-p2");
   await page.getByRole("button", { name: "预览绑定" }).click();

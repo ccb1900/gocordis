@@ -270,9 +270,10 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
         <Select aria-label="文件配置范围" mode="multiple" style={{ width: 300 }} value={profileIds}
           onChange={(values: string[]) => setProfileIds(values)}
           options={profiles.map((item) => ({ value: item.id, label: item.name }))} />
-        <Select aria-label="目标资源" mode="multiple" style={{ width: 300 }} value={targetIds}
-          onChange={(values: string[]) => setTargetIds(values)}
-          options={resources.map((item) => ({ value: item.id, label: `${item.name} (${item.type})` }))} />
+        <Input aria-label="目标资源 ID 列表" placeholder="目标资源 ID，逗号分隔"
+          value={targetIds.join(",")}
+          onChange={(e: any) => setTargetIds(e.target.value.split(",")
+            .map((item: string) => item.trim()).filter(Boolean))} />
         <Select aria-label="绑定触发策略" style={{ width: 160 }} value={triggerKind}
           onChange={(value: string) => setTriggerKind(value)}
           options={[{ value: "manual", label: "手动" }, { value: "schedule", label: "定时" }]} />

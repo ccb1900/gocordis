@@ -1,7 +1,7 @@
 name: windows-unc-browser
 
-# Runtime contract rebind: re-run on packaging fixes because packaged UI is part of this story.
-# Runtime contract rebind: browser-level acceptance for the Windows UNC UI story. The run id and tested
+# Selector stability rebind: re-run on packaging fixes because packaged UI is part of this story.
+# Selector stability rebind: browser-level acceptance for the Windows UNC UI story. The run id and tested
 # head sha are recorded in artifacts/windows-unc-browser-result.json.
 
 on:

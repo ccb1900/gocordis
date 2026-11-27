@@ -542,10 +542,16 @@ public sealed class IndustrialUiComponent : Component
                     new ValueTask(RotateCredentialAsync(payload, credentials).AsTask()), owner);
                 api.RegisterCommand("industrial/delete-credential", payload =>
                     new ValueTask(DeleteCredentialAsync(payload, credentials, resources, machines).AsTask()), owner);
+                api.RegisterCommand("industrial/upgrade-binding-version", payload =>
+                    new ValueTask(UpgradeBindingVersionAsync(payload, bindings, workflows).AsTask()), owner);
                 api.RegisterCommand("industrial/set-binding-enabled", payload =>
                     new ValueTask(SetBindingEnabledAsync(payload, bindings).AsTask()), owner);
                 api.RegisterCommand("industrial/import-config", payload =>
                     new ValueTask(ImportConfigAsync(payload, workflows, fileProfiles, bindings).AsTask()), owner);
+                api.RegisterCommand("industrial/import-file-profiles", payload =>
+                    new ValueTask(ImportFileProfilesAsync(payload, fileProfiles).AsTask()), owner);
+                api.RegisterCommand("industrial/import-bindings", payload =>
+                    new ValueTask(ImportBindingsAsync(payload, bindings).AsTask()), owner);
                 api.RegisterCommand("industrial/import-machines", payload =>
                     new ValueTask(ImportMachinesAsync(payload, machines).AsTask()), owner);
                 api.RegisterCommand("industrial/save-file-profile", payload =>
@@ -662,6 +668,26 @@ public sealed class IndustrialUiComponent : Component
         return map;
     }
 
+    private static async ValueTask UpgradeBindingVersionAsync(
+        JsonNode? payload, ICollectionBindingRegistry bindings, IWorkflowRegistry workflows)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var version = body["version"] is JsonValue value && value.TryGetValue<int>(out var parsed)
+            ? parsed : throw new InvalidOperationException("version is required");
+        var ids = body["ids"] is JsonArray array
+            ? array.Select(node => node?.GetValue<string>()).Where(id => id is not null).ToArray()
+            : [];
+        foreach (var id in ids)
+        {
+            var binding = await bindings.GetAsync(id!)
+                          ?? throw new InvalidOperationException($"binding '{id}' not found");
+            if (await workflows.GetPublishedVersionAsync(binding.WorkflowId, version) is null)
+                throw new InvalidOperationException(
+                    $"workflow {binding.WorkflowId}:v{version} is not published");
+            await bindings.RegisterAsync(binding with { WorkflowVersion = version });
+        }
+    }
+
     private static async ValueTask SetBindingEnabledAsync(
         JsonNode? payload, ICollectionBindingRegistry bindings)
     {
@@ -737,6 +763,82 @@ public sealed class IndustrialUiComponent : Component
         }
     }
 
+    private static async ValueTask ImportFileProfilesAsync(
+        JsonNode? payload, IFileProfileRegistry profiles)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var csv = Text(body, "csv") ?? string.Empty;
+        var lines = csv.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length == 0) return;
+        var header = lines[0].Split(',').Select(part => part.Trim()).ToArray();
+        int Column(string name) => Array.IndexOf(header, name);
+        var idIndex = Column("id");
+        var nameIndex = Column("name");
+        if (idIndex < 0 || nameIndex < 0)
+            throw new InvalidOperationException("file profile CSV requires id and name columns");
+        foreach (var line in lines.Skip(1))
+        {
+            var cells = line.Split(',');
+            var id = cells[idIndex].Trim();
+            if (id.Length == 0) continue;
+            string Cell(string name, string fallback)
+            {
+                var index = Column(name);
+                return index >= 0 && index < cells.Length && cells[index].Trim().Length > 0
+                    ? cells[index].Trim() : fallback;
+            }
+            var mapping = new Dictionary<string, object?>();
+            foreach (var pair in Cell("mapping", string.Empty).Split(';'))
+            {
+                var parts = pair.Split('=').Select(x => x.Trim()).ToArray();
+                if (parts.Length == 2 && parts[0].Length > 0 && parts[1].Length > 0) mapping[parts[0]] = parts[1];
+            }
+            await profiles.RegisterAsync(new FileProfileDefinition(
+                id, cells[nameIndex].Trim(), 0,
+                Cell("fileNamePattern", "*.csv"), Cell("format", "csv"),
+                Cell("delimiter", ","),
+                bool.TryParse(Cell("hasHeader", "true"), out var hasHeader) ? hasHeader : true,
+                Cell("encoding", "utf-8"), mapping,
+                Cell("required", string.Empty).Split(';').Where(x => x.Trim().Length > 0)
+                    .Select(x => x.Trim()).ToArray(),
+                true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+        }
+    }
+
+    private static async ValueTask ImportBindingsAsync(
+        JsonNode? payload, ICollectionBindingRegistry bindings)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var csv = Text(body, "csv") ?? string.Empty;
+        var lines = csv.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length == 0) return;
+        var header = lines[0].Split(',').Select(part => part.Trim()).ToArray();
+        int Column(string name) => Array.IndexOf(header, name);
+        foreach (var line in lines.Skip(1))
+        {
+            var cells = line.Split(',');
+            string Cell(string name, string fallback = "")
+            {
+                var index = Column(name);
+                return index >= 0 && index < cells.Length && cells[index].Trim().Length > 0
+                    ? cells[index].Trim() : fallback;
+            }
+            var id = Cell("id");
+            if (id.Length == 0) continue;
+            var kind = Cell("triggerKind", "manual");
+            var cron = Cell("cron", string.Empty);
+            await bindings.RegisterAsync(new CollectionBindingDefinition(
+                id, Cell("name", id), Cell("machineId"),
+                Cell("workflowId"), int.TryParse(Cell("workflowVersion", "1"), out var version) ? version : 1,
+                Cell("fileProfileId"), Cell("sourceResourceId"),
+                Cell("targetResourceIds").Split(';').Where(x => x.Trim().Length > 0)
+                    .Select(x => x.Trim()).ToArray(),
+                new TriggerDefinition(kind, cron.Length > 0 ? cron : null, null,
+                    new Dictionary<string, object?>()),
+                true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+        }
+    }
+
     private static async ValueTask ImportMachinesAsync(JsonNode? payload, IMachineRegistry machines)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
@@ -806,13 +908,14 @@ public sealed class IndustrialUiComponent : Component
             body["workflowVersion"] is JsonValue version && version.TryGetValue<int>(out var parsed)
                 ? parsed : 1,
             Text(body, "sourceResourcePattern") ?? "resource-{machine}",
-            List("targetResourceIds"));
+            List("targetResourceIds"), Text(body, "triggerKind") ?? "manual",
+            Text(body, "cron"));
     }
 
     private sealed record BindingRequest(
         IReadOnlyList<string> MachineIds, IReadOnlyList<string> FileProfileIds,
         string WorkflowId, int WorkflowVersion, string SourceResourcePattern,
-        IReadOnlyList<string> TargetResourceIds);
+        IReadOnlyList<string> TargetResourceIds, string TriggerKind, string? Cron);
 
     private static async ValueTask PreviewBindingsAsync(JsonNode? payload, ICollectionBindingRegistry bindings)
     {
@@ -832,7 +935,7 @@ public sealed class IndustrialUiComponent : Component
             ?? throw new InvalidOperationException("JSON payload required"));
         await bindings.CreateBulkAsync(request.MachineIds, request.FileProfileIds,
             request.WorkflowId, request.WorkflowVersion, request.SourceResourcePattern,
-            request.TargetResourceIds);
+            request.TargetResourceIds, request.TriggerKind, request.Cron);
     }
 
     private static async ValueTask DeleteCredentialAsync(

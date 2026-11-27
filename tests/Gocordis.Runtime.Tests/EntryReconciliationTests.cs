@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Gocordis.Core;
 using Gocordis.Plugins;
 using Xunit;
@@ -114,9 +115,12 @@ public sealed class EntryReconciliationTests
     {
         await using var runtime = new Gocordis.Core.Runtime();
         await using var registry = new PluginRegistry(runtime);
-        var applies = new Dictionary<string, int>(StringComparer.Ordinal);
+        // Core may activate several entries concurrently; the probe must not
+        // corrupt its own bookkeeping while counting real Apply invocations.
+        var applies = new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
         registry.RegisterComponentFactory("probe", manifest =>
-            new CountingComponent(manifest.Id, () => applies[manifest.Id] = applies.GetValueOrDefault(manifest.Id) + 1));
+            new CountingComponent(manifest.Id,
+                () => applies.AddOrUpdate(manifest.Id, 1, (_, count) => count + 1)));
 
         var a = Manifest("a", "probe", intercept: "before");
         var b = Manifest("b", "probe");

@@ -213,7 +213,8 @@ public interface ICollectionBindingRegistry
     ValueTask<BindingPreview> CreateBulkAsync(
         IReadOnlyList<string> machineIds, IReadOnlyList<string> fileProfileIds,
         string workflowId, int workflowVersion, string sourceResourcePattern,
-        IReadOnlyList<string> targetResourceIds, CancellationToken ct = default);
+        IReadOnlyList<string> targetResourceIds, string triggerKind = "manual",
+        string? cron = null, CancellationToken ct = default);
     ValueTask<bool> RemoveAsync(string id, CancellationToken ct = default);
 }
 

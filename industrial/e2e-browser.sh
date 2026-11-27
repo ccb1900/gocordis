@@ -42,5 +42,5 @@ if ! curl -fsS "$URL/api/query/industrial/recovery" >/dev/null 2>&1 ||
   exit 1
 fi
 
-(cd "$ROOT/industrial/web" && E2E_BASE_URL="$URL" npm run test:e2e -- e2e/designer.spec.ts e2e/user-stories.spec.ts e2e/designer-gestures.spec.ts e2e/designer-usability.spec.ts)
+(cd "$ROOT/industrial/web" && E2E_BASE_URL="$URL" npm run test:e2e -- e2e/designer.spec.ts e2e/user-stories.spec.ts e2e/designer-gestures.spec.ts e2e/designer-usability.spec.ts e2e/scale-e2e.spec.ts)
 echo "==> real-browser designer E2E passed: $URL"

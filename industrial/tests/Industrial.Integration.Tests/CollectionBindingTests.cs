@@ -90,6 +90,18 @@ public sealed class CollectionBindingTests
         Assert.Equal("target-db", bound.Nodes[0].Config["targetResourceId"]);
         Assert.Equal(["machine-42-source"], bound.ResourceReferences);
         Assert.Equal("{{TargetResource}}", definition.Nodes[0].Config["targetResourceId"]);
+
+        // Commands carry definitions through JSON, where object values become
+        // JsonElement. The browser path must substitute them too.
+        var fromWire = System.Text.Json.JsonSerializer.Deserialize<WorkflowDefinition>(
+            System.Text.Json.JsonSerializer.Serialize(definition))!;
+        var wireBound = Industrial.Elsa.WorkflowBinding.BindParameters(fromWire,
+            new Dictionary<string, string>
+            {
+                ["SourceResource"] = "machine-42-source", ["TargetResource"] = "target-db",
+            });
+        Assert.Equal("target-db", wireBound.Nodes[0].Config["targetResourceId"]!.ToString());
+        Assert.Equal("{{TargetResource}}", definition.Nodes[0].Config["targetResourceId"]);
     }
 
     [Fact]

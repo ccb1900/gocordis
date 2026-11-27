@@ -175,7 +175,8 @@ public sealed class CollectionBindingRegistry(Func<IndustrialDbContext> db) : IC
     public async ValueTask<BindingPreview> CreateBulkAsync(
         IReadOnlyList<string> machineIds, IReadOnlyList<string> fileProfileIds,
         string workflowId, int workflowVersion, string sourceResourcePattern,
-        IReadOnlyList<string> targetResourceIds, CancellationToken ct = default)
+        IReadOnlyList<string> targetResourceIds, string triggerKind = "manual",
+        string? cron = null, CancellationToken ct = default)
     {
         var preview = await PreviewBulkAsync(machineIds, fileProfileIds, workflowId, workflowVersion,
             sourceResourcePattern, targetResourceIds, ct);
@@ -190,7 +191,7 @@ public sealed class CollectionBindingRegistry(Func<IndustrialDbContext> db) : IC
                 id, $"{machine} / {profile}", machine, workflowId, workflowVersion, profile,
                 sourceResourcePattern.Replace("{machine}", machine, StringComparison.Ordinal),
                 targetResourceIds,
-                new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+                new TriggerDefinition(triggerKind, cron, null, new Dictionary<string, object?>()),
                 true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow), ct);
             created++;
         }

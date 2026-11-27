@@ -125,7 +125,8 @@ public sealed class IndustrialElsaComponent : Component
          IndustrialKeys.RecordReader, IndustrialKeys.RecordSinkFactories,
          IndustrialKeys.StageOutputStore, TimerKeys.Service,
          IndustrialKeys.RecordSink, IndustrialKeys.ArchiveSink,
-         IndustrialKeys.NodeExecutionHandlers, IndustrialKeys.CollectionBindings];
+         IndustrialKeys.NodeExecutionHandlers, IndustrialKeys.CollectionBindings,
+         IndustrialKeys.FileProfiles];
     public override IReadOnlyList<ICapabilityKey> Provide() => [IndustrialKeys.ElsaActivityCatalog];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
@@ -146,7 +147,9 @@ public sealed class IndustrialElsaComponent : Component
         var sink = context.Require(IndustrialKeys.RecordSink);
         var archive = context.Require(IndustrialKeys.ArchiveSink);
         _nodeHandlers = context.Require(IndustrialKeys.NodeExecutionHandlers);
-        _bindings = context.Require(IndustrialKeys.CollectionBindings);
+        var bindings = context.Require(IndustrialKeys.CollectionBindings);
+        var profiles = context.Require(IndustrialKeys.FileProfiles);
+        _bindings = bindings;
         var timers = context.Require(TimerKeys.Service);
         var owner = ContributionOwner.ForContext(context, "industrial", "elsa-publish");
         foreach (var type in IndustrialActivityTypes.All)
@@ -250,6 +253,20 @@ public sealed class IndustrialElsaComponent : Component
                         await RunWorkflowAsync(
                             payload, workflows, coordinator, ledger, resources, vault, planner,
                             source, reader, stage, sinkFactories, sink, archive, ElsaDbPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        _lastError = ex.Message;
+                        throw;
+                    }
+                }, owner);
+                api.RegisterCommand("industrial/run-binding", async payload =>
+                {
+                    try
+                    {
+                        await RunBindingAsync(payload, bindings, profiles, workflows, coordinator,
+                            ledger, resources, vault, planner, source, reader, stage,
+                            sinkFactories, sink, archive, ElsaDbPath);
                     }
                     catch (Exception ex)
                     {
@@ -928,6 +945,88 @@ public sealed class IndustrialElsaComponent : Component
         {
             _recoveryLock.Release();
         }
+    }
+
+    /// <summary>Runs a binding by substituting its machine/profile/resource
+    /// values into an immutable published template snapshot. The published
+    /// definition itself is never edited, and no second workflow engine is
+    /// involved: the bound snapshot goes through the same RunWorkflowAsync path.
+    /// </summary>
+    private async ValueTask RunBindingAsync(
+        JsonNode? payload,
+        ICollectionBindingRegistry bindings,
+        IFileProfileRegistry profiles,
+        IWorkflowRegistry workflows,
+        ICollectionCoordinator coordinator,
+        ICollectionLedger ledger,
+        IResourceRegistry resources,
+        ICredentialVault vault,
+        IHistoricalRangePlanner planner,
+        IFileSource source,
+        IRecordReader reader,
+        IStageOutputStore stage,
+        Broker<IRecordSinkFactory> sinkFactories,
+        IRecordSink sink,
+        IArchiveSink archive,
+        string elsaDbPath)
+    {
+        var body = payload as JsonObject
+                   ?? throw new InvalidOperationException("JSON payload required");
+        var id = body["bindingId"]?.GetValue<string>()
+                 ?? throw new InvalidOperationException("bindingId is required");
+        var binding = await bindings.GetAsync(id)
+                      ?? throw new InvalidOperationException($"binding '{id}' not found");
+        if (binding.TargetResourceIds.Count == 0)
+            throw new InvalidOperationException($"binding '{id}' has no target resources");
+        var days = body["lookbackDays"] is JsonValue number &&
+                   number.TryGetValue<int>(out var parsed)
+            ? parsed
+            : 1;
+        var published = await workflows.GetPublishedVersionAsync(
+                             binding.WorkflowId, binding.WorkflowVersion)
+                         ?? throw new InvalidOperationException(
+                             $"workflow '{binding.WorkflowId}' version {binding.WorkflowVersion} " +
+                             "has no published version");
+
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Binding"] = binding.Id,
+            ["Machine"] = binding.MachineId,
+            ["Profile"] = binding.FileProfileId,
+            ["SourceResource"] = binding.SourceResourceId,
+        };
+        for (var index = 0; index < binding.TargetResourceIds.Count; index++)
+        {
+            values[index == 0 ? "TargetResource" : $"TargetResource{index + 1}"] =
+                binding.TargetResourceIds[index];
+        }
+
+        var profile = await profiles.GetAsync(binding.FileProfileId);
+        if (profile is not null)
+        {
+            values["FileNamePattern"] = profile.FileNamePattern;
+            values["Format"] = profile.Format;
+            values["Delimiter"] = profile.Delimiter;
+            values["HasHeader"] = profile.HasHeader ? "true" : "false";
+            values["Encoding"] = profile.Encoding;
+            values["Mapping"] = string.Join(";", profile.Mapping
+                .Select(pair => $"{pair.Key}={pair.Value}"));
+            values["Required"] = string.Join(";", profile.RequiredFields);
+        }
+
+        var bound = WorkflowBinding.BindParameters(published.Definition, values);
+        var layout = new Dictionary<string, object?>(bound.Layout, StringComparer.Ordinal)
+        {
+            ["lookbackDays"] = days,
+        };
+        await RunWorkflowAsync(new JsonObject
+        {
+            ["workflowId"] = binding.WorkflowId,
+            ["version"] = binding.WorkflowVersion,
+            ["resourceId"] = binding.SourceResourceId,
+        }, workflows, coordinator, ledger, resources, vault, planner, source, reader, stage,
+            sinkFactories, sink, archive, elsaDbPath,
+            overrideDefinition: bound with { Layout = layout });
     }
 
     private async ValueTask RunWorkflowAsync(
@@ -1707,6 +1806,12 @@ public static class WorkflowBinding
         object? ReplaceValue(object? value) => value switch
         {
             string text => Replace(text),
+            // Workflow definitions arrive over the JSON command boundary, where
+            // object-typed config values deserialize as JsonElement rather than
+            // string. Substitution must work for both shapes.
+            JsonElement element when element.ValueKind == JsonValueKind.String =>
+                Replace(element.GetString()),
+            JsonValue node when node.TryGetValue<string>(out var nodeText) => Replace(nodeText),
             _ => value,
         };
         return definition with

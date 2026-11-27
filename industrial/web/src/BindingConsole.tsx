@@ -32,6 +32,12 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
   const [resourceMap, setResourceMap] = useState("");
   const [credentialMap, setCredentialMap] = useState("");
   const [status, setStatus] = useState<any>(null);
+  const [triggerKind, setTriggerKind] = useState("manual");
+  const [cron, setCron] = useState("");
+  const [profileCsv, setProfileCsv] = useState("");
+  const [bindingCsv, setBindingCsv] = useState("");
+  const [upgradeVersion, setUpgradeVersion] = useState(1);
+  const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -72,11 +78,12 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
       await ctx.hubCommand("industrial/create-bindings", {
         machineIds, fileProfileIds: profileIds, workflowId, workflowVersion: version,
         sourceResourcePattern: sourcePattern, targetResourceIds: targetIds,
+        triggerKind, cron: cron || null,
       });
       await load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
-  }, [ctx, load, preview.missing.length, profileIds, sourcePattern, targetIds, version, workflowId, machineIds]);
+  }, [ctx, cron, load, preview.missing.length, profileIds, sourcePattern, targetIds, triggerKind, version, workflowId, machineIds]);
 
   const setEnabled = useCallback(async (binding: any, enabled: boolean) => {
     setBusy(true); setError(null);
@@ -97,6 +104,34 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
   }, [ctx]);
+
+  const importProfiles = useCallback(async () => {
+    setBusy(true); setError(null);
+    try {
+      await ctx.hubCommand("industrial/import-file-profiles", { csv: profileCsv });
+      setProfileCsv(""); await load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  }, [ctx, load, profileCsv]);
+
+  const importBindingRows = useCallback(async () => {
+    setBusy(true); setError(null);
+    try {
+      await ctx.hubCommand("industrial/import-bindings", { csv: bindingCsv });
+      setBindingCsv(""); await load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  }, [ctx, load, bindingCsv]);
+
+  const upgradeVersionAll = useCallback(async () => {
+    setBusy(true); setError(null);
+    try {
+      const ids = bindings.filter((row) => row.workflowId === workflowId).map((row) => row.id);
+      await ctx.hubCommand("industrial/upgrade-binding-version", { ids, version: upgradeVersion });
+      await load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  }, [bindings, ctx, load, upgradeVersion, workflowId]);
 
   const importCsv = useCallback(async () => {
     setBusy(true); setError(null);
@@ -142,6 +177,20 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
       <Typography.Title level={4} style={{ margin: 0 }}>采集任务绑定</Typography.Title>
       {error && <Alert type="error" showIcon message={error} />}
       <Space wrap>
+        <Input aria-label="工作流 ID" placeholder="工作流 ID" value={workflowId ?? ""}
+          onChange={(e: any) => setWorkflowId(e.target.value)} />
+        <Input aria-label="机台 ID 列表" placeholder="机台 ID，逗号分隔"
+          value={machineIds.join(",")}
+          onChange={(e: any) => setMachineIds(e.target.value.split(",")
+            .map((item: string) => item.trim()).filter(Boolean))} />
+        <Input aria-label="文件配置 ID 列表" placeholder="文件配置 ID，逗号分隔"
+          value={profileIds.join(",")}
+          onChange={(e: any) => setProfileIds(e.target.value.split(",")
+            .map((item: string) => item.trim()).filter(Boolean))} />
+        <Input aria-label="目标资源 ID 列表" placeholder="目标资源 ID，逗号分隔"
+          value={targetIds.join(",")}
+          onChange={(e: any) => setTargetIds(e.target.value.split(",")
+            .map((item: string) => item.trim()).filter(Boolean))} />
         <Select aria-label="工作流模板" mode="single" style={{ width: 220 }} value={workflowId}
           onChange={(value: string) => setWorkflowId(value)}
           options={workflows.map((item) => ({ value: item.workflowId, label: item.name }))} />
@@ -156,17 +205,45 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
         <Select aria-label="目标资源" mode="multiple" style={{ width: 300 }} value={targetIds}
           onChange={(values: string[]) => setTargetIds(values)}
           options={resources.map((item) => ({ value: item.id, label: `${item.name} (${item.type})` }))} />
+        <select aria-label="绑定触发策略选择" value={triggerKind}
+          onChange={(e: any) => setTriggerKind(e.target.value)}>
+          <option value="manual">手动</option>
+          <option value="schedule">定时</option>
+        </select>
+        <Select aria-label="绑定触发策略" style={{ width: 160 }} value={triggerKind}
+          onChange={(value: string) => setTriggerKind(value)}
+          options={[{ value: "manual", label: "手动" }, { value: "schedule", label: "定时" }]} />
+        <Input aria-label="绑定 Cron" placeholder="cron（定时策略）" value={cron}
+          onChange={(e: any) => setCron(e.target.value)} />
         <Input aria-label="来源资源模板" placeholder="来源资源模板，{machine} 占位符" value={sourcePattern}
           onChange={(e: any) => setSourcePattern(e.target.value)} />
+      </Space>
+      <Space wrap>
+        <Button size="small" onClick={() => setMachineIds(machines.map((item) => item.id))}>全选机台</Button>
+        <Button size="small" onClick={() => setProfileIds(profiles.map((item) => item.id))}>全选文件配置</Button>
+        <Button size="small" onClick={() => { setMachineIds([]); setProfileIds([]); }}>清空范围</Button>
       </Space>
       <Alert type="info" showIcon
         message={`预计生成 ${preview.total} 条绑定；可创建 ${preview.create} 条`}
         description={`冲突 ${preview.conflicts.length} 条；缺失资源 ${preview.missing.length} 条`} />
       <Button type="primary" loading={busy} onClick={() => void create()}>生成绑定</Button>
+      <Space wrap>
+        <InputNumber aria-label="升级到模板版本" min={1} value={upgradeVersion}
+          onChange={(value: number | null) => setUpgradeVersion(Number(value) || 1)} />
+        <Button loading={busy} onClick={() => void upgradeVersionAll()}>升级当前工作流绑定版本</Button>
+      </Space>
       <Typography.Title level={5} style={{ margin: 0 }}>批量导入机台（CSV）</Typography.Title>
       <Input.TextArea aria-label="机台 CSV" rows={4} value={csv}
         placeholder="id,name,endpoint,credentialId" onChange={(e: any) => setCsv(e.target.value)} />
       <Button loading={busy} onClick={() => void importCsv()}>导入机台</Button>
+      <Input.TextArea aria-label="文件配置 CSV" rows={3} value={profileCsv}
+        placeholder="id,name,fileNamePattern,format,delimiter,hasHeader,encoding,mapping,required"
+        onChange={(e: any) => setProfileCsv(e.target.value)} />
+      <Button loading={busy} onClick={() => void importProfiles()}>导入文件配置</Button>
+      <Input.TextArea aria-label="绑定 CSV" rows={3} value={bindingCsv}
+        placeholder="id,name,machineId,workflowId,workflowVersion,fileProfileId,sourceResourceId,targetResourceIds,triggerKind,cron"
+        onChange={(e: any) => setBindingCsv(e.target.value)} />
+      <Button loading={busy} onClick={() => void importBindingRows()}>导入采集绑定</Button>
       <Typography.Title level={5} style={{ margin: 0 }}>配置包（不含凭证）</Typography.Title>
       <Space wrap>
         <Button onClick={() => void exportConfig()}>导出配置</Button>
@@ -178,7 +255,10 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
         onChange={(e: any) => setCredentialMap(e.target.value)} />
       <Input.TextArea aria-label="配置包" rows={5} value={packageText}
         placeholder="导出后可跨环境导入；资源 ID 需自行映射" onChange={(e: any) => setPackageText(e.target.value)} />
-      <Table rowKey="id" dataSource={bindings} pagination={false}
+      <Input aria-label="绑定筛选" placeholder="按绑定名称/ID筛选" value={filter}
+        onChange={(e: any) => setFilter(e.target.value)} />
+      <Table rowKey="id" dataSource={bindings.filter((row) =>
+        !filter || `${row.id} ${row.name}`.includes(filter))} pagination={{ pageSize: 20 }}
         columns={[
           { title: "绑定", dataIndex: "name" },
           { title: "机台", dataIndex: "machineId" },

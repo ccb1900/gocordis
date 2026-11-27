@@ -292,7 +292,18 @@ public sealed class WebUiServer : IAsyncDisposable
                 return ApiResults.Error(ex.Status, "invalid_request", ex.Message);
             }
 
-            var ok = await host.Api.ExecuteAsync(name, payload, context.RequestAborted);
+            bool ok;
+            try
+            {
+                ok = await host.Api.ExecuteAsync(name, payload, context.RequestAborted);
+            }
+            catch (Exception ex)
+            {
+                // surface the command's own diagnostic to the console instead
+                // of letting the host middleware flatten it into "HTTP 500".
+                return ApiResults.Error(StatusCodes.Status500InternalServerError,
+                    "command_failed", ex.Message);
+            }
             return ok
                 ? ApiResults.Data(null, StatusCodes.Status202Accepted)
                 : ApiResults.Error(StatusCodes.Status404NotFound, "not_found", $"unknown command '{name}'");

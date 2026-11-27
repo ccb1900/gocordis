@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
 async function chooseAntd(page: any, label: string, option: string) {
   await page.getByLabel(label).click();
   await page.locator(".ant-select-item-option")
-    .filter({ hasText: option }).last().click();
+    .filter({ hasText: option }).last().evaluate((el: HTMLElement) => el.click());
   await page.keyboard.press("Escape");
 }
 
@@ -383,6 +383,71 @@ test("a user manages machines end to end and credentials by type", async ({ page
   await expect(page.getByText("managed-line-2", { exact: true })).toHaveCount(0);
 });
 
+test("a user upgrades bindings only to a published template version", async ({ page }) => {
+  const workflowId = "version-impact-template";
+  const saveTemplate = (version: number) => page.request.post("/api/command/industrial/save-workflow", {
+    data: {
+      workflowId, name: "Version impact template", version, nodes: [], edges: [],
+      trigger: { kind: "manual", cron: null, eventName: null, config: {} },
+      resourceReferences: [], layout: {},
+    },
+  });
+  expect((await saveTemplate(1)).ok()).toBe(true);
+  expect((await page.request.post("/api/command/industrial/publish-workflow", {
+    data: { workflowId },
+  })).ok()).toBe(true);
+
+  // CSV import through the browser is covered by the scale story; seed these
+  // three rows through the same commands so this story stays focused on
+  // version impact control.
+  const seed = async (name: string, csv: string) => {
+    const response = await page.request.post(`/api/command/industrial/${name}`, { data: { csv } });
+    expect(response.ok(), await response.text()).toBe(true);
+  };
+  await seed("import-machines", "id,name,endpoint\nversion-machine,Version machine,10.0.0.9\n");
+  await seed("import-file-profiles",
+    "id,name,fileNamePattern,format,delimiter,hasHeader,encoding,mapping,required\n" +
+    "version-profile,Version profile,*.csv,csv,,true,utf-8,value=reading,value\n");
+  await seed("import-bindings",
+    "id,name,machineId,workflowId,workflowVersion,fileProfileId,sourceResourceId,targetResourceIds,triggerKind,cron\n" +
+    "version-binding,Version binding,version-machine,version-impact-template,1,version-profile," +
+    "resource-version-machine,version-target,schedule,0 3 * * *\n");
+  await page.goto("/industrial/bindings");
+
+  const readBinding = async () => {
+    const rows = (await (await page.request.get("/api/query/industrial/bindings")).json()).data;
+    return rows.find((row: { id: string }) => row.id === "version-binding");
+  };
+  await expect.poll(async () => (await readBinding())?.workflowVersion).toBe(1);
+  expect((await readBinding()).trigger.kind).toBe("schedule");
+
+  await page.getByLabel("工作流 ID").fill(workflowId);
+  await page.getByLabel("升级到模板版本").fill("2");
+  await page.getByRole("button", { name: "升级当前工作流绑定版本" }).click();
+  // The command endpoint must surface its own diagnostic, not a flat HTTP 500,
+  // and no binding may be moved to an unpublished version.
+  await expect(page.getByText(/v2 is not published/)).toBeVisible();
+  await expect.poll(async () => (await readBinding())?.workflowVersion).toBe(1);
+
+  expect((await saveTemplate(2)).ok()).toBe(true);
+  expect((await page.request.post("/api/command/industrial/publish-workflow", {
+    data: { workflowId },
+  })).ok()).toBe(true);
+  const upgrade = await page.request.post("/api/command/industrial/upgrade-binding-version", {
+    data: { ids: ["version-binding"], version: 2 },
+  });
+  expect(upgrade.ok(), await upgrade.text()).toBe(true);
+  await expect.poll(async () => (await readBinding())?.workflowVersion).toBe(2);
+  expect((await readBinding()).trigger.cron).toBe("0 3 * * *");
+
+  // The impact is visible in the user's table after a fresh navigation too.
+  await page.goto("/industrial/bindings");
+  await page.getByLabel("绑定筛选").fill("Version binding");
+  const row = page.getByRole("row").filter({ hasText: "Version binding" }).first();
+  await expect(row).toContainText("2");
+  await expect(row).toContainText(/最近运行|暂无运行/);
+});
+
 test("a user generates bulk bindings instead of copying workflows", async ({ page }) => {
   await page.request.post("/api/command/industrial/save-workflow", { data: {
     workflowId: "bulk-template", name: "Bulk template", version: 1, nodes: [], edges: [],
@@ -413,19 +478,16 @@ test("a user generates bulk bindings instead of copying workflows", async ({ pag
   }
 
   await page.goto("/industrial/bindings");
-  const chooseMulti = async (label: string, names: string[]) => {
-    await page.getByLabel(label).click();
-    for (const name of names) {
-      await page.locator(".ant-select-item-option").filter({ hasText: name }).last().click();
-    }
-    await page.keyboard.press("Escape");
-  };
-  await chooseMulti("工作流模板", ["Bulk template"]);
-  await chooseMulti("机台范围", ["Bulk 1", "Bulk 2"]);
-  await chooseMulti("文件配置范围", ["Profile A", "Profile B"]);
+  const profiles = (await (await page.request.get("/api/query/industrial/file-profiles")).json()).data;
+  const selectedProfiles = ["Profile A", "Profile B"]
+    .map((name) => profiles.find((row: { name: string }) => row.name === name)?.id);
+  expect(selectedProfiles.every(Boolean)).toBe(true);
+  await page.getByLabel("工作流 ID").fill("bulk-template");
+  await page.getByLabel("机台 ID 列表").fill("bulk-1,bulk-2");
+  await page.getByLabel("文件配置 ID 列表").fill(selectedProfiles.join(","));
   const available = (await (await page.request.get("/api/query/industrial/resources")).json()).data;
   const target = available.find((row: { type: string }) => row.type === "sqlite") ?? available[0];
-  await chooseMulti("目标资源", [`${target.name} (${target.type})`]);
+  await page.getByLabel("目标资源 ID 列表").fill(target.id);
   await expect(page.getByText(/预计生成 4 条绑定/)).toBeVisible();
   await page.getByLabel("资源 ID 映射").fill("old-source=resource-bulk-1");
   await page.getByLabel("凭证别名映射").fill("old-cred=machine-credential");

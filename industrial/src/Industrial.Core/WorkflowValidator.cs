@@ -11,6 +11,13 @@ public sealed class WorkflowValidator : IWorkflowValidator
     private static readonly string[] FORBIDDEN_CONFIG_KEYS =
         ["connectionstring", "password", "user", "username", "server", "host", "database", "secret"];
 
+    // A reusable template may leave resource ids to its CollectionBinding.
+    // Binding substitution resolves the placeholder before a run; publishing
+    // must not require a concrete resource for that template parameter.
+    private static bool IsTemplateParameter(string? value) =>
+        value is not null && value.StartsWith("{{", StringComparison.Ordinal) &&
+        value.EndsWith("}}", StringComparison.Ordinal);
+
     private readonly INodeCatalog _catalog;
     private readonly IResourceRegistry _resources;
     private readonly ICredentialVault _credentials;
@@ -158,7 +165,8 @@ public sealed class WorkflowValidator : IWorkflowValidator
                 }
             }
 
-            if (node.Config.TryGetValue("resourceId", out var resourceId) && resourceId is string id)
+            if (node.Config.TryGetValue("resourceId", out var resourceId) && resourceId is string id &&
+                !IsTemplateParameter(id))
             {
                 var resource = await _resources.GetAsync(id, ct);
                 if (resource is null)
@@ -244,7 +252,8 @@ public sealed class WorkflowValidator : IWorkflowValidator
 
         foreach (var resourceId in definition.ResourceReferences)
         {
-            if (await _resources.GetAsync(resourceId, ct) is null)
+            if (!IsTemplateParameter(resourceId) &&
+                await _resources.GetAsync(resourceId, ct) is null)
             {
                 errors.Add(new($"resourceReferences.{resourceId}", "RESOURCE_MISSING",
                     $"referenced resource '{resourceId}' does not exist"));

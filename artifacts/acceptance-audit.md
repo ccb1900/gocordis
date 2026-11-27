@@ -49,6 +49,14 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 
 | Large-file streaming: Reader/Mapping/Validation/Sink use stage-backed IAsyncEnumerable, no full batch in memory | `PublishedNodeExecutor`, `StageOutputStore`, `CrashRecoveryTests.LargeFileStreamsThroughReaderMappingValidationAndSink` | Pass |
 
-Unified report: 938 passed, 3 explicitly skipped, 0 failed suites, generated for tested code commit `6616545da63b5d05654c2b6ef18ab332da97884e` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+| Draft save separated from full validation; publish validates and pins a version-consistent snapshot | `WorkflowRegistry`, `ElsaAdapter.publish-workflow`, `WorkflowValidationTests`, `ElsaPocTests.RepublishKeepsVersionConsistentAcrossRowDefinitionAndElsaGraph` | Pass |
+| Archive participates in run completion | `PublishedNodeExecutor` consequence counter, `ElsaPocTests` run-terminal assertion | Pass |
+| Production persistence root cannot silently fall back to temp | `IndustrialCapabilityComponent.EnsurePersistentRoot`, `ProductionRootTests` | Pass |
+| Cross-machine record ids are source-scoped by default | `SinkWriteOptions`, all SQL sinks, `SinkWriteOptionsTests.SameRecordIdFromTwoSourcesDoesNotCollideByDefault` | Pass |
+| Exact node execution handlers are pluggable without core/designer changes | `IIndustrialNodeHandler`, `IndustrialKeys.NodeExecutionHandlers`, `CustomNodeHandlerTests` | Pass |
+| Machine-resource association and quick collection wizard | `ResourceDefinition.MachineId`, `industrial/machine-resources`, `MachineConsole.tsx`, `CollectionWizard.tsx`, browser E2E | Pass |
+| SQL Server / MySQL opt-in real-server tests and parsed packaged E2E counts | `SqlServerSinkTests`, `MySqlSinkTests`, `industrial/e2e-packaged.sh`, report status vocabulary | Pass |
+
+Unified report: 954 passed, 3 explicitly skipped, 0 failed suites, generated for tested code commit `06961f733c12236e3068697b7dad6814f70d4fd5` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

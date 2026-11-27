@@ -85,11 +85,12 @@ test("blank environment: UI creates UNC machine, credential and resource, reads 
     return rows.filter((row: { sourceResourceId: string; path: string }) =>
       row.sourceResourceId === "unc-source" && row.path.includes("recent.csv")).length;
   }).toBeGreaterThan(0);
-  const deliveries = (await (await page.request.get("/api/query/industrial/execution-center")).json())
-    .data.deliveries;
-  expect(deliveries.some((delivery: { targetId: string; status: string; records: number }) =>
-    delivery.targetId === "unc-target" && delivery.status === "Succeeded" && delivery.records >= 1))
-    .toBe(true);
+  await expect.poll(async () => {
+    const deliveries = (await (await page.request.get("/api/query/industrial/execution-center")).json())
+      .data.deliveries;
+    return deliveries.some((delivery: { targetId: string; status: string; records: number }) =>
+      delivery.targetId === "unc-target" && delivery.status === "Succeeded" && delivery.records >= 1);
+  }, { timeout: 30_000 }).toBe(true);
 
   // Rotate to a wrong password: the next connection must fail with the NEW
   // credential, proving the vault rotation reached the real SMB session.

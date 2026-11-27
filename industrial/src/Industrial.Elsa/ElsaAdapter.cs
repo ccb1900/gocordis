@@ -91,6 +91,8 @@ public sealed class IndustrialElsaComponent : Component
     private JsonObject? _lastBackfillPreview;
     private JsonObject? _lastBindingTick;
     private JsonObject? _lastBindingValues;
+    private int _lastSourceFileCount;
+    private IReadOnlyDictionary<DateOnly, int> _lastSourceDates = new Dictionary<DateOnly, int>();
     private int _bindingConcurrency = 8;
 
     public IndustrialElsaComponent() : this(null) { }
@@ -550,11 +552,36 @@ public sealed class IndustrialElsaComponent : Component
         var published = await workflows.GetPublishedVersionAsync(instance.WorkflowId, instance.Version)
                         ?? throw new InvalidOperationException(
                             $"published version {instance.WorkflowId}:v{instance.Version} was not found");
-        var executor = CreateExecutor(published.Definition, resourceId, ledger, resources, vault,
+        var runDefinitionJson = string.IsNullOrWhiteSpace(lastRunId)
+            ? null : await ledger.GetRunDefinitionAsync(lastRunId!);
+        var retryDefinition = string.IsNullOrWhiteSpace(runDefinitionJson)
+            ? published.Definition
+            : JsonSerializer.Deserialize<WorkflowDefinition>(runDefinitionJson!, WebJson)
+              ?? published.Definition;
+        var executor = CreateExecutor(retryDefinition, resourceId, ledger, resources, vault,
             planner, source, reader, stage, factories, defaultSink, archive,
             delivery.Id, delivery.TargetId, _nodeHandlers);
         await ElsaPersistedExecution.RunAsync(published, executor, resourceId, ElsaDbPath,
             instance.InstanceId, resume: true);
+    }
+
+    private static IReadOnlySet<DateOnly> PlannedDates(IReadOnlyDictionary<string, object?> config)
+    {
+        var result = new HashSet<DateOnly>();
+        if (!config.TryGetValue("businessDates", out var raw) || raw is null) return result;
+        var values = raw switch
+        {
+            string text => text.Split(',', StringSplitOptions.RemoveEmptyEntries),
+            IEnumerable<string> list => list,
+            JsonElement element when element.ValueKind == JsonValueKind.Array =>
+                element.EnumerateArray().Select(item => item.GetString()),
+            _ => [],
+        };
+        foreach (var value in values)
+        {
+            if (DateOnly.TryParseExact(value, "yyyy-MM-dd", out var date)) result.Add(date);
+        }
+        return result;
     }
 
     private static TimeZoneInfo ScheduleZone(TriggerDefinition trigger)
@@ -929,10 +956,11 @@ public sealed class IndustrialElsaComponent : Component
         IFileSource source, IRecordReader reader, IStageOutputStore stage,
         Broker<IRecordSinkFactory> factories, IRecordSink defaultSink, IArchiveSink archive,
         string? retryDeliveryId = null, string? retryTargetId = null,
-        Broker<IIndustrialNodeHandler>? handlers = null) =>
+        Broker<IIndustrialNodeHandler>? handlers = null,
+        Action<IReadOnlyDictionary<DateOnly, int>>? onSourceDates = null) =>
         new(definition.WorkflowId, resourceId, definition, null!, ledger, resources, vault,
             planner, source, reader, stage, factories, defaultSink, archive,
-            retryDeliveryId, retryTargetId, handlers);
+            retryDeliveryId, retryTargetId, handlers, onSourceDates);
 
     private async ValueTask RecoverAllAsync(
         IWorkflowRegistry workflows, ICollectionLedger ledger, IResourceRegistry resources,
@@ -1289,9 +1317,27 @@ public sealed class IndustrialElsaComponent : Component
                              $"workflow '{binding.WorkflowId}' version {binding.WorkflowVersion} " +
                              "has no published version");
 
+        var catchUpDays = binding.Parameters is not null &&
+                          binding.Parameters.TryGetValue("catchUpDays", out var configuredDays) &&
+                          int.TryParse(configuredDays?.ToString(), out var parsedDays) && parsedDays > 0
+            ? parsedDays
+            : 7;
+        var businessDates = BusinessDatePlanner.Plan(
+            await ledger.ListDatesAsync(), binding.Id,
+            DateOnly.FromDateTime(DateTime.UtcNow), catchUpDays);
+        var dateClaims = new List<(DateOnly Date, string Id, string Token)>();
+        var businessRunId = $"binding-run-{binding.Id}-{Guid.NewGuid():N}";
+        foreach (var businessDate in businessDates)
+        {
+            var claim = await ledger.ClaimDateAsync(binding.Id, businessDate, businessRunId,
+                TimeSpan.FromMinutes(5));
+            if (claim is not null) dateClaims.Add((businessDate, claim.Id, claim.LeaseToken!));
+        }
+
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["Binding"] = binding.Id,
+            ["BusinessDates"] = string.Join(",", businessDates.Select(date => date.ToString("yyyy-MM-dd"))),
             ["Machine"] = binding.MachineId,
             ["Profile"] = binding.FileProfileId,
             ["FileProfile"] = binding.FileProfileId,
@@ -1322,11 +1368,25 @@ public sealed class IndustrialElsaComponent : Component
             .Select(pair => KeyValuePair.Create<string, JsonNode?>(pair.Key, JsonValue.Create(pair.Value))));
         var bound = WorkflowBinding.ApplyFileProfile(
             WorkflowBinding.BindParameters(published.Definition, values), profile);
+        var dateValues = businessDates.Select(date => (object?)date.ToString("yyyy-MM-dd")).ToArray();
+        bound = bound with
+        {
+            Nodes = bound.Nodes.Select(node => node.Type.Contains("source", StringComparison.OrdinalIgnoreCase)
+                ? node with
+                {
+                    Config = new Dictionary<string, object?>(node.Config, StringComparer.Ordinal)
+                    {
+                        ["businessDates"] = dateValues,
+                        ["fileProfile"] = profile is null ? null : JsonSerializer.Serialize(profile, WebJson),
+                    },
+                }
+                : node).ToArray(),
+        };
         var layout = new Dictionary<string, object?>(bound.Layout, StringComparer.Ordinal)
         {
             ["lookbackDays"] = days,
         };
-        return await RunWorkflowAsync(new JsonObject
+        var result = await RunWorkflowAsync(new JsonObject
         {
             ["workflowId"] = binding.WorkflowId,
             ["version"] = binding.WorkflowVersion,
@@ -1334,6 +1394,19 @@ public sealed class IndustrialElsaComponent : Component
         }, workflows, coordinator, ledger, resources, vault, planner, source, reader, stage,
             sinkFactories, sink, archive, elsaDbPath,
             overrideDefinition: bound with { Layout = layout });
+
+        var succeeded = result is not null &&
+                        (string.Equals(result.Status, "Completed", StringComparison.Ordinal) ||
+                         string.Equals(result.Status, "Finished", StringComparison.Ordinal));
+        foreach (var claim in dateClaims)
+        {
+            var files = _lastSourceDates.TryGetValue(claim.Date, out var count) ? count : 0;
+            var status = !succeeded ? CollectionDateStatus.Failed
+                : files > 0 ? CollectionDateStatus.Succeeded : CollectionDateStatus.NoData;
+            await ledger.CompleteDateAsync(claim.Id, claim.Token, status, files,
+                succeeded ? null : _lastError, CancellationToken.None);
+        }
+        return result;
     }
 
     private async ValueTask<ElsaPersistedExecution.ExecutionResult?> RunWorkflowAsync(
@@ -1378,9 +1451,10 @@ public sealed class IndustrialElsaComponent : Component
         // The RUN input is the persisted published artifact. The draft is never
         // consulted here: publishing v1 and editing v2 must not change a run.
         var definition = overrideDefinition ?? published.Definition;
+        IReadOnlyDictionary<DateOnly, int> sourceDates = new Dictionary<DateOnly, int>();
         var executor = CreateExecutor(definition, resourceId, ledger, resources, vault,
             planner, source, reader, stage, sinkFactories, defaultSink, archive,
-            handlers: _nodeHandlers);
+            handlers: _nodeHandlers, onSourceDates: dates => sourceDates = dates);
         var instanceId = body["instanceId"]?.GetValue<string>();
         var resume = body["resume"] is JsonValue flag && flag.TryGetValue<bool>(out var shouldResume) && shouldResume;
         _lastError = null;
@@ -1388,6 +1462,8 @@ public sealed class IndustrialElsaComponent : Component
             published, executor, resourceId, elsaDbPath, instanceId, resume);
         _lastInstanceId = result.InstanceId;
         _lastDefinitionId = result.DefinitionId;
+        _lastSourceDates = sourceDates;
+        _lastSourceFileCount = sourceDates.Values.Sum();
         var productStatus = string.Equals(result.Status, "Finished", StringComparison.Ordinal)
             ? "Completed"
             : result.Status;
@@ -1415,6 +1491,7 @@ public sealed class IndustrialElsaComponent : Component
         private readonly IRecordSink _defaultSink;
         private readonly IArchiveSink _archive;
         private readonly Broker<IIndustrialNodeHandler>? _handlers;
+        private readonly Action<IReadOnlyDictionary<DateOnly, int>>? _onSourceDates;
         private readonly Dictionary<string, List<DiscoveredFile>> _files = new(StringComparer.Ordinal);
         private readonly Dictionary<string, CollectionFile> _ledgerFiles = new(StringComparer.Ordinal);
         private readonly List<string> _executed = [];
@@ -1434,9 +1511,11 @@ public sealed class IndustrialElsaComponent : Component
             IStageOutputStore stage, Broker<IRecordSinkFactory> factories,
             IRecordSink defaultSink, IArchiveSink archive,
             string? retryDeliveryId = null, string? retryTargetId = null,
-            Broker<IIndustrialNodeHandler>? handlers = null)
+            Broker<IIndustrialNodeHandler>? handlers = null,
+            Action<IReadOnlyDictionary<DateOnly, int>>? onSourceDates = null)
         {
             _handlers = handlers;
+            _onSourceDates = onSourceDates;
             _retryDeliveryId = retryDeliveryId;
             _retryTargetId = retryTargetId;
             _workflowId = workflowId;
@@ -1675,6 +1754,7 @@ public sealed class IndustrialElsaComponent : Component
                 // A resumed run must still point at the instance whose stage
                 // outputs it reuses; legacy runs may not carry the link yet.
                 await _ledger.SetRunInstanceAsync(_runId!, _instanceId, ct);
+                await _ledger.SetRunDefinitionAsync(_runId!, JsonSerializer.Serialize(_definition, WebJson), ct);
                 var files = new List<DiscoveredFile>();
                 foreach (var refFile in cached.Files)
                 {
@@ -1694,23 +1774,43 @@ public sealed class IndustrialElsaComponent : Component
                 _runId = (await _ledger.StartAsync(_workflowId, ct)).Id;
                 await _ledger.BeginRunAsync(_runId, ct);
                 await _ledger.SetRunInstanceAsync(_runId, _instanceId, ct);
+                await _ledger.SetRunDefinitionAsync(_runId!, JsonSerializer.Serialize(_definition, WebJson), ct);
             }
 
             var resourceId = node.Config.TryGetValue("resourceId", out var configured)
                              && configured is not null && !string.IsNullOrWhiteSpace(configured.ToString())
                 ? configured.ToString()!
                 : _resourceId;
-            var discovered = await _source.DiscoverAsync(
-                resourceId, _planner.Plan(DateTimeOffset.UtcNow, Lookback()), ct);
-            var pattern = new NodeConfigReader(node.Config).GetString("fileNamePattern", string.Empty);
-            if (!string.IsNullOrWhiteSpace(pattern))
+            var profileJson = new NodeConfigReader(node.Config).GetString("fileProfile", string.Empty);
+            var fileProfile = string.IsNullOrWhiteSpace(profileJson)
+                ? null : JsonSerializer.Deserialize<FileProfileDefinition>(profileJson, WebJson);
+            var resourceDefinition = await _resources.GetAsync(resourceId, ct);
+            var discoveryRoot = resourceDefinition?.Configuration.TryGetValue("root", out var configuredRoot) == true
+                ? configuredRoot?.ToString() ?? string.Empty
+                : string.Empty;
+            var plannedDates = PlannedDates(node.Config);
+            // A planned business date may arrive late: its file mtime is older
+            // than the lookback but its encoded date is still in the window.
+            var range = plannedDates.Count > 0
+                ? new SourceDateRange(
+                    new DateTimeOffset(plannedDates.Min().ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)),
+                    new DateTimeOffset(plannedDates.Max().AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)))
+                : _planner.Plan(DateTimeOffset.UtcNow, Lookback());
+            var discovered = await _source.DiscoverAsync(resourceId, range, ct);
+            discovered = FileProfileDiscovery.Apply(fileProfile, discovered, discoveryRoot);
+            var fileNamePattern = new NodeConfigReader(node.Config).GetString("fileNamePattern", string.Empty);
+            if (!string.IsNullOrWhiteSpace(fileNamePattern))
             {
-                var matcher = new Matcher();
-                matcher.AddInclude(pattern);
+                var regex = new System.Text.RegularExpressions.Regex(
+                    "^" + System.Text.RegularExpressions.Regex.Escape(fileNamePattern)
+                        .Replace("\\*", ".*").Replace("\\?", ".") + "$",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 discovered = discovered.Where(file =>
-                    matcher.Match(Path.GetDirectoryName(file.FullPath) ?? string.Empty,
-                        Path.GetFileName(file.FullPath)).HasMatches).ToArray();
+                    regex.IsMatch(Path.GetFileName(file.FullPath))).ToArray();
             }
+            if (plannedDates.Count > 0)
+                discovered = discovered.Where(file => plannedDates.Contains(
+                    DateOnly.FromDateTime(file.SourceDate.UtcDateTime))).ToArray();
             var discoveredFiles = new List<DiscoveredFile>();
             var batchFiles = new List<BatchFileRef>();
             foreach (var file in discovered)
@@ -1726,6 +1826,9 @@ public sealed class IndustrialElsaComponent : Component
             }
             _files[node.Id] = discoveredFiles;
             View(node.Id).Files = discoveredFiles.Count;
+            _onSourceDates?.Invoke(discoveredFiles
+                .GroupBy(file => DateOnly.FromDateTime(file.SourceDate.UtcDateTime))
+                .ToDictionary(group => group.Key, group => group.Count()));
             await _stage.CommitAsync(_instanceId, node.Id, Fingerprint(node),
                 new FileBatchRef($"batch-{Guid.NewGuid():N}", _instanceId, node.Id,
                     Fingerprint(node), batchFiles, _runId), ct);
@@ -2145,6 +2248,12 @@ public static class WorkflowBinding
             config["mapping"] = profile.Mapping.ToDictionary(
                 pair => pair.Key, pair => pair.Value?.ToString() ?? string.Empty,
                 StringComparer.OrdinalIgnoreCase);
+            config["metadataRules"] = (profile.MetadataRules ?? [])
+                .Select(rule => new Dictionary<string, object?>
+                {
+                    ["from"] = rule.From, ["pattern"] = rule.Pattern,
+                    ["key"] = rule.Key, ["required"] = rule.Required,
+                }).ToArray();
         }
         if (type.Contains("validate"))
         {

@@ -67,3 +67,28 @@ test("binding run parameters reach the published template at runtime", async ({ 
   expect(resolved.TargetResource).toBe("params-target");
   expect(resolved.shift).toBe("night");
 });
+
+test("file profile date layouts and metadata rules are configured in the browser", async ({ page }) => {
+  await page.goto("/industrial/file-profiles");
+  await page.getByRole("button", { name: "新建文件配置" }).click();
+  await page.getByLabel("配置名称").fill("Date layout profile");
+  await page.getByLabel("文件匹配规则").fill("*.csv");
+  await page.getByLabel("文件格式").fill("csv");
+  await page.getByLabel("字段映射").fill("value=reading");
+  await page.getByLabel("必填字段").fill("value");
+  await page.getByLabel("日期目录模板").fill("YYYY-MM-DD");
+  await page.getByLabel("日期文件模板").fill("yyyyMMdd-*.csv");
+  await page.getByLabel("元数据规则").fill("filename|(?<value>line-\\d+)|line|true");
+  await page.getByRole("button", { name: "保存配置" }).click();
+
+  await expect.poll(async () => {
+    const rows = (await (await page.request.get("/api/query/industrial/file-profiles")).json()).data;
+    return rows.find((row: { name: string }) => row.name === "Date layout profile");
+  }).toBeTruthy();
+  const rows = (await (await page.request.get("/api/query/industrial/file-profiles")).json()).data;
+  const profile = rows.find((row: { name: string }) => row.name === "Date layout profile");
+  expect(profile.directoryPattern).toBe("YYYY-MM-DD");
+  expect(profile.datePattern).toBe("yyyyMMdd-*.csv");
+  expect(profile.metadataRules[0].key).toBe("line");
+  expect(profile.metadataRules[0].required).toBe(true);
+});

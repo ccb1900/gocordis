@@ -61,7 +61,7 @@ while IFS= read -r file; do
   esac
   case "$file" in
     *BindingConsole*|*ConfigurationRegistries*|*IndustrialUiComponent*|*Vocabulary.cs|*IndustrialDbContext*|*Industrial.Elsa*|*BindingParameterTests*|*ImportPreviewTests*|*CollectionBindingTests*|*ConfigurationImportTests*|*ConfigPackageTests*|*ExcelImportTests*|*FileProfileRuntimeTests*|*CsvImportTests*)
-      BACKEND_FILTER='FullyQualifiedName~BindingParameterTests|FullyQualifiedName~ImportPreviewTests|FullyQualifiedName~CollectionBindingTests|FullyQualifiedName~ConfigurationImportTests|FullyQualifiedName~ConfigPackageTests|FullyQualifiedName~ExcelImportTests|FullyQualifiedName~FileProfileRuntimeTests|FullyQualifiedName~CsvImportTests|FullyQualifiedName~ResourceReferenceGuardTests' ;;
+      BACKEND_FILTER='FullyQualifiedName~BindingParameterTests|FullyQualifiedName~ImportPreviewTests|FullyQualifiedName~CollectionBindingTests|FullyQualifiedName~ConfigurationImportTests|FullyQualifiedName~ConfigPackageTests|FullyQualifiedName~ExcelImportTests|FullyQualifiedName~FileProfileRuntimeTests|FullyQualifiedName~CsvImportTests|FullyQualifiedName~BusinessDateLedgerTests|FullyQualifiedName~IndustrialSemanticsTests|FullyQualifiedName~ResourceReferenceGuardTests' ;;
     industrial/src/*Credential*|industrial/tests/*Credential*|*ResourceConnectionTester*|*SinkFactories*)
       BACKEND_FILTER='FullyQualifiedName~CredentialBackendTests|FullyQualifiedName~ResourceReferenceGuardTests' ;;
     *MachineConsole*|*ResourceReferenceGuardTests*)

@@ -1029,7 +1029,13 @@ public sealed class IndustrialUiComponent : Component
                 Field("encoding", "utf-8"), mapping,
                 Field("required", string.Empty).Split(';').Where(x => x.Trim().Length > 0)
                     .Select(x => x.Trim()).ToArray(),
-                true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+                true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+                Field("directoryPattern", string.Empty), Field("datePattern", string.Empty),
+                bool.TryParse(Field("flat", "false"), out var flat) && flat,
+                Field("metadataRules", string.Empty).Split(';')
+                    .Select(rule => rule.Split('|')).Where(parts => parts.Length >= 3)
+                    .Select(parts => new MetadataRule(parts[0], parts[1], parts[2],
+                        parts.Length < 4 || parts[3] != "false")).ToArray()));
         }
     }
 
@@ -1167,7 +1173,20 @@ public sealed class IndustrialUiComponent : Component
                 : existing?.RequiredFields ?? [],
             body["enabled"] is JsonValue flag && flag.TryGetValue<bool>(out var enabled) ? enabled : true,
             existing?.CreatedAt ?? DateTimeOffset.UtcNow,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            Text(body, "directoryPattern") ?? string.Empty,
+            Text(body, "datePattern") ?? string.Empty,
+            body["flat"] is JsonValue flat && flat.TryGetValue<bool>(out var isFlat) && isFlat,
+            body["metadataRules"] is JsonArray metadata
+                ? metadata.Select(node => node?.AsObject())
+                    .Where(node => node is not null)
+                    .Select(node => new MetadataRule(
+                        Text(node, "from") ?? "filename", Text(node, "pattern") ?? string.Empty,
+                        Text(node, "key") ?? string.Empty,
+                        node!["required"] is JsonValue requiredFlag &&
+                        requiredFlag.TryGetValue<bool>(out var isRequired) ? isRequired : true))
+                    .Where(rule => rule.Pattern.Length > 0 && rule.Key.Length > 0).ToArray()
+                : existing?.MetadataRules ?? []);
         await registry.RegisterAsync(profile);
     }
 

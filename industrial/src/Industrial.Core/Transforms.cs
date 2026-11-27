@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Industrial.Contracts;
 
 namespace Industrial.Core;
@@ -10,12 +11,17 @@ public sealed class MappingTransform
 {
     private readonly IReadOnlyDictionary<string, string> _mapping;
     private readonly bool _dropUnmapped;
+    private readonly IReadOnlyList<MetadataRule> _metadataRules;
 
     public MappingTransform(IReadOnlyDictionary<string, object?> config)
     {
         var reader = new NodeConfigReader(config);
         _mapping = reader.GetStringMap("mapping");
         _dropUnmapped = reader.GetBool("dropUnmapped", true);
+        _metadataRules = config.TryGetValue("metadataRules", out var rules) && rules is not null
+            ? JsonSerializer.Deserialize<List<MetadataRule>>(JsonSerializer.Serialize(rules),
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? []
+            : [];
     }
 
     public RecordEnvelope Apply(RecordEnvelope record)
@@ -25,6 +31,18 @@ public sealed class MappingTransform
         {
             record.Values.TryGetValue(source, out var value);
             mapped[target] = value;
+        }
+
+        foreach (var rule in _metadataRules)
+        {
+            var relative = record.Source.Key.Split('|').Skip(1).FirstOrDefault() ?? string.Empty;
+            var text = string.Equals(rule.From, "path", StringComparison.OrdinalIgnoreCase)
+                ? relative : Path.GetFileName(relative);
+            var match = Regex.Match(text, rule.Pattern, RegexOptions.IgnoreCase);
+            var value = match.Success
+                ? (match.Groups["value"].Success ? match.Groups["value"].Value : match.Value)
+                : null;
+            if (value is not null || rule.Required) mapped[rule.Key] = value;
         }
 
         mapped["record_id"] = record.Values.GetValueOrDefault("record_id");

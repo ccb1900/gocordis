@@ -437,6 +437,24 @@ public sealed class CollectionLedger : ICollectionLedger
             .SingleOrDefaultAsync(ct);
     }
 
+    public async ValueTask SetRunDefinitionAsync(
+        string runId, string definitionJson, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        await Exec(db,
+            "UPDATE CollectionRuns SET DefinitionJson = {0} WHERE Id = {1};",
+            definitionJson, runId, ct);
+    }
+
+    public async ValueTask<string?> GetRunDefinitionAsync(string runId, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        return await db.CollectionRuns.AsNoTracking()
+            .Where(x => x.Id == runId)
+            .Select(x => x.DefinitionJson)
+            .SingleOrDefaultAsync(ct);
+    }
+
     public async ValueTask<IReadOnlyList<CollectionRun>> ListRunsAsync(CancellationToken ct = default)
     {
         await using var db = _db();
@@ -768,6 +786,96 @@ public sealed class CollectionLedger : ICollectionLedger
         await using var db = _db();
         var rows = await db.CollectionFiles.AsNoTracking().ToListAsync(ct);
         return rows.Select(ToContract).OrderBy(file => file.CollectedAt).ToArray();
+    }
+
+    public async ValueTask<IReadOnlyList<CollectionDateState>> ListDatesAsync(CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var rows = await db.Database.SqlQueryRaw<DateRow>(
+            "SELECT * FROM CollectionDates ORDER BY BindingId, BusinessDate;").ToListAsync(ct);
+        return rows.Select(ToDateContract).ToArray();
+    }
+
+    public async ValueTask<CollectionDateState?> ClaimDateAsync(
+        string bindingId, DateOnly date, string runId, TimeSpan lease, CancellationToken ct = default)
+    {
+        var id = $"{bindingId}|{date:yyyy-MM-dd}";
+        var token = $"cd-{Guid.NewGuid():N}";
+        var now = DateTimeOffset.UtcNow;
+        await using var db = _db();
+        await Exec(db,
+            """
+            INSERT OR IGNORE INTO CollectionDates
+                (Id, BindingId, BusinessDate, Status, Attempts, CreatedAt, UpdatedAt)
+            VALUES ({0}, {1}, {2}, {3}, 0, {4}, {4});
+            """,
+            id, bindingId, date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            CollectionDateStatus.Pending, now.ToString("O"), ct);
+        var rows = await Exec(db,
+            """
+            UPDATE CollectionDates
+               SET Status = {0}, Attempts = Attempts + 1, ClaimToken = {1},
+                   LeaseExpiresAt = {2}, LastRunId = {3}, Error = NULL, UpdatedAt = {4}
+             WHERE Id = {5} AND
+                   (Status IN ({6}, {7}, {8}) OR
+                    (Status = {9} AND (LeaseExpiresAt IS NULL OR LeaseExpiresAt < {10})));
+            """,
+            CollectionDateStatus.Running, token, now.Add(lease).ToString("O"), runId,
+            now.ToString("O"), id, CollectionDateStatus.Pending, CollectionDateStatus.Failed,
+            CollectionDateStatus.Interrupted, CollectionDateStatus.Running,
+            now.ToString("O"), ct);
+        return rows == 1
+            ? new CollectionDateState(id, bindingId, date, CollectionDateStatus.Running,
+                1, token, now.Add(lease), runId, 0, null)
+            : null;
+    }
+
+    public async ValueTask CompleteDateAsync(
+        string id, string token, string status, int files, string? error, CancellationToken ct = default)
+    {
+        if (status is not (CollectionDateStatus.Succeeded or CollectionDateStatus.NoData or
+                           CollectionDateStatus.Failed or CollectionDateStatus.Interrupted))
+            throw new ArgumentException($"invalid business-date status '{status}'", nameof(status));
+        await using var db = _db();
+        // Go parity: no data is a log-only probe, not a terminal collection.
+        // Retire the claim row so the next trigger re-probes the date.
+        if (status == CollectionDateStatus.NoData)
+        {
+            await Exec(db,
+                "DELETE FROM CollectionDates WHERE Id = {0} AND ClaimToken = {1};",
+                id, token, ct);
+            return;
+        }
+        await Exec(db,
+            """
+            UPDATE CollectionDates
+               SET Status = {0}, Files = {1}, Error = {2}, ClaimToken = NULL,
+                   LeaseExpiresAt = NULL, UpdatedAt = {3}
+             WHERE Id = {4} AND ClaimToken = {5};
+            """,
+            status, files, error ?? string.Empty,
+            DateTimeOffset.UtcNow.ToString("O"), id, token, ct);
+    }
+
+    private static CollectionDateState ToDateContract(DateRow row) => new(
+        row.Id, row.BindingId, DateOnly.Parse(row.BusinessDate, CultureInfo.InvariantCulture),
+        row.Status, row.Attempts, row.ClaimToken,
+        string.IsNullOrWhiteSpace(row.LeaseExpiresAt)
+            ? null : DateTimeOffset.Parse(row.LeaseExpiresAt, CultureInfo.InvariantCulture),
+        row.LastRunId, row.Files, row.Error);
+
+    private sealed class DateRow
+    {
+        public string Id { get; set; } = "";
+        public string BindingId { get; set; } = "";
+        public string BusinessDate { get; set; } = "";
+        public string Status { get; set; } = "";
+        public int Attempts { get; set; }
+        public string? ClaimToken { get; set; }
+        public string? LeaseExpiresAt { get; set; }
+        public string? LastRunId { get; set; }
+        public int Files { get; set; }
+        public string? Error { get; set; }
     }
 
     private static Task<int> Exec(IndustrialDbContext db, string sql, params object[] parameters)

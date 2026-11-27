@@ -222,14 +222,28 @@ public sealed class UncFileSource : IFileSource
             ? null
             : await _vault!.RevealAsync(resource.CredentialId, ct);
         var (user, password, domain) = ParseCredential(secret);
+        // Flat sources point at the file itself; the SMB session still belongs
+        // to its share root, never to a file or subfolder path.
+        var connectionRoot = Directory.Exists(root) ? root! : ShareRoot(root!);
         UncConnectionLease? lease = null;
         if (!string.IsNullOrWhiteSpace(user))
         {
-            lease = UncConnectionLease.Acquire(root!, user, password!, domain);
+            lease = UncConnectionLease.Acquire(connectionRoot, user, password!, domain);
         }
 
         try
         {
+            if (File.Exists(root))
+            {
+                var parent = Path.GetDirectoryName(root!) ?? root!;
+                var identity = FileIdentityFactory.Create(root!, parent, resource.Id);
+                var flatDate = FileIdentityFactory.ParseSourceDate(Path.GetFileName(root))
+                               ?? identity.LastWriteUtc;
+                return flatDate < range.FromInclusive || flatDate >= range.ToExclusive
+                    ? []
+                    : [new DiscoveredFile(identity, root!, flatDate, resource.Id)];
+            }
+
             var result = new List<DiscoveredFile>();
             var files = DiscoveredFilePatterns.Enumerate(root!, _extensions);
             foreach (var path in files)
@@ -246,6 +260,12 @@ public sealed class UncFileSource : IFileSource
         {
             if (lease is not null) await lease.DisposeAsync();
         }
+    }
+
+    internal static string ShareRoot(string path)
+    {
+        var parts = path.TrimStart('\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length >= 2 ? $@"\\{parts[0]}\{parts[1]}" : path;
     }
 
     public static void ReleaseAll() => UncConnectionLease.ReleaseAll();

@@ -71,6 +71,15 @@ public sealed class BindingParameterTests
             Assert.Equal("night", resolved["shift"]!.GetValue<string>());
             Assert.Equal("7", resolved["lookbackDays"]!.GetValue<string>());
 
+            // The exact bound snapshot is persisted on the run so a later
+            // delivery retry uses the same profile/parameters, not the template.
+            var ledger = runtime.RequireCapability(IndustrialKeys.CollectionLedger);
+            var run = (await ledger.ListRunsAsync()).Last();
+            var snapshot = await ledger.GetRunDefinitionAsync(run.Id);
+            Assert.NotNull(snapshot);
+            Assert.Contains("p-params", snapshot!, StringComparison.Ordinal);
+            Assert.Contains("night", snapshot, StringComparison.Ordinal);
+
             // The published snapshot was never modified by substitution.
             var published = await runtime.RequireCapability(IndustrialKeys.WorkflowRegistry)
                 .GetPublishedVersionAsync("params-template", 1);

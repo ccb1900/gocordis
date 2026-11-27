@@ -25,12 +25,15 @@ public sealed class FileProfileRegistry(Func<IndustrialDbContext> db) : IFilePro
             """
             INSERT OR REPLACE INTO FileProfiles
               (Id, Name, Version, FileNamePattern, Format, Delimiter, HasHeader, Encoding,
-               MappingJson, RequiredJson, Enabled, CreatedAt, UpdatedAt)
-            VALUES ({0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11},{12});
+               MappingJson, RequiredJson, Enabled, DirectoryPattern, DatePattern, Flat,
+               MetadataJson, CreatedAt, UpdatedAt)
+            VALUES ({0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11},{12},{13},{14},{15},{16});
             """,
             [next.Id, next.Name, next.Version, next.FileNamePattern, next.Format, next.Delimiter,
              next.HasHeader ? 1 : 0, next.Encoding, JsonSerializer.Serialize(next.Mapping, Json),
              JsonSerializer.Serialize(next.RequiredFields, Json), next.Enabled ? 1 : 0,
+             next.DirectoryPattern, next.DatePattern, next.Flat ? 1 : 0,
+             JsonSerializer.Serialize(next.MetadataRules ?? [], Json),
              created.ToString("O"), next.UpdatedAt.ToString("O")], ct);
         return next with { CreatedAt = created };
     }
@@ -71,7 +74,9 @@ public sealed class FileProfileRegistry(Func<IndustrialDbContext> db) : IFilePro
         JsonSerializer.Deserialize<List<string>>(row.RequiredJson, Json) ?? [],
         row.Enabled != 0,
         DateTimeOffset.Parse(row.CreatedAt, CultureInfo.InvariantCulture),
-        DateTimeOffset.Parse(row.UpdatedAt, CultureInfo.InvariantCulture));
+        DateTimeOffset.Parse(row.UpdatedAt, CultureInfo.InvariantCulture),
+        row.DirectoryPattern, row.DatePattern, row.Flat != 0,
+        JsonSerializer.Deserialize<List<MetadataRule>>(row.MetadataJson, Json) ?? []);
 
     private sealed class CountRow { public int Value { get; set; } }
 
@@ -82,6 +87,10 @@ public sealed class FileProfileRegistry(Func<IndustrialDbContext> db) : IFilePro
         public string Format { get; set; } = ""; public string Delimiter { get; set; } = "";
         public int HasHeader { get; set; } public string Encoding { get; set; } = "";
         public string MappingJson { get; set; } = "{}"; public string RequiredJson { get; set; } = "[]";
+        public string DirectoryPattern { get; set; } = "";
+        public string DatePattern { get; set; } = "";
+        public int Flat { get; set; }
+        public string MetadataJson { get; set; } = "[]";
         public int Enabled { get; set; } public string CreatedAt { get; set; } = "";
         public string UpdatedAt { get; set; } = "";
     }

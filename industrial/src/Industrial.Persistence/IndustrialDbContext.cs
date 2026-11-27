@@ -145,6 +145,7 @@ public sealed class CollectionRunEntity
     /// original instance through this field instead of guessing by instance id
     /// string order.</summary>
     public string? InstanceId { get; set; }
+    public string? DefinitionJson { get; set; }
 }
 
 public sealed class CollectionFileEntity
@@ -266,6 +267,8 @@ public static class IndustrialStore
         var existed = File.Exists(path);
         var options = new DbContextOptionsBuilder<IndustrialDbContext>()
             .UseSqlite($"Data Source={path}", sql => sql.MigrationsAssembly("Industrial.Persistence"))
+            .ConfigureWarnings(warnings => warnings.Ignore(
+                Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning))
             .Options;
         var context = new IndustrialDbContext(options);
         if (existed)
@@ -300,6 +303,23 @@ public static class IndustrialStore
                 Error TEXT NULL,
                 FinishedAtUtc TEXT NULL,
                 PlannedAtUtc TEXT NULL);
+            """);
+        Execute(context, """
+            CREATE TABLE IF NOT EXISTS CollectionDates (
+                Id TEXT NOT NULL PRIMARY KEY,
+                BindingId TEXT NOT NULL,
+                BusinessDate TEXT NOT NULL,
+                Status TEXT NOT NULL DEFAULT 'Pending',
+                Attempts INTEGER NOT NULL DEFAULT 0,
+                ClaimToken TEXT NULL,
+                LeaseExpiresAt TEXT NULL,
+                LastRunId TEXT NULL,
+                Files INTEGER NOT NULL DEFAULT 0,
+                Error TEXT NULL,
+                CreatedAt TEXT NOT NULL,
+                UpdatedAt TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS IX_CollectionDates_Binding
+                ON CollectionDates(BindingId, BusinessDate);
             """);
         // Legacy ledger files created the five-column shape; bring them up to
         // the same lifecycle schema without losing already-fired rows.
@@ -339,6 +359,9 @@ public static class IndustrialStore
                 FileNamePattern TEXT NOT NULL, Format TEXT NOT NULL, Delimiter TEXT NOT NULL,
                 HasHeader INTEGER NOT NULL, Encoding TEXT NOT NULL, MappingJson TEXT NOT NULL,
                 RequiredJson TEXT NOT NULL, Enabled INTEGER NOT NULL,
+                DirectoryPattern TEXT NOT NULL DEFAULT '', DatePattern TEXT NOT NULL DEFAULT '',
+                Flat INTEGER NOT NULL DEFAULT 0,
+                MetadataJson TEXT NOT NULL DEFAULT '[]',
                 CreatedAt TEXT NOT NULL, UpdatedAt TEXT NOT NULL);
             """);
         Execute(context, """
@@ -369,10 +392,15 @@ public static class IndustrialStore
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN Warnings INTEGER NOT NULL DEFAULT 0;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN StatisticsJson TEXT NULL;");
         Execute(context, "ALTER TABLE CollectionRuns ADD COLUMN InstanceId TEXT NULL;");
+        Execute(context, "ALTER TABLE CollectionRuns ADD COLUMN DefinitionJson TEXT NULL;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN LastAttemptRunId TEXT NULL;");
         Execute(context, "ALTER TABLE Resources ADD COLUMN MachineId TEXT NULL;");
         Execute(context, "ALTER TABLE ScheduleCheckpoints ADD COLUMN BacklogTruncated INTEGER NOT NULL DEFAULT 0;");
         Execute(context, "ALTER TABLE CollectionBindings ADD COLUMN ParametersJson TEXT NOT NULL DEFAULT '{{}}';");
+        Execute(context, "ALTER TABLE FileProfiles ADD COLUMN DirectoryPattern TEXT NOT NULL DEFAULT '';");
+        Execute(context, "ALTER TABLE FileProfiles ADD COLUMN DatePattern TEXT NOT NULL DEFAULT '';");
+        Execute(context, "ALTER TABLE FileProfiles ADD COLUMN Flat INTEGER NOT NULL DEFAULT 0;");
+        Execute(context, "ALTER TABLE FileProfiles ADD COLUMN MetadataJson TEXT NOT NULL DEFAULT '[]';");
         Execute(context, "CREATE INDEX IF NOT EXISTS IX_CollectionRuns_InstanceId ON CollectionRuns(InstanceId);");
         Execute(context, """
             CREATE TABLE IF NOT EXISTS CollectionRunDeliveries (

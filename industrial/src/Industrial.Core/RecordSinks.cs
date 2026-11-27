@@ -35,6 +35,7 @@ public sealed class SqliteRecordSink : IRecordSink
         const int batchSize = 500;
         var count = 0;
         var pending = 0;
+        var writtenIds = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var record in records.WithCancellation(ct))
         {
             var recordId = _options.ResolveId(record);
@@ -42,6 +43,7 @@ public sealed class SqliteRecordSink : IRecordSink
             {
                 continue;
             }
+            writtenIds.Add(recordId);
 
             db.Records.Add(new TargetRecordEntity
             {
@@ -62,6 +64,15 @@ public sealed class SqliteRecordSink : IRecordSink
         }
 
         if (pending > 0) await db.SaveChangesAsync(ct);
+        // Bounded readback: a delivery is not complete until the target proves
+        // it holds every row this write claimed to have inserted.
+        if (writtenIds.Count > 0)
+        {
+            var stored = await db.Records.CountAsync(row => writtenIds.Contains(row.RecordId), ct);
+            if (stored != writtenIds.Count)
+                throw new InvalidOperationException(
+                    $"target verification failed: wrote {writtenIds.Count} rows but found {stored}");
+        }
         return new DeliveryResultRef(idempotencyKey, TargetId, count);
     }
 }

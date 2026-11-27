@@ -7,24 +7,24 @@ function Pe() {
     throw new Error("[industrial-designer] console facade is not available");
   return jr;
 }
-const f = (...e) => Pe().jsxRuntime.jsx(...e), R = (...e) => Pe().jsxRuntime.jsxs(...e), dr = (e) => Pe().jsxRuntime.jsx(Pe().jsxRuntime.Fragment, e), Lo = (...e) => Pe().React.createElement(...e), F = (...e) => Pe().React.useCallback(...e), _e = (...e) => Pe().React.useEffect(...e), ht = (...e) => Pe().React.useMemo(...e), Te = (...e) => Pe().React.useRef(...e), I = (...e) => Pe().React.useState(...e), ye = (e) => {
+const f = (...e) => Pe().jsxRuntime.jsx(...e), R = (...e) => Pe().jsxRuntime.jsxs(...e), dr = (e) => Pe().jsxRuntime.jsx(Pe().jsxRuntime.Fragment, e), $o = (...e) => Pe().React.createElement(...e), F = (...e) => Pe().React.useCallback(...e), _e = (...e) => Pe().React.useEffect(...e), pt = (...e) => Pe().React.useMemo(...e), Te = (...e) => Pe().React.useRef(...e), q = (...e) => Pe().React.useState(...e), ye = (e) => {
   const r = (t) => {
     const n = e.split(".").reduce((a, i) => a == null ? void 0 : a[i], Pe().antd);
     if (!n) throw new Error(`[industrial-designer] antd.${e} is unavailable`);
-    return Lo(n, t ?? {});
+    return $o(n, t ?? {});
   };
   return r.displayName = `facade.${e}`, r;
-}, Ee = ye("Alert"), $ = ye("Button"), pu = ye("Divider"), sv = ye("Drawer"), xh = ye("Empty"), $o = Object.assign(ye("Form"), {
+}, Ee = ye("Alert"), L = ye("Button"), pu = ye("Divider"), sv = ye("Drawer"), xh = ye("Empty"), Lo = Object.assign(ye("Form"), {
   Item: ye("Form.Item"),
   useForm: (...e) => Pe().antd.Form.useForm(...e)
-}), Q = Object.assign(ye("Input"), {
+}), V = Object.assign(ye("Input"), {
   Number: ye("InputNumber"),
   TextArea: ye("Input.TextArea"),
   Password: ye("Input.Password")
-}), it = ye("InputNumber"), ov = Object.assign(ye("Layout"), {
+}), st = ye("InputNumber"), ov = Object.assign(ye("Layout"), {
   Header: ye("Layout.Header"),
   Content: ye("Layout.Content")
-}), br = ye("Modal"), je = ye("Select"), Y = ye("Space"), kh = ye("Spin"), pt = ye("Switch"), Ae = ye("Table"), Le = ye("Tag"), U = Object.assign(ye("Typography"), {
+}), br = ye("Modal"), je = ye("Select"), Y = ye("Space"), kh = ye("Spin"), Hr = ye("Switch"), Ae = ye("Table"), $e = ye("Tag"), U = Object.assign(ye("Typography"), {
   Title: ye("Typography.Title"),
   Text: ye("Typography.Text"),
   Paragraph: ye("Typography.Paragraph")
@@ -179,7 +179,7 @@ const fv = "__industrial_drag_target__", hv = "__industrial_connect_source__", D
   if (r.targetType !== "node" || !((l = r.target) != null && l.id)) return !1;
   const t = ((d = e.gestureOrigin) == null ? void 0 : d.call(e)) ?? r.client ?? r.canvas;
   if (!t || !e.graph) return !1;
-  const n = String(r.target.id), a = e.graph.getNodeData().find((p) => String(p.id) === n), i = a == null ? void 0 : a.style;
+  const n = String(r.target.id), a = e.graph.getNodeData().find((h) => String(h.id) === n), i = a == null ? void 0 : a.style;
   if (typeof (i == null ? void 0 : i.x) != "number" || typeof i.y != "number") return !1;
   const [s, o] = e.graph.getCanvasByClient([t.x, t.y]), u = Math.abs(s - i.x), c = Math.abs(o - i.y);
   return Math.abs(u - Ah / 2) <= 14 && c <= Ph / 2 + 10;
@@ -189,10 +189,10 @@ function Nh(e = {}) {
     var c, l, d;
     const a = e.graph;
     if (!a || !e.onPositions) return;
-    const i = Array.isArray(n) ? n : n ? [String(n)] : void 0, s = a.getNodeData().map((p) => ({
-      id: String(p.id),
-      data: p.data ?? {},
-      style: p.style ?? {}
+    const i = Array.isArray(n) ? n : n ? [String(n)] : void 0, s = a.getNodeData().map((h) => ({
+      id: String(h.id),
+      data: h.data ?? {},
+      style: h.style ?? {}
     })), o = jo(
       { nodes: s },
       ((c = e.allowedIds) == null ? void 0 : c.call(e)) ?? /* @__PURE__ */ new Set(),
@@ -278,53 +278,53 @@ function vv(e) {
     onGraphReady: c,
     onSelectEdge: l,
     onDeleteNodeById: d,
-    onDuplicateNode: p,
+    onDuplicateNode: h,
     onDeleteEdgeById: v
-  } = e, g = Te(null), h = Te(null), y = Te(!1), C = Te(!1), x = Te({ armed: !1 }), _ = Te(null), [A, L] = I(null), [m, k] = I([]), N = Te({ onSelect: a, onDropNode: i, onCreateEdge: s, onPositions: o });
+  } = e, g = Te(null), p = Te(null), m = Te(!1), w = Te(!1), x = Te({ armed: !1 }), b = Te(null), [k, M] = q(null), [y, A] = q([]), N = Te({ onSelect: a, onDropNode: i, onCreateEdge: s, onPositions: o });
   N.current = { onSelect: a, onDropNode: i, onCreateEdge: s, onPositions: o, onSelectEdge: l };
-  const H = ht(
+  const W = pt(
     () => cv(r, t, n),
     [r, t, n]
-  ), G = Te(H);
-  G.current = H;
+  ), G = Te(W);
+  G.current = W;
   const S = Te(/* @__PURE__ */ new Set());
   S.current = new Set(r.nodes.map((z) => z.id)), _e(() => {
     const z = (fe) => {
-      fe.code === "Space" && !fe.repeat && (C.current = !0);
+      fe.code === "Space" && !fe.repeat && (w.current = !0);
     }, ie = (fe) => {
-      fe.code === "Space" && (C.current = !1);
+      fe.code === "Space" && (w.current = !1);
     }, ue = () => {
-      C.current = !1;
+      w.current = !1;
     };
     return window.addEventListener("keydown", z), window.addEventListener("keyup", ie), window.addEventListener("blur", ue), () => {
       window.removeEventListener("keydown", z), window.removeEventListener("keyup", ie), window.removeEventListener("blur", ue);
     };
   }, []), _e(() => {
     const z = g.current;
-    if (!z || y.current) return;
+    if (!z || m.current) return;
     let ie = !1;
-    return import("./esm-H_YWdHHj.js").then(({ Graph: ue }) => {
-      if (ie || !g.current || y.current) return;
+    return import("./esm--BItwFV3.js").then(({ Graph: ue }) => {
+      if (ie || !g.current || m.current) return;
       const fe = dv(G.current, z), B = new ue({
         ...fe,
         behaviors: Nh({
           graph: {
             getNodeData: () => {
               var J;
-              return ((J = h.current) == null ? void 0 : J.getNodeData()) ?? [];
+              return ((J = p.current) == null ? void 0 : J.getNodeData()) ?? [];
             },
             getCanvasByClient: (J) => {
               var T;
-              const E = ((T = h.current) == null ? void 0 : T.getCanvasByClient(J)) ?? J;
+              const E = ((T = p.current) == null ? void 0 : T.getCanvasByClient(J)) ?? J;
               return [E[0], E[1]];
             }
           },
-          isPanModifier: () => C.current,
-          gestureOrigin: () => _.current,
+          isPanModifier: () => w.current,
+          gestureOrigin: () => b.current,
           connectionState: x.current,
           allowedIds: () => S.current,
           onPositions: (J) => N.current.onPositions(J),
-          onAlign: (J) => k((E) => J.length > 0 ? J : E),
+          onAlign: (J) => A((E) => J.length > 0 ? J : E),
           onSelectIds: (J) => u == null ? void 0 : u(J),
           onCreateEdge: (J, E) => N.current.onCreateEdge(J, E)
         })
@@ -333,47 +333,47 @@ function vv(e) {
         const E = pv(J);
         E && N.current.onSelect(E);
       }), B.on("edge:click", (J) => {
-        var T, M, ve;
+        var T, $, ve;
         const E = J;
-        (ve = (M = N.current).onSelectEdge) == null || ve.call(M, ((T = E.target) == null ? void 0 : T.id) ?? null);
+        (ve = ($ = N.current).onSelectEdge) == null || ve.call($, ((T = E.target) == null ? void 0 : T.id) ?? null);
       }), B.on("node:contextmenu", (J) => {
-        var T, M, ve;
+        var T, $, ve;
         const E = J;
-        (T = E.target) != null && T.id && L({
-          x: ((M = E.client) == null ? void 0 : M.x) ?? 0,
+        (T = E.target) != null && T.id && M({
+          x: (($ = E.client) == null ? void 0 : $.x) ?? 0,
           y: ((ve = E.client) == null ? void 0 : ve.y) ?? 0,
           type: "node",
           id: E.target.id
         });
       }), B.on("edge:contextmenu", (J) => {
-        var T, M, ve;
+        var T, $, ve;
         const E = J;
-        (T = E.target) != null && T.id && L({
-          x: ((M = E.client) == null ? void 0 : M.x) ?? 0,
+        (T = E.target) != null && T.id && M({
+          x: (($ = E.client) == null ? void 0 : $.x) ?? 0,
           y: ((ve = E.client) == null ? void 0 : ve.y) ?? 0,
           type: "edge",
           id: E.target.id
         });
       }), B.on("canvas:click", () => N.current.onSelect(null)), B.on("pointerdown", (J) => {
         const E = J;
-        _.current = E.client ? { x: E.client.x, y: E.client.y } : null;
+        b.current = E.client ? { x: E.client.x, y: E.client.y } : null;
       }), B.on("pointerup", () => {
         queueMicrotask(() => {
-          x.current.armed = !1, _.current = null;
+          x.current.armed = !1, b.current = null;
         });
-      }), h.current = B, z.__industrialGraph = B, c == null || c(B), y.current = !0, B.render();
+      }), p.current = B, z.__industrialGraph = B, c == null || c(B), m.current = !0, B.render();
     }), () => {
       ie = !0;
     };
   }, []), _e(() => {
-    const z = h.current;
-    !z || !y.current || (z.setData(H), z.draw());
-  }, [H]), _e(() => () => {
+    const z = p.current;
+    !z || !m.current || (z.setData(W), z.draw());
+  }, [W]), _e(() => () => {
     var z;
-    (z = h.current) == null || z.destroy(), h.current = null, y.current = !1;
+    (z = p.current) == null || z.destroy(), p.current = null, m.current = !1;
   }, []);
   const j = () => {
-    const z = h.current;
+    const z = p.current;
     if (!z) return;
     const ie = z.getNodeData().map((B) => ({
       id: String(B.id),
@@ -382,7 +382,7 @@ function vv(e) {
     })), ue = jo({ nodes: ie }, S.current);
     N.current.onPositions(ue);
     const fe = Oh(ue);
-    k(fe.length > 0 ? fe : ["已对齐到网格"]);
+    A(fe.length > 0 ? fe : ["已对齐到网格"]);
   };
   return /* @__PURE__ */ f("div", { className: "industrial-canvas-wrap", children: /* @__PURE__ */ R("div", { className: "industrial-graph", children: [
     /* @__PURE__ */ f(
@@ -395,7 +395,7 @@ function vv(e) {
           z.preventDefault();
           const ie = z.dataTransfer.getData("application/x-industrial-node") || z.dataTransfer.getData("text/plain");
           if (!ie) return;
-          const ue = h.current, fe = g.current;
+          const ue = p.current, fe = g.current;
           if (!ue || !fe) return;
           const B = fe.getBoundingClientRect(), J = ue.getCanvasByViewport([
             z.clientX - B.left,
@@ -406,24 +406,24 @@ function vv(e) {
         "data-testid": "industrial-graph"
       }
     ),
-    A && /* @__PURE__ */ f("div", { className: "industrial-context-menu", style: { left: A.x, top: A.y }, children: A.type === "node" ? /* @__PURE__ */ R(dr, { children: [
+    k && /* @__PURE__ */ f("div", { className: "industrial-context-menu", style: { left: k.x, top: k.y }, children: k.type === "node" ? /* @__PURE__ */ R(dr, { children: [
       /* @__PURE__ */ f("button", { onClick: () => {
-        p == null || p(A.id), L(null);
+        h == null || h(k.id), M(null);
       }, children: "复制节点" }),
       /* @__PURE__ */ f("button", { onClick: () => {
-        d == null || d(A.id), L(null);
+        d == null || d(k.id), M(null);
       }, children: "删除节点" })
     ] }) : /* @__PURE__ */ R(dr, { children: [
       /* @__PURE__ */ f("button", { onClick: () => {
-        l == null || l(A.id), L(null);
+        l == null || l(k.id), M(null);
       }, children: "编辑连线" }),
       /* @__PURE__ */ f("button", { onClick: () => {
-        v == null || v(A.id), L(null);
+        v == null || v(k.id), M(null);
       }, children: "删除连线" })
     ] }) }),
-    m.length > 0 && /* @__PURE__ */ R("div", { className: "industrial-align-guide", "data-testid": "align-guide", children: [
+    y.length > 0 && /* @__PURE__ */ R("div", { className: "industrial-align-guide", "data-testid": "align-guide", children: [
       "已对齐 ",
-      m.join(" · ")
+      y.join(" · ")
     ] }),
     /* @__PURE__ */ R("div", { className: "industrial-graph-hint", children: [
       "Shift+拖拽框选 · 拖节点移动 · 端口拖拽连线 · 滚轮缩放 · 空格/中键平移",
@@ -464,17 +464,17 @@ function gv({ descriptors: e, loading: r, error: t, onAdd: n }) {
           children: [
             /* @__PURE__ */ f("div", { className: "industrial-palette-node-title", children: u.name }),
             /* @__PURE__ */ R("div", { className: "industrial-palette-node-meta", children: [
-              /* @__PURE__ */ f(Le, { bordered: !1, color: "blue", children: u.version }),
+              /* @__PURE__ */ f($e, { bordered: !1, color: "blue", children: u.version }),
               /* @__PURE__ */ f(U.Text, { type: "secondary", style: { fontSize: 11 }, children: u.nodeTypeId })
             ] }),
             /* @__PURE__ */ R("div", { className: "industrial-palette-node-ports", children: [
-              u.inputs.map((c) => /* @__PURE__ */ R(Le, { bordered: !1, color: "default", children: [
+              u.inputs.map((c) => /* @__PURE__ */ R($e, { bordered: !1, color: "default", children: [
                 "in ",
                 c.name,
                 ": ",
                 c.type
               ] }, `in-${c.name}`)),
-              u.outputs.map((c) => /* @__PURE__ */ R(Le, { bordered: !1, color: "green", children: [
+              u.outputs.map((c) => /* @__PURE__ */ R($e, { bordered: !1, color: "green", children: [
                 "out ",
                 c.name,
                 ": ",
@@ -488,7 +488,7 @@ function gv({ descriptors: e, loading: r, error: t, onAdd: n }) {
     ] }, s))
   ] });
 }
-const st = (e = "daily-collection") => ({
+const ot = (e = "daily-collection") => ({
   workflowId: e,
   name: e,
   version: 1,
@@ -510,7 +510,7 @@ function Mt(e, r, t = 0, n = 0) {
 function tr(e, r) {
   return e.get(r);
 }
-function ot(e, r, t) {
+function ut(e, r, t) {
   return e[t].find((n) => n.name === r);
 }
 function Ko(e, r) {
@@ -536,7 +536,7 @@ function bv(e, r, t) {
   const s = tr(t, a.type), o = tr(t, i.type);
   if (!s || !o)
     return { definition: e, issue: ke(n, "NODE_TYPE_UNKNOWN", "endpoint has no node descriptor") };
-  const u = ot(s, r.sourcePort, "outputs"), c = ot(o, r.targetPort, "inputs");
+  const u = ut(s, r.sourcePort, "outputs"), c = ut(o, r.targetPort, "inputs");
   return !u || !c ? { definition: e, issue: ke(n, "PORT_MISSING", "declared port does not exist") } : Ko(u.type, c.type) ? { definition: { ...e, edges: [...e.edges, r] } } : {
     definition: e,
     issue: ke(
@@ -546,7 +546,7 @@ function bv(e, r, t) {
     )
   };
 }
-function Lt(e, r) {
+function $t(e, r) {
   return {
     ...e,
     nodes: e.nodes.filter((t) => t.id !== r),
@@ -644,9 +644,9 @@ function _u(e, r, t) {
       n.push(ke(`edges.${u}`, "ENDPOINT_MISSING", "edge endpoint is missing"));
       return;
     }
-    const d = i.get(o.source), p = i.get(o.target);
-    if (!d || !p) return;
-    const v = ot(d, o.sourcePort, "outputs"), g = ot(p, o.targetPort, "inputs");
+    const d = i.get(o.source), h = i.get(o.target);
+    if (!d || !h) return;
+    const v = ut(d, o.sourcePort, "outputs"), g = ut(h, o.targetPort, "inputs");
     if (!v || !g) {
       n.push(ke(`edges.${u}`, "PORT_MISSING", "edge references an unknown port"));
       return;
@@ -691,7 +691,7 @@ function wu(e) {
   }
   return { record: r, duplicateKeys: t };
 }
-function rt(e) {
+function tt(e) {
   if (!Array.isArray(e)) return [];
   const r = /* @__PURE__ */ new Set(), t = [];
   for (const n of e) {
@@ -717,22 +717,22 @@ function Sv({
   valueTitle: a = "来源字段",
   testId: i
 }) {
-  const s = JSON.stringify(e ?? {}), [o, u] = I(() => Go(e)), [c, l] = I(s);
+  const s = JSON.stringify(e ?? {}), [o, u] = q(() => Go(e)), [c, l] = q(s);
   _e(() => {
     s !== c && (u(Go(e)), l(s));
   }, [s, c, e]);
   const d = (v) => {
     u(v), r == null || r(wu(v).record);
-  }, { duplicateKeys: p } = wu(o);
+  }, { duplicateKeys: h } = wu(o);
   return /* @__PURE__ */ R("div", { "data-testid": i, className: "industrial-kv-editor", children: [
     o.map((v, g) => /* @__PURE__ */ R("div", { className: "industrial-kv-row", children: [
       /* @__PURE__ */ f(
-        Q,
+        V,
         {
           "aria-label": `${n} ${g + 1}`,
           value: v.key,
           placeholder: n,
-          onChange: (h) => d(o.map((y, C) => C === g ? { ...y, key: h.target.value } : y))
+          onChange: (p) => d(o.map((m, w) => w === g ? { ...m, key: p.target.value } : m))
         }
       ),
       t && t.length > 0 ? /* @__PURE__ */ f(
@@ -741,32 +741,32 @@ function Sv({
           "aria-label": `${a} ${g + 1}`,
           value: v.value || void 0,
           placeholder: a,
-          options: t.map((h) => ({ label: h, value: h })),
-          onChange: (h) => d(o.map((y, C) => C === g ? { ...y, value: h ?? "" } : y))
+          options: t.map((p) => ({ label: p, value: p })),
+          onChange: (p) => d(o.map((m, w) => w === g ? { ...m, value: p ?? "" } : m))
         }
       ) : /* @__PURE__ */ f(
-        Q,
+        V,
         {
           "aria-label": `${a} ${g + 1}`,
           value: v.value,
           placeholder: a,
-          onChange: (h) => d(o.map((y, C) => C === g ? { ...y, value: h.target.value } : y))
+          onChange: (p) => d(o.map((m, w) => w === g ? { ...m, value: p.target.value } : m))
         }
       ),
       /* @__PURE__ */ f(
-        $,
+        L,
         {
           size: "small",
           type: "text",
           danger: !0,
           "aria-label": `删除 ${g + 1}`,
-          onClick: () => d(o.filter((h, y) => y !== g)),
+          onClick: () => d(o.filter((p, m) => m !== g)),
           children: "删"
         }
       )
     ] }, g)),
     /* @__PURE__ */ f(
-      $,
+      L,
       {
         size: "small",
         type: "dashed",
@@ -775,50 +775,50 @@ function Sv({
         children: "添加字段"
       }
     ),
-    p.length > 0 && /* @__PURE__ */ R(U.Text, { type: "danger", className: "industrial-editor-error", children: [
+    h.length > 0 && /* @__PURE__ */ R(U.Text, { type: "danger", className: "industrial-editor-error", children: [
       "重复字段：",
-      p.join("、")
+      h.join("、")
     ] })
   ] });
 }
 function Rv({ value: e, onChange: r, suggestions: t = [], testId: n }) {
-  const a = JSON.stringify(rt(e)), [i, s] = I(() => rt(e)), [o, u] = I(a);
+  const a = JSON.stringify(tt(e)), [i, s] = q(() => tt(e)), [o, u] = q(a);
   _e(() => {
-    a !== o && (s(rt(e)), u(a));
+    a !== o && (s(tt(e)), u(a));
   }, [a, o, e]);
   const c = (l) => {
-    s(l), r == null || r(rt(l));
+    s(l), r == null || r(tt(l));
   };
   return /* @__PURE__ */ R("div", { "data-testid": n, className: "industrial-list-editor", children: [
     /* @__PURE__ */ f("datalist", { id: `${n ?? "list"}-suggestions`, children: t.map((l) => /* @__PURE__ */ f("option", { value: l }, l)) }),
     i.map((l, d) => /* @__PURE__ */ R("div", { className: "industrial-list-row", children: [
       /* @__PURE__ */ f(
-        Q,
+        V,
         {
           "aria-label": `字段 ${d + 1}`,
           value: l,
           list: `${n ?? "list"}-suggestions`,
-          onChange: (p) => c(i.map((v, g) => g === d ? p.target.value : v))
+          onChange: (h) => c(i.map((v, g) => g === d ? h.target.value : v))
         }
       ),
       /* @__PURE__ */ f(
-        $,
+        L,
         {
           size: "small",
           type: "text",
           danger: !0,
           "aria-label": `删除 ${d + 1}`,
-          onClick: () => c(i.filter((p, v) => v !== d)),
+          onClick: () => c(i.filter((h, v) => v !== d)),
           children: "删"
         }
       )
     ] }, d)),
-    /* @__PURE__ */ f($, { size: "small", type: "dashed", block: !0, onClick: () => c([...i, ""]), children: "添加字段" }),
+    /* @__PURE__ */ f(L, { size: "small", type: "dashed", block: !0, onClick: () => c([...i, ""]), children: "添加字段" }),
     i.length === 0 && /* @__PURE__ */ f(U.Text, { type: "secondary", className: "industrial-editor-error", children: "尚未添加字段" })
   ] });
 }
 function Tv({ value: e, onChange: r }) {
-  const t = e === void 0 ? "{}" : JSON.stringify(e, null, 2), [n, a] = I(t), [i, s] = I(null);
+  const t = e === void 0 ? "{}" : JSON.stringify(e, null, 2), [n, a] = q(t), [i, s] = q(null);
   _e(() => {
     a(t), s(null);
   }, [t]);
@@ -832,7 +832,7 @@ function Tv({ value: e, onChange: r }) {
     }
   };
   return /* @__PURE__ */ R("div", { children: [
-    /* @__PURE__ */ f(Q.TextArea, { rows: 5, value: n, onChange: (u) => o(u.target.value) }),
+    /* @__PURE__ */ f(V.TextArea, { rows: 5, value: n, onChange: (u) => o(u.target.value) }),
     i && /* @__PURE__ */ f(U.Text, { type: "danger", style: { fontSize: 11 }, children: i })
   ] });
 }
@@ -870,7 +870,7 @@ function xv({ value: e, onChange: r, resources: t, resourceType: n, label: a, on
         ]
       }
     ),
-    /* @__PURE__ */ f($, { type: "link", size: "small", "data-testid": "resource-picker-create", onClick: i, children: "新建资源" })
+    /* @__PURE__ */ f(L, { type: "link", size: "small", "data-testid": "resource-picker-create", onClick: i, children: "新建资源" })
   ] });
 }
 function kv({ name: e, schema: r, required: t, resources: n, resourceType: a, properties: i, config: s, onCreateResource: o }) {
@@ -897,10 +897,10 @@ function kv({ name: e, schema: r, required: t, resources: n, resourceType: a, pr
       );
       break;
     case "number":
-      u = /* @__PURE__ */ f(it, { style: { width: "100%" } });
+      u = /* @__PURE__ */ f(st, { style: { width: "100%" } });
       break;
     case "boolean":
-      u = /* @__PURE__ */ f(pt, {}), c = "checked";
+      u = /* @__PURE__ */ f(Hr, {}), c = "checked";
       break;
     case "key-value":
       u = /* @__PURE__ */ f(
@@ -920,11 +920,11 @@ function kv({ name: e, schema: r, required: t, resources: n, resourceType: a, pr
       u = /* @__PURE__ */ f(Tv, {});
       break;
     default:
-      u = /* @__PURE__ */ f(Q, { placeholder: r.description });
+      u = /* @__PURE__ */ f(V, { placeholder: r.description });
       break;
   }
   return /* @__PURE__ */ f(
-    $o.Item,
+    Lo.Item,
     {
       name: e,
       label: r.title ?? e,
@@ -933,8 +933,8 @@ function kv({ name: e, schema: r, required: t, resources: n, resourceType: a, pr
         const l = r.examples, d = [
           r.description,
           r.default === void 0 ? null : `默认：${JSON.stringify(r.default)}`,
-          Array.isArray(l) && l.length > 0 ? `示例：${l.map((p) => String(p)).join("、")}` : null
-        ].filter((p) => typeof p == "string" && p.length > 0);
+          Array.isArray(l) && l.length > 0 ? `示例：${l.map((h) => String(h)).join("、")}` : null
+        ].filter((h) => typeof h == "string" && h.length > 0);
         return d.length > 0 ? /* @__PURE__ */ f("span", { "data-testid": `field-hint-${e}`, children: d.join(" · ") }) : void 0;
       })(),
       valuePropName: c,
@@ -957,27 +957,27 @@ function Av(e) {
     onDeleteNode: c,
     onDeleteEdge: l,
     onCreateEdge: d,
-    onUpdateEdge: p,
+    onUpdateEdge: h,
     onSelectNode: v,
     onCreateResource: g,
-    selectedEdgeId: h,
-    sampleLines: y
-  } = e, [C] = $o.useForm(), [x, _] = I("{}"), [A, L] = I(null), [m, k] = I(), [N, H] = I(), [G, S] = I(!1), [j, V] = I(!1);
+    selectedEdgeId: p,
+    sampleLines: m
+  } = e, [w] = Lo.useForm(), [x, b] = q("{}"), [k, M] = q(null), [y, A] = q(), [N, W] = q(), [G, S] = q(!1), [j, H] = q(!1);
   _e(() => {
-    C.setFieldsValue((r == null ? void 0 : r.config) ?? {}), _(JSON.stringify((r == null ? void 0 : r.config) ?? {}, null, 2)), L(null);
-  }, [C, r == null ? void 0 : r.id, r == null ? void 0 : r.config]);
+    w.setFieldsValue((r == null ? void 0 : r.config) ?? {}), b(JSON.stringify((r == null ? void 0 : r.config) ?? {}, null, 2)), M(null);
+  }, [w, r == null ? void 0 : r.id, r == null ? void 0 : r.config]);
   const z = new Set((t == null ? void 0 : t.configurationSchema.required) ?? []), ie = Object.entries((t == null ? void 0 : t.configurationSchema.properties) ?? {}), ue = () => {
     if (ie.length > 0) {
-      C.validateFields().then((E) => u(_v((r == null ? void 0 : r.config) ?? {}, E)));
+      w.validateFields().then((E) => u(_v((r == null ? void 0 : r.config) ?? {}, E)));
       return;
     }
     try {
       const E = JSON.parse(x);
       if (E === null || typeof E != "object" || Array.isArray(E))
         throw new Error("配置必须是 JSON 对象");
-      L(null), u(E);
+      M(null), u(E);
     } catch (E) {
-      L(E.message);
+      M(E.message);
     }
   }, B = (r && !G ? a.map((E, T) => ({ edge: E, index: T })).filter(({ edge: E }) => E.source === r.id || E.target === r.id) : a.map((E, T) => ({ edge: E, index: T }))).map(({ edge: E, index: T }) => ({
     ...E,
@@ -993,8 +993,8 @@ function Av(e) {
         {
           "aria-label": `连线 ${T.index} 起点节点`,
           value: T.source,
-          onChange: (M) => p(T.index, { ...T, source: M.target.value }),
-          children: n.map((M) => /* @__PURE__ */ f("option", { value: M.id, children: M.id }, M.id))
+          onChange: ($) => h(T.index, { ...T, source: $.target.value }),
+          children: n.map(($) => /* @__PURE__ */ f("option", { value: $.id, children: $.id }, $.id))
         }
       )
     },
@@ -1007,8 +1007,8 @@ function Av(e) {
         {
           "aria-label": `连线 ${T.index} 终点节点`,
           value: T.target,
-          onChange: (M) => p(T.index, { ...T, target: M.target.value }),
-          children: n.map((M) => /* @__PURE__ */ f("option", { value: M.id, children: M.id }, M.id))
+          onChange: ($) => h(T.index, { ...T, target: $.target.value }),
+          children: n.map(($) => /* @__PURE__ */ f("option", { value: $.id, children: $.id }, $.id))
         }
       )
     },
@@ -1016,7 +1016,7 @@ function Av(e) {
       title: "端口",
       key: "ports",
       render: (E, T) => {
-        const M = i.get(T.source), ve = i.get(T.target);
+        const $ = i.get(T.source), ve = i.get(T.target);
         return /* @__PURE__ */ R("div", { className: "industrial-edge-ports", children: [
           /* @__PURE__ */ f(
             je,
@@ -1024,8 +1024,8 @@ function Av(e) {
               size: "small",
               value: T.sourcePort,
               style: { width: 110 },
-              onChange: (we) => p(T.index, { ...T, sourcePort: we }),
-              options: ((M == null ? void 0 : M.outputs) ?? []).map((we) => ({ label: `${we.name} (${we.type})`, value: we.name }))
+              onChange: (we) => h(T.index, { ...T, sourcePort: we }),
+              options: (($ == null ? void 0 : $.outputs) ?? []).map((we) => ({ label: `${we.name} (${we.type})`, value: we.name }))
             }
           ),
           /* @__PURE__ */ f(
@@ -1034,7 +1034,7 @@ function Av(e) {
               size: "small",
               value: T.targetPort,
               style: { width: 110 },
-              onChange: (we) => p(T.index, { ...T, targetPort: we }),
+              onChange: (we) => h(T.index, { ...T, targetPort: we }),
               options: ((ve == null ? void 0 : ve.inputs) ?? []).map((we) => ({ label: `${we.name} (${we.type})`, value: we.name }))
             }
           )
@@ -1045,7 +1045,7 @@ function Av(e) {
       title: "",
       key: "actions",
       width: 44,
-      render: (E, T) => /* @__PURE__ */ f($, { danger: !0, size: "small", type: "text", onClick: () => l(T.index), children: "删" })
+      render: (E, T) => /* @__PURE__ */ f(L, { danger: !0, size: "small", type: "text", onClick: () => l(T.index), children: "删" })
     }
   ];
   return /* @__PURE__ */ R("div", { className: "industrial-properties-body", children: [
@@ -1055,30 +1055,30 @@ function Av(e) {
       /* @__PURE__ */ f(U.Text, { type: "secondary", style: { fontSize: 11 }, children: r.id }),
       /* @__PURE__ */ f(U.Paragraph, { type: "secondary", style: { fontSize: 12, marginTop: 6 }, children: (t == null ? void 0 : t.description) ?? "请按业务含义配置该节点。" }),
       /* @__PURE__ */ R(Y, { wrap: !0, size: 4, style: { marginBottom: 8 }, children: [
-        /* @__PURE__ */ f(Le, { color: "blue", children: (t == null ? void 0 : t.category) ?? "采集节点" }),
-        /* @__PURE__ */ R(Le, { children: [
+        /* @__PURE__ */ f($e, { color: "blue", children: (t == null ? void 0 : t.category) ?? "采集节点" }),
+        /* @__PURE__ */ R($e, { children: [
           "版本 ",
           (t == null ? void 0 : t.version) ?? "1.0.0"
         ] }),
-        t == null ? void 0 : t.inputs.map((E) => /* @__PURE__ */ R(Le, { color: E.required ? "red" : "default", children: [
+        t == null ? void 0 : t.inputs.map((E) => /* @__PURE__ */ R($e, { color: E.required ? "red" : "default", children: [
           "输入 ",
           E.name,
           " · ",
           E.type
         ] }, `in-${E.name}`)),
-        t == null ? void 0 : t.outputs.map((E) => /* @__PURE__ */ R(Le, { color: "green", children: [
+        t == null ? void 0 : t.outputs.map((E) => /* @__PURE__ */ R($e, { color: "green", children: [
           "输出 ",
           E.name,
           " · ",
           E.type
         ] }, `out-${E.name}`))
       ] }),
-      (r.type.includes("reader") || r.type.includes("mapping") || r.type.includes("source") || r.type.includes("filesystem")) && y && y.length > 0 && /* @__PURE__ */ R(dr, { children: [
+      (r.type.includes("reader") || r.type.includes("mapping") || r.type.includes("source") || r.type.includes("filesystem")) && m && m.length > 0 && /* @__PURE__ */ R(dr, { children: [
         /* @__PURE__ */ f(U.Text, { strong: !0, style: { fontSize: 12 }, children: "样本预览" }),
-        /* @__PURE__ */ f("pre", { className: "industrial-sample-preview", children: y.join(`
+        /* @__PURE__ */ f("pre", { className: "industrial-sample-preview", children: m.join(`
 `) })
       ] }),
-      /* @__PURE__ */ f($o, { form: C, layout: "vertical", size: "small", style: { marginTop: 12 }, children: ie.map(([E, T]) => /* @__PURE__ */ f(
+      /* @__PURE__ */ f(Lo, { form: w, layout: "vertical", size: "small", style: { marginTop: 12 }, children: ie.map(([E, T]) => /* @__PURE__ */ f(
         kv,
         {
           name: E,
@@ -1093,29 +1093,29 @@ function Av(e) {
         E
       )) }),
       ie.length === 0 && /* @__PURE__ */ f(U.Text, { type: "secondary", style: { fontSize: 12 }, children: "此节点无需填写业务参数；保留默认配置即可。" }),
-      /* @__PURE__ */ f($, { type: "link", size: "small", onClick: () => V((E) => !E), children: j ? "收起高级配置" : "高级配置" }),
+      /* @__PURE__ */ f(L, { type: "link", size: "small", onClick: () => H((E) => !E), children: j ? "收起高级配置" : "高级配置" }),
       j && /* @__PURE__ */ R(dr, { children: [
         /* @__PURE__ */ f(U.Text, { type: "secondary", style: { fontSize: 12 }, children: "高级配置直接编辑节点 JSON，仅在需要复杂表达式时使用。" }),
         /* @__PURE__ */ f(
-          Q.TextArea,
+          V.TextArea,
           {
             rows: 8,
             value: x,
             style: { marginTop: 6 },
-            onChange: (E) => _(E.target.value)
+            onChange: (E) => b(E.target.value)
           }
         ),
-        A && /* @__PURE__ */ f(U.Text, { type: "danger", style: { fontSize: 12 }, children: A }),
+        k && /* @__PURE__ */ f(U.Text, { type: "danger", style: { fontSize: 12 }, children: k }),
         (t == null ? void 0 : t.activityType) && /* @__PURE__ */ R(U.Text, { type: "secondary", style: { fontSize: 11, display: "block" }, children: [
           "运行时 Activity：",
           t.activityType
         ] })
       ] }),
-      /* @__PURE__ */ f($, { type: "primary", block: !0, onClick: ue, children: "应用配置" }),
-      /* @__PURE__ */ f($, { danger: !0, block: !0, style: { marginTop: 8 }, onClick: c, children: "删除节点" })
+      /* @__PURE__ */ f(L, { type: "primary", block: !0, onClick: ue, children: "应用配置" }),
+      /* @__PURE__ */ f(L, { danger: !0, block: !0, style: { marginTop: 8 }, onClick: c, children: "删除节点" })
     ] }),
-    h && (() => {
-      const E = a.findIndex((M) => `e:${M.source}:${M.sourcePort}>${M.target}:${M.targetPort}` === h);
+    p && (() => {
+      const E = a.findIndex(($) => `e:${$.source}:${$.sourcePort}>${$.target}:${$.targetPort}` === p);
       if (E < 0) return null;
       const T = a[E];
       return /* @__PURE__ */ f(
@@ -1125,7 +1125,7 @@ function Av(e) {
           showIcon: !0,
           style: { marginTop: 8 },
           message: `当前连线：${T.source}.${T.sourcePort} → ${T.target}.${T.targetPort}`,
-          description: /* @__PURE__ */ f($, { size: "small", danger: !0, onClick: () => l(E), children: "删除此连线" })
+          description: /* @__PURE__ */ f(L, { size: "small", danger: !0, onClick: () => l(E), children: "删除此连线" })
         }
       );
     })(),
@@ -1136,14 +1136,14 @@ function Av(e) {
       a.length,
       ")"
     ] }),
-    r && /* @__PURE__ */ f($, { type: "link", size: "small", onClick: () => S((E) => !E), children: G ? "仅看当前节点" : "显示全部连线" }),
+    r && /* @__PURE__ */ f(L, { type: "link", size: "small", onClick: () => S((E) => !E), children: G ? "仅看当前节点" : "显示全部连线" }),
     n.length > 1 && /* @__PURE__ */ R(Y, { wrap: !0, style: { marginBottom: 8 }, children: [
       /* @__PURE__ */ R(
         "select",
         {
           "aria-label": "连线起点",
-          value: m ?? "",
-          onChange: (E) => k(E.target.value || void 0),
+          value: y ?? "",
+          onChange: (E) => A(E.target.value || void 0),
           children: [
             /* @__PURE__ */ f("option", { value: "", children: "起点节点" }),
             n.map((E) => /* @__PURE__ */ f("option", { value: E.id, children: E.id }, E.id))
@@ -1155,7 +1155,7 @@ function Av(e) {
         {
           "aria-label": "连线终点",
           value: N ?? "",
-          onChange: (E) => H(E.target.value || void 0),
+          onChange: (E) => W(E.target.value || void 0),
           children: [
             /* @__PURE__ */ f("option", { value: "", children: "终点节点" }),
             n.map((E) => /* @__PURE__ */ f("option", { value: E.id, children: E.id }, E.id))
@@ -1163,12 +1163,12 @@ function Av(e) {
         }
       ),
       /* @__PURE__ */ f(
-        $,
+        L,
         {
           size: "small",
-          disabled: !m || !N || m === N,
+          disabled: !y || !N || y === N,
           onClick: () => {
-            m && N && d(m, N);
+            y && N && d(y, N);
           },
           children: "添加连线"
         }
@@ -1182,14 +1182,14 @@ function Av(e) {
         ")"
       ] }),
       o.map((E, T) => /* @__PURE__ */ R("div", { className: "industrial-issue", children: [
-        /* @__PURE__ */ f(Le, { color: "red", children: E.code }),
+        /* @__PURE__ */ f($e, { color: "red", children: E.code }),
         /* @__PURE__ */ R(
           U.Text,
           {
             style: { fontSize: 12, cursor: "pointer" },
             onClick: () => {
-              const M = /^nodes\.([^.]+)/.exec(E.path);
-              M && v(M[1]);
+              const $ = /^nodes\.([^.]+)/.exec(E.path);
+              $ && v($[1]);
             },
             children: [
               E.path,
@@ -1220,7 +1220,7 @@ class Ov extends Error {
 const ae = (e) => e !== null && typeof e == "object" && !Array.isArray(e) ? e : {}, Ie = (e) => Array.isArray(e) ? e : [], O = (e, r = "") => typeof e == "string" ? e : typeof e == "number" || typeof e == "boolean" ? String(e) : r ?? "", me = (e, r = 0) => {
   const t = typeof e == "string" ? Number(e) : e;
   return typeof t == "number" && Number.isFinite(t) ? t : r;
-}, b = (e, ...r) => {
+}, _ = (e, ...r) => {
   for (const t of r)
     if (e[t] !== void 0 && e[t] !== null) return e[t];
 };
@@ -1238,11 +1238,11 @@ function Nv(e) {
 function Dv(e) {
   if (typeof e == "string")
     return { name: e, type: "Unknown", required: !1 };
-  const r = ae(e), t = O(b(r, "name", "port", "id")).trim();
+  const r = ae(e), t = O(_(r, "name", "port", "id")).trim();
   return t ? {
     name: t,
-    type: Nv(b(r, "type", "portType", "dataType")),
-    required: b(r, "required", "isRequired") === !0
+    type: Nv(_(r, "type", "portType", "dataType")),
+    required: _(r, "required", "isRequired") === !0
   } : null;
 }
 function Iu(e) {
@@ -1253,85 +1253,85 @@ const Mv = (e) => {
   const r = ae(e);
   return Object.keys(r).length === 0 ? { type: "object", properties: {} } : r;
 };
-function Lv(e) {
-  const r = ae(e), t = O(b(r, "nodeTypeId", "node_type_id", "type", "id")).trim();
+function $v(e) {
+  const r = ae(e), t = O(_(r, "nodeTypeId", "node_type_id", "type", "id")).trim();
   return t ? {
     nodeTypeId: t,
-    name: O(b(r, "name", "title"), t),
-    description: O(b(r, "description", "desc")),
-    category: O(b(r, "category", "group"), "General"),
-    icon: O(b(r, "icon"), "AppstoreOutlined"),
-    version: O(b(r, "version"), "1.0.0"),
-    inputs: Iu(b(r, "inputs", "inputPorts", "input_ports")),
-    outputs: Iu(b(r, "outputs", "outputPorts", "output_ports")),
-    configurationSchema: Mv(b(r, "configurationSchema", "configSchema", "schema")),
-    activityType: O(b(r, "activityType", "activity_type")),
-    dependencies: Ie(b(r, "dependencies")).map((n) => O(n)).filter(Boolean)
+    name: O(_(r, "name", "title"), t),
+    description: O(_(r, "description", "desc")),
+    category: O(_(r, "category", "group"), "General"),
+    icon: O(_(r, "icon"), "AppstoreOutlined"),
+    version: O(_(r, "version"), "1.0.0"),
+    inputs: Iu(_(r, "inputs", "inputPorts", "input_ports")),
+    outputs: Iu(_(r, "outputs", "outputPorts", "output_ports")),
+    configurationSchema: Mv(_(r, "configurationSchema", "configSchema", "schema")),
+    activityType: O(_(r, "activityType", "activity_type")),
+    dependencies: Ie(_(r, "dependencies")).map((n) => O(n)).filter(Boolean)
   } : null;
 }
 function Mh(e) {
-  const r = xe(e), t = Array.isArray(r) ? r : Ie(b(ae(r), "nodes", "items")), n = /* @__PURE__ */ new Set();
-  return t.map(Lv).filter((a) => a !== null).filter((a) => n.has(a.nodeTypeId) ? !1 : (n.add(a.nodeTypeId), !0));
+  const r = xe(e), t = Array.isArray(r) ? r : Ie(_(ae(r), "nodes", "items")), n = /* @__PURE__ */ new Set();
+  return t.map($v).filter((a) => a !== null).filter((a) => n.has(a.nodeTypeId) ? !1 : (n.add(a.nodeTypeId), !0));
 }
-function Lh(e) {
-  const r = xe(e), t = Array.isArray(r) ? r : Ie(b(ae(r), "resources", "items")), n = /* @__PURE__ */ new Set();
+function $h(e) {
+  const r = xe(e), t = Array.isArray(r) ? r : Ie(_(ae(r), "resources", "items")), n = /* @__PURE__ */ new Set();
   return t.map((a) => {
-    const i = ae(a), s = O(b(i, "id")).trim();
+    const i = ae(a), s = O(_(i, "id")).trim();
     return !s || n.has(s) ? null : (n.add(s), {
       id: s,
-      name: O(b(i, "name"), s),
-      type: O(b(i, "type"), "unknown"),
+      name: O(_(i, "name"), s),
+      type: O(_(i, "type"), "unknown"),
       enabled: i.enabled !== !1,
       credentialId: typeof i.credentialId == "string" ? i.credentialId : null,
       credentialName: typeof i.credentialName == "string" ? i.credentialName : null
     });
   }).filter((a) => a !== null);
 }
-function $h(e) {
-  const r = ae(e), t = O(b(r, "workflowId", "workflow_id", "id")).trim();
+function Lh(e) {
+  const r = ae(e), t = O(_(r, "workflowId", "workflow_id", "id")).trim();
   return t ? {
     workflowId: t,
-    name: O(b(r, "name", "title"), t),
-    version: me(b(r, "version"), 1)
+    name: O(_(r, "name", "title"), t),
+    version: me(_(r, "version"), 1)
   } : null;
 }
 function jh(e) {
   const r = xe(e);
-  return (Array.isArray(r) ? r : Ie(b(ae(r), "workflows", "items"))).map($h).filter((n) => n !== null);
+  return (Array.isArray(r) ? r : Ie(_(ae(r), "workflows", "items"))).map(Lh).filter((n) => n !== null);
 }
-function ut(e) {
+function lt(e) {
   const r = ae(e), t = {};
   for (const [n, a] of Object.entries(r))
     a !== void 0 && (t[n] = a);
   return t;
 }
-function $v(e) {
-  const r = ae(e), t = O(b(r, "id", "nodeId", "node_id")).trim();
+function Lv(e) {
+  const r = ae(e), t = O(_(r, "id", "nodeId", "node_id")).trim();
   if (!t) return null;
-  const n = ae(b(r, "position", "layout"));
+  const n = ae(_(r, "position", "layout"));
   return {
     id: t,
-    type: O(b(r, "type", "nodeType", "nodeTypeId"), "unknown"),
-    config: ut(b(r, "config", "configuration")),
-    x: me(b(r, "x") ?? b(n, "x"), 0),
-    y: me(b(r, "y") ?? b(n, "y"), 0)
+    type: O(_(r, "type", "nodeType", "nodeTypeId"), "unknown"),
+    config: lt(_(r, "config", "configuration")),
+    x: me(_(r, "x") ?? _(n, "x"), 0),
+    y: me(_(r, "y") ?? _(n, "y"), 0)
   };
 }
 function jv(e) {
-  const r = ae(e), t = O(b(r, "source", "from", "sourceId")).trim(), n = O(b(r, "target", "to", "targetId")).trim();
+  const r = ae(e), t = O(_(r, "source", "from", "sourceId")).trim(), n = O(_(r, "target", "to", "targetId")).trim();
   return !t || !n ? null : {
     source: t,
-    sourcePort: O(b(r, "sourcePort", "source_port", "fromPort"), "out"),
+    sourcePort: O(_(r, "sourcePort", "source_port", "fromPort"), "out"),
     target: n,
-    targetPort: O(b(r, "targetPort", "target_port", "toPort"), "in")
+    targetPort: O(_(r, "targetPort", "target_port", "toPort"), "in")
   };
 }
 function Fv(e) {
-  const r = xe(e), t = ae(r), n = $h(t) ?? { workflowId: "", name: "", version: 1 }, a = Ie(b(t, "nodes")).map($v).filter((u) => u !== null), i = Ie(b(t, "edges")).map(jv).filter((u) => u !== null), s = ae(b(t, "trigger")), o = {
-    kind: O(b(s, "kind", "type"), "manual"),
-    cron: b(s, "cron") === void 0 ? null : O(s.cron),
-    eventName: b(s, "eventName", "event_name") === void 0 ? null : O(b(s, "eventName", "event_name")),
-    config: ut(b(s, "config"))
+  const r = xe(e), t = ae(r), n = Lh(t) ?? { workflowId: "", name: "", version: 1 }, a = Ie(_(t, "nodes")).map(Lv).filter((u) => u !== null), i = Ie(_(t, "edges")).map(jv).filter((u) => u !== null), s = ae(_(t, "trigger")), o = {
+    kind: O(_(s, "kind", "type"), "manual"),
+    cron: _(s, "cron") === void 0 ? null : O(s.cron),
+    eventName: _(s, "eventName", "event_name") === void 0 ? null : O(_(s, "eventName", "event_name")),
+    config: lt(_(s, "config"))
   };
   return {
     workflowId: n.workflowId,
@@ -1340,47 +1340,47 @@ function Fv(e) {
     nodes: a,
     edges: i,
     trigger: o,
-    resourceReferences: Ie(b(t, "resourceReferences", "resource_references")).map((u) => O(u)).filter(Boolean),
-    layout: ut(b(t, "layout"))
+    resourceReferences: Ie(_(t, "resourceReferences", "resource_references")).map((u) => O(u)).filter(Boolean),
+    layout: lt(_(t, "layout"))
   };
 }
 const Ar = (e) => e === !0 || typeof e == "string" && e.toLowerCase() === "true";
 function Gv(e) {
   const r = xe(e);
-  return (Array.isArray(r) ? r : Ie(b(ae(r), "resources", "items"))).map((n) => {
-    const a = ae(n), i = b(a, "credentialId", "credential_id");
+  return (Array.isArray(r) ? r : Ie(_(ae(r), "resources", "items"))).map((n) => {
+    const a = ae(n), i = _(a, "credentialId", "credential_id");
     return {
-      id: O(b(a, "id"), "—"),
-      name: O(b(a, "name"), "—"),
-      type: O(b(a, "type"), "—"),
-      provider: O(b(a, "provider"), "—"),
-      enabled: Ar(b(a, "enabled")),
+      id: O(_(a, "id"), "—"),
+      name: O(_(a, "name"), "—"),
+      type: O(_(a, "type"), "—"),
+      provider: O(_(a, "provider"), "—"),
+      enabled: Ar(_(a, "enabled")),
       credentialId: i == null ? null : O(i),
-      credentialName: b(a, "credentialName") == null ? null : O(b(a, "credentialName")),
-      config: ut(b(a, "config", "configuration"))
+      credentialName: _(a, "credentialName") == null ? null : O(_(a, "credentialName")),
+      config: lt(_(a, "config", "configuration"))
     };
   });
 }
 function Fh(e) {
   const r = xe(e);
-  return (Array.isArray(r) ? r : Ie(b(ae(r), "credentials", "items"))).map((n) => {
+  return (Array.isArray(r) ? r : Ie(_(ae(r), "credentials", "items"))).map((n) => {
     const a = ae(n);
     return {
-      id: O(b(a, "id"), "—"),
-      name: O(b(a, "name"), "—"),
-      kind: O(b(a, "kind"), "—"),
-      version: me(b(a, "version"))
+      id: O(_(a, "id"), "—"),
+      name: O(_(a, "name"), "—"),
+      kind: O(_(a, "kind"), "—"),
+      version: me(_(a, "version"))
     };
   });
 }
 function zv(e) {
   const r = xe(e);
-  return (Array.isArray(r) ? r : Ie(b(ae(r), "tests", "items"))).map((n) => {
+  return (Array.isArray(r) ? r : Ie(_(ae(r), "tests", "items"))).map((n) => {
     const a = ae(n);
     return {
-      resourceId: O(b(a, "resourceId", "resource_id"), "—"),
-      ok: Ar(b(a, "ok")),
-      detail: O(b(a, "detail"), "")
+      resourceId: O(_(a, "resourceId", "resource_id"), "—"),
+      ok: Ar(_(a, "ok")),
+      detail: O(_(a, "detail"), "")
     };
   });
 }
@@ -1388,19 +1388,19 @@ const Gh = (e) => {
   if (e == null) return null;
   const r = ae(e);
   return Object.keys(r).length === 0 ? null : {
-    code: O(b(r, "code"), "OTHER"),
-    message: O(b(r, "message"), ""),
-    action: O(b(r, "action"), "")
+    code: O(_(r, "code"), "OTHER"),
+    message: O(_(r, "message"), ""),
+    action: O(_(r, "action"), "")
   };
 };
 function Bv(e) {
   const r = xe(e);
-  return Ie(b(ae(r), "triggers", "items")).map((n) => {
-    const a = ae(n), i = (s) => b(a, s) == null ? null : O(b(a, s));
+  return Ie(_(ae(r), "triggers", "items")).map((n) => {
+    const a = ae(n), i = (s) => _(a, s) == null ? null : O(_(a, s));
     return {
-      workflowId: O(b(a, "workflowId", "workflow_id"), "—"),
-      version: me(b(a, "version")),
-      kind: O(b(a, "kind"), "manual"),
+      workflowId: O(_(a, "workflowId", "workflow_id"), "—"),
+      version: me(_(a, "version")),
+      kind: O(_(a, "kind"), "manual"),
       cron: i("cron"),
       eventName: i("eventName"),
       timezone: i("timezone"),
@@ -1410,9 +1410,9 @@ function Bv(e) {
       lastStartedAt: i("lastStartedAt"),
       lastFireStatus: i("lastFireStatus"),
       lastFireDueAt: i("lastFireDueAt"),
-      lastFireAttempts: b(a, "lastFireAttempts") == null ? null : me(b(a, "lastFireAttempts")),
-      skippedFires: b(a, "skippedFires") == null ? null : me(b(a, "skippedFires")),
-      backlogTruncated: b(a, "backlogTruncated") == null ? null : b(a, "backlogTruncated") === !0,
+      lastFireAttempts: _(a, "lastFireAttempts") == null ? null : me(_(a, "lastFireAttempts")),
+      skippedFires: _(a, "skippedFires") == null ? null : me(_(a, "skippedFires")),
+      backlogTruncated: _(a, "backlogTruncated") == null ? null : _(a, "backlogTruncated") === !0,
       lastError: i("lastError")
     };
   });
@@ -1421,90 +1421,90 @@ function Uv(e) {
   if (e == null) return null;
   const r = xe(e), t = ae(r);
   if (Object.keys(t).length === 0) return null;
-  const n = Ie(b(t, "files")).map((i) => {
+  const n = Ie(_(t, "files")).map((i) => {
     const s = ae(i);
     return {
-      path: O(b(s, "path"), "—"),
-      sourceDate: O(b(s, "sourceDate"), ""),
-      inLedger: Ar(b(s, "inLedger")),
-      expectedTargets: me(b(s, "expectedTargets")),
-      succeededTargets: me(b(s, "succeededTargets")),
-      incompleteTargets: me(b(s, "incompleteTargets")),
-      missingTargets: O(b(s, "missingTargets"), ""),
-      wouldSkip: Ar(b(s, "wouldSkip")),
-      wouldCollect: Ar(b(s, "wouldCollect")),
-      duplicateRisk: Ar(b(s, "duplicateRisk"))
+      path: O(_(s, "path"), "—"),
+      sourceDate: O(_(s, "sourceDate"), ""),
+      inLedger: Ar(_(s, "inLedger")),
+      expectedTargets: me(_(s, "expectedTargets")),
+      succeededTargets: me(_(s, "succeededTargets")),
+      incompleteTargets: me(_(s, "incompleteTargets")),
+      missingTargets: O(_(s, "missingTargets"), ""),
+      wouldSkip: Ar(_(s, "wouldSkip")),
+      wouldCollect: Ar(_(s, "wouldCollect")),
+      duplicateRisk: Ar(_(s, "duplicateRisk"))
     };
-  }), a = ae(b(t, "summary"));
+  }), a = ae(_(t, "summary"));
   return {
-    resourceId: O(b(t, "resourceId"), "—"),
-    from: O(b(t, "from"), ""),
-    to: O(b(t, "to"), ""),
+    resourceId: O(_(t, "resourceId"), "—"),
+    from: O(_(t, "from"), ""),
+    to: O(_(t, "to"), ""),
     files: n,
     summary: {
-      discovered: me(b(a, "discovered")),
-      alreadyComplete: me(b(a, "alreadyComplete")),
-      needsCollection: me(b(a, "needsCollection")),
-      duplicateRisk: me(b(a, "duplicateRisk"))
+      discovered: me(_(a, "discovered")),
+      alreadyComplete: me(_(a, "alreadyComplete")),
+      needsCollection: me(_(a, "needsCollection")),
+      duplicateRisk: me(_(a, "duplicateRisk"))
     }
   };
 }
 function Kv(e) {
   const r = xe(e);
-  return (Array.isArray(r) ? r : Ie(b(ae(r), "files", "items"))).map((n) => {
+  return (Array.isArray(r) ? r : Ie(_(ae(r), "files", "items"))).map((n) => {
     const a = ae(n);
     return {
-      id: O(b(a, "id"), "—"),
-      path: O(b(a, "path"), "—"),
-      identityKey: O(b(a, "identityKey"), ""),
-      sourceResourceId: O(b(a, "sourceResourceId"), ""),
-      length: me(b(a, "length")),
-      sourceDate: O(b(a, "sourceDate"), ""),
-      collectedAt: O(b(a, "collectedAt"), ""),
-      status: O(b(a, "status"), "—"),
-      deliveries: Ie(b(a, "deliveries")).map((i) => {
+      id: O(_(a, "id"), "—"),
+      path: O(_(a, "path"), "—"),
+      identityKey: O(_(a, "identityKey"), ""),
+      sourceResourceId: O(_(a, "sourceResourceId"), ""),
+      length: me(_(a, "length")),
+      sourceDate: O(_(a, "sourceDate"), ""),
+      collectedAt: O(_(a, "collectedAt"), ""),
+      status: O(_(a, "status"), "—"),
+      deliveries: Ie(_(a, "deliveries")).map((i) => {
         const s = ae(i);
         return {
-          id: O(b(s, "id"), "—"),
-          collectionFileId: O(b(s, "collectionFileId"), ""),
-          targetId: O(b(s, "targetId"), "—"),
-          targetKind: O(b(s, "targetKind"), "record"),
-          status: O(b(s, "status"), "—"),
-          attempts: me(b(s, "attempts")),
-          records: me(b(s, "records")),
-          error: b(s, "error") == null ? null : O(b(s, "error")),
-          accepted: me(b(s, "accepted")),
-          rejected: me(b(s, "rejected")),
-          warnings: me(b(s, "warnings")),
-          diagnosis: Gh(b(s, "diagnosis"))
+          id: O(_(s, "id"), "—"),
+          collectionFileId: O(_(s, "collectionFileId"), ""),
+          targetId: O(_(s, "targetId"), "—"),
+          targetKind: O(_(s, "targetKind"), "record"),
+          status: O(_(s, "status"), "—"),
+          attempts: me(_(s, "attempts")),
+          records: me(_(s, "records")),
+          error: _(s, "error") == null ? null : O(_(s, "error")),
+          accepted: me(_(s, "accepted")),
+          rejected: me(_(s, "rejected")),
+          warnings: me(_(s, "warnings")),
+          diagnosis: Gh(_(s, "diagnosis"))
         };
       })
     };
   });
 }
 function Vv(e) {
-  const r = xe(e), t = ae(r), n = Ie(b(t, "runs")).map((i) => {
+  const r = xe(e), t = ae(r), n = Ie(_(t, "runs")).map((i) => {
     const s = ae(i);
     return {
-      id: O(b(s, "id"), "—"),
-      workflowId: O(b(s, "workflowId", "workflow_id"), "—"),
-      status: O(b(s, "status"), "—"),
-      startedAt: O(b(s, "startedAt", "started_at"), ""),
-      finishedAt: b(s, "finishedAt", "finished_at") == null ? null : O(b(s, "finishedAt", "finished_at")),
-      error: b(s, "error") == null ? null : O(b(s, "error"))
+      id: O(_(s, "id"), "—"),
+      workflowId: O(_(s, "workflowId", "workflow_id"), "—"),
+      status: O(_(s, "status"), "—"),
+      startedAt: O(_(s, "startedAt", "started_at"), ""),
+      finishedAt: _(s, "finishedAt", "finished_at") == null ? null : O(_(s, "finishedAt", "finished_at")),
+      error: _(s, "error") == null ? null : O(_(s, "error"))
     };
-  }), a = Ie(b(t, "deliveries")).map((i) => {
+  }), a = Ie(_(t, "deliveries")).map((i) => {
     const s = ae(i);
     return {
-      id: O(b(s, "id"), "—"),
-      collectionFileId: O(b(s, "collectionFileId", "collection_file_id"), ""),
-      targetId: O(b(s, "targetId", "target_id"), "—"),
-      targetKind: O(b(s, "targetKind", "target_kind"), "record"),
-      status: O(b(s, "status"), "—"),
-      attempts: me(b(s, "attempts")),
-      records: me(b(s, "records")),
-      error: b(s, "error") == null ? null : O(b(s, "error")),
-      diagnosis: Gh(b(s, "diagnosis"))
+      id: O(_(s, "id"), "—"),
+      collectionFileId: O(_(s, "collectionFileId", "collection_file_id"), ""),
+      targetId: O(_(s, "targetId", "target_id"), "—"),
+      targetKind: O(_(s, "targetKind", "target_kind"), "record"),
+      status: O(_(s, "status"), "—"),
+      attempts: me(_(s, "attempts")),
+      records: me(_(s, "records")),
+      error: _(s, "error") == null ? null : O(_(s, "error")),
+      diagnosis: Gh(_(s, "diagnosis"))
     };
   });
   return { runs: n, deliveries: a };
@@ -1513,23 +1513,23 @@ function Hv(e) {
   if (e == null) return null;
   const r = xe(e), t = ae(r);
   if (Object.keys(t).length === 0) return null;
-  const n = Ie(b(t, "nodes")).slice(0, 64).map((a) => {
+  const n = Ie(_(t, "nodes")).slice(0, 64).map((a) => {
     const i = ae(a);
     return {
-      nodeId: O(b(i, "nodeId", "node_id"), "—"),
-      status: O(b(i, "status"), "—"),
-      records: me(b(i, "records")),
-      files: me(b(i, "files")),
-      error: b(i, "error") == null ? null : O(b(i, "error"), void 0),
-      samples: Ie(b(i, "samples")).slice(0, 3).map((s) => O(s))
+      nodeId: O(_(i, "nodeId", "node_id"), "—"),
+      status: O(_(i, "status"), "—"),
+      records: me(_(i, "records")),
+      files: me(_(i, "files")),
+      error: _(i, "error") == null ? null : O(_(i, "error"), void 0),
+      samples: Ie(_(i, "samples")).slice(0, 3).map((s) => O(s))
     };
   });
   return {
-    status: O(b(t, "status"), "—"),
-    error: b(t, "error") == null ? null : O(b(t, "error"), void 0),
-    executed: Ie(b(t, "executed")).map((a) => O(a)),
-    instanceId: b(t, "instanceId") == null ? null : O(b(t, "instanceId"), void 0),
-    definitionId: b(t, "definitionId") == null ? null : O(b(t, "definitionId"), void 0),
+    status: O(_(t, "status"), "—"),
+    error: _(t, "error") == null ? null : O(_(t, "error"), void 0),
+    executed: Ie(_(t, "executed")).map((a) => O(a)),
+    instanceId: _(t, "instanceId") == null ? null : O(_(t, "instanceId"), void 0),
+    definitionId: _(t, "definitionId") == null ? null : O(_(t, "definitionId"), void 0),
     nodes: n
   };
 }
@@ -1552,13 +1552,13 @@ function Yv({
   ctx: i,
   workflowId: s
 }) {
-  const [o, u] = I(t), [c, l] = I([]), [d, p] = I(null);
+  const [o, u] = q(t), [c, l] = q([]), [d, h] = q(null);
   _e(() => {
     u(t);
   }, [t]), _e(() => {
-    e && i.hubQuery("industrial/trigger-status").then((h) => l(Bv(h))).catch((h) => p(h instanceof Error ? h.message : String(h)));
+    e && i.hubQuery("industrial/trigger-status").then((p) => l(Bv(p))).catch((p) => h(p instanceof Error ? p.message : String(p)));
   }, [i, e]);
-  const v = c.find((h) => h.workflowId === s);
+  const v = c.find((p) => p.workflowId === s);
   return /* @__PURE__ */ f(
     br,
     {
@@ -1568,29 +1568,29 @@ function Yv({
       cancelText: "取消",
       onCancel: r,
       onOk: () => {
-        var h, y;
-        if (o.kind === "schedule" && !((h = o.cron) != null && h.trim())) {
-          p("定时运行需要填写 cron 表达式");
+        var p, m;
+        if (o.kind === "schedule" && !((p = o.cron) != null && p.trim())) {
+          h("定时运行需要填写 cron 表达式");
           return;
         }
-        if (o.kind === "event" && !((y = o.eventName) != null && y.trim())) {
-          p("事件触发需要填写事件名称");
+        if (o.kind === "event" && !((m = o.eventName) != null && m.trim())) {
+          h("事件触发需要填写事件名称");
           return;
         }
-        p(null), a(o), r();
+        h(null), a(o), r();
       },
       width: 720,
       children: /* @__PURE__ */ R(Y, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
         /* @__PURE__ */ R(Y, { direction: "vertical", style: { width: "100%" }, children: [
           /* @__PURE__ */ f(U.Text, { children: "触发方式" }),
-          /* @__PURE__ */ f(Y, { wrap: !0, children: Wv.map((h) => /* @__PURE__ */ f(
-            $,
+          /* @__PURE__ */ f(Y, { wrap: !0, children: Wv.map((p) => /* @__PURE__ */ f(
+            L,
             {
-              type: o.kind === h.value ? "primary" : "default",
-              onClick: () => u({ ...o, kind: h.value }),
-              children: h.label
+              type: o.kind === p.value ? "primary" : "default",
+              onClick: () => u({ ...o, kind: p.value }),
+              children: p.label
             },
-            h.value
+            p.value
           )) })
         ] }),
         /* @__PURE__ */ f(Y, { wrap: !0, children: /* @__PURE__ */ f(
@@ -1600,10 +1600,10 @@ function Yv({
             allowClear: !0,
             placeholder: "运行资源",
             value: Jv(o),
-            options: n.map((h) => ({ value: h, label: h })),
-            onChange: (h) => u({
+            options: n.map((p) => ({ value: p, label: p })),
+            onChange: (p) => u({
               ...o,
-              config: { ...o.config, resourceId: h ?? "" }
+              config: { ...o.config, resourceId: p ?? "" }
             })
           }
         ) }),
@@ -1611,44 +1611,44 @@ function Yv({
           /* @__PURE__ */ f(U.Text, { type: "secondary", children: "Cron 与事件名称始终可编辑；只有所选触发方式会生效。" }),
           /* @__PURE__ */ R(Y, { wrap: !0, children: [
             /* @__PURE__ */ f(U.Text, { children: "常用" }),
-            Qv.map((h) => /* @__PURE__ */ f(
-              $,
+            Qv.map((p) => /* @__PURE__ */ f(
+              L,
               {
                 size: "small",
-                onClick: () => u({ ...o, cron: h.cron }),
-                children: h.label
+                onClick: () => u({ ...o, cron: p.cron }),
+                children: p.label
               },
-              h.cron
+              p.cron
             ))
           ] }),
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "Cron 表达式",
               placeholder: "分 时 日 月 周，例如 0 2 * * *",
               value: o.cron ?? "",
-              onChange: (h) => u({ ...o, cron: h.target.value })
+              onChange: (p) => u({ ...o, cron: p.target.value })
             }
           ),
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "调度时区",
               placeholder: "时区（默认 UTC，例如 Asia/Shanghai）",
               value: Xv(o),
-              onChange: (h) => u({
+              onChange: (p) => u({
                 ...o,
-                config: { ...o.config, timezone: h.target.value }
+                config: { ...o.config, timezone: p.target.value }
               })
             }
           ),
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "事件名称",
               placeholder: "事件名称",
               value: o.eventName ?? "",
-              onChange: (h) => u({ ...o, eventName: h.target.value })
+              onChange: (p) => u({ ...o, eventName: p.target.value })
             }
           ),
           /* @__PURE__ */ R(U.Text, { type: "secondary", children: [
@@ -1663,15 +1663,15 @@ function Yv({
             dataSource: [v],
             pagination: !1,
             columns: [
-              { title: "时区", dataIndex: "timezone", render: (h) => h ?? "UTC" },
-              { title: "状态", dataIndex: "lastStatus", render: (h) => h ?? "未运行" },
-              { title: "上次运行", dataIndex: "lastStartedAt", render: (h) => h ?? "—" },
+              { title: "时区", dataIndex: "timezone", render: (p) => p ?? "UTC" },
+              { title: "状态", dataIndex: "lastStatus", render: (p) => p ?? "未运行" },
+              { title: "上次运行", dataIndex: "lastStartedAt", render: (p) => p ?? "—" },
               {
                 title: "触发点",
                 dataIndex: "lastFireStatus",
-                render: (h, y) => y.lastFireStatus ? `${y.lastFireStatus} · ${y.lastFireDueAt ?? "—"} · ${y.lastFireAttempts ?? 0} 次` + (y.skippedFires ? ` · 跳过≥${y.skippedFires}` : "") + (y.backlogTruncated ? " · 积压扫描截断" : "") : "—"
+                render: (p, m) => m.lastFireStatus ? `${m.lastFireStatus} · ${m.lastFireDueAt ?? "—"} · ${m.lastFireAttempts ?? 0} 次` + (m.skippedFires ? ` · 跳过≥${m.skippedFires}` : "") + (m.backlogTruncated ? " · 积压扫描截断" : "") : "—"
               },
-              { title: "错误", dataIndex: "lastError", render: (h) => h ?? "—" }
+              { title: "错误", dataIndex: "lastError", render: (p) => p ?? "—" }
             ]
           }
         ),
@@ -1696,7 +1696,7 @@ function Zv({
   resourceId: a,
   lookbackDays: i
 }) {
-  const [s, o] = I(null), [u, c] = I(null), [l, d] = I(!1), p = F(async () => {
+  const [s, o] = q(null), [u, c] = q(null), [l, d] = q(!1), h = F(async () => {
     d(!0), c(null);
     try {
       await t.hubCommand("industrial/preview-backfill", {
@@ -1718,12 +1718,12 @@ function Zv({
       onCancel: r,
       width: 820,
       footer: [
-        /* @__PURE__ */ f($, { loading: l, onClick: () => void p(), children: "重新扫描" }, "refresh"),
-        /* @__PURE__ */ f($, { type: "primary", onClick: r, children: "关闭" }, "close")
+        /* @__PURE__ */ f(L, { loading: l, onClick: () => void h(), children: "重新扫描" }, "refresh"),
+        /* @__PURE__ */ f(L, { type: "primary", onClick: r, children: "关闭" }, "close")
       ],
       children: /* @__PURE__ */ R(Y, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
         /* @__PURE__ */ R(Y, { children: [
-          /* @__PURE__ */ R($, { type: "primary", loading: l, onClick: () => void p(), children: [
+          /* @__PURE__ */ R(L, { type: "primary", loading: l, onClick: () => void h(), children: [
             "扫描最近 ",
             i,
             " 天"
@@ -1773,21 +1773,21 @@ function Zv({
     }
   );
 }
-var tt = typeof globalThis < "u" ? globalThis : typeof window < "u" ? window : typeof global < "u" ? global : typeof self < "u" ? self : {};
+var nt = typeof globalThis < "u" ? globalThis : typeof window < "u" ? window : typeof global < "u" ? global : typeof self < "u" ? self : {};
 function eg(e) {
   return e && e.__esModule && Object.prototype.hasOwnProperty.call(e, "default") ? e.default : e;
 }
 function Vo(e) {
   throw new Error('Could not dynamically require "' + e + '". Please configure the dynamicRequireTargets or/and ignoreDynamicRequires option of @rollup/plugin-commonjs appropriately for this require call to work.');
 }
-var $t, qu;
+var Lt, qu;
 function rg() {
-  if (qu) return $t;
+  if (qu) return Lt;
   qu = 1;
   function e() {
     this.__data__ = [], this.size = 0;
   }
-  return $t = e, $t;
+  return Lt = e, Lt;
 }
 var jt, Cu;
 function Pr() {
@@ -1913,7 +1913,7 @@ var Yt, Du;
 function zh() {
   if (Du) return Yt;
   Du = 1;
-  var e = typeof tt == "object" && tt && tt.Object === Object && tt;
+  var e = typeof nt == "object" && nt && nt.Object === Object && nt;
   return Yt = e, Yt;
 }
 var Jt, Mu;
@@ -1923,17 +1923,17 @@ function Ve() {
   var e = zh(), r = typeof self == "object" && self && self.Object === Object && self, t = e || r || Function("return this")();
   return Jt = t, Jt;
 }
-var Xt, Lu;
+var Xt, $u;
 function Or() {
-  if (Lu) return Xt;
-  Lu = 1;
+  if ($u) return Xt;
+  $u = 1;
   var e = Ve(), r = e.Symbol;
   return Xt = r, Xt;
 }
-var Zt, $u;
+var Zt, Lu;
 function cg() {
-  if ($u) return Zt;
-  $u = 1;
+  if (Lu) return Zt;
+  Lu = 1;
   var e = Or(), r = Object.prototype, t = r.hasOwnProperty, n = r.toString, a = e ? e.toStringTag : void 0;
   function i(s) {
     var o = t.call(s, a), u = s[a];
@@ -1978,7 +1978,7 @@ function Fe() {
   return tn = e, tn;
 }
 var nn, zu;
-function Qr() {
+function Yr() {
   if (zu) return nn;
   zu = 1;
   var e = _r(), r = Fe(), t = "[object AsyncFunction]", n = "[object Function]", a = "[object GeneratorFunction]", i = "[object Proxy]";
@@ -2034,14 +2034,14 @@ var un, Vu;
 function pg() {
   if (Vu) return un;
   Vu = 1;
-  var e = Qr(), r = hg(), t = Fe(), n = Bh(), a = /[\\^$.*+?()[\]{}|]/g, i = /^\[object .+?Constructor\]$/, s = Function.prototype, o = Object.prototype, u = s.toString, c = o.hasOwnProperty, l = RegExp(
+  var e = Yr(), r = hg(), t = Fe(), n = Bh(), a = /[\\^$.*+?()[\]{}|]/g, i = /^\[object .+?Constructor\]$/, s = Function.prototype, o = Object.prototype, u = s.toString, c = o.hasOwnProperty, l = RegExp(
     "^" + u.call(c).replace(a, "\\$&").replace(/hasOwnProperty|(function).*?(?=\\\()| for .+?(?=\\\])/g, "$1.*?") + "$"
   );
-  function d(p) {
-    if (!t(p) || r(p))
+  function d(h) {
+    if (!t(h) || r(h))
       return !1;
-    var v = e(p) ? l : i;
-    return v.test(n(p));
+    var v = e(h) ? l : i;
+    return v.test(n(h));
   }
   return un = d, un;
 }
@@ -2320,7 +2320,7 @@ function wt() {
   return Pn = a, Pn;
 }
 var On, yl;
-function Yr() {
+function Jr() {
   if (yl) return On;
   yl = 1;
   var e = wt(), r = _t();
@@ -2365,23 +2365,23 @@ function kg() {
   }
   return Mn = n, Mn;
 }
-var Ln, wl;
-function Jr() {
-  if (wl) return Ln;
+var $n, wl;
+function Xr() {
+  if (wl) return $n;
   wl = 1;
   var e = kg(), r = Xe(), t = Object.prototype, n = t.hasOwnProperty, a = t.propertyIsEnumerable, i = e(/* @__PURE__ */ function() {
     return arguments;
   }()) ? e : function(s) {
     return r(s) && n.call(s, "callee") && !a.call(s, "callee");
   };
-  return Ln = i, Ln;
+  return $n = i, $n;
 }
-var $n, Il;
+var Ln, Il;
 function qe() {
-  if (Il) return $n;
+  if (Il) return Ln;
   Il = 1;
   var e = Array.isArray;
-  return $n = e, $n;
+  return Ln = e, Ln;
 }
 var Gr = { exports: {} }, jn, ql;
 function Ag() {
@@ -2425,10 +2425,10 @@ var zn, Rl;
 function Pg() {
   if (Rl) return zn;
   Rl = 1;
-  var e = _r(), r = Yo(), t = Xe(), n = "[object Arguments]", a = "[object Array]", i = "[object Boolean]", s = "[object Date]", o = "[object Error]", u = "[object Function]", c = "[object Map]", l = "[object Number]", d = "[object Object]", p = "[object RegExp]", v = "[object Set]", g = "[object String]", h = "[object WeakMap]", y = "[object ArrayBuffer]", C = "[object DataView]", x = "[object Float32Array]", _ = "[object Float64Array]", A = "[object Int8Array]", L = "[object Int16Array]", m = "[object Int32Array]", k = "[object Uint8Array]", N = "[object Uint8ClampedArray]", H = "[object Uint16Array]", G = "[object Uint32Array]", S = {};
-  S[x] = S[_] = S[A] = S[L] = S[m] = S[k] = S[N] = S[H] = S[G] = !0, S[n] = S[a] = S[y] = S[i] = S[C] = S[s] = S[o] = S[u] = S[c] = S[l] = S[d] = S[p] = S[v] = S[g] = S[h] = !1;
-  function j(V) {
-    return t(V) && r(V.length) && !!S[e(V)];
+  var e = _r(), r = Yo(), t = Xe(), n = "[object Arguments]", a = "[object Array]", i = "[object Boolean]", s = "[object Date]", o = "[object Error]", u = "[object Function]", c = "[object Map]", l = "[object Number]", d = "[object Object]", h = "[object RegExp]", v = "[object Set]", g = "[object String]", p = "[object WeakMap]", m = "[object ArrayBuffer]", w = "[object DataView]", x = "[object Float32Array]", b = "[object Float64Array]", k = "[object Int8Array]", M = "[object Int16Array]", y = "[object Int32Array]", A = "[object Uint8Array]", N = "[object Uint8ClampedArray]", W = "[object Uint16Array]", G = "[object Uint32Array]", S = {};
+  S[x] = S[b] = S[k] = S[M] = S[y] = S[A] = S[N] = S[W] = S[G] = !0, S[n] = S[a] = S[m] = S[i] = S[w] = S[s] = S[o] = S[u] = S[c] = S[l] = S[d] = S[h] = S[v] = S[g] = S[p] = !1;
+  function j(H) {
+    return t(H) && r(H.length) && !!S[e(H)];
   }
   return zn = j, zn;
 }
@@ -2459,7 +2459,7 @@ function Jo() {
   }(zr, zr.exports)), zr.exports;
 }
 var Un, kl;
-function Xr() {
+function Zr() {
   if (kl) return Un;
   kl = 1;
   var e = Pg(), r = qt(), t = Jo(), n = t && t.isTypedArray, a = n ? r(n) : e;
@@ -2469,16 +2469,16 @@ var Kn, Al;
 function Kh() {
   if (Al) return Kn;
   Al = 1;
-  var e = xg(), r = Jr(), t = qe(), n = Nr(), a = It(), i = Xr(), s = Object.prototype, o = s.hasOwnProperty;
+  var e = xg(), r = Xr(), t = qe(), n = Nr(), a = It(), i = Zr(), s = Object.prototype, o = s.hasOwnProperty;
   function u(c, l) {
-    var d = t(c), p = !d && r(c), v = !d && !p && n(c), g = !d && !p && !v && i(c), h = d || p || v || g, y = h ? e(c.length, String) : [], C = y.length;
+    var d = t(c), h = !d && r(c), v = !d && !h && n(c), g = !d && !h && !v && i(c), p = d || h || v || g, m = p ? e(c.length, String) : [], w = m.length;
     for (var x in c)
-      (l || o.call(c, x)) && !(h && // Safari 9 has enumerable `arguments.length` in strict mode.
+      (l || o.call(c, x)) && !(p && // Safari 9 has enumerable `arguments.length` in strict mode.
       (x == "length" || // Node.js 0.10 has enumerable non-index properties on buffers.
       v && (x == "offset" || x == "parent") || // PhantomJS 2 has enumerable non-index properties on typed arrays.
       g && (x == "buffer" || x == "byteLength" || x == "byteOffset") || // Skip index properties.
-      a(x, C))) && y.push(x);
-    return y;
+      a(x, w))) && m.push(x);
+    return m;
   }
   return Kn = u, Kn;
 }
@@ -2530,27 +2530,27 @@ var Yn, Ml;
 function sr() {
   if (Ml) return Yn;
   Ml = 1;
-  var e = Qr(), r = Yo();
+  var e = Yr(), r = Yo();
   function t(n) {
     return n != null && r(n.length) && !e(n);
   }
   return Yn = t, Yn;
 }
-var Jn, Ll;
+var Jn, $l;
 function pr() {
-  if (Ll) return Jn;
-  Ll = 1;
+  if ($l) return Jn;
+  $l = 1;
   var e = Kh(), r = Xo(), t = sr();
   function n(a) {
     return t(a) ? e(a) : r(a);
   }
   return Jn = n, Jn;
 }
-var Xn, $l;
+var Xn, Ll;
 function Ng() {
-  if ($l) return Xn;
-  $l = 1;
-  var e = Yr(), r = pr();
+  if (Ll) return Xn;
+  Ll = 1;
+  var e = Jr(), r = pr();
   function t(n, a) {
     return n && e(a, r(a), n);
   }
@@ -2595,10 +2595,10 @@ function Ir() {
   return ra = n, ra;
 }
 var ta, zl;
-function Lg() {
+function $g() {
   if (zl) return ta;
   zl = 1;
-  var e = Yr(), r = Ir();
+  var e = Jr(), r = Ir();
   function t(n, a) {
     return n && e(a, r(a), n);
   }
@@ -2613,8 +2613,8 @@ function Hh() {
     function u(c, l) {
       if (l)
         return c.slice();
-      var d = c.length, p = o ? o(d) : new c.constructor(d);
-      return c.copy(p), p;
+      var d = c.length, h = o ? o(d) : new c.constructor(d);
+      return c.copy(h), h;
     }
     e.exports = u;
   }(Br, Br.exports)), Br.exports;
@@ -2665,10 +2665,10 @@ function Zo() {
   return sa = i, sa;
 }
 var oa, Wl;
-function $g() {
+function Lg() {
   if (Wl) return oa;
   Wl = 1;
-  var e = Yr(), r = Zo();
+  var e = Jr(), r = Zo();
   function t(n, a) {
     return e(n, r(n), a);
   }
@@ -2707,7 +2707,7 @@ var da, Xl;
 function jg() {
   if (Xl) return da;
   Xl = 1;
-  var e = Yr(), r = Jh();
+  var e = Jr(), r = Jh();
   function t(n, a) {
     return e(n, r(n), a);
   }
@@ -2776,23 +2776,23 @@ var ba, sc;
 function Dr() {
   if (sc) return ba;
   sc = 1;
-  var e = Gg(), r = Ho(), t = zg(), n = ep(), a = Bg(), i = _r(), s = Bh(), o = "[object Map]", u = "[object Object]", c = "[object Promise]", l = "[object Set]", d = "[object WeakMap]", p = "[object DataView]", v = s(e), g = s(r), h = s(t), y = s(n), C = s(a), x = i;
-  return (e && x(new e(new ArrayBuffer(1))) != p || r && x(new r()) != o || t && x(t.resolve()) != c || n && x(new n()) != l || a && x(new a()) != d) && (x = function(_) {
-    var A = i(_), L = A == u ? _.constructor : void 0, m = L ? s(L) : "";
-    if (m)
-      switch (m) {
+  var e = Gg(), r = Ho(), t = zg(), n = ep(), a = Bg(), i = _r(), s = Bh(), o = "[object Map]", u = "[object Object]", c = "[object Promise]", l = "[object Set]", d = "[object WeakMap]", h = "[object DataView]", v = s(e), g = s(r), p = s(t), m = s(n), w = s(a), x = i;
+  return (e && x(new e(new ArrayBuffer(1))) != h || r && x(new r()) != o || t && x(t.resolve()) != c || n && x(new n()) != l || a && x(new a()) != d) && (x = function(b) {
+    var k = i(b), M = k == u ? b.constructor : void 0, y = M ? s(M) : "";
+    if (y)
+      switch (y) {
         case v:
-          return p;
+          return h;
         case g:
           return o;
-        case h:
+        case p:
           return c;
-        case y:
+        case m:
           return l;
-        case C:
+        case w:
           return d;
       }
-    return A;
+    return k;
   }), ba = x, ba;
 }
 var _a, oc;
@@ -2871,38 +2871,38 @@ var Ra, pc;
 function Wg() {
   if (pc) return Ra;
   pc = 1;
-  var e = ru(), r = Kg(), t = Vg(), n = Hg(), a = tp(), i = "[object Boolean]", s = "[object Date]", o = "[object Map]", u = "[object Number]", c = "[object RegExp]", l = "[object Set]", d = "[object String]", p = "[object Symbol]", v = "[object ArrayBuffer]", g = "[object DataView]", h = "[object Float32Array]", y = "[object Float64Array]", C = "[object Int8Array]", x = "[object Int16Array]", _ = "[object Int32Array]", A = "[object Uint8Array]", L = "[object Uint8ClampedArray]", m = "[object Uint16Array]", k = "[object Uint32Array]";
-  function N(H, G, S) {
-    var j = H.constructor;
+  var e = ru(), r = Kg(), t = Vg(), n = Hg(), a = tp(), i = "[object Boolean]", s = "[object Date]", o = "[object Map]", u = "[object Number]", c = "[object RegExp]", l = "[object Set]", d = "[object String]", h = "[object Symbol]", v = "[object ArrayBuffer]", g = "[object DataView]", p = "[object Float32Array]", m = "[object Float64Array]", w = "[object Int8Array]", x = "[object Int16Array]", b = "[object Int32Array]", k = "[object Uint8Array]", M = "[object Uint8ClampedArray]", y = "[object Uint16Array]", A = "[object Uint32Array]";
+  function N(W, G, S) {
+    var j = W.constructor;
     switch (G) {
       case v:
-        return e(H);
+        return e(W);
       case i:
       case s:
-        return new j(+H);
+        return new j(+W);
       case g:
-        return r(H, S);
-      case h:
-      case y:
-      case C:
-      case x:
-      case _:
-      case A:
-      case L:
+        return r(W, S);
+      case p:
       case m:
+      case w:
+      case x:
+      case b:
       case k:
-        return a(H, S);
+      case M:
+      case y:
+      case A:
+        return a(W, S);
       case o:
         return new j();
       case u:
       case d:
-        return new j(H);
+        return new j(W);
       case c:
-        return t(H);
+        return t(W);
       case l:
         return new j();
-      case p:
-        return n(H);
+      case h:
+        return n(W);
     }
   }
   return Ra = N, Ra;
@@ -2974,23 +2974,23 @@ var Na, wc;
 function ip() {
   if (wc) return Na;
   wc = 1;
-  var e = bt(), r = Qo(), t = wt(), n = Ng(), a = Lg(), i = Hh(), s = Wh(), o = $g(), u = jg(), c = Zh(), l = Fg(), d = Dr(), p = Ug(), v = Wg(), g = ap(), h = qe(), y = Nr(), C = Yg(), x = Fe(), _ = Xg(), A = pr(), L = Ir(), m = 1, k = 2, N = 4, H = "[object Arguments]", G = "[object Array]", S = "[object Boolean]", j = "[object Date]", V = "[object Error]", z = "[object Function]", ie = "[object GeneratorFunction]", ue = "[object Map]", fe = "[object Number]", B = "[object Object]", J = "[object RegExp]", E = "[object Set]", T = "[object String]", M = "[object Symbol]", ve = "[object WeakMap]", we = "[object ArrayBuffer]", Se = "[object DataView]", Ze = "[object Float32Array]", Er = "[object Float64Array]", vr = "[object Int8Array]", Sr = "[object Int16Array]", We = "[object Int32Array]", Rr = "[object Uint8Array]", ze = "[object Uint8ClampedArray]", Qe = "[object Uint16Array]", Be = "[object Uint32Array]", le = {};
-  le[H] = le[G] = le[we] = le[Se] = le[S] = le[j] = le[Ze] = le[Er] = le[vr] = le[Sr] = le[We] = le[ue] = le[fe] = le[B] = le[J] = le[E] = le[T] = le[M] = le[Rr] = le[ze] = le[Qe] = le[Be] = !0, le[V] = le[z] = le[ve] = !1;
+  var e = bt(), r = Qo(), t = wt(), n = Ng(), a = $g(), i = Hh(), s = Wh(), o = Lg(), u = jg(), c = Zh(), l = Fg(), d = Dr(), h = Ug(), v = Wg(), g = ap(), p = qe(), m = Nr(), w = Yg(), x = Fe(), b = Xg(), k = pr(), M = Ir(), y = 1, A = 2, N = 4, W = "[object Arguments]", G = "[object Array]", S = "[object Boolean]", j = "[object Date]", H = "[object Error]", z = "[object Function]", ie = "[object GeneratorFunction]", ue = "[object Map]", fe = "[object Number]", B = "[object Object]", J = "[object RegExp]", E = "[object Set]", T = "[object String]", $ = "[object Symbol]", ve = "[object WeakMap]", we = "[object ArrayBuffer]", Se = "[object DataView]", Ze = "[object Float32Array]", Er = "[object Float64Array]", vr = "[object Int8Array]", Sr = "[object Int16Array]", We = "[object Int32Array]", Rr = "[object Uint8Array]", ze = "[object Uint8ClampedArray]", Qe = "[object Uint16Array]", Be = "[object Uint32Array]", le = {};
+  le[W] = le[G] = le[we] = le[Se] = le[S] = le[j] = le[Ze] = le[Er] = le[vr] = le[Sr] = le[We] = le[ue] = le[fe] = le[B] = le[J] = le[E] = le[T] = le[$] = le[Rr] = le[ze] = le[Qe] = le[Be] = !0, le[H] = le[z] = le[ve] = !1;
   function ge(te, Re, Ue, er, ne, Ce) {
-    var ee, X = Re & m, Ne = Re & k, ur = Re & N;
+    var ee, X = Re & y, Ne = Re & A, ur = Re & N;
     if (Ue && (ee = ne ? Ue(te, er, ne, Ce) : Ue(te)), ee !== void 0)
       return ee;
     if (!x(te))
       return te;
-    var Tr = h(te);
+    var Tr = p(te);
     if (Tr) {
-      if (ee = p(te), !X)
+      if (ee = h(te), !X)
         return s(te, ee);
     } else {
       var De = d(te), xr = De == z || De == ie;
-      if (y(te))
+      if (m(te))
         return i(te, X);
-      if (De == B || De == H || xr && !ne) {
+      if (De == B || De == W || xr && !ne) {
         if (ee = Ne || xr ? {} : g(te), !X)
           return Ne ? u(te, a(ee, te)) : o(te, n(ee, te));
       } else {
@@ -3003,14 +3003,14 @@ function ip() {
     var gr = Ce.get(te);
     if (gr)
       return gr;
-    Ce.set(te, ee), _(te) ? te.forEach(function($e) {
-      ee.add(ge($e, Re, Ue, $e, te, Ce));
-    }) : C(te) && te.forEach(function($e, Ke) {
-      ee.set(Ke, ge($e, Re, Ue, Ke, te, Ce));
+    Ce.set(te, ee), b(te) ? te.forEach(function(Le) {
+      ee.add(ge(Le, Re, Ue, Le, te, Ce));
+    }) : w(te) && te.forEach(function(Le, Ke) {
+      ee.set(Ke, ge(Le, Re, Ue, Ke, te, Ce));
     });
-    var yr = ur ? Ne ? l : c : Ne ? L : A, kr = Tr ? void 0 : yr(te);
-    return r(kr || te, function($e, Ke) {
-      kr && (Ke = $e, $e = te[Ke]), t(ee, Ke, ge($e, Re, Ue, Ke, te, Ce));
+    var yr = ur ? Ne ? l : c : Ne ? M : k, kr = Tr ? void 0 : yr(te);
+    return r(kr || te, function(Le, Ke) {
+      kr && (Ke = Le, Le = te[Ke]), t(ee, Ke, ge(Le, Re, Ue, Ke, te, Ce));
     }), ee;
   }
   return Na = ge, Na;
@@ -3036,9 +3036,9 @@ function tu() {
   }
   return Ma = e, Ma;
 }
-var La, Cc;
+var $a, Cc;
 function ey() {
-  if (Cc) return La;
+  if (Cc) return $a;
   Cc = 1;
   function e(r) {
     return function(t, n, a) {
@@ -3050,14 +3050,14 @@ function ey() {
       return t;
     };
   }
-  return La = e, La;
+  return $a = e, $a;
 }
-var $a, Ec;
+var La, Ec;
 function nu() {
-  if (Ec) return $a;
+  if (Ec) return La;
   Ec = 1;
   var e = ey(), r = e();
-  return $a = r, $a;
+  return La = r, La;
 }
 var ja, Sc;
 function au() {
@@ -3172,10 +3172,10 @@ function lp() {
   }
   return n.prototype.add = n.prototype.push = r, n.prototype.has = t, Qa = n, Qa;
 }
-var Ya, Lc;
+var Ya, $c;
 function iy() {
-  if (Lc) return Ya;
-  Lc = 1;
+  if ($c) return Ya;
+  $c = 1;
   function e(r, t) {
     for (var n = -1, a = r == null ? 0 : r.length; ++n < a; )
       if (t(r[n], n, r))
@@ -3184,10 +3184,10 @@ function iy() {
   }
   return Ya = e, Ya;
 }
-var Ja, $c;
+var Ja, Lc;
 function cp() {
-  if ($c) return Ja;
-  $c = 1;
+  if (Lc) return Ja;
+  Lc = 1;
   function e(r, t) {
     return r.has(t);
   }
@@ -3199,32 +3199,32 @@ function dp() {
   jc = 1;
   var e = lp(), r = iy(), t = cp(), n = 1, a = 2;
   function i(s, o, u, c, l, d) {
-    var p = u & n, v = s.length, g = o.length;
-    if (v != g && !(p && g > v))
+    var h = u & n, v = s.length, g = o.length;
+    if (v != g && !(h && g > v))
       return !1;
-    var h = d.get(s), y = d.get(o);
-    if (h && y)
-      return h == o && y == s;
-    var C = -1, x = !0, _ = u & a ? new e() : void 0;
-    for (d.set(s, o), d.set(o, s); ++C < v; ) {
-      var A = s[C], L = o[C];
+    var p = d.get(s), m = d.get(o);
+    if (p && m)
+      return p == o && m == s;
+    var w = -1, x = !0, b = u & a ? new e() : void 0;
+    for (d.set(s, o), d.set(o, s); ++w < v; ) {
+      var k = s[w], M = o[w];
       if (c)
-        var m = p ? c(L, A, C, o, s, d) : c(A, L, C, s, o, d);
-      if (m !== void 0) {
-        if (m)
+        var y = h ? c(M, k, w, o, s, d) : c(k, M, w, s, o, d);
+      if (y !== void 0) {
+        if (y)
           continue;
         x = !1;
         break;
       }
-      if (_) {
-        if (!r(o, function(k, N) {
-          if (!t(_, N) && (A === k || l(A, k, u, c, d)))
-            return _.push(N);
+      if (b) {
+        if (!r(o, function(A, N) {
+          if (!t(b, N) && (k === A || l(k, A, u, c, d)))
+            return b.push(N);
         })) {
           x = !1;
           break;
         }
-      } else if (!(A === L || l(A, L, u, c, d))) {
+      } else if (!(k === M || l(k, M, u, c, d))) {
         x = !1;
         break;
       }
@@ -3261,43 +3261,43 @@ var ri, zc;
 function oy() {
   if (zc) return ri;
   zc = 1;
-  var e = Or(), r = rp(), t = Pr(), n = dp(), a = sy(), i = iu(), s = 1, o = 2, u = "[object Boolean]", c = "[object Date]", l = "[object Error]", d = "[object Map]", p = "[object Number]", v = "[object RegExp]", g = "[object Set]", h = "[object String]", y = "[object Symbol]", C = "[object ArrayBuffer]", x = "[object DataView]", _ = e ? e.prototype : void 0, A = _ ? _.valueOf : void 0;
-  function L(m, k, N, H, G, S, j) {
+  var e = Or(), r = rp(), t = Pr(), n = dp(), a = sy(), i = iu(), s = 1, o = 2, u = "[object Boolean]", c = "[object Date]", l = "[object Error]", d = "[object Map]", h = "[object Number]", v = "[object RegExp]", g = "[object Set]", p = "[object String]", m = "[object Symbol]", w = "[object ArrayBuffer]", x = "[object DataView]", b = e ? e.prototype : void 0, k = b ? b.valueOf : void 0;
+  function M(y, A, N, W, G, S, j) {
     switch (N) {
       case x:
-        if (m.byteLength != k.byteLength || m.byteOffset != k.byteOffset)
+        if (y.byteLength != A.byteLength || y.byteOffset != A.byteOffset)
           return !1;
-        m = m.buffer, k = k.buffer;
-      case C:
-        return !(m.byteLength != k.byteLength || !S(new r(m), new r(k)));
+        y = y.buffer, A = A.buffer;
+      case w:
+        return !(y.byteLength != A.byteLength || !S(new r(y), new r(A)));
       case u:
       case c:
-      case p:
-        return t(+m, +k);
-      case l:
-        return m.name == k.name && m.message == k.message;
-      case v:
       case h:
-        return m == k + "";
+        return t(+y, +A);
+      case l:
+        return y.name == A.name && y.message == A.message;
+      case v:
+      case p:
+        return y == A + "";
       case d:
-        var V = a;
+        var H = a;
       case g:
-        var z = H & s;
-        if (V || (V = i), m.size != k.size && !z)
+        var z = W & s;
+        if (H || (H = i), y.size != A.size && !z)
           return !1;
-        var ie = j.get(m);
+        var ie = j.get(y);
         if (ie)
-          return ie == k;
-        H |= o, j.set(m, k);
-        var ue = n(V(m), V(k), H, G, S, j);
-        return j.delete(m), ue;
-      case y:
-        if (A)
-          return A.call(m) == A.call(k);
+          return ie == A;
+        W |= o, j.set(y, A);
+        var ue = n(H(y), H(A), W, G, S, j);
+        return j.delete(y), ue;
+      case m:
+        if (k)
+          return k.call(y) == k.call(A);
     }
     return !1;
   }
-  return ri = L, ri;
+  return ri = M, ri;
 }
 var ti, Bc;
 function uy() {
@@ -3305,35 +3305,35 @@ function uy() {
   Bc = 1;
   var e = Zh(), r = 1, t = Object.prototype, n = t.hasOwnProperty;
   function a(i, s, o, u, c, l) {
-    var d = o & r, p = e(i), v = p.length, g = e(s), h = g.length;
-    if (v != h && !d)
+    var d = o & r, h = e(i), v = h.length, g = e(s), p = g.length;
+    if (v != p && !d)
       return !1;
-    for (var y = v; y--; ) {
-      var C = p[y];
-      if (!(d ? C in s : n.call(s, C)))
+    for (var m = v; m--; ) {
+      var w = h[m];
+      if (!(d ? w in s : n.call(s, w)))
         return !1;
     }
-    var x = l.get(i), _ = l.get(s);
-    if (x && _)
-      return x == s && _ == i;
-    var A = !0;
+    var x = l.get(i), b = l.get(s);
+    if (x && b)
+      return x == s && b == i;
+    var k = !0;
     l.set(i, s), l.set(s, i);
-    for (var L = d; ++y < v; ) {
-      C = p[y];
-      var m = i[C], k = s[C];
+    for (var M = d; ++m < v; ) {
+      w = h[m];
+      var y = i[w], A = s[w];
       if (u)
-        var N = d ? u(k, m, C, s, i, l) : u(m, k, C, i, s, l);
-      if (!(N === void 0 ? m === k || c(m, k, o, u, l) : N)) {
-        A = !1;
+        var N = d ? u(A, y, w, s, i, l) : u(y, A, w, i, s, l);
+      if (!(N === void 0 ? y === A || c(y, A, o, u, l) : N)) {
+        k = !1;
         break;
       }
-      L || (L = C == "constructor");
+      M || (M = w == "constructor");
     }
-    if (A && !L) {
-      var H = i.constructor, G = s.constructor;
-      H != G && "constructor" in i && "constructor" in s && !(typeof H == "function" && H instanceof H && typeof G == "function" && G instanceof G) && (A = !1);
+    if (k && !M) {
+      var W = i.constructor, G = s.constructor;
+      W != G && "constructor" in i && "constructor" in s && !(typeof W == "function" && W instanceof W && typeof G == "function" && G instanceof G) && (k = !1);
     }
-    return l.delete(i), l.delete(s), A;
+    return l.delete(i), l.delete(s), k;
   }
   return ti = a, ti;
 }
@@ -3341,26 +3341,26 @@ var ni, Uc;
 function ly() {
   if (Uc) return ni;
   Uc = 1;
-  var e = bt(), r = dp(), t = oy(), n = uy(), a = Dr(), i = qe(), s = Nr(), o = Xr(), u = 1, c = "[object Arguments]", l = "[object Array]", d = "[object Object]", p = Object.prototype, v = p.hasOwnProperty;
-  function g(h, y, C, x, _, A) {
-    var L = i(h), m = i(y), k = L ? l : a(h), N = m ? l : a(y);
-    k = k == c ? d : k, N = N == c ? d : N;
-    var H = k == d, G = N == d, S = k == N;
-    if (S && s(h)) {
-      if (!s(y))
+  var e = bt(), r = dp(), t = oy(), n = uy(), a = Dr(), i = qe(), s = Nr(), o = Zr(), u = 1, c = "[object Arguments]", l = "[object Array]", d = "[object Object]", h = Object.prototype, v = h.hasOwnProperty;
+  function g(p, m, w, x, b, k) {
+    var M = i(p), y = i(m), A = M ? l : a(p), N = y ? l : a(m);
+    A = A == c ? d : A, N = N == c ? d : N;
+    var W = A == d, G = N == d, S = A == N;
+    if (S && s(p)) {
+      if (!s(m))
         return !1;
-      L = !0, H = !1;
+      M = !0, W = !1;
     }
-    if (S && !H)
-      return A || (A = new e()), L || o(h) ? r(h, y, C, x, _, A) : t(h, y, k, C, x, _, A);
-    if (!(C & u)) {
-      var j = H && v.call(h, "__wrapped__"), V = G && v.call(y, "__wrapped__");
-      if (j || V) {
-        var z = j ? h.value() : h, ie = V ? y.value() : y;
-        return A || (A = new e()), _(z, ie, C, x, A);
+    if (S && !W)
+      return k || (k = new e()), M || o(p) ? r(p, m, w, x, b, k) : t(p, m, A, w, x, b, k);
+    if (!(w & u)) {
+      var j = W && v.call(p, "__wrapped__"), H = G && v.call(m, "__wrapped__");
+      if (j || H) {
+        var z = j ? p.value() : p, ie = H ? m.value() : m;
+        return k || (k = new e()), b(z, ie, w, x, k);
       }
     }
-    return S ? (A || (A = new e()), n(h, y, C, x, _, A)) : !1;
+    return S ? (k || (k = new e()), n(p, m, w, x, b, k)) : !1;
   }
   return ni = g, ni;
 }
@@ -3384,21 +3384,21 @@ function cy() {
     if (i == null)
       return !l;
     for (i = Object(i); c--; ) {
-      var p = o[c];
-      if (d && p[2] ? p[1] !== i[p[0]] : !(p[0] in i))
+      var h = o[c];
+      if (d && h[2] ? h[1] !== i[h[0]] : !(h[0] in i))
         return !1;
     }
     for (; ++c < l; ) {
-      p = o[c];
-      var v = p[0], g = i[v], h = p[1];
-      if (d && p[2]) {
+      h = o[c];
+      var v = h[0], g = i[v], p = h[1];
+      if (d && h[2]) {
         if (g === void 0 && !(v in i))
           return !1;
       } else {
-        var y = new e();
+        var m = new e();
         if (u)
-          var C = u(g, h, v, i, s, y);
-        if (!(C === void 0 ? r(h, g, t | n, u, y) : C))
+          var w = u(g, p, v, i, s, m);
+        if (!(w === void 0 ? r(p, g, t | n, u, m) : w))
           return !1;
       }
     }
@@ -3570,7 +3570,7 @@ function Tt() {
   return mi = a, mi;
 }
 var bi, sd;
-function Zr() {
+function et() {
   if (sd) return bi;
   sd = 1;
   var e = Mr();
@@ -3586,7 +3586,7 @@ var _i, od;
 function xt() {
   if (od) return _i;
   od = 1;
-  var e = Tt(), r = Zr();
+  var e = Tt(), r = et();
   function t(n, a) {
     a = e(a, n);
     for (var i = 0, s = a.length; n != null && i < s; )
@@ -3619,16 +3619,16 @@ var qi, cd;
 function gp() {
   if (cd) return qi;
   cd = 1;
-  var e = Tt(), r = Jr(), t = qe(), n = It(), a = Yo(), i = Zr();
+  var e = Tt(), r = Xr(), t = qe(), n = It(), a = Yo(), i = et();
   function s(o, u, c) {
     u = e(u, o);
-    for (var l = -1, d = u.length, p = !1; ++l < d; ) {
+    for (var l = -1, d = u.length, h = !1; ++l < d; ) {
       var v = i(u[l]);
-      if (!(p = o != null && c(o, v)))
+      if (!(h = o != null && c(o, v)))
         break;
       o = o[v];
     }
-    return p || ++l != d ? p : (d = o == null ? 0 : o.length, !!d && a(d) && n(v, d) && (t(o) || r(o)));
+    return h || ++l != d ? h : (d = o == null ? 0 : o.length, !!d && a(d) && n(v, d) && (t(o) || r(o)));
   }
   return qi = s, qi;
 }
@@ -3646,11 +3646,11 @@ var Ei, fd;
 function by() {
   if (fd) return Ei;
   fd = 1;
-  var e = fp(), r = yy(), t = yp(), n = su(), a = hp(), i = pp(), s = Zr(), o = 1, u = 2;
+  var e = fp(), r = yy(), t = yp(), n = su(), a = hp(), i = pp(), s = et(), o = 1, u = 2;
   function c(l, d) {
-    return n(l) && a(d) ? i(s(l), d) : function(p) {
-      var v = r(p, l);
-      return v === void 0 && v === d ? t(p, l) : e(d, v, o | u);
+    return n(l) && a(d) ? i(s(l), d) : function(h) {
+      var v = r(h, l);
+      return v === void 0 && v === d ? t(h, l) : e(d, v, o | u);
     };
   }
   return Ei = c, Ei;
@@ -3682,7 +3682,7 @@ var Ti, vd;
 function wy() {
   if (vd) return Ti;
   vd = 1;
-  var e = mp(), r = _y(), t = su(), n = Zr();
+  var e = mp(), r = _y(), t = su(), n = et();
   function a(i) {
     return t(i) ? e(n(i)) : r(i);
   }
@@ -3733,8 +3733,8 @@ var Oi, _d;
 function qy() {
   if (_d) return Oi;
   _d = 1;
-  var e = Xo(), r = Dr(), t = Jr(), n = qe(), a = sr(), i = Nr(), s = Ct(), o = Xr(), u = "[object Map]", c = "[object Set]", l = Object.prototype, d = l.hasOwnProperty;
-  function p(v) {
+  var e = Xo(), r = Dr(), t = Xr(), n = qe(), a = sr(), i = Nr(), s = Ct(), o = Zr(), u = "[object Map]", c = "[object Set]", l = Object.prototype, d = l.hasOwnProperty;
+  function h(v) {
     if (v == null)
       return !0;
     if (a(v) && (n(v) || typeof v == "string" || typeof v.splice == "function" || i(v) || o(v) || t(v)))
@@ -3744,12 +3744,12 @@ function qy() {
       return !v.size;
     if (s(v))
       return !e(v).length;
-    for (var h in v)
-      if (d.call(v, h))
+    for (var p in v)
+      if (d.call(v, p))
         return !1;
     return !0;
   }
-  return Oi = p, Oi;
+  return Oi = h, Oi;
 }
 var Ni, wd;
 function wp() {
@@ -3784,9 +3784,9 @@ function qp() {
   }
   return Mi = a, Mi;
 }
-var Li, Cd;
+var $i, Cd;
 function Cy() {
-  if (Cd) return Li;
+  if (Cd) return $i;
   Cd = 1;
   function e(r, t, n, a) {
     var i = -1, s = r == null ? 0 : r.length;
@@ -3794,18 +3794,18 @@ function Cy() {
       n = t(n, r[i], i, r);
     return n;
   }
-  return Li = e, Li;
+  return $i = e, $i;
 }
-var $i, Ed;
+var Li, Ed;
 function Ey() {
-  if (Ed) return $i;
+  if (Ed) return Li;
   Ed = 1;
   function e(r, t, n, a, i) {
     return i(r, function(s, o, u) {
       n = a ? (a = !1, s) : t(n, s, o, u);
     }), n;
   }
-  return $i = e, $i;
+  return Li = e, Li;
 }
 var ji, Sd;
 function Cp() {
@@ -3849,13 +3849,13 @@ var Bi, kd;
 function xy() {
   if (kd) return Bi;
   kd = 1;
-  var e = "\\ud800-\\udfff", r = "\\u0300-\\u036f", t = "\\ufe20-\\ufe2f", n = "\\u20d0-\\u20ff", a = r + t + n, i = "\\ufe0e\\ufe0f", s = "[" + e + "]", o = "[" + a + "]", u = "\\ud83c[\\udffb-\\udfff]", c = "(?:" + o + "|" + u + ")", l = "[^" + e + "]", d = "(?:\\ud83c[\\udde6-\\uddff]){2}", p = "[\\ud800-\\udbff][\\udc00-\\udfff]", v = "\\u200d", g = c + "?", h = "[" + i + "]?", y = "(?:" + v + "(?:" + [l, d, p].join("|") + ")" + h + g + ")*", C = h + g + y, x = "(?:" + [l + o + "?", o, d, p, s].join("|") + ")", _ = RegExp(u + "(?=" + u + ")|" + x + C, "g");
-  function A(L) {
-    for (var m = _.lastIndex = 0; _.test(L); )
-      ++m;
-    return m;
+  var e = "\\ud800-\\udfff", r = "\\u0300-\\u036f", t = "\\ufe20-\\ufe2f", n = "\\u20d0-\\u20ff", a = r + t + n, i = "\\ufe0e\\ufe0f", s = "[" + e + "]", o = "[" + a + "]", u = "\\ud83c[\\udffb-\\udfff]", c = "(?:" + o + "|" + u + ")", l = "[^" + e + "]", d = "(?:\\ud83c[\\udde6-\\uddff]){2}", h = "[\\ud800-\\udbff][\\udc00-\\udfff]", v = "\\u200d", g = c + "?", p = "[" + i + "]?", m = "(?:" + v + "(?:" + [l, d, h].join("|") + ")" + p + g + ")*", w = p + g + m, x = "(?:" + [l + o + "?", o, d, h, s].join("|") + ")", b = RegExp(u + "(?=" + u + ")|" + x + w, "g");
+  function k(M) {
+    for (var y = b.lastIndex = 0; b.test(M); )
+      ++y;
+    return y;
   }
-  return Bi = A, Bi;
+  return Bi = k, Bi;
 }
 var Ui, Ad;
 function ky() {
@@ -3886,15 +3886,15 @@ var Vi, Od;
 function Py() {
   if (Od) return Vi;
   Od = 1;
-  var e = Qo(), r = np(), t = au(), n = or(), a = Et(), i = qe(), s = Nr(), o = Qr(), u = Fe(), c = Xr();
-  function l(d, p, v) {
-    var g = i(d), h = g || s(d) || c(d);
-    if (p = n(p, 4), v == null) {
-      var y = d && d.constructor;
-      h ? v = g ? new y() : [] : u(d) ? v = o(y) ? r(a(d)) : {} : v = {};
+  var e = Qo(), r = np(), t = au(), n = or(), a = Et(), i = qe(), s = Nr(), o = Yr(), u = Fe(), c = Zr();
+  function l(d, h, v) {
+    var g = i(d), p = g || s(d) || c(d);
+    if (h = n(h, 4), v == null) {
+      var m = d && d.constructor;
+      p ? v = g ? new m() : [] : u(d) ? v = o(m) ? r(a(d)) : {} : v = {};
     }
-    return (h ? e : t)(d, function(C, x, _) {
-      return p(v, C, x, _);
+    return (p ? e : t)(d, function(w, x, b) {
+      return h(v, w, x, b);
     }), v;
   }
   return Vi = l, Vi;
@@ -3903,7 +3903,7 @@ var Hi, Nd;
 function Oy() {
   if (Nd) return Hi;
   Nd = 1;
-  var e = Or(), r = Jr(), t = qe(), n = e ? e.isConcatSpreadable : void 0;
+  var e = Or(), r = Xr(), t = qe(), n = e ? e.isConcatSpreadable : void 0;
   function a(i) {
     return t(i) || r(i) || !!(n && i && i[n]);
   }
@@ -3943,10 +3943,10 @@ function Ny() {
   }
   return Qi = e, Qi;
 }
-var Yi, Ld;
+var Yi, $d;
 function Ep() {
-  if (Ld) return Yi;
-  Ld = 1;
+  if ($d) return Yi;
+  $d = 1;
   var e = Ny(), r = Math.max;
   function t(n, a, i) {
     return a = r(a === void 0 ? n.length - 1 : a, 0), function() {
@@ -3960,10 +3960,10 @@ function Ep() {
   }
   return Yi = t, Yi;
 }
-var Ji, $d;
+var Ji, Ld;
 function Dy() {
-  if ($d) return Ji;
-  $d = 1;
+  if (Ld) return Ji;
+  Ld = 1;
   var e = tu(), r = Uh(), t = qr(), n = r ? function(a, i) {
     return r(a, "toString", {
       configurable: !0,
@@ -4023,7 +4023,7 @@ function Rp() {
   return rs = e, rs;
 }
 var ts, Bd;
-function Ly() {
+function $y() {
   if (Bd) return ts;
   Bd = 1;
   function e(r) {
@@ -4032,7 +4032,7 @@ function Ly() {
   return ts = e, ts;
 }
 var ns, Ud;
-function $y() {
+function Ly() {
   if (Ud) return ns;
   Ud = 1;
   function e(r, t, n) {
@@ -4047,7 +4047,7 @@ var as, Kd;
 function jy() {
   if (Kd) return as;
   Kd = 1;
-  var e = Rp(), r = Ly(), t = $y();
+  var e = Rp(), r = $y(), t = Ly();
   function n(a, i, s) {
     return i === i ? t(a, i, s) : e(a, r, s);
   }
@@ -4099,27 +4099,27 @@ function Uy() {
   Yd = 1;
   var e = lp(), r = Fy(), t = Gy(), n = cp(), a = By(), i = iu(), s = 200;
   function o(u, c, l) {
-    var d = -1, p = r, v = u.length, g = !0, h = [], y = h;
+    var d = -1, h = r, v = u.length, g = !0, p = [], m = p;
     if (l)
-      g = !1, p = t;
+      g = !1, h = t;
     else if (v >= s) {
-      var C = c ? null : a(u);
-      if (C)
-        return i(C);
-      g = !1, p = n, y = new e();
+      var w = c ? null : a(u);
+      if (w)
+        return i(w);
+      g = !1, h = n, m = new e();
     } else
-      y = c ? [] : h;
+      m = c ? [] : p;
     e:
       for (; ++d < v; ) {
-        var x = u[d], _ = c ? c(x) : x;
-        if (x = l || x !== 0 ? x : 0, g && _ === _) {
-          for (var A = y.length; A--; )
-            if (y[A] === _)
+        var x = u[d], b = c ? c(x) : x;
+        if (x = l || x !== 0 ? x : 0, g && b === b) {
+          for (var k = m.length; k--; )
+            if (m[k] === b)
               continue e;
-          c && y.push(_), h.push(x);
-        } else p(y, _, l) || (y !== h && y.push(_), h.push(x));
+          c && m.push(b), p.push(x);
+        } else h(m, b, l) || (m !== p && m.push(b), p.push(x));
       }
-    return h;
+    return p;
   }
   return ls = o, ls;
 }
@@ -4179,7 +4179,7 @@ function Ge() {
         has: _p(),
         isArray: qe(),
         isEmpty: qy(),
-        isFunction: Qr(),
+        isFunction: Yr(),
         isUndefined: wp(),
         keys: pr(),
         map: qp(),
@@ -4230,9 +4230,9 @@ function uu() {
       return e.isEmpty(l._out[d]);
     });
   }, a.prototype.setNodes = function(l, d) {
-    var p = arguments, v = this;
+    var h = arguments, v = this;
     return e.each(l, function(g) {
-      p.length > 1 ? v.setNode(g, d) : v.setNode(g);
+      h.length > 1 ? v.setNode(g, d) : v.setNode(g);
     }), this;
   }, a.prototype.setNode = function(l, d) {
     return e.has(this._nodes, l) ? (arguments.length > 1 && (this._nodes[l] = d), this) : (this._nodes[l] = arguments.length > 1 ? d : this._defaultNodeLabelFn(l), this._isCompound && (this._parent[l] = t, this._children[l] = {}, this._children[t][l] = !0), this._in[l] = {}, this._preds[l] = {}, this._out[l] = {}, this._sucs[l] = {}, ++this._nodeCount, this);
@@ -4243,12 +4243,12 @@ function uu() {
   }, a.prototype.removeNode = function(l) {
     var d = this;
     if (e.has(this._nodes, l)) {
-      var p = function(v) {
+      var h = function(v) {
         d.removeEdge(d._edgeObjs[v]);
       };
       delete this._nodes[l], this._isCompound && (this._removeFromParentsChildList(l), delete this._parent[l], e.each(this.children(l), function(v) {
         d.setParent(v);
-      }), delete this._children[l]), e.each(e.keys(this._in[l]), p), delete this._in[l], delete this._preds[l], e.each(e.keys(this._out[l]), p), delete this._out[l], delete this._sucs[l], --this._nodeCount;
+      }), delete this._children[l]), e.each(e.keys(this._in[l]), h), delete this._in[l], delete this._preds[l], e.each(e.keys(this._out[l]), h), delete this._out[l], delete this._sucs[l], --this._nodeCount;
     }
     return this;
   }, a.prototype.setParent = function(l, d) {
@@ -4258,8 +4258,8 @@ function uu() {
       d = t;
     else {
       d += "";
-      for (var p = d; !e.isUndefined(p); p = this.parent(p))
-        if (p === l)
+      for (var h = d; !e.isUndefined(h); h = this.parent(h))
+        if (h === l)
           throw new Error("Setting " + d + " as parent of " + l + " would create a cycle");
       this.setNode(d);
     }
@@ -4305,19 +4305,19 @@ function uu() {
       compound: this._isCompound
     });
     d.setGraph(this.graph());
-    var p = this;
-    e.each(this._nodes, function(h, y) {
-      l(y) && d.setNode(y, h);
-    }), e.each(this._edgeObjs, function(h) {
-      d.hasNode(h.v) && d.hasNode(h.w) && d.setEdge(h, p.edge(h));
+    var h = this;
+    e.each(this._nodes, function(p, m) {
+      l(m) && d.setNode(m, p);
+    }), e.each(this._edgeObjs, function(p) {
+      d.hasNode(p.v) && d.hasNode(p.w) && d.setEdge(p, h.edge(p));
     });
     var v = {};
-    function g(h) {
-      var y = p.parent(h);
-      return y === void 0 || d.hasNode(y) ? (v[h] = y, y) : y in v ? v[y] : g(y);
+    function g(p) {
+      var m = h.parent(p);
+      return m === void 0 || d.hasNode(m) ? (v[p] = m, m) : m in v ? v[m] : g(m);
     }
-    return this._isCompound && e.each(d.nodes(), function(h) {
-      d.setParent(h, g(h));
+    return this._isCompound && e.each(d.nodes(), function(p) {
+      d.setParent(p, g(p));
     }), d;
   }, a.prototype.setDefaultEdgeLabel = function(l) {
     return e.isFunction(l) || (l = e.constant(l)), this._defaultEdgeLabelFn = l, this;
@@ -4326,50 +4326,50 @@ function uu() {
   }, a.prototype.edges = function() {
     return e.values(this._edgeObjs);
   }, a.prototype.setPath = function(l, d) {
-    var p = this, v = arguments;
-    return e.reduce(l, function(g, h) {
-      return v.length > 1 ? p.setEdge(g, h, d) : p.setEdge(g, h), h;
+    var h = this, v = arguments;
+    return e.reduce(l, function(g, p) {
+      return v.length > 1 ? h.setEdge(g, p, d) : h.setEdge(g, p), p;
     }), this;
   }, a.prototype.setEdge = function() {
-    var l, d, p, v, g = !1, h = arguments[0];
-    typeof h == "object" && h !== null && "v" in h ? (l = h.v, d = h.w, p = h.name, arguments.length === 2 && (v = arguments[1], g = !0)) : (l = h, d = arguments[1], p = arguments[3], arguments.length > 2 && (v = arguments[2], g = !0)), l = "" + l, d = "" + d, e.isUndefined(p) || (p = "" + p);
-    var y = o(this._isDirected, l, d, p);
-    if (e.has(this._edgeLabels, y))
-      return g && (this._edgeLabels[y] = v), this;
-    if (!e.isUndefined(p) && !this._isMultigraph)
+    var l, d, h, v, g = !1, p = arguments[0];
+    typeof p == "object" && p !== null && "v" in p ? (l = p.v, d = p.w, h = p.name, arguments.length === 2 && (v = arguments[1], g = !0)) : (l = p, d = arguments[1], h = arguments[3], arguments.length > 2 && (v = arguments[2], g = !0)), l = "" + l, d = "" + d, e.isUndefined(h) || (h = "" + h);
+    var m = o(this._isDirected, l, d, h);
+    if (e.has(this._edgeLabels, m))
+      return g && (this._edgeLabels[m] = v), this;
+    if (!e.isUndefined(h) && !this._isMultigraph)
       throw new Error("Cannot set a named edge when isMultigraph = false");
-    this.setNode(l), this.setNode(d), this._edgeLabels[y] = g ? v : this._defaultEdgeLabelFn(l, d, p);
-    var C = u(this._isDirected, l, d, p);
-    return l = C.v, d = C.w, Object.freeze(C), this._edgeObjs[y] = C, i(this._preds[d], l), i(this._sucs[l], d), this._in[d][y] = C, this._out[l][y] = C, this._edgeCount++, this;
-  }, a.prototype.edge = function(l, d, p) {
-    var v = arguments.length === 1 ? c(this._isDirected, arguments[0]) : o(this._isDirected, l, d, p);
+    this.setNode(l), this.setNode(d), this._edgeLabels[m] = g ? v : this._defaultEdgeLabelFn(l, d, h);
+    var w = u(this._isDirected, l, d, h);
+    return l = w.v, d = w.w, Object.freeze(w), this._edgeObjs[m] = w, i(this._preds[d], l), i(this._sucs[l], d), this._in[d][m] = w, this._out[l][m] = w, this._edgeCount++, this;
+  }, a.prototype.edge = function(l, d, h) {
+    var v = arguments.length === 1 ? c(this._isDirected, arguments[0]) : o(this._isDirected, l, d, h);
     return this._edgeLabels[v];
-  }, a.prototype.hasEdge = function(l, d, p) {
-    var v = arguments.length === 1 ? c(this._isDirected, arguments[0]) : o(this._isDirected, l, d, p);
+  }, a.prototype.hasEdge = function(l, d, h) {
+    var v = arguments.length === 1 ? c(this._isDirected, arguments[0]) : o(this._isDirected, l, d, h);
     return e.has(this._edgeLabels, v);
-  }, a.prototype.removeEdge = function(l, d, p) {
-    var v = arguments.length === 1 ? c(this._isDirected, arguments[0]) : o(this._isDirected, l, d, p), g = this._edgeObjs[v];
+  }, a.prototype.removeEdge = function(l, d, h) {
+    var v = arguments.length === 1 ? c(this._isDirected, arguments[0]) : o(this._isDirected, l, d, h), g = this._edgeObjs[v];
     return g && (l = g.v, d = g.w, delete this._edgeLabels[v], delete this._edgeObjs[v], s(this._preds[d], l), s(this._sucs[l], d), delete this._in[d][v], delete this._out[l][v], this._edgeCount--), this;
   }, a.prototype.inEdges = function(l, d) {
-    var p = this._in[l];
-    if (p) {
-      var v = e.values(p);
+    var h = this._in[l];
+    if (h) {
+      var v = e.values(h);
       return d ? e.filter(v, function(g) {
         return g.v === d;
       }) : v;
     }
   }, a.prototype.outEdges = function(l, d) {
-    var p = this._out[l];
-    if (p) {
-      var v = e.values(p);
+    var h = this._out[l];
+    if (h) {
+      var v = e.values(h);
       return d ? e.filter(v, function(g) {
         return g.w === d;
       }) : v;
     }
   }, a.prototype.nodeEdges = function(l, d) {
-    var p = this.inEdges(l, d);
-    if (p)
-      return p.concat(this.outEdges(l, d));
+    var h = this.inEdges(l, d);
+    if (h)
+      return h.concat(this.outEdges(l, d));
   };
   function i(l, d) {
     l[d] ? l[d]++ : l[d] = 1;
@@ -4377,22 +4377,22 @@ function uu() {
   function s(l, d) {
     --l[d] || delete l[d];
   }
-  function o(l, d, p, v) {
-    var g = "" + d, h = "" + p;
-    if (!l && g > h) {
-      var y = g;
-      g = h, h = y;
+  function o(l, d, h, v) {
+    var g = "" + d, p = "" + h;
+    if (!l && g > p) {
+      var m = g;
+      g = p, p = m;
     }
-    return g + n + h + n + (e.isUndefined(v) ? r : v);
+    return g + n + p + n + (e.isUndefined(v) ? r : v);
   }
-  function u(l, d, p, v) {
-    var g = "" + d, h = "" + p;
-    if (!l && g > h) {
-      var y = g;
-      g = h, h = y;
+  function u(l, d, h, v) {
+    var g = "" + d, p = "" + h;
+    if (!l && g > p) {
+      var m = g;
+      g = p, p = m;
     }
-    var C = { v: g, w: h };
-    return v && (C.name = v), C;
+    var w = { v: g, w: p };
+    return v && (w.name = v), w;
   }
   function c(l, d) {
     return o(l, d.v, d.w, d.name);
@@ -4540,16 +4540,16 @@ function Ap() {
     );
   }
   function a(i, s, o, u) {
-    var c = {}, l = new r(), d, p, v = function(g) {
-      var h = g.v !== d ? g.v : g.w, y = c[h], C = o(g), x = p.distance + C;
-      if (C < 0)
-        throw new Error("dijkstra does not allow negative edge weights. Bad edge: " + g + " Weight: " + C);
-      x < y.distance && (y.distance = x, y.predecessor = d, l.decrease(h, x));
+    var c = {}, l = new r(), d, h, v = function(g) {
+      var p = g.v !== d ? g.v : g.w, m = c[p], w = o(g), x = h.distance + w;
+      if (w < 0)
+        throw new Error("dijkstra does not allow negative edge weights. Bad edge: " + g + " Weight: " + w);
+      x < m.distance && (m.distance = x, m.predecessor = d, l.decrease(p, x));
     };
     for (i.nodes().forEach(function(g) {
-      var h = g === s ? 0 : Number.POSITIVE_INFINITY;
-      c[g] = { distance: h }, l.add(g, h);
-    }); l.size() > 0 && (d = l.removeMin(), p = c[d], p.distance !== Number.POSITIVE_INFINITY); )
+      var p = g === s ? 0 : Number.POSITIVE_INFINITY;
+      c[g] = { distance: p }, l.add(g, p);
+    }); l.size() > 0 && (d = l.removeMin(), h = c[d], h.distance !== Number.POSITIVE_INFINITY); )
       u(d).forEach(v);
     return c;
   }
@@ -4582,8 +4582,8 @@ function Pp() {
         lowlink: n,
         index: n++
       };
-      if (a.push(u), t.successors(u).forEach(function(p) {
-        e.has(i, p) ? i[p].onStack && (c.lowlink = Math.min(c.lowlink, i[p].index)) : (o(p), c.lowlink = Math.min(c.lowlink, i[p].lowlink));
+      if (a.push(u), t.successors(u).forEach(function(h) {
+        e.has(i, h) ? i[h].onStack && (c.lowlink = Math.min(c.lowlink, i[h].index)) : (o(h), c.lowlink = Math.min(c.lowlink, i[h].lowlink));
       }), c.lowlink === c.index) {
         var l = [], d;
         do
@@ -4633,16 +4633,16 @@ function Zy() {
       o[c] = {}, o[c][c] = { distance: 0 }, u.forEach(function(l) {
         c !== l && (o[c][l] = { distance: Number.POSITIVE_INFINITY });
       }), s(c).forEach(function(l) {
-        var d = l.v === c ? l.w : l.v, p = i(l);
-        o[c][d] = { distance: p, predecessor: c };
+        var d = l.v === c ? l.w : l.v, h = i(l);
+        o[c][d] = { distance: h, predecessor: c };
       });
     }), u.forEach(function(c) {
       var l = o[c];
       u.forEach(function(d) {
-        var p = o[d];
+        var h = o[d];
         u.forEach(function(v) {
-          var g = p[c], h = l[v], y = p[v], C = g.distance + h.distance;
-          C < y.distance && (y.distance = C, y.predecessor = h.predecessor);
+          var g = h[c], p = l[v], m = h[v], w = g.distance + p.distance;
+          w < m.distance && (m.distance = w, m.predecessor = p.predecessor);
         });
       });
     }), o;
@@ -4740,17 +4740,17 @@ function nm() {
   As = n;
   function n(a, i) {
     var s = new r(), o = {}, u = new t(), c;
-    function l(p) {
-      var v = p.v === c ? p.w : p.v, g = u.priority(v);
+    function l(h) {
+      var v = h.v === c ? h.w : h.v, g = u.priority(v);
       if (g !== void 0) {
-        var h = i(p);
-        h < g && (o[v] = c, u.decrease(v, h));
+        var p = i(h);
+        p < g && (o[v] = c, u.decrease(v, p));
       }
     }
     if (a.nodeCount() === 0)
       return s;
-    e.each(a.nodes(), function(p) {
-      u.add(p, Number.POSITIVE_INFINITY), s.setNode(p);
+    e.each(a.nodes(), function(h) {
+      u.add(h, Number.POSITIVE_INFINITY), s.setNode(h);
     }), u.decrease(a.nodes()[0], 0);
     for (var d = !1; u.size() > 0; ) {
       if (c = u.removeMin(), e.has(o, c))
@@ -4794,14 +4794,14 @@ function im() {
     version: e.version
   }, Os;
 }
-var lt;
+var ct;
 if (typeof Vo == "function")
   try {
-    lt = im();
+    ct = im();
   } catch {
   }
-lt || (lt = window.graphlib);
-var He = lt, Ns, If;
+ct || (ct = window.graphlib);
+var He = ct, Ns, If;
 function sm() {
   if (If) return Ns;
   If = 1;
@@ -4832,17 +4832,17 @@ function om() {
     o = Object(o);
     var c = -1, l = u.length, d = l > 2 ? u[2] : void 0;
     for (d && t(u[0], u[1], d) && (l = 1); ++c < l; )
-      for (var p = u[c], v = n(p), g = -1, h = v.length; ++g < h; ) {
-        var y = v[g], C = o[y];
-        (C === void 0 || r(C, a[y]) && !i.call(o, y)) && (o[y] = p[y]);
+      for (var h = u[c], v = n(h), g = -1, p = v.length; ++g < p; ) {
+        var m = v[g], w = o[m];
+        (w === void 0 || r(w, a[m]) && !i.call(o, m)) && (o[m] = h[m]);
       }
     return o;
   });
   return Ms = s, Ms;
 }
-var Ls, Ef;
+var $s, Ef;
 function um() {
-  if (Ef) return Ls;
+  if (Ef) return $s;
   Ef = 1;
   var e = or(), r = sr(), t = pr();
   function n(a) {
@@ -4858,11 +4858,11 @@ function um() {
       return l > -1 ? u[c ? i[l] : l] : void 0;
     };
   }
-  return Ls = n, Ls;
+  return $s = n, $s;
 }
-var $s, Sf;
+var Ls, Sf;
 function lm() {
-  if (Sf) return $s;
+  if (Sf) return Ls;
   Sf = 1;
   var e = /\s/;
   function r(t) {
@@ -4870,7 +4870,7 @@ function lm() {
       ;
     return n;
   }
-  return $s = r, $s;
+  return Ls = r, Ls;
 }
 var js, Rf;
 function cm() {
@@ -4996,10 +4996,10 @@ function ym() {
   }
   return Ws = n, Ws;
 }
-var Qs, Lf;
+var Qs, $f;
 function lu() {
-  if (Lf) return Qs;
-  Lf = 1;
+  if ($f) return Qs;
+  $f = 1;
   var e = Mr();
   function r(t, n, a) {
     for (var i = -1, s = t.length; ++i < s; ) {
@@ -5011,10 +5011,10 @@ function lu() {
   }
   return Qs = r, Qs;
 }
-var Ys, $f;
+var Ys, Lf;
 function mm() {
-  if ($f) return Ys;
-  $f = 1;
+  if (Lf) return Ys;
+  Lf = 1;
   function e(r, t) {
     return r > t;
   }
@@ -5031,7 +5031,7 @@ function bm() {
   return Js = n, Js;
 }
 var Xs, Ff;
-function Lp() {
+function $p() {
   if (Ff) return Xs;
   Ff = 1;
   var e = _t(), r = Pr();
@@ -5051,13 +5051,13 @@ function _m() {
     var d = r(l);
     if (d === null)
       return !0;
-    var p = o.call(d, "constructor") && d.constructor;
-    return typeof p == "function" && p instanceof p && s.call(p) == u;
+    var h = o.call(d, "constructor") && d.constructor;
+    return typeof h == "function" && h instanceof h && s.call(h) == u;
   }
   return Zs = c, Zs;
 }
 var eo, zf;
-function $p() {
+function Lp() {
   if (zf) return eo;
   zf = 1;
   function e(r, t) {
@@ -5070,7 +5070,7 @@ var ro, Bf;
 function wm() {
   if (Bf) return ro;
   Bf = 1;
-  var e = Yr(), r = Ir();
+  var e = Jr(), r = Ir();
   function t(n) {
     return e(n, r(n));
   }
@@ -5080,34 +5080,34 @@ var to, Uf;
 function Im() {
   if (Uf) return to;
   Uf = 1;
-  var e = Lp(), r = Hh(), t = tp(), n = Wh(), a = ap(), i = Jr(), s = qe(), o = Tp(), u = Nr(), c = Qr(), l = Fe(), d = _m(), p = Xr(), v = $p(), g = wm();
-  function h(y, C, x, _, A, L, m) {
-    var k = v(y, x), N = v(C, x), H = m.get(N);
-    if (H) {
-      e(y, x, H);
+  var e = $p(), r = Hh(), t = tp(), n = Wh(), a = ap(), i = Xr(), s = qe(), o = Tp(), u = Nr(), c = Yr(), l = Fe(), d = _m(), h = Zr(), v = Lp(), g = wm();
+  function p(m, w, x, b, k, M, y) {
+    var A = v(m, x), N = v(w, x), W = y.get(N);
+    if (W) {
+      e(m, x, W);
       return;
     }
-    var G = L ? L(k, N, x + "", y, C, m) : void 0, S = G === void 0;
+    var G = M ? M(A, N, x + "", m, w, y) : void 0, S = G === void 0;
     if (S) {
-      var j = s(N), V = !j && u(N), z = !j && !V && p(N);
-      G = N, j || V || z ? s(k) ? G = k : o(k) ? G = n(k) : V ? (S = !1, G = r(N, !0)) : z ? (S = !1, G = t(N, !0)) : G = [] : d(N) || i(N) ? (G = k, i(k) ? G = g(k) : (!l(k) || c(k)) && (G = a(N))) : S = !1;
+      var j = s(N), H = !j && u(N), z = !j && !H && h(N);
+      G = N, j || H || z ? s(A) ? G = A : o(A) ? G = n(A) : H ? (S = !1, G = r(N, !0)) : z ? (S = !1, G = t(N, !0)) : G = [] : d(N) || i(N) ? (G = A, i(A) ? G = g(A) : (!l(A) || c(A)) && (G = a(N))) : S = !1;
     }
-    S && (m.set(N, G), A(G, N, _, L, m), m.delete(N)), e(y, x, G);
+    S && (y.set(N, G), k(G, N, b, M, y), y.delete(N)), e(m, x, G);
   }
-  return to = h, to;
+  return to = p, to;
 }
 var no, Kf;
 function qm() {
   if (Kf) return no;
   Kf = 1;
-  var e = bt(), r = Lp(), t = nu(), n = Im(), a = Fe(), i = Ir(), s = $p();
-  function o(u, c, l, d, p) {
+  var e = bt(), r = $p(), t = nu(), n = Im(), a = Fe(), i = Ir(), s = Lp();
+  function o(u, c, l, d, h) {
     u !== c && t(c, function(v, g) {
-      if (p || (p = new e()), a(v))
-        n(u, c, g, l, o, d, p);
+      if (h || (h = new e()), a(v))
+        n(u, c, g, l, o, d, h);
       else {
-        var h = d ? d(s(u, g), v, g + "", u, c, p) : void 0;
-        h === void 0 && (h = v), r(u, g, h);
+        var p = d ? d(s(u, g), v, g + "", u, c, h) : void 0;
+        p === void 0 && (p = v), r(u, g, p);
       }
     }, i);
   }
@@ -5181,20 +5181,20 @@ var co, Xf;
 function xm() {
   if (Xf) return co;
   Xf = 1;
-  var e = wt(), r = Tt(), t = It(), n = Fe(), a = Zr();
+  var e = wt(), r = Tt(), t = It(), n = Fe(), a = et();
   function i(s, o, u, c) {
     if (!n(s))
       return s;
     o = r(o, s);
-    for (var l = -1, d = o.length, p = d - 1, v = s; v != null && ++l < d; ) {
-      var g = a(o[l]), h = u;
+    for (var l = -1, d = o.length, h = d - 1, v = s; v != null && ++l < d; ) {
+      var g = a(o[l]), p = u;
       if (g === "__proto__" || g === "constructor" || g === "prototype")
         return s;
-      if (l != p) {
-        var y = v[g];
-        h = c ? c(y, g, v) : void 0, h === void 0 && (h = n(y) ? y : t(o[l + 1]) ? [] : {});
+      if (l != h) {
+        var m = v[g];
+        p = c ? c(m, g, v) : void 0, p === void 0 && (p = n(m) ? m : t(o[l + 1]) ? [] : {});
       }
-      e(v, g, h), v = v[g];
+      e(v, g, p), v = v[g];
     }
     return s;
   }
@@ -5277,7 +5277,7 @@ function Mm() {
   return mo = r, mo;
 }
 var bo, sh;
-function Lm() {
+function $m() {
   if (sh) return bo;
   sh = 1;
   function e(r, t) {
@@ -5289,7 +5289,7 @@ function Lm() {
   return bo = e, bo;
 }
 var _o, oh;
-function $m() {
+function Lm() {
   if (oh) return _o;
   oh = 1;
   var e = Mr();
@@ -5309,7 +5309,7 @@ var wo, uh;
 function jm() {
   if (uh) return wo;
   uh = 1;
-  var e = $m();
+  var e = Lm();
   function r(t, n, a) {
     for (var i = -1, s = t.criteria, o = n.criteria, u = s.length, c = a.length; ++i < u; ) {
       var l = e(s[i], o[i]);
@@ -5328,23 +5328,23 @@ var Io, lh;
 function Fm() {
   if (lh) return Io;
   lh = 1;
-  var e = Rt(), r = xt(), t = or(), n = Ip(), a = Lm(), i = qt(), s = jm(), o = qr(), u = qe();
-  function c(l, d, p) {
-    d.length ? d = e(d, function(h) {
-      return u(h) ? function(y) {
-        return r(y, h.length === 1 ? h[0] : h);
-      } : h;
+  var e = Rt(), r = xt(), t = or(), n = Ip(), a = $m(), i = qt(), s = jm(), o = qr(), u = qe();
+  function c(l, d, h) {
+    d.length ? d = e(d, function(p) {
+      return u(p) ? function(m) {
+        return r(m, p.length === 1 ? p[0] : p);
+      } : p;
     }) : d = [o];
     var v = -1;
     d = e(d, i(t));
-    var g = n(l, function(h, y, C) {
-      var x = e(d, function(_) {
-        return _(h);
+    var g = n(l, function(p, m, w) {
+      var x = e(d, function(b) {
+        return b(p);
       });
-      return { criteria: x, index: ++v, value: h };
+      return { criteria: x, index: ++v, value: p };
     });
-    return a(g, function(h, y) {
-      return s(h, y, p);
+    return a(g, function(p, m) {
+      return s(p, m, h);
     });
   }
   return Io = c, Io;
@@ -5395,10 +5395,10 @@ function Um() {
   }
   return So = t, So;
 }
-var ct;
+var dt;
 if (typeof Vo == "function")
   try {
-    ct = {
+    dt = {
       cloneDeep: sm(),
       constant: tu(),
       defaults: om(),
@@ -5428,8 +5428,8 @@ if (typeof Vo == "function")
     };
   } catch {
   }
-ct || (ct = window._);
-var be = ct, Km = Pt;
+dt || (dt = window._);
+var be = dt, Km = Pt;
 function Pt() {
   var e = {};
   e._next = e._prev = e, this._sentinel = e;
@@ -5707,7 +5707,7 @@ function wb(e) {
       a = e.successors(r)[0], e.removeNode(r), n.points.push({ x: t.x, y: t.y }), t.dummy === "edge-label" && (n.x = t.x, n.y = t.y, n.width = t.width, n.height = t.height), r = a, t = e.node(r);
   });
 }
-var nt = be, Ot = {
+var at = be, Ot = {
   longestPath: Ib,
   slack: qb
 };
@@ -5715,46 +5715,46 @@ function Ib(e) {
   var r = {};
   function t(n) {
     var a = e.node(n);
-    if (nt.has(r, n))
+    if (at.has(r, n))
       return a.rank;
     r[n] = !0;
-    var i = nt.min(nt.map(e.outEdges(n), function(s) {
+    var i = at.min(at.map(e.outEdges(n), function(s) {
       return t(s.w) - e.edge(s).minlen;
     }));
     return (i === Number.POSITIVE_INFINITY || // return value of _.map([]) for Lodash 3
     i === void 0 || // return value of _.map([]) for Lodash 4
     i === null) && (i = 0), a.rank = i;
   }
-  nt.forEach(e.sources(), t);
+  at.forEach(e.sources(), t);
 }
 function qb(e, r) {
   return e.node(r.w).rank - e.node(r.v).rank - e.edge(r).minlen;
 }
-var dt = be, Cb = He.Graph, ft = Ot.slack, Kp = Eb;
+var ft = be, Cb = He.Graph, ht = Ot.slack, Kp = Eb;
 function Eb(e) {
   var r = new Cb({ directed: !1 }), t = e.nodes()[0], n = e.nodeCount();
   r.setNode(t, {});
   for (var a, i; Sb(r, e) < n; )
-    a = Rb(r, e), i = r.hasNode(a.v) ? ft(e, a) : -ft(e, a), Tb(r, e, i);
+    a = Rb(r, e), i = r.hasNode(a.v) ? ht(e, a) : -ht(e, a), Tb(r, e, i);
   return r;
 }
 function Sb(e, r) {
   function t(n) {
-    dt.forEach(r.nodeEdges(n), function(a) {
+    ft.forEach(r.nodeEdges(n), function(a) {
       var i = a.v, s = n === i ? a.w : i;
-      !e.hasNode(s) && !ft(r, a) && (e.setNode(s, {}), e.setEdge(n, s, {}), t(s));
+      !e.hasNode(s) && !ht(r, a) && (e.setNode(s, {}), e.setEdge(n, s, {}), t(s));
     });
   }
-  return dt.forEach(e.nodes(), t), e.nodeCount();
+  return ft.forEach(e.nodes(), t), e.nodeCount();
 }
 function Rb(e, r) {
-  return dt.minBy(r.edges(), function(t) {
+  return ft.minBy(r.edges(), function(t) {
     if (e.hasNode(t.v) !== e.hasNode(t.w))
-      return ft(r, t);
+      return ht(r, t);
   });
 }
 function Tb(e, r, t) {
-  dt.forEach(e.nodes(), function(n) {
+  ft.forEach(e.nodes(), function(n) {
     r.node(n).rank += t;
   });
 }
@@ -5787,8 +5787,8 @@ function Vp(e, r, t) {
   return s || (i = !1, s = r.edge(a, t)), o = s.weight, ir.forEach(r.nodeEdges(t), function(u) {
     var c = u.v === t, l = c ? u.w : u.v;
     if (l !== a) {
-      var d = c === i, p = r.edge(u).weight;
-      if (o += d ? p : -p, $b(e, t, l)) {
+      var d = c === i, h = r.edge(u).weight;
+      if (o += d ? h : -h, Lb(e, t, l)) {
         var v = e.edge(t, l).cutvalue;
         o += d ? -v : v;
       }
@@ -5823,9 +5823,9 @@ function Qp(e, r, t) {
 }
 function Yp(e, r, t, n) {
   var a = t.v, i = t.w;
-  e.removeEdge(a, i), e.setEdge(n.v, n.w, {}), du(e), cu(e, r), Lb(e, r);
+  e.removeEdge(a, i), e.setEdge(n.v, n.w, {}), du(e), cu(e, r), $b(e, r);
 }
-function Lb(e, r) {
+function $b(e, r) {
   var t = ir.find(e.nodes(), function(a) {
     return !r.node(a).parent;
   }), n = Pb(e, t);
@@ -5834,7 +5834,7 @@ function Lb(e, r) {
     s || (s = r.edge(i, a), o = !0), r.node(a).rank = r.node(i).rank + (o ? s.minlen : -s.minlen);
   });
 }
-function $b(e, r, t) {
+function Lb(e, r, t) {
   return e.hasEdge(r, t);
 }
 function ph(e, r, t) {
@@ -5923,14 +5923,14 @@ function Xp(e, r, t, n, a, i, s) {
   var u = Uo.addBorderNode(e, "_bt"), c = Uo.addBorderNode(e, "_bb"), l = e.node(s);
   e.setParent(u, s), l.borderTop = u, e.setParent(c, s), l.borderBottom = c, ar.forEach(o, function(d) {
     Xp(e, r, t, n, a, i, d);
-    var p = e.node(d), v = p.borderTop ? p.borderTop : d, g = p.borderBottom ? p.borderBottom : d, h = p.borderTop ? n : 2 * n, y = v !== g ? 1 : a - i[s] + 1;
+    var h = e.node(d), v = h.borderTop ? h.borderTop : d, g = h.borderBottom ? h.borderBottom : d, p = h.borderTop ? n : 2 * n, m = v !== g ? 1 : a - i[s] + 1;
     e.setEdge(u, v, {
-      weight: h,
-      minlen: y,
+      weight: p,
+      minlen: m,
       nestingEdge: !0
     }), e.setEdge(g, c, {
-      weight: h,
-      minlen: y,
+      weight: p,
+      minlen: m,
       nestingEdge: !0
     });
   }), e.parent(s) || e.setEdge(r, u, { weight: 0, minlen: a + i[s] });
@@ -6175,16 +6175,16 @@ function ev(e, r, t, n) {
   var c = C_(e, a);
   cr.forEach(c, function(g) {
     if (e.children(g.v).length) {
-      var h = ev(e, g.v, t, n);
-      u[g.v] = h, cr.has(h, "barycenter") && x_(g, h);
+      var p = ev(e, g.v, t, n);
+      u[g.v] = p, cr.has(p, "barycenter") && x_(g, p);
     }
   });
   var l = E_(c, t);
   T_(l, u);
   var d = S_(l, n);
   if (s && (d.vs = cr.flatten([s, d.vs, o], !0), e.predecessors(s).length)) {
-    var p = e.node(e.predecessors(s)[0]), v = e.node(e.predecessors(o)[0]);
-    cr.has(d, "barycenter") || (d.barycenter = 0, d.weight = 0), d.barycenter = (d.barycenter * d.weight + p.order + v.order) / (d.weight + 2), d.weight += 2;
+    var h = e.node(e.predecessors(s)[0]), v = e.node(e.predecessors(o)[0]);
+    cr.has(d, "barycenter") || (d.barycenter = 0, d.weight = 0), d.barycenter = (d.barycenter * d.weight + h.order + v.order) / (d.weight + 2), d.weight += 2;
   }
   return d;
 }
@@ -6231,13 +6231,13 @@ function M_(e, r, t) {
     }
   });
 }
-var fr = be, L_ = l_, $_ = d_, j_ = R_, F_ = A_, G_ = D_, z_ = He.Graph, _h = Oe, B_ = U_;
+var fr = be, $_ = l_, L_ = d_, j_ = R_, F_ = A_, G_ = D_, z_ = He.Graph, _h = Oe, B_ = U_;
 function U_(e) {
-  var r = _h.maxRank(e), t = wh(e, fr.range(1, r + 1), "inEdges"), n = wh(e, fr.range(r - 1, -1, -1), "outEdges"), a = L_(e);
+  var r = _h.maxRank(e), t = wh(e, fr.range(1, r + 1), "inEdges"), n = wh(e, fr.range(r - 1, -1, -1), "outEdges"), a = $_(e);
   Ih(e, a);
   for (var i = Number.POSITIVE_INFINITY, s, o = 0, u = 0; u < 4; ++o, ++u) {
     K_(o % 2 ? t : n, o % 4 >= 2), a = _h.buildLayerMatrix(e);
-    var c = $_(e, a);
+    var c = L_(e, a);
     c < i && (u = 0, s = fr.cloneDeep(a), i = c);
   }
   Ih(e, s);
@@ -6271,11 +6271,11 @@ function Q_(e, r) {
   function n(a, i) {
     var s = 0, o = 0, u = a.length, c = Z.last(i);
     return Z.forEach(i, function(l, d) {
-      var p = J_(e, l), v = p ? e.node(p).order : u;
-      (p || l === c) && (Z.forEach(i.slice(o, d + 1), function(g) {
-        Z.forEach(e.predecessors(g), function(h) {
-          var y = e.node(h), C = y.order;
-          (C < s || v < C) && !(y.dummy && e.node(g).dummy) && rv(t, h, g);
+      var h = J_(e, l), v = h ? e.node(h).order : u;
+      (h || l === c) && (Z.forEach(i.slice(o, d + 1), function(g) {
+        Z.forEach(e.predecessors(g), function(p) {
+          var m = e.node(p), w = m.order;
+          (w < s || v < w) && !(m.dummy && e.node(g).dummy) && rv(t, p, g);
         });
       }), o = d + 1, s = v);
     }), i;
@@ -6287,9 +6287,9 @@ function Y_(e, r) {
   function n(i, s, o, u, c) {
     var l;
     Z.forEach(Z.range(s, o), function(d) {
-      l = i[d], e.node(l).dummy && Z.forEach(e.predecessors(l), function(p) {
-        var v = e.node(p);
-        v.dummy && (v.order < u || v.order > c) && rv(t, p, l);
+      l = i[d], e.node(l).dummy && Z.forEach(e.predecessors(l), function(h) {
+        var v = e.node(h);
+        v.dummy && (v.order < u || v.order > c) && rv(t, h, l);
       });
     });
   }
@@ -6297,8 +6297,8 @@ function Y_(e, r) {
     var o = -1, u, c = 0;
     return Z.forEach(s, function(l, d) {
       if (e.node(l).dummy === "border") {
-        var p = e.predecessors(l);
-        p.length && (u = e.node(p[0]).order, n(s, c, d, o, u), c = d, o = u);
+        var h = e.predecessors(l);
+        h.length && (u = e.node(h[0]).order, n(s, c, d, o, u), c = d, o = u);
       }
       n(s, c, s.length, u, i.length);
     }), s;
@@ -6337,11 +6337,11 @@ function Z_(e, r, t, n) {
     Z.forEach(o, function(c) {
       var l = n(c);
       if (l.length) {
-        l = Z.sortBy(l, function(h) {
-          return s[h];
+        l = Z.sortBy(l, function(p) {
+          return s[p];
         });
-        for (var d = (l.length - 1) / 2, p = Math.floor(d), v = Math.ceil(d); p <= v; ++p) {
-          var g = l[p];
+        for (var d = (l.length - 1) / 2, h = Math.floor(d), v = Math.ceil(d); h <= v; ++h) {
+          var g = l[h];
           i[c] === c && u < s[g] && !X_(t, c, g) && (i[g] = c, i[c] = a[c] = a[g], u = s[g]);
         }
       }
@@ -6350,20 +6350,20 @@ function Z_(e, r, t, n) {
 }
 function ew(e, r, t, n, a) {
   var i = {}, s = rw(e, r, t, a), o = a ? "borderLeft" : "borderRight";
-  function u(d, p) {
-    for (var v = s.nodes(), g = v.pop(), h = {}; g; )
-      h[g] ? d(g) : (h[g] = !0, v.push(g), v = v.concat(p(g))), g = v.pop();
+  function u(d, h) {
+    for (var v = s.nodes(), g = v.pop(), p = {}; g; )
+      p[g] ? d(g) : (p[g] = !0, v.push(g), v = v.concat(h(g))), g = v.pop();
   }
   function c(d) {
-    i[d] = s.inEdges(d).reduce(function(p, v) {
-      return Math.max(p, i[v.v] + s.edge(v));
+    i[d] = s.inEdges(d).reduce(function(h, v) {
+      return Math.max(h, i[v.v] + s.edge(v));
     }, 0);
   }
   function l(d) {
-    var p = s.outEdges(d).reduce(function(g, h) {
-      return Math.min(g, i[h.w] - s.edge(h));
+    var h = s.outEdges(d).reduce(function(g, p) {
+      return Math.min(g, i[p.w] - s.edge(p));
     }, Number.POSITIVE_INFINITY), v = e.node(d);
-    p !== Number.POSITIVE_INFINITY && v.borderType !== o && (i[d] = Math.max(i[d], p));
+    h !== Number.POSITIVE_INFINITY && v.borderType !== o && (i[d] = Math.max(i[d], h));
   }
   return u(c, s.predecessors.bind(s)), u(l, s.successors.bind(s)), Z.forEach(n, function(d) {
     i[d] = i[t[d]];
@@ -6376,8 +6376,8 @@ function rw(e, r, t, n) {
     Z.forEach(o, function(c) {
       var l = t[c];
       if (a.setNode(l), u) {
-        var d = t[u], p = a.edge(d, l);
-        a.setEdge(d, l, Math.max(s(e, c, u), p || 0));
+        var d = t[u], h = a.edge(d, l);
+        a.setEdge(d, l, Math.max(s(e, c, u), h || 0));
       }
       u = c;
     });
@@ -6545,9 +6545,9 @@ function Iw(e, r) {
   }), r("    undoCoordinateSystem", function() {
     Sh.undo(e);
   }), r("    translateGraph", function() {
-    Lw(e);
-  }), r("    assignNodeIntersects", function() {
     $w(e);
+  }), r("    assignNodeIntersects", function() {
+    Lw(e);
   }), r("    reversePoints", function() {
     Fw(e);
   }), r("    acyclic.undo", function() {
@@ -6620,11 +6620,11 @@ function Mw(e) {
     t.dummy === "edge-proxy" && (e.edge(t.e).labelRank = t.rank, e.removeNode(r));
   });
 }
-function Lw(e) {
+function $w(e) {
   var r = Number.POSITIVE_INFINITY, t = 0, n = Number.POSITIVE_INFINITY, a = 0, i = e.graph(), s = i.marginx || 0, o = i.marginy || 0;
   function u(c) {
-    var l = c.x, d = c.y, p = c.width, v = c.height;
-    r = Math.min(r, l - p / 2), t = Math.max(t, l + p / 2), n = Math.min(n, d - v / 2), a = Math.max(a, d + v / 2);
+    var l = c.x, d = c.y, h = c.width, v = c.height;
+    r = Math.min(r, l - h / 2), t = Math.max(t, l + h / 2), n = Math.min(n, d - v / 2), a = Math.max(a, d + v / 2);
   }
   re.forEach(e.nodes(), function(c) {
     u(e.node(c));
@@ -6641,7 +6641,7 @@ function Lw(e) {
     }), re.has(l, "x") && (l.x -= r), re.has(l, "y") && (l.y -= n);
   }), i.width = t - r + s, i.height = a - n + o;
 }
-function $w(e) {
+function Lw(e) {
   re.forEach(e.edges(), function(r) {
     var t = e.edge(r), n = e.node(r.v), a = e.node(r.w), i, s;
     t.points ? (i = t.points[0], s = t.points[t.points.length - 1]) : (t.points = [], i = a, s = n), t.points.unshift(hr.intersectRect(n, i)), t.points.push(hr.intersectRect(a, s));
@@ -6728,18 +6728,18 @@ function Po(e) {
     r[n.toLowerCase()] = t;
   }), r;
 }
-var at = be, Kw = Oe, Vw = He.Graph, Hw = {
+var it = be, Kw = Oe, Vw = He.Graph, Hw = {
   debugOrdering: Ww
 };
 function Ww(e) {
   var r = Kw.buildLayerMatrix(e), t = new Vw({ compound: !0, multigraph: !0 }).setGraph({});
-  return at.forEach(e.nodes(), function(n) {
+  return it.forEach(e.nodes(), function(n) {
     t.setNode(n, { label: n }), t.setParent(n, "layer" + e.node(n).rank);
-  }), at.forEach(e.edges(), function(n) {
+  }), it.forEach(e.edges(), function(n) {
     t.setEdge(n.v, n.w, {}, n.name);
-  }), at.forEach(r, function(n, a) {
+  }), it.forEach(r, function(n, a) {
     var i = "layer" + a;
-    t.setNode(i, { rank: "same" }), at.reduce(n, function(s, o) {
+    t.setNode(i, { rank: "same" }), it.reduce(n, function(s, o) {
       return t.setEdge(s, o, { style: "invis" }), o;
     });
   }), t;
@@ -6754,18 +6754,18 @@ var Qw = "0.8.5", Yw = {
   },
   version: Qw
 };
-const Rh = /* @__PURE__ */ eg(Yw), Hr = 148, Wr = 46, fu = 80, hu = 44;
+const Rh = /* @__PURE__ */ eg(Yw), Wr = 148, Qr = 46, fu = 80, hu = 44;
 function Jw(e) {
   if (e.nodes.length === 0) return e;
   const r = new Rh.graphlib.Graph();
   r.setDefaultEdgeLabel(() => ({})), r.setGraph({ rankdir: "LR", nodesep: 60, ranksep: 120, marginx: 40, marginy: 40 });
-  for (const n of e.nodes) r.setNode(n.id, { width: Hr, height: Wr });
+  for (const n of e.nodes) r.setNode(n.id, { width: Wr, height: Qr });
   for (const n of e.edges) r.setEdge(n.source, n.target);
   Rh.layout(r);
   const t = {};
   for (const n of e.nodes) {
     const a = r.node(n.id);
-    t[n.id] = a ? { x: Math.round(a.x - Hr / 2), y: Math.round(a.y - Wr / 2) } : { x: n.x, y: n.y };
+    t[n.id] = a ? { x: Math.round(a.x - Wr / 2), y: Math.round(a.y - Qr / 2) } : { x: n.x, y: n.y };
   }
   return {
     ...e,
@@ -6773,12 +6773,12 @@ function Jw(e) {
     layout: { ...e.layout, positions: t }
   };
 }
-const nv = (e, r) => Math.abs(e.x - r.x) < Hr + fu && Math.abs(e.y - r.y) < Wr + hu;
+const nv = (e, r) => Math.abs(e.x - r.x) < Wr + fu && Math.abs(e.y - r.y) < Qr + hu;
 function Xw(e) {
   const r = [], t = e.nodes.map((a) => {
     let i = Number.isFinite(a.x) ? a.x : 0, s = Number.isFinite(a.y) ? a.y : 0, o = 0;
     for (; r.some((u) => nv({ x: i, y: s }, u)) && o++ < 200; )
-      i += Hr + fu, i > 2400 && (i = 80, s += Wr + hu);
+      i += Wr + fu, i > 2400 && (i = 80, s += Qr + hu);
     return r.push({ x: i, y: s }), { ...a, x: i, y: s };
   });
   if (t.every((a, i) => a.x === e.nodes[i].x && a.y === e.nodes[i].y)) return e;
@@ -6788,129 +6788,129 @@ function Xw(e) {
 function Oo(e, r, t) {
   let n = { x: Math.round(r), y: Math.round(t) }, a = 0;
   for (; e.nodes.some((i) => nv(n, i)) && a++ < 200; )
-    n = { x: n.x + Hr + fu, y: n.y }, n.x > 2400 && (n = { x: 80, y: n.y + Wr + hu });
+    n = { x: n.x + Wr + fu, y: n.y }, n.x > 2400 && (n = { x: 80, y: n.y + Qr + hu });
   return n;
 }
 const { Header: Zw, Content: e1 } = ov;
 function r1({ ctx: e }) {
-  var et, Lr;
-  const [r, t] = uv.useMessage(), [n, a] = I([]), [i, s] = I([]), [o, u] = I([]), [c, l] = I([]), [d, p] = I(""), [v, g] = I(1), [h, y] = I(!0), [C, x] = I([]), [_, A] = I(() => st()), [L, m] = I(null), [k, N] = I(null), [H, G] = I([]), [S, j] = I(!1), [V, z] = I(!0), [ie, ue] = I(!1), [fe, B] = I(!1), [J, E] = I(0), T = Te([]), M = Te([]), ve = Te(null), we = Te(null), [Se, Ze] = I(null), [Er, vr] = I({}), [Sr, We] = I(!1), [Rr, ze] = I(!1), Qe = Te(1), Be = Te(e);
+  var rt, $r;
+  const [r, t] = uv.useMessage(), [n, a] = q([]), [i, s] = q([]), [o, u] = q([]), [c, l] = q([]), [d, h] = q(""), [v, g] = q(1), [p, m] = q(!0), [w, x] = q([]), [b, k] = q(() => ot()), [M, y] = q(null), [A, N] = q(null), [W, G] = q([]), [S, j] = q(!1), [H, z] = q(!0), [ie, ue] = q(!1), [fe, B] = q(!1), [J, E] = q(0), T = Te([]), $ = Te([]), ve = Te(null), we = Te(null), [Se, Ze] = q(null), [Er, vr] = q({}), [Sr, We] = q(!1), [Rr, ze] = q(!1), Qe = Te(1), Be = Te(e);
   Be.current = e;
-  const le = Te(_.trigger);
+  const le = Te(b.trigger);
   _e(() => {
-    le.current = _.trigger;
-  }, [_.trigger]), _e(() => {
-    let q = !0;
+    le.current = b.trigger;
+  }, [b.trigger]), _e(() => {
+    let C = !0;
     const D = Be.current.hubQuery;
     return Promise.allSettled([
       D("industrial/nodes"),
       D("industrial/workflows"),
       D("industrial/resources")
     ]).then(async ([ce, se, he]) => {
-      var w;
-      if (!q) return;
+      var I;
+      if (!C) return;
       const pe = [];
       if (ce.status === "fulfilled" ? a(Mh(ce.value)) : pe.push(`节点描述: ${String(ce.reason)}`), se.status === "fulfilled") {
         const P = jh(se.value);
         s(P);
-        const W = new URLSearchParams(window.location.search).get("workflowId"), oe = W && P.some((K) => K.workflowId === W) ? W : (w = P[0]) == null ? void 0 : w.workflowId;
+        const Q = new URLSearchParams(window.location.search).get("workflowId"), oe = Q && P.some((K) => K.workflowId === Q) ? Q : (I = P[0]) == null ? void 0 : I.workflowId;
         oe && Ue(oe);
       } else pe.push(`工作流: ${String(se.reason)}`);
       if (he.status === "fulfilled") {
-        const P = Lh(he.value);
+        const P = $h(he.value);
         l(P);
-        const W = P.map((oe) => oe.id);
-        u(W), p((oe) => oe || W[0] || "");
+        const Q = P.map((oe) => oe.id);
+        u(Q), h((oe) => oe || Q[0] || "");
       } else pe.push(`资源: ${String(he.reason)}`);
       x(pe);
       try {
         const P = await Be.current.hubQuery("industrial/file-samples");
-        q && vr((P == null ? void 0 : P.data) ?? P ?? {});
+        C && vr((P == null ? void 0 : P.data) ?? P ?? {});
       } catch {
       }
     }).finally(() => {
-      q && y(!1);
+      C && m(!1);
     }), () => {
-      q = !1;
+      C = !1;
     };
   }, []);
-  const ge = ht(
-    () => new Map(n.map((q) => [q.nodeTypeId, q])),
+  const ge = pt(
+    () => new Map(n.map((C) => [C.nodeTypeId, C])),
     [n]
-  ), te = _.nodes.find((q) => q.id === L) ?? null, Re = F(async (q, D, ce) => {
+  ), te = b.nodes.find((C) => C.id === M) ?? null, Re = F(async (C, D, ce) => {
     j(!0);
     try {
-      return await Pe().api.hubCommand(q, D), r.success(ce), !0;
+      return await Pe().api.hubCommand(C, D), r.success(ce), !0;
     } catch (se) {
-      return r.error(`${q} failed: ${se instanceof Error ? se.message : String(se)}`), !1;
+      return r.error(`${C} failed: ${se instanceof Error ? se.message : String(se)}`), !1;
     } finally {
       j(!1);
     }
-  }, [r]), Ue = F(async (q) => {
+  }, [r]), Ue = F(async (C) => {
     try {
       const D = await e.hubQuery("industrial/workflow-definitions"), se = (xe(D) ?? []).find((P) => {
-        const W = P;
-        return String((W == null ? void 0 : W.workflowId) ?? "") === q;
-      }), he = se === void 0 ? { ...st(q), name: q } : Fv(se), pe = Xw(he);
-      A(pe), T.current = [], M.current = [], E((P) => P + 1), g(Number(pe.layout.lookbackDays ?? 1) || 1);
-      const w = he.nodes.map((P) => /^n(\d+)$/.exec(P.id)).filter(Boolean).reduce((P, W) => Math.max(P, Number(W[1])), 0);
-      Qe.current = w + 1, m(null), ue(!1), G([]), B(!1);
+        const Q = P;
+        return String((Q == null ? void 0 : Q.workflowId) ?? "") === C;
+      }), he = se === void 0 ? { ...ot(C), name: C } : Fv(se), pe = Xw(he);
+      k(pe), T.current = [], $.current = [], E((P) => P + 1), g(Number(pe.layout.lookbackDays ?? 1) || 1);
+      const I = he.nodes.map((P) => /^n(\d+)$/.exec(P.id)).filter(Boolean).reduce((P, Q) => Math.max(P, Number(Q[1])), 0);
+      Qe.current = I + 1, y(null), ue(!1), G([]), B(!1);
     } catch (D) {
       r.error(`加载工作流失败: ${D instanceof Error ? D.message : String(D)}`);
     }
   }, [e, r]);
   _e(() => {
-    _.workflowId && G(_u(_, ge, new Set(c.map((q) => q.id))));
-  }, [ge, _, c]);
+    b.workflowId && G(_u(b, ge, new Set(c.map((C) => C.id))));
+  }, [ge, b, c]);
   const er = F(async () => {
     try {
-      const q = Hv(await e.hubQuery("industrial/execution"));
-      if (q === null) return;
-      Ze(q);
+      const C = Hv(await e.hubQuery("industrial/execution"));
+      if (C === null) return;
+      Ze(C);
     } catch {
     }
   }, [e]), ne = F(async () => {
     var ce;
-    const q = new Set(_.resourceReferences ?? []);
-    for (const se of _.nodes)
+    const C = new Set(b.resourceReferences ?? []);
+    for (const se of b.nodes)
       for (const he of ["resourceId", "targetResourceId"]) {
         const pe = (ce = se.config) == null ? void 0 : ce[he];
-        typeof pe == "string" && pe.trim() && q.add(pe.trim());
+        typeof pe == "string" && pe.trim() && C.add(pe.trim());
       }
     const D = {
-      ..._,
+      ...b,
       trigger: le.current,
-      resourceReferences: [...q],
-      layout: { ..._.layout, lookbackDays: v }
+      resourceReferences: [...C],
+      layout: { ...b.layout, lookbackDays: v }
     };
-    await Re("industrial/save-workflow", D, "已保存") && (A(D), B(!1));
-  }, [Re, _, v]), Ce = F(async () => {
+    await Re("industrial/save-workflow", D, "已保存") && (k(D), B(!1));
+  }, [Re, b, v]), Ce = F(async () => {
     if (fe) {
       r.warning("草稿尚未保存，请先保存再发布");
       return;
     }
-    await Re("industrial/publish-workflow", { workflowId: _.workflowId }, "已发布") && await er();
-  }, [Re, _.workflowId, fe, r, er]), ee = F(async () => {
+    await Re("industrial/publish-workflow", { workflowId: b.workflowId }, "已发布") && await er();
+  }, [Re, b.workflowId, fe, r, er]), ee = F(async () => {
     if (fe) {
       r.warning("草稿尚未保存，请先保存再运行");
       return;
     }
     await Re(
       "industrial/run-workflow",
-      { workflowId: _.workflowId, resourceId: d },
+      { workflowId: b.workflowId, resourceId: d },
       "采集已启动"
     ) && await er();
-  }, [Re, _.workflowId, fe, r, er, d]), X = F((q) => {
-    q !== _ && (T.current.length >= 50 && T.current.shift(), T.current.push(_), M.current = [], E((D) => D + 1), A(q), B(!0));
-  }, [_]), Ne = F(() => {
-    const q = T.current.pop();
-    q && (M.current.push(_), A(q), B(!0), E((D) => D + 1));
-  }, [_]), ur = F(() => {
-    const q = M.current.pop();
-    q && (T.current.push(_), A(q), B(!0), E((D) => D + 1));
-  }, [_]);
+  }, [Re, b.workflowId, fe, r, er, d]), X = F((C) => {
+    C !== b && (T.current.length >= 50 && T.current.shift(), T.current.push(b), $.current = [], E((D) => D + 1), k(C), B(!0));
+  }, [b]), Ne = F(() => {
+    const C = T.current.pop();
+    C && ($.current.push(b), k(C), B(!0), E((D) => D + 1));
+  }, [b]), ur = F(() => {
+    const C = $.current.pop();
+    C && (T.current.push(b), k(C), B(!0), E((D) => D + 1));
+  }, [b]);
   _e(() => {
-    const q = (D) => {
+    const C = (D) => {
       const ce = D.target;
       if (ce && /INPUT|TEXTAREA|SELECT/.test(ce.tagName)) return;
       const se = D.key.toLowerCase();
@@ -6922,116 +6922,116 @@ function r1({ ctx: e }) {
         D.preventDefault(), ur();
         return;
       }
-      if (D.key === "Delete" && L) {
-        D.preventDefault(), X(Lt(_, L)), m(null);
+      if (D.key === "Delete" && M) {
+        D.preventDefault(), X($t(b, M)), y(null);
         return;
       }
-      if ((D.ctrlKey || D.metaKey) && se === "c" && L) {
-        we.current = _.nodes.find((he) => he.id === L) ?? null;
+      if ((D.ctrlKey || D.metaKey) && se === "c" && M) {
+        we.current = b.nodes.find((he) => he.id === M) ?? null;
         return;
       }
       if ((D.ctrlKey || D.metaKey) && se === "v" && we.current) {
         D.preventDefault();
         const he = tr(ge, we.current.type);
         if (!he) return;
-        const pe = `n${Qe.current++}`, w = we.current, P = Oo(_, w.x + 40, w.y + 40), W = Mt(he, pe, P.x, P.y);
+        const pe = `n${Qe.current++}`, I = we.current, P = Oo(b, I.x + 40, I.y + 40), Q = Mt(he, pe, P.x, P.y);
         X({
-          ..._,
-          nodes: [..._.nodes, { ...W, config: { ...w.config } }]
-        }), m(pe);
+          ...b,
+          nodes: [...b.nodes, { ...Q, config: { ...I.config } }]
+        }), y(pe);
       }
     };
-    return window.addEventListener("keydown", q), () => window.removeEventListener("keydown", q);
-  }, [ge, X, _, ur, L, Ne]);
+    return window.addEventListener("keydown", C), () => window.removeEventListener("keydown", C);
+  }, [ge, X, b, ur, M, Ne]);
   const Tr = F(() => {
-    X(Jw(_)), requestAnimationFrame(() => {
-      var q, D;
-      return (D = (q = ve.current) == null ? void 0 : q.fitView) == null ? void 0 : D.call(q, { when: "always" });
+    X(Jw(b)), requestAnimationFrame(() => {
+      var C, D;
+      return (D = (C = ve.current) == null ? void 0 : C.fitView) == null ? void 0 : D.call(C, { when: "always" });
     });
-  }, [X, _]), De = F((q, D, ce) => {
-    const se = tr(ge, q);
+  }, [X, b]), De = F((C, D, ce) => {
+    const se = tr(ge, C);
     if (!se) return;
-    const he = `n${Qe.current++}`, pe = Oo(_, D, ce);
-    X({ ..._, nodes: [..._.nodes, Mt(se, he, pe.x, pe.y)] }), m(he), ue(!0), G([]);
-  }, [ge, X, _]), xr = F((q) => {
+    const he = `n${Qe.current++}`, pe = Oo(b, D, ce);
+    X({ ...b, nodes: [...b.nodes, Mt(se, he, pe.x, pe.y)] }), y(he), ue(!0), G([]);
+  }, [ge, X, b]), xr = F((C) => {
     const D = Qe.current - 1;
-    De(q, 80 + D % 3 * 190, 80 + Math.floor(D / 3) * 130);
-  }, [De]), gr = F((q, D) => {
-    const ce = _.nodes.find((K) => K.id === q), se = _.nodes.find((K) => K.id === D);
+    De(C, 80 + D % 3 * 190, 80 + Math.floor(D / 3) * 130);
+  }, [De]), gr = F((C, D) => {
+    const ce = b.nodes.find((K) => K.id === C), se = b.nodes.find((K) => K.id === D);
     if (!ce || !se)
       return r.warning("连线失败：端点不在画布上"), null;
     const he = tr(ge, ce.type), pe = tr(ge, se.type);
     if (!he || !pe) return null;
-    let w = ce, P = se, W = mu(he, pe);
-    if (!W) {
+    let I = ce, P = se, Q = mu(he, pe);
+    if (!Q) {
       const K = mu(pe, he);
       if (!K)
         return r.warning(`端口类型不兼容：${he.name} → ${pe.name}`), null;
-      w = se, P = ce, W = K;
+      I = se, P = ce, Q = K;
     }
-    const oe = bv(_, {
-      source: w.id,
-      sourcePort: W.sourcePort,
+    const oe = bv(b, {
+      source: I.id,
+      sourcePort: Q.sourcePort,
       target: P.id,
-      targetPort: W.targetPort
+      targetPort: Q.targetPort
     }, ge);
-    return oe.issue ? (r.warning(`${oe.issue.code}: ${oe.issue.message}`), G((K) => [...K, oe.issue]), null) : oe.definition === _ ? (r.info("这条连线已经存在"), null) : (X(oe.definition), W);
-  }, [ge, X, _, r]), yr = F(() => {
-    const q = _u(_, ge, new Set(o));
-    G(q), q.length === 0 ? r.success("本地校验通过（发布时服务端仍会复核）") : (r.warning(`发现 ${q.length} 个问题，见属性抽屉定位列表`), ue(!0));
-  }, [_, ge, o, r]), kr = F((q) => {
-    X(Lt(_, q)), L === q && m(null);
-  }, [X, _, L]), $e = F((q) => {
-    const D = _.nodes.find((pe) => pe.id === q);
+    return oe.issue ? (r.warning(`${oe.issue.code}: ${oe.issue.message}`), G((K) => [...K, oe.issue]), null) : oe.definition === b ? (r.info("这条连线已经存在"), null) : (X(oe.definition), Q);
+  }, [ge, X, b, r]), yr = F(() => {
+    const C = _u(b, ge, new Set(o));
+    G(C), C.length === 0 ? r.success("本地校验通过（发布时服务端仍会复核）") : (r.warning(`发现 ${C.length} 个问题，见属性抽屉定位列表`), ue(!0));
+  }, [b, ge, o, r]), kr = F((C) => {
+    X($t(b, C)), M === C && y(null);
+  }, [X, b, M]), Le = F((C) => {
+    const D = b.nodes.find((pe) => pe.id === C);
     if (!D) return;
     const ce = tr(ge, D.type);
     if (!ce) return;
-    const se = `n${Qe.current++}`, he = Oo(_, D.x + 40, D.y + 40);
-    X({ ..._, nodes: [
-      ..._.nodes,
+    const se = `n${Qe.current++}`, he = Oo(b, D.x + 40, D.y + 40);
+    X({ ...b, nodes: [
+      ...b.nodes,
       { ...Mt(ce, se, he.x, he.y), config: { ...D.config } }
-    ] }), m(se);
-  }, [ge, X, _]), Ke = F((q) => {
-    const D = _.edges.findIndex((ce) => `e:${ce.source}:${ce.sourcePort}>${ce.target}:${ce.targetPort}` === q);
-    D >= 0 && X(bu(_, D));
-  }, [X, _]), Nt = F((q, D) => {
+    ] }), y(se);
+  }, [ge, X, b]), Ke = F((C) => {
+    const D = b.edges.findIndex((ce) => `e:${ce.source}:${ce.sourcePort}>${ce.target}:${ce.targetPort}` === C);
+    D >= 0 && X(bu(b, D));
+  }, [X, b]), Nt = F((C, D) => {
     X({
-      ..._,
-      edges: _.edges.map((ce, se) => se === q ? D : ce)
+      ...b,
+      edges: b.edges.map((ce, se) => se === C ? D : ce)
     });
-  }, [X, _]);
-  return h ? /* @__PURE__ */ f(kh, { tip: "加载节点描述与资源…" }) : /* @__PURE__ */ R("div", { className: "industrial-designer", children: [
+  }, [X, b]);
+  return p ? /* @__PURE__ */ f(kh, { tip: "加载节点描述与资源…" }) : /* @__PURE__ */ R("div", { className: "industrial-designer", children: [
     t,
     /* @__PURE__ */ R(Zw, { className: "industrial-header", children: [
       /* @__PURE__ */ R("div", { className: "industrial-title", children: [
         /* @__PURE__ */ f(U.Text, { strong: !0, children: "Industrial Workflow" }),
-        /* @__PURE__ */ f(U.Text, { type: "secondary", children: _.name || _.workflowId }),
-        fe && /* @__PURE__ */ f(Le, { color: "orange", children: "未保存" }),
-        Se && /* @__PURE__ */ f(Le, { color: Se.error ? "error" : "success", children: Se.status })
+        /* @__PURE__ */ f(U.Text, { type: "secondary", children: b.name || b.workflowId }),
+        fe && /* @__PURE__ */ f($e, { color: "orange", children: "未保存" }),
+        Se && /* @__PURE__ */ f($e, { color: Se.error ? "error" : "success", children: Se.status })
       ] }),
       /* @__PURE__ */ R("div", { className: "industrial-toolbar", children: [
         /* @__PURE__ */ f(
-          $,
+          L,
           {
             size: "small",
             "data-testid": "toggle-library",
-            "aria-expanded": V,
-            onClick: () => z((q) => !q),
-            children: V ? "收起节点库" : "节点库"
+            "aria-expanded": H,
+            onClick: () => z((C) => !C),
+            children: H ? "收起节点库" : "节点库"
           }
         ),
         /* @__PURE__ */ f(
-          $,
+          L,
           {
             size: "small",
             "data-testid": "toggle-properties",
-            onClick: () => ue((q) => !q),
+            onClick: () => ue((C) => !C),
             children: "属性"
           }
         ),
-        /* @__PURE__ */ f($, { size: "small", "data-testid": "open-trigger", onClick: () => We(!0), children: "触发器" }),
+        /* @__PURE__ */ f(L, { size: "small", "data-testid": "open-trigger", onClick: () => We(!0), children: "触发器" }),
         /* @__PURE__ */ f(
-          $,
+          L,
           {
             size: "small",
             "data-testid": "open-backfill-preview",
@@ -7040,7 +7040,7 @@ function r1({ ctx: e }) {
           }
         ),
         /* @__PURE__ */ f(
-          $,
+          L,
           {
             size: "small",
             "data-testid": "designer-undo",
@@ -7050,30 +7050,30 @@ function r1({ ctx: e }) {
           }
         ),
         /* @__PURE__ */ f(
-          $,
+          L,
           {
             size: "small",
             "data-testid": "designer-redo",
-            disabled: M.current.length === 0,
+            disabled: $.current.length === 0,
             onClick: ur,
             children: "重做"
           }
         ),
-        /* @__PURE__ */ f($, { size: "small", "data-testid": "designer-auto-layout", onClick: Tr, children: "自动布局" }),
-        /* @__PURE__ */ f($, { size: "small", "data-testid": "designer-fit", onClick: () => {
-          var q, D;
-          return (D = (q = ve.current) == null ? void 0 : q.fitView) == null ? void 0 : D.call(q, { when: "always" });
+        /* @__PURE__ */ f(L, { size: "small", "data-testid": "designer-auto-layout", onClick: Tr, children: "自动布局" }),
+        /* @__PURE__ */ f(L, { size: "small", "data-testid": "designer-fit", onClick: () => {
+          var C, D;
+          return (D = (C = ve.current) == null ? void 0 : C.fitView) == null ? void 0 : D.call(C, { when: "always" });
         }, children: "适应画布" }),
-        /* @__PURE__ */ f($, { size: "small", "data-testid": "designer-center", onClick: () => {
-          var q, D;
-          return (D = (q = ve.current) == null ? void 0 : q.fitCenter) == null ? void 0 : D.call(q);
+        /* @__PURE__ */ f(L, { size: "small", "data-testid": "designer-center", onClick: () => {
+          var C, D;
+          return (D = (C = ve.current) == null ? void 0 : C.fitCenter) == null ? void 0 : D.call(C);
         }, children: "居中" }),
         /* @__PURE__ */ f("span", { className: "industrial-toolbar-divider" }),
         /* @__PURE__ */ R(Y, { size: 4, children: [
-          /* @__PURE__ */ f($, { size: "small", loading: S, onClick: () => void ne(), children: "保存" }),
-          /* @__PURE__ */ f($, { size: "small", onClick: yr, children: "校验" }),
-          /* @__PURE__ */ f($, { size: "small", loading: S, onClick: () => void Ce(), children: "发布" }),
-          /* @__PURE__ */ f($, { size: "small", type: "primary", loading: S, onClick: () => void ee(), children: "运行" })
+          /* @__PURE__ */ f(L, { size: "small", loading: S, onClick: () => void ne(), children: "保存" }),
+          /* @__PURE__ */ f(L, { size: "small", onClick: yr, children: "校验" }),
+          /* @__PURE__ */ f(L, { size: "small", loading: S, onClick: () => void Ce(), children: "发布" }),
+          /* @__PURE__ */ f(L, { size: "small", type: "primary", loading: S, onClick: () => void ee(), children: "运行" })
         ] }),
         /* @__PURE__ */ R(
           "select",
@@ -7081,76 +7081,76 @@ function r1({ ctx: e }) {
             className: "industrial-resource-select",
             "aria-label": "运行资源",
             value: d,
-            onChange: (q) => p(q.target.value),
+            onChange: (C) => h(C.target.value),
             children: [
               /* @__PURE__ */ f("option", { value: "", children: "运行资源" }),
-              o.map((q) => /* @__PURE__ */ f("option", { value: q, children: q }, q))
+              o.map((C) => /* @__PURE__ */ f("option", { value: C, children: C }, C))
             ]
           }
         ),
         /* @__PURE__ */ f(
-          it,
+          st,
           {
             className: "industrial-backfill-input",
             size: "small",
             min: 1,
             max: 365,
             value: v,
-            onChange: (q) => {
-              g(Number(q) || 1), B(!0);
+            onChange: (C) => {
+              g(Number(C) || 1), B(!0);
             },
             addonBefore: "补采"
           }
         )
       ] })
     ] }),
-    /* @__PURE__ */ R(e1, { className: `industrial-body${V ? "" : " industrial-body--collapsed"}`, children: [
-      V ? /* @__PURE__ */ R("aside", { className: "industrial-palette", children: [
+    /* @__PURE__ */ R(e1, { className: `industrial-body${H ? "" : " industrial-body--collapsed"}`, children: [
+      H ? /* @__PURE__ */ R("aside", { className: "industrial-palette", children: [
         i.length > 0 && /* @__PURE__ */ f(
           je,
           {
             className: "industrial-workflow-select",
             size: "small",
-            value: _.workflowId,
+            value: b.workflowId,
             placeholder: "选择工作流",
-            onChange: (q) => void Ue(q),
-            options: i.map((q) => ({ value: q.workflowId, label: q.name }))
+            onChange: (C) => void Ue(C),
+            options: i.map((C) => ({ value: C.workflowId, label: C.name }))
           }
         ),
         /* @__PURE__ */ f(gv, { descriptors: n, loading: !1, onAdd: xr })
-      ] }) : /* @__PURE__ */ f("div", { className: "industrial-palette-rail", children: /* @__PURE__ */ f($, { type: "text", size: "small", onClick: () => z(!0), children: "节点库" }) }),
+      ] }) : /* @__PURE__ */ f("div", { className: "industrial-palette-rail", children: /* @__PURE__ */ f(L, { type: "text", size: "small", onClick: () => z(!0), children: "节点库" }) }),
       /* @__PURE__ */ R("section", { className: "industrial-center", children: [
-        C.length > 0 && /* @__PURE__ */ f(
+        w.length > 0 && /* @__PURE__ */ f(
           Ee,
           {
             type: "warning",
             showIcon: !0,
             style: { marginBottom: 8 },
             message: "部分设计器数据未加载",
-            description: C.join("；")
+            description: w.join("；")
           }
         ),
         /* @__PURE__ */ f(
           vv,
           {
-            definition: _,
+            definition: b,
             catalog: ge,
-            selectedId: L,
-            onSelect: (q) => {
-              m(q), q && ue(!0);
+            selectedId: M,
+            onSelect: (C) => {
+              y(C), C && ue(!0);
             },
             onDropNode: De,
             onCreateEdge: gr,
-            onPositions: (q) => X(Iv(_, q)),
-            onSelectIds: (q) => {
-              q.length && m(q[0]);
+            onPositions: (C) => X(Iv(b, C)),
+            onSelectIds: (C) => {
+              C.length && y(C[0]);
             },
-            onGraphReady: (q) => {
-              ve.current = q;
+            onGraphReady: (C) => {
+              ve.current = C;
             },
-            onSelectEdge: (q) => N(q),
+            onSelectEdge: (C) => N(C),
             onDeleteNodeById: kr,
-            onDuplicateNode: $e,
+            onDuplicateNode: Le,
             onDeleteEdgeById: Ke
           }
         )
@@ -7196,7 +7196,7 @@ function r1({ ctx: e }) {
                       {
                         title: "错误 / 样本",
                         key: "detail",
-                        render: (q, D) => D.error ?? (D.samples.length > 0 ? D.samples.join(", ") : "—")
+                        render: (C, D) => D.error ?? (D.samples.length > 0 ? D.samples.join(", ") : "—")
                       }
                     ]
                   }
@@ -7209,28 +7209,28 @@ function r1({ ctx: e }) {
             {
               node: te,
               descriptor: te ? tr(ge, te.type) ?? null : null,
-              nodes: _.nodes,
-              edges: _.edges,
+              nodes: b.nodes,
+              edges: b.edges,
               catalog: ge,
               resources: c,
-              issues: H,
-              onApplyConfig: (q) => {
-                L && X(wv(_, L, q));
+              issues: W,
+              onApplyConfig: (C) => {
+                M && X(wv(b, M, C));
               },
               onDeleteNode: () => {
-                X(Lt(_, L ?? "")), m(null);
+                X($t(b, M ?? "")), y(null);
               },
-              onDeleteEdge: (q) => X(bu(_, q)),
-              onCreateEdge: (q, D) => void gr(q, D),
+              onDeleteEdge: (C) => X(bu(b, C)),
+              onCreateEdge: (C, D) => void gr(C, D),
               onUpdateEdge: Nt,
               onCreateResource: () => {
-                var q;
-                return (q = e.navigate) == null ? void 0 : q.call(e, "/industrial/resources");
+                var C;
+                return (C = e.navigate) == null ? void 0 : C.call(e, "/industrial/resources");
               },
-              selectedEdgeId: k,
-              sampleLines: te ? Er[String(((et = te.config) == null ? void 0 : et.resourceId) ?? ((Lr = te.config) == null ? void 0 : Lr.targetResourceId) ?? "")] ?? [] : [],
-              onSelectNode: (q) => {
-                m(q), ue(!0);
+              selectedEdgeId: A,
+              sampleLines: te ? Er[String(((rt = te.config) == null ? void 0 : rt.resourceId) ?? (($r = te.config) == null ? void 0 : $r.targetResourceId) ?? "")] ?? [] : [],
+              onSelectNode: (C) => {
+                y(C), ue(!0);
               }
             }
           )
@@ -7242,12 +7242,12 @@ function r1({ ctx: e }) {
       {
         open: Sr,
         onClose: () => We(!1),
-        trigger: _.trigger,
+        trigger: b.trigger,
         resourceIds: o,
-        workflowId: _.workflowId,
+        workflowId: b.workflowId,
         ctx: e,
-        onSave: (q) => {
-          le.current = q, X({ ..._, trigger: q });
+        onSave: (C) => {
+          le.current = C, X({ ...b, trigger: C });
         }
       }
     ),
@@ -7257,7 +7257,7 @@ function r1({ ctx: e }) {
         open: Rr,
         onClose: () => ze(!1),
         ctx: e,
-        workflowId: _.workflowId,
+        workflowId: b.workflowId,
         resourceId: d,
         lookbackDays: v
       }
@@ -7265,20 +7265,20 @@ function r1({ ctx: e }) {
   ] });
 }
 function t1({ block: e, ctx: r }) {
-  const [t, n] = I([]), [a, i] = I(!1), [s, o] = I(""), [u, c] = I(null), [l, d] = I(!1), p = F(async () => {
+  const [t, n] = q([]), [a, i] = q(!1), [s, o] = q(""), [u, c] = q(null), [l, d] = q(!1), h = F(async () => {
     try {
       n(jh(await r.hubQuery((e == null ? void 0 : e.query) ?? "industrial/workflows")));
-    } catch (h) {
-      c(h instanceof Error ? h.message : String(h));
+    } catch (p) {
+      c(p instanceof Error ? p.message : String(p));
     }
   }, [e == null ? void 0 : e.query, r]);
   _e(() => {
-    p();
-  }, [p]);
+    h();
+  }, [h]);
   const v = F(async () => {
-    var y;
-    const h = s.trim();
-    if (!h) {
+    var m;
+    const p = s.trim();
+    if (!p) {
       c("请输入工作流名称");
       return;
     }
@@ -7286,23 +7286,23 @@ function t1({ block: e, ctx: r }) {
     try {
       const x = `workflow-${typeof crypto < "u" && "randomUUID" in crypto ? crypto.randomUUID().replace(/-/g, "").slice(0, 10) : Date.now().toString(36)}`;
       await r.hubCommand("industrial/save-workflow", {
-        ...st(x),
-        name: h,
+        ...ot(x),
+        name: p,
         layout: { lookbackDays: 1 }
-      }), i(!1), o(""), await p(), (y = r.navigate) == null || y.call(r, `/industrial/designer?workflowId=${encodeURIComponent(x)}`);
-    } catch (C) {
-      c(C instanceof Error ? C.message : String(C));
+      }), i(!1), o(""), await h(), (m = r.navigate) == null || m.call(r, `/industrial/designer?workflowId=${encodeURIComponent(x)}`);
+    } catch (w) {
+      c(w instanceof Error ? w.message : String(w));
     } finally {
       d(!1);
     }
-  }, [r, p, s]), g = F((h) => {
-    var y;
-    (y = r.navigate) == null || y.call(r, `/industrial/designer?workflowId=${encodeURIComponent(h)}`);
+  }, [r, h, s]), g = F((p) => {
+    var m;
+    (m = r.navigate) == null || m.call(r, `/industrial/designer?workflowId=${encodeURIComponent(p)}`);
   }, [r]);
   return /* @__PURE__ */ R(Y, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
     /* @__PURE__ */ R(Y, { style: { width: "100%", justifyContent: "space-between" }, children: [
       /* @__PURE__ */ f(U.Title, { level: 4, style: { margin: 0 }, children: "采集工作流" }),
-      /* @__PURE__ */ f($, { type: "primary", onClick: () => i(!0), children: "新建工作流" })
+      /* @__PURE__ */ f(L, { type: "primary", onClick: () => i(!0), children: "新建工作流" })
     ] }),
     u && /* @__PURE__ */ f(U.Text, { type: "danger", children: u }),
     /* @__PURE__ */ f(
@@ -7315,7 +7315,7 @@ function t1({ block: e, ctx: r }) {
           {
             title: "ID",
             dataIndex: "workflowId",
-            render: (h) => /* @__PURE__ */ f($, { type: "link", style: { padding: 0 }, onClick: () => g(h), children: h })
+            render: (p) => /* @__PURE__ */ f(L, { type: "link", style: { padding: 0 }, onClick: () => g(p), children: p })
           },
           { title: "名称", dataIndex: "name" },
           { title: "版本", dataIndex: "version" }
@@ -7335,12 +7335,12 @@ function t1({ block: e, ctx: r }) {
         children: /* @__PURE__ */ R(Y, { direction: "vertical", style: { width: "100%" }, children: [
           /* @__PURE__ */ f(U.Text, { children: "输入名称后会生成唯一 ID，并直接进入设计器。" }),
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "工作流名称",
               placeholder: "例如：每日设备数据采集",
               value: s,
-              onChange: (h) => o(h.target.value ?? "")
+              onChange: (p) => o(p.target.value ?? "")
             }
           ),
           u && /* @__PURE__ */ f(U.Text, { type: "danger", children: u })
@@ -7393,95 +7393,95 @@ function a1(e) {
   return r;
 }
 function i1({ block: e, ctx: r }) {
-  const [t, n] = I([]), [a, i] = I([]), [s, o] = I([]), [u, c] = I(No), [l, d] = I(!1), [p, v] = I(null), [g, h] = I(!1), y = F(async () => {
+  const [t, n] = q([]), [a, i] = q([]), [s, o] = q([]), [u, c] = q(No), [l, d] = q(!1), [h, v] = q(null), [g, p] = q(!1), m = F(async () => {
     try {
-      const [m, k, N] = await Promise.all([
+      const [y, A, N] = await Promise.all([
         r.hubQuery((e == null ? void 0 : e.query) ?? "industrial/resources"),
         r.hubQuery("industrial/credentials"),
         r.hubQuery("industrial/resource-tests")
       ]);
-      n(Gv(m)), i(Fh(k)), o(zv(N));
-    } catch (m) {
-      v(m instanceof Error ? m.message : String(m));
+      n(Gv(y)), i(Fh(A)), o(zv(N));
+    } catch (y) {
+      v(y instanceof Error ? y.message : String(y));
     }
   }, [e == null ? void 0 : e.query, r]);
   _e(() => {
-    y();
-  }, [y]);
-  const C = F((m) => {
-    const k = (...N) => {
-      for (const H of N) {
-        const G = m.config[H];
+    m();
+  }, [m]);
+  const w = F((y) => {
+    const A = (...N) => {
+      for (const W of N) {
+        const G = y.config[W];
         if (G != null && String(G).trim()) return String(G);
       }
       return "";
     };
     c({
-      id: m.id,
-      name: m.name,
-      type: m.type,
-      provider: m.provider,
-      root: k("root", "path"),
-      host: k("server", "host", "dataSource", "data_source"),
-      database: k("database", "initialCatalog", "initial_catalog", "path"),
-      port: k("port"),
-      table: k("table"),
-      credentialId: m.credentialId ?? "",
-      enabled: m.enabled,
-      config: m.config
+      id: y.id,
+      name: y.name,
+      type: y.type,
+      provider: y.provider,
+      root: A("root", "path"),
+      host: A("server", "host", "dataSource", "data_source"),
+      database: A("database", "initialCatalog", "initial_catalog", "path"),
+      port: A("port"),
+      table: A("table"),
+      credentialId: y.credentialId ?? "",
+      enabled: y.enabled,
+      config: y.config
     }), d(!0);
   }, []), x = F(async () => {
-    const m = u.id.trim();
-    if (!m) {
+    const y = u.id.trim();
+    if (!y) {
       v("请输入资源 ID");
       return;
     }
-    h(!0), v(null);
+    p(!0), v(null);
     try {
       await r.hubCommand("industrial/save-resource", {
-        id: m,
-        name: u.name || m,
+        id: y,
+        name: u.name || y,
         type: u.type,
         provider: u.provider || "manual",
         config: a1(u),
         credentialId: u.credentialId || null,
         enabled: u.enabled
-      }), d(!1), c(No), await y();
-    } catch (k) {
-      v(k instanceof Error ? k.message : String(k));
+      }), d(!1), c(No), await m();
+    } catch (A) {
+      v(A instanceof Error ? A.message : String(A));
     } finally {
-      h(!1);
+      p(!1);
     }
-  }, [r, u, y]), _ = F(async (m) => {
+  }, [r, u, m]), b = F(async (y) => {
     v(null);
     try {
-      await r.hubCommand("industrial/test-resource", { id: m });
-    } catch (k) {
-      v(k instanceof Error ? k.message : String(k));
+      await r.hubCommand("industrial/test-resource", { id: y });
+    } catch (A) {
+      v(A instanceof Error ? A.message : String(A));
     }
-    await y();
-  }, [r, y]), A = F(async (m) => {
+    await m();
+  }, [r, m]), k = F(async (y) => {
     v(null);
     try {
-      await r.hubCommand("industrial/delete-resource", { id: m }), await y();
-    } catch (k) {
-      v(k instanceof Error ? k.message : String(k));
+      await r.hubCommand("industrial/delete-resource", { id: y }), await m();
+    } catch (A) {
+      v(A instanceof Error ? A.message : String(A));
     }
-  }, [r, y]), L = new Map(s.map((m) => [m.resourceId, m]));
+  }, [r, m]), M = new Map(s.map((y) => [y.resourceId, y]));
   return /* @__PURE__ */ R(Y, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
     /* @__PURE__ */ R(Y, { style: { width: "100%", justifyContent: "space-between" }, children: [
       /* @__PURE__ */ f(U.Title, { level: 4, style: { margin: 0 }, children: "数据源与目标" }),
       /* @__PURE__ */ R(Y, { children: [
-        /* @__PURE__ */ f($, { onClick: () => {
-          var m;
-          return (m = r.navigate) == null ? void 0 : m.call(r, "/industrial/designer");
+        /* @__PURE__ */ f(L, { onClick: () => {
+          var y;
+          return (y = r.navigate) == null ? void 0 : y.call(r, "/industrial/designer");
         }, children: "返回设计器" }),
-        /* @__PURE__ */ f($, { type: "primary", onClick: () => {
+        /* @__PURE__ */ f(L, { type: "primary", onClick: () => {
           c(No), d(!0);
         }, children: "新建资源" })
       ] })
     ] }),
-    p && /* @__PURE__ */ f(Ee, { type: "error", showIcon: !0, message: p }),
+    h && /* @__PURE__ */ f(Ee, { type: "error", showIcon: !0, message: h }),
     /* @__PURE__ */ f(
       Ae,
       {
@@ -7492,22 +7492,22 @@ function i1({ block: e, ctx: r }) {
           { title: "ID", dataIndex: "id" },
           { title: "名称", dataIndex: "name" },
           { title: "类型", dataIndex: "type" },
-          { title: "凭证", dataIndex: "credentialName", render: (m) => m ?? "—" },
+          { title: "凭证", dataIndex: "credentialName", render: (y) => y ?? "—" },
           {
             title: "连接测试",
             key: "test",
-            render: (m, k) => {
-              const N = L.get(k.id);
+            render: (y, A) => {
+              const N = M.get(A.id);
               return N ? /* @__PURE__ */ f(U.Text, { type: N.ok ? "success" : "danger", children: N.detail }) : "未测试";
             }
           },
           {
             title: "操作",
             key: "actions",
-            render: (m, k) => /* @__PURE__ */ R(Y, { size: 4, children: [
-              /* @__PURE__ */ f($, { size: "small", onClick: () => void _(k.id), children: "测试连接" }),
-              /* @__PURE__ */ f($, { size: "small", onClick: () => C(k), children: "编辑" }),
-              /* @__PURE__ */ f($, { size: "small", danger: !0, onClick: () => void A(k.id), children: "删除" })
+            render: (y, A) => /* @__PURE__ */ R(Y, { size: 4, children: [
+              /* @__PURE__ */ f(L, { size: "small", onClick: () => void b(A.id), children: "测试连接" }),
+              /* @__PURE__ */ f(L, { size: "small", onClick: () => w(A), children: "编辑" }),
+              /* @__PURE__ */ f(L, { size: "small", danger: !0, onClick: () => void k(A.id), children: "删除" })
             ] })
           }
         ]
@@ -7525,79 +7525,79 @@ function i1({ block: e, ctx: r }) {
         onOk: () => void x(),
         children: /* @__PURE__ */ R(Y, { direction: "vertical", style: { width: "100%" }, children: [
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "资源 ID",
               placeholder: "资源 ID（唯一）",
               value: u.id,
-              onChange: (m) => c({ ...u, id: m.target.value })
+              onChange: (y) => c({ ...u, id: y.target.value })
             }
           ),
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "资源名称",
               placeholder: "显示名称",
               value: u.name,
-              onChange: (m) => c({ ...u, name: m.target.value })
+              onChange: (y) => c({ ...u, name: y.target.value })
             }
           ),
           /* @__PURE__ */ f(U.Text, { children: "资源类型" }),
-          /* @__PURE__ */ f(Y, { wrap: !0, children: n1.map((m) => /* @__PURE__ */ f(
-            $,
+          /* @__PURE__ */ f(Y, { wrap: !0, children: n1.map((y) => /* @__PURE__ */ f(
+            L,
             {
               size: "small",
-              type: u.type === m.value ? "primary" : "default",
-              onClick: () => c({ ...u, type: m.value }),
-              children: m.label
+              type: u.type === y.value ? "primary" : "default",
+              onClick: () => c({ ...u, type: y.value }),
+              children: y.label
             },
-            m.value
+            y.value
           )) }),
           (u.type === "filesystem.local" || u.type === "filesystem.unc") && /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "目录路径",
               placeholder: u.type === "filesystem.unc" ? "\\\\server\\share" : "/data/csv",
               value: u.root,
-              onChange: (m) => c({ ...u, root: m.target.value })
+              onChange: (y) => c({ ...u, root: y.target.value })
             }
           ),
           (u.type === "sqlserver" || u.type === "postgresql" || u.type === "mysql") && /* @__PURE__ */ R(Y, { children: [
             /* @__PURE__ */ f(
-              Q,
+              V,
               {
                 "aria-label": "主机或服务器",
                 placeholder: "主机 / 服务器",
                 value: u.host,
-                onChange: (m) => c({ ...u, host: m.target.value })
+                onChange: (y) => c({ ...u, host: y.target.value })
               }
             ),
             /* @__PURE__ */ f(
-              Q,
+              V,
               {
                 "aria-label": "数据库",
                 placeholder: "数据库",
                 value: u.database,
-                onChange: (m) => c({ ...u, database: m.target.value })
+                onChange: (y) => c({ ...u, database: y.target.value })
               }
             ),
             /* @__PURE__ */ f(
-              Q,
+              V,
               {
                 "aria-label": "端口",
                 placeholder: "端口",
                 value: u.port,
-                onChange: (m) => c({ ...u, port: m.target.value })
+                onChange: (y) => c({ ...u, port: y.target.value })
               }
             )
           ] }),
           u.type === "sqlite" && /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "数据库文件",
               placeholder: "数据库文件路径",
               value: u.database,
-              onChange: (m) => c({ ...u, database: m.target.value })
+              onChange: (y) => c({ ...u, database: y.target.value })
             }
           ),
           /* @__PURE__ */ f(
@@ -7607,17 +7607,17 @@ function i1({ block: e, ctx: r }) {
               allowClear: !0,
               placeholder: "凭证（可选）",
               value: u.credentialId || void 0,
-              options: a.map((m) => ({ value: m.id, label: m.name })),
-              onChange: (m) => c({ ...u, credentialId: m ?? "" })
+              options: a.map((y) => ({ value: y.id, label: y.name })),
+              onChange: (y) => c({ ...u, credentialId: y ?? "" })
             }
           ),
           /* @__PURE__ */ R(Y, { children: [
             /* @__PURE__ */ f(
-              pt,
+              Hr,
               {
                 "aria-label": "启用资源",
                 checked: u.enabled,
-                onChange: (m) => c({ ...u, enabled: m })
+                onChange: (y) => c({ ...u, enabled: y })
               }
             ),
             /* @__PURE__ */ f(U.Text, { children: "启用" })
@@ -7629,11 +7629,11 @@ function i1({ block: e, ctx: r }) {
 }
 const Do = ["username-password", "domain-account", "api-token"];
 function s1({ block: e, ctx: r }) {
-  const [t, n] = I([]), [a, i] = I(Do), [s, o] = I(!1), [u, c] = I(""), [l, d] = I(""), [p, v] = I(Do[0]), [g, h] = I(""), [y, C] = I(""), [x, _] = I(""), [A, L] = I(""), [m, k] = I(""), [N, H] = I(!1), [G, S] = I(null), [j, V] = I(!1), z = F(async () => {
+  const [t, n] = q([]), [a, i] = q(Do), [s, o] = q(!1), [u, c] = q(""), [l, d] = q(""), [h, v] = q(Do[0]), [g, p] = q(""), [m, w] = q(""), [x, b] = q(""), [k, M] = q(""), [y, A] = q(""), [N, W] = q(!1), [G, S] = q(null), [j, H] = q(!1), z = F(async () => {
     try {
       n(Fh(await r.hubQuery((e == null ? void 0 : e.query) ?? "industrial/credentials")));
-      const T = await r.hubQuery("industrial/credential-types"), M = Array.isArray(T) ? T : Array.isArray(T == null ? void 0 : T.data) ? T.data : [];
-      M.length && i(M.map((ve) => ve.kind));
+      const T = await r.hubQuery("industrial/credential-types"), $ = Array.isArray(T) ? T : Array.isArray(T == null ? void 0 : T.data) ? T.data : [];
+      $.length && i($.map((ve) => ve.kind));
     } catch (T) {
       S(T instanceof Error ? T.message : String(T));
     }
@@ -7642,12 +7642,12 @@ function s1({ block: e, ctx: r }) {
     z();
   }, [z]);
   const ie = F(() => {
-    c(""), d(""), v(Do[0]), h(""), C(""), _(""), L(""), k(""), H(!1), S(null);
+    c(""), d(""), v(Do[0]), p(""), w(""), b(""), M(""), A(""), W(!1), S(null);
   }, []), ue = F(() => {
     ie(), o(!0);
   }, [ie]), fe = F((T) => {
-    ie(), c(T.id), d(T.name), a.includes(T.kind) && v(T.kind), H(!0), o(!0);
-  }, [a, ie]), B = F(() => m.trim() ? m.trim() : p === "api-token" ? A.trim() ? JSON.stringify({ token: A.trim() }) : null : !g.trim() || !y.trim() ? null : JSON.stringify(p === "domain-account" ? { username: g.trim(), password: y.trim(), domain: x.trim() } : { username: g.trim(), password: y.trim() }), [x, p, y, m, A, g]), J = F(async () => {
+    ie(), c(T.id), d(T.name), a.includes(T.kind) && v(T.kind), W(!0), o(!0);
+  }, [a, ie]), B = F(() => y.trim() ? y.trim() : h === "api-token" ? k.trim() ? JSON.stringify({ token: k.trim() }) : null : !g.trim() || !m.trim() ? null : JSON.stringify(h === "domain-account" ? { username: g.trim(), password: m.trim(), domain: x.trim() } : { username: g.trim(), password: m.trim() }), [x, h, m, y, k, g]), J = F(async () => {
     if (!u.trim()) {
       S("请输入凭证 ID");
       return;
@@ -7657,26 +7657,26 @@ function s1({ block: e, ctx: r }) {
       S("请填写凭证字段，或在高级内容中提供凭证");
       return;
     }
-    V(!0), S(null);
+    H(!0), S(null);
     try {
-      N ? await r.hubCommand("industrial/rotate-credential", { id: u, secret: T }) : await r.hubCommand("industrial/save-credential", { id: u, name: l || u, kind: p, secret: T }), o(!1), await z();
-    } catch (M) {
-      S(M instanceof Error ? M.message : String(M));
+      N ? await r.hubCommand("industrial/rotate-credential", { id: u, secret: T }) : await r.hubCommand("industrial/save-credential", { id: u, name: l || u, kind: h, secret: T }), o(!1), await z();
+    } catch ($) {
+      S($ instanceof Error ? $.message : String($));
     } finally {
-      V(!1);
+      H(!1);
     }
-  }, [B, r, u, p, z, l, N, m]), E = F(async (T) => {
+  }, [B, r, u, h, z, l, N, y]), E = F(async (T) => {
     S(null);
     try {
       await r.hubCommand("industrial/delete-credential", { id: T.id }), await z();
-    } catch (M) {
-      S(M instanceof Error ? M.message : String(M));
+    } catch ($) {
+      S($ instanceof Error ? $.message : String($));
     }
   }, [r, z]);
   return /* @__PURE__ */ R(Y, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
     /* @__PURE__ */ R(Y, { style: { width: "100%", justifyContent: "space-between" }, children: [
       /* @__PURE__ */ f(U.Title, { level: 4, style: { margin: 0 }, children: "凭证" }),
-      /* @__PURE__ */ f($, { type: "primary", onClick: ue, children: "新建凭证" })
+      /* @__PURE__ */ f(L, { type: "primary", onClick: ue, children: "新建凭证" })
     ] }),
     G && /* @__PURE__ */ f(Ee, { type: "error", showIcon: !0, message: G }),
     /* @__PURE__ */ f(
@@ -7693,9 +7693,9 @@ function s1({ block: e, ctx: r }) {
           {
             title: "操作",
             key: "actions",
-            render: (T, M) => /* @__PURE__ */ R(Y, { children: [
-              /* @__PURE__ */ f($, { size: "small", onClick: () => fe(M), children: "轮换" }),
-              /* @__PURE__ */ f($, { size: "small", danger: !0, onClick: () => void E(M), children: "删除" })
+            render: (T, $) => /* @__PURE__ */ R(Y, { children: [
+              /* @__PURE__ */ f(L, { size: "small", onClick: () => fe($), children: "轮换" }),
+              /* @__PURE__ */ f(L, { size: "small", danger: !0, onClick: () => void E($), children: "删除" })
             ] })
           }
         ]
@@ -7713,7 +7713,7 @@ function s1({ block: e, ctx: r }) {
         onOk: () => void J(),
         children: /* @__PURE__ */ R(Y, { direction: "vertical", style: { width: "100%" }, children: [
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "凭证 ID",
               placeholder: "凭证 ID",
@@ -7723,7 +7723,7 @@ function s1({ block: e, ctx: r }) {
             }
           ),
           !N && /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "凭证名称",
               placeholder: "显示名称",
@@ -7736,55 +7736,55 @@ function s1({ block: e, ctx: r }) {
             {
               "aria-label": "凭证类型",
               style: { width: "100%" },
-              value: p,
+              value: h,
               onChange: (T) => v(T),
               options: a.map((T) => ({ value: T, label: T }))
             }
           ),
-          p === "api-token" ? /* @__PURE__ */ f(
-            Q.Password,
+          h === "api-token" ? /* @__PURE__ */ f(
+            V.Password,
             {
               "aria-label": "令牌",
               placeholder: "令牌",
-              value: A,
-              onChange: (T) => L(T.target.value)
+              value: k,
+              onChange: (T) => M(T.target.value)
             }
           ) : /* @__PURE__ */ R(dr, { children: [
             /* @__PURE__ */ f(
-              Q,
+              V,
               {
                 "aria-label": "用户名",
                 placeholder: "用户名",
                 value: g,
-                onChange: (T) => h(T.target.value)
+                onChange: (T) => p(T.target.value)
               }
             ),
             /* @__PURE__ */ f(
-              Q.Password,
+              V.Password,
               {
                 "aria-label": "密码",
                 placeholder: "密码",
-                value: y,
-                onChange: (T) => C(T.target.value)
+                value: m,
+                onChange: (T) => w(T.target.value)
               }
             ),
-            p === "domain-account" && /* @__PURE__ */ f(
-              Q,
+            h === "domain-account" && /* @__PURE__ */ f(
+              V,
               {
                 "aria-label": "域",
                 placeholder: "域（可选）",
                 value: x,
-                onChange: (T) => _(T.target.value)
+                onChange: (T) => b(T.target.value)
               }
             )
           ] }),
           /* @__PURE__ */ f(
-            Q.Password,
+            V.Password,
             {
               "aria-label": "凭证内容",
               placeholder: "高级：直接提供凭证内容（优先）",
-              value: m,
-              onChange: (T) => k(T.target.value)
+              value: y,
+              onChange: (T) => A(T.target.value)
             }
           ),
           G && /* @__PURE__ */ f(U.Text, { type: "danger", children: G })
@@ -7795,7 +7795,7 @@ function s1({ block: e, ctx: r }) {
 }
 const Th = (e) => e === "Succeeded" || e === "Completed" ? "success" : e === "Failed" || e === "PartialFailure" ? "error" : e === "Running" || e === "Interrupted" ? "processing" : "default";
 function o1({ block: e, ctx: r }) {
-  const [t, n] = I([]), [a, i] = I([]), [s, o] = I(null), [u, c] = I(null), [l, d] = I(!1), p = F(async () => {
+  const [t, n] = q([]), [a, i] = q([]), [s, o] = q(null), [u, c] = q(null), [l, d] = q(!1), h = F(async () => {
     try {
       const g = Vv(await r.hubQuery((e == null ? void 0 : e.query) ?? "industrial/execution-center"));
       n(g.runs), i(g.deliveries);
@@ -7804,21 +7804,21 @@ function o1({ block: e, ctx: r }) {
     }
   }, [e == null ? void 0 : e.query, r]);
   _e(() => {
-    p();
-  }, [p]);
+    h();
+  }, [h]);
   const v = F(async (g) => {
     d(!0), o(null), c(null);
     try {
       await r.hubCommand("industrial/retry-failed", {
         deliveryId: g.id,
         targetId: g.targetId
-      }), c(`已提交目标 ${g.targetId} 的重试`), await p();
-    } catch (h) {
-      o(h instanceof Error ? h.message : String(h));
+      }), c(`已提交目标 ${g.targetId} 的重试`), await h();
+    } catch (p) {
+      o(p instanceof Error ? p.message : String(p));
     } finally {
       d(!1);
     }
-  }, [r, p]);
+  }, [r, h]);
   return /* @__PURE__ */ R(Y, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
     /* @__PURE__ */ f(U.Title, { level: 4, style: { margin: 0 }, children: "执行记录" }),
     s && /* @__PURE__ */ f(Ee, { type: "error", showIcon: !0, message: s }),
@@ -7832,7 +7832,7 @@ function o1({ block: e, ctx: r }) {
         title: () => "采集运行",
         columns: [
           { title: "工作流", dataIndex: "workflowId" },
-          { title: "状态", dataIndex: "status", render: (g) => /* @__PURE__ */ f(Le, { color: Th(g), children: g }) },
+          { title: "状态", dataIndex: "status", render: (g) => /* @__PURE__ */ f($e, { color: Th(g), children: g }) },
           { title: "开始", dataIndex: "startedAt" },
           { title: "结束", dataIndex: "finishedAt", render: (g) => g ?? "—" },
           { title: "错误", dataIndex: "error", render: (g) => g ?? "—" }
@@ -7848,26 +7848,26 @@ function o1({ block: e, ctx: r }) {
         title: () => "交付目标",
         columns: [
           { title: "目标", dataIndex: "targetId" },
-          { title: "状态", dataIndex: "status", render: (g) => /* @__PURE__ */ f(Le, { color: Th(g), children: g }) },
+          { title: "状态", dataIndex: "status", render: (g) => /* @__PURE__ */ f($e, { color: Th(g), children: g }) },
           { title: "记录数", dataIndex: "records" },
           { title: "尝试次数", dataIndex: "attempts" },
           {
             title: "原因与下一步",
             key: "diagnosis",
-            render: (g, h) => h.diagnosis ? /* @__PURE__ */ R(Y, { direction: "vertical", size: 0, children: [
-              /* @__PURE__ */ f(U.Text, { children: h.diagnosis.message }),
-              /* @__PURE__ */ f(U.Text, { type: "secondary", children: h.diagnosis.action })
-            ] }) : h.error ?? "—"
+            render: (g, p) => p.diagnosis ? /* @__PURE__ */ R(Y, { direction: "vertical", size: 0, children: [
+              /* @__PURE__ */ f(U.Text, { children: p.diagnosis.message }),
+              /* @__PURE__ */ f(U.Text, { type: "secondary", children: p.diagnosis.action })
+            ] }) : p.error ?? "—"
           },
           {
             title: "操作",
             key: "actions",
-            render: (g, h) => /* @__PURE__ */ f(
-              $,
+            render: (g, p) => /* @__PURE__ */ f(
+              L,
               {
                 size: "small",
-                disabled: l || h.status !== "Failed" && h.status !== "Interrupted",
-                onClick: () => void v(h),
+                disabled: l || p.status !== "Failed" && p.status !== "Interrupted",
+                onClick: () => void v(p),
                 children: "重试此目标"
               }
             )
@@ -7878,7 +7878,7 @@ function o1({ block: e, ctx: r }) {
   ] });
 }
 function u1({ block: e, ctx: r }) {
-  const [t, n] = I([]), [a, i] = I(null), s = F(async () => {
+  const [t, n] = q([]), [a, i] = q(null), s = F(async () => {
     try {
       n(Kv(await r.hubQuery((e == null ? void 0 : e.query) ?? "industrial/file-details")));
     } catch (u) {
@@ -7897,7 +7897,7 @@ function u1({ block: e, ctx: r }) {
       size: "small",
       columns: [
         { title: "目标", dataIndex: "targetId" },
-        { title: "状态", dataIndex: "status", render: (c) => /* @__PURE__ */ f(Le, { children: c }) },
+        { title: "状态", dataIndex: "status", render: (c) => /* @__PURE__ */ f($e, { children: c }) },
         { title: "记录", dataIndex: "records" },
         {
           title: "接受/拒绝/警告",
@@ -7946,48 +7946,48 @@ const Mo = (e) => {
   return Array.isArray(r) ? r : [];
 }, l1 = () => `machine-${typeof crypto < "u" && "randomUUID" in crypto ? crypto.randomUUID().replace(/-/g, "").slice(0, 12) : Date.now().toString(36)}`;
 function c1({ block: e, ctx: r }) {
-  const [t, n] = I([]), [a, i] = I([]), [s, o] = I([]), [u, c] = I(null), [l, d] = I(""), [p, v] = I(""), [g, h] = I(), [y, C] = I(!0), [x, _] = I(null), A = F(async () => {
+  const [t, n] = q([]), [a, i] = q([]), [s, o] = q([]), [u, c] = q(null), [l, d] = q(""), [h, v] = q(""), [g, p] = q(), [m, w] = q(!0), [x, b] = q(null), k = F(async () => {
     try {
       n(Mo(await r.hubQuery((e == null ? void 0 : e.query) ?? "industrial/machines"))), i(Mo(await r.hubQuery("industrial/resources"))), o(Mo(await r.hubQuery("industrial/credentials")));
     } catch (S) {
-      _(S instanceof Error ? S.message : String(S));
+      b(S instanceof Error ? S.message : String(S));
     }
   }, [e == null ? void 0 : e.query, r]);
   _e(() => {
-    A();
-  }, [A]);
-  const L = F(() => {
-    c({ id: l1(), name: "", endpoint: "", credentialId: null, enabled: !0 }), d(""), v(""), h(void 0), C(!0), _(null);
-  }, []), m = F((S) => {
-    c(S), d(S.name), v(S.endpoint), h(S.credentialId ?? void 0), C(S.enabled), _(null);
-  }, []), k = F(async () => {
+    k();
+  }, [k]);
+  const M = F(() => {
+    c({ id: l1(), name: "", endpoint: "", credentialId: null, enabled: !0 }), d(""), v(""), p(void 0), w(!0), b(null);
+  }, []), y = F((S) => {
+    c(S), d(S.name), v(S.endpoint), p(S.credentialId ?? void 0), w(S.enabled), b(null);
+  }, []), A = F(async () => {
     if (u) {
       if (!l.trim()) {
-        _("请输入设备名称");
+        b("请输入设备名称");
         return;
       }
-      _(null);
+      b(null);
       try {
         await r.hubCommand("industrial/save-machine", {
           id: u.id,
           name: l.trim(),
-          endpoint: p.trim(),
+          endpoint: h.trim(),
           credentialId: g ?? null,
-          enabled: y
-        }), c(null), await A();
+          enabled: m
+        }), c(null), await k();
       } catch (S) {
-        _(S instanceof Error ? S.message : String(S));
+        b(S instanceof Error ? S.message : String(S));
       }
     }
-  }, [r, g, u, p, y, A, l]), N = F(async (S) => {
-    _(null);
+  }, [r, g, u, h, m, k, l]), N = F(async (S) => {
+    b(null);
     try {
-      await r.hubCommand("industrial/delete-machine", { id: S.id }), await A();
+      await r.hubCommand("industrial/delete-machine", { id: S.id }), await k();
     } catch (j) {
-      _(j instanceof Error ? j.message : String(j));
+      b(j instanceof Error ? j.message : String(j));
     }
-  }, [r, A]), H = F(async (S, j) => {
-    _(null);
+  }, [r, k]), W = F(async (S, j) => {
+    b(null);
     try {
       await r.hubCommand("industrial/save-machine", {
         id: S.id,
@@ -7995,25 +7995,25 @@ function c1({ block: e, ctx: r }) {
         endpoint: S.endpoint,
         credentialId: S.credentialId,
         enabled: j
-      }), await A();
-    } catch (V) {
-      _(V instanceof Error ? V.message : String(V));
+      }), await k();
+    } catch (H) {
+      b(H instanceof Error ? H.message : String(H));
     }
-  }, [r, A]), G = F(async (S, j) => {
-    _(null);
+  }, [r, k]), G = F(async (S, j) => {
+    b(null);
     try {
       await r.hubCommand("industrial/save-resource", {
         id: S.id,
         machineId: j || null
-      }), await A();
-    } catch (V) {
-      _(V instanceof Error ? V.message : String(V));
+      }), await k();
+    } catch (H) {
+      b(H instanceof Error ? H.message : String(H));
     }
-  }, [r, A]);
+  }, [r, k]);
   return /* @__PURE__ */ R(Y, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
     /* @__PURE__ */ R(Y, { style: { width: "100%", justifyContent: "space-between" }, children: [
       /* @__PURE__ */ f(U.Title, { level: 4, style: { margin: 0 }, children: "设备与资源" }),
-      /* @__PURE__ */ f($, { type: "primary", onClick: L, children: "新增设备" })
+      /* @__PURE__ */ f(L, { type: "primary", onClick: M, children: "新增设备" })
     ] }),
     /* @__PURE__ */ f(U.Text, { type: "secondary", children: "设备地址是台账属性；实际连接由数据源资源配置决定。绑定凭证供需要认证的数据源引用。" }),
     x && /* @__PURE__ */ f(Ee, { type: "error", showIcon: !0, message: x }),
@@ -8031,24 +8031,24 @@ function c1({ block: e, ctx: r }) {
             dataIndex: "credentialId",
             render: (S) => {
               var j;
-              return ((j = s.find((V) => V.id === S)) == null ? void 0 : j.name) ?? "—";
+              return ((j = s.find((H) => H.id === S)) == null ? void 0 : j.name) ?? "—";
             }
           },
           {
             title: "启用",
             dataIndex: "enabled",
             render: (S, j) => /* @__PURE__ */ f(
-              pt,
+              Hr,
               {
                 "aria-label": `设备 ${j.name} 启用`,
                 checked: S,
-                onChange: (V) => void H(j, V)
+                onChange: (H) => void W(j, H)
               }
             )
           },
           { title: "操作", key: "actions", render: (S, j) => /* @__PURE__ */ R(Y, { children: [
-            /* @__PURE__ */ f($, { size: "small", onClick: () => m(j), children: "编辑" }),
-            /* @__PURE__ */ f($, { size: "small", danger: !0, onClick: () => void N(j), children: "删除" })
+            /* @__PURE__ */ f(L, { size: "small", onClick: () => y(j), children: "编辑" }),
+            /* @__PURE__ */ f(L, { size: "small", danger: !0, onClick: () => void N(j), children: "删除" })
           ] }) }
         ]
       }
@@ -8073,8 +8073,8 @@ function c1({ block: e, ctx: r }) {
                 style: { width: 220 },
                 value: j.machineId ?? void 0,
                 allowClear: !0,
-                onChange: (V) => void G(j, V ?? ""),
-                options: t.map((V) => ({ value: V.id, label: V.name }))
+                onChange: (H) => void G(j, H ?? ""),
+                options: t.map((H) => ({ value: H.id, label: H.name }))
               }
             )
           }
@@ -8089,10 +8089,10 @@ function c1({ block: e, ctx: r }) {
         okText: "保存设备",
         cancelText: "取消",
         onCancel: () => c(null),
-        onOk: () => void k(),
+        onOk: () => void A(),
         children: /* @__PURE__ */ R(Y, { direction: "vertical", style: { width: "100%" }, children: [
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "设备名称",
               placeholder: "设备名称",
@@ -8101,11 +8101,11 @@ function c1({ block: e, ctx: r }) {
             }
           ),
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "设备地址",
               placeholder: "台账地址 / IP",
-              value: p,
+              value: h,
               onChange: (S) => v(S.target.value)
             }
           ),
@@ -8117,7 +8117,7 @@ function c1({ block: e, ctx: r }) {
               allowClear: !0,
               placeholder: "凭证（可选）",
               value: g,
-              onChange: (S) => h(S),
+              onChange: (S) => p(S),
               options: s.map((S) => ({
                 value: S.id,
                 label: `${S.name} (${S.kind})`
@@ -8131,80 +8131,80 @@ function c1({ block: e, ctx: r }) {
 }
 const d1 = ["filesystem.local", "filesystem.unc"], f1 = ["sink.sqlite", "sink.sqlserver", "sink.postgresql", "sink.mysql"];
 function h1({ block: e, ctx: r }) {
-  const [t, n] = I([]), [a, i] = I([]), [s, o] = I(""), [u, c] = I(""), [l, d] = I("csv"), [p, v] = I([]), [g, h] = I(null), [y, C] = I(!1);
+  const [t, n] = q([]), [a, i] = q([]), [s, o] = q(""), [u, c] = q(""), [l, d] = q("csv"), [h, v] = q([]), [g, p] = q(null), [m, w] = q(!1);
   _e(() => {
     (async () => {
       try {
-        n(Lh(await r.hubQuery((e == null ? void 0 : e.query) ?? "industrial/resources"))), i(Mh(await r.hubQuery((e == null ? void 0 : e.nodesQuery) ?? "industrial/nodes")));
-      } catch (m) {
-        h(m instanceof Error ? m.message : String(m));
+        n($h(await r.hubQuery((e == null ? void 0 : e.query) ?? "industrial/resources"))), i(Mh(await r.hubQuery((e == null ? void 0 : e.nodesQuery) ?? "industrial/nodes")));
+      } catch (y) {
+        p(y instanceof Error ? y.message : String(y));
       }
     })();
   }, [e == null ? void 0 : e.nodesQuery, e == null ? void 0 : e.query, r]);
-  const x = t.filter((m) => d1.includes(m.type)), _ = t.filter((m) => f1.some((k) => m.type === k.split(".")[1])), A = ht(
-    () => new Map(a.map((m) => [m.nodeTypeId, m])),
+  const x = t.filter((y) => d1.includes(y.type)), b = t.filter((y) => f1.some((A) => y.type === A.split(".")[1])), k = pt(
+    () => new Map(a.map((y) => [y.nodeTypeId, y])),
     [a]
-  ), L = F(async () => {
-    var m;
+  ), M = F(async () => {
+    var y;
     if (!s.trim()) {
-      h("请输入任务名称");
+      p("请输入任务名称");
       return;
     }
     if (!u) {
-      h("请选择数据来源");
+      p("请选择数据来源");
       return;
     }
-    if (p.length === 0) {
-      h("请至少选择一个目标");
+    if (h.length === 0) {
+      p("请至少选择一个目标");
       return;
     }
-    C(!0), h(null);
+    w(!0), p(null);
     try {
-      const N = `quick-${typeof crypto < "u" && "randomUUID" in crypto ? crypto.randomUUID().replace(/-/g, "").slice(0, 10) : Date.now().toString(36)}`, G = `industrial.${t.find((B) => B.id === u).type}`, S = `industrial.reader.${l}`, j = (B, J, E, T, M) => ({ id: B, type: J, config: M, x: E, y: T }), V = (B, J) => {
-        var M, ve;
-        const E = A.get(ie[B]), T = A.get(ie[J]);
+      const N = `quick-${typeof crypto < "u" && "randomUUID" in crypto ? crypto.randomUUID().replace(/-/g, "").slice(0, 10) : Date.now().toString(36)}`, G = `industrial.${t.find((B) => B.id === u).type}`, S = `industrial.reader.${l}`, j = (B, J, E, T, $) => ({ id: B, type: J, config: $, x: E, y: T }), H = (B, J) => {
+        var $, ve;
+        const E = k.get(ie[B]), T = k.get(ie[J]);
         return {
           source: B,
-          sourcePort: ((M = E.outputs[0]) == null ? void 0 : M.name) ?? "output",
+          sourcePort: (($ = E.outputs[0]) == null ? void 0 : $.name) ?? "output",
           target: J,
           targetPort: ((ve = T.inputs[0]) == null ? void 0 : ve.name) ?? "input"
         };
       }, z = [
         j("src", G, 80, 120, { resourceId: u }),
         j("read", S, 280, 120, {}),
-        ...p.map((B, J) => j(
+        ...h.map((B, J) => j(
           `sink${J + 1}`,
           `industrial.sink.${t.find((E) => E.id === B).type}`,
           500,
           80 + J * 120,
           { targetResourceId: B }
         ))
-      ], ie = Object.fromEntries(z.map((B) => [B.id, B.type])), ue = [V("src", "read"), ...p.map((B, J) => V("read", `sink${J + 1}`))], fe = {
-        ...st(N),
+      ], ie = Object.fromEntries(z.map((B) => [B.id, B.type])), ue = [H("src", "read"), ...h.map((B, J) => H("read", `sink${J + 1}`))], fe = {
+        ...ot(N),
         name: s.trim(),
         nodes: z,
         edges: ue,
-        resourceReferences: [u, ...p],
+        resourceReferences: [u, ...h],
         layout: { lookbackDays: 1 }
       };
-      await r.hubCommand("industrial/save-workflow", fe), await r.hubCommand("industrial/publish-workflow", { workflowId: N }), (m = r.navigate) == null || m.call(r, `/industrial/designer?workflowId=${encodeURIComponent(N)}`);
-    } catch (k) {
-      h(k instanceof Error ? k.message : String(k));
+      await r.hubCommand("industrial/save-workflow", fe), await r.hubCommand("industrial/publish-workflow", { workflowId: N }), (y = r.navigate) == null || y.call(r, `/industrial/designer?workflowId=${encodeURIComponent(N)}`);
+    } catch (A) {
+      p(A instanceof Error ? A.message : String(A));
     } finally {
-      C(!1);
+      w(!1);
     }
-  }, [r, l, A, s, t, u, p]);
+  }, [r, l, k, s, t, u, h]);
   return /* @__PURE__ */ R(Y, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
     /* @__PURE__ */ f(U.Title, { level: 4, style: { margin: 0 }, children: "快速创建采集任务" }),
     /* @__PURE__ */ f(U.Text, { type: "secondary", children: "生成标准工作流，可在设计器中继续修改。" }),
     g && /* @__PURE__ */ f(Ee, { type: "error", showIcon: !0, message: g }),
     /* @__PURE__ */ f(
-      Q,
+      V,
       {
         "aria-label": "任务名称",
         placeholder: "任务名称",
         value: s,
-        onChange: (m) => o(m.target.value)
+        onChange: (y) => o(y.target.value)
       }
     ),
     /* @__PURE__ */ R(Y, { wrap: !0, children: [
@@ -8215,8 +8215,8 @@ function h1({ block: e, ctx: r }) {
           style: { width: 260 },
           placeholder: "数据来源",
           value: u || void 0,
-          onChange: (m) => c(m),
-          options: x.map((m) => ({ value: m.id, label: `${m.name} (${m.type})` }))
+          onChange: (y) => c(y),
+          options: x.map((y) => ({ value: y.id, label: `${y.name} (${y.type})` }))
         }
       ),
       /* @__PURE__ */ f(
@@ -8225,8 +8225,8 @@ function h1({ block: e, ctx: r }) {
           "aria-label": "数据格式",
           style: { width: 160 },
           value: l,
-          onChange: (m) => d(m),
-          options: ["csv", "excel", "json"].map((m) => ({ value: m, label: m.toUpperCase() }))
+          onChange: (y) => d(y),
+          options: ["csv", "excel", "json"].map((y) => ({ value: y, label: y.toUpperCase() }))
         }
       )
     ] }),
@@ -8236,17 +8236,17 @@ function h1({ block: e, ctx: r }) {
         "aria-label": "目标资源 ID 列表",
         multiple: !0,
         style: { width: 420, minHeight: 72 },
-        value: p,
-        onChange: (m) => v(Array.from(m.target.selectedOptions).map((k) => k.value)),
-        children: _.map((m) => /* @__PURE__ */ R("option", { value: m.id, children: [
-          m.name,
+        value: h,
+        onChange: (y) => v(Array.from(y.target.selectedOptions).map((A) => A.value)),
+        children: b.map((y) => /* @__PURE__ */ R("option", { value: y.id, children: [
+          y.name,
           " (",
-          m.type,
+          y.type,
           ")"
-        ] }, m.id))
+        ] }, y.id))
       }
     ),
-    /* @__PURE__ */ f($, { type: "primary", loading: y, onClick: () => void L(), children: "创建并发布" })
+    /* @__PURE__ */ f(L, { type: "primary", loading: m, onClick: () => void M(), children: "创建并发布" })
   ] });
 }
 const p1 = (e) => {
@@ -8263,35 +8263,50 @@ const p1 = (e) => {
   encoding: "utf-8",
   enabled: !0,
   mapping: {},
-  requiredFields: []
+  requiredFields: [],
+  directoryPattern: "",
+  datePattern: "",
+  flat: !1,
+  metadataRules: []
 });
 function g1({ block: e, ctx: r }) {
-  const [t, n] = I([]), [a, i] = I(null), [s, o] = I(""), [u, c] = I(""), [l, d] = I(null), p = F(async () => {
+  const [t, n] = q([]), [a, i] = q(null), [s, o] = q(""), [u, c] = q(""), [l, d] = q(""), [h, v] = q(null), g = F(async () => {
     try {
       n(p1(await r.hubQuery((e == null ? void 0 : e.query) ?? "industrial/file-profiles")));
-    } catch (h) {
-      d(h instanceof Error ? h.message : String(h));
+    } catch (w) {
+      v(w instanceof Error ? w.message : String(w));
     }
   }, [e == null ? void 0 : e.query, r]);
   _e(() => {
-    p();
-  }, [p]);
-  const v = F((h) => {
-    const y = h ? { ...h } : v1();
-    i(y), o(Object.entries(y.mapping ?? {}).map(([C, x]) => `${C}=${x}`).join(",")), c((y.requiredFields ?? []).join(",")), d(null);
-  }, []), g = F(async () => {
+    g();
+  }, [g]);
+  const p = F((w) => {
+    const x = w ? { ...w } : v1();
+    i(x), o(Object.entries(x.mapping ?? {}).map(([b, k]) => `${b}=${k}`).join(",")), c((x.requiredFields ?? []).join(",")), d((x.metadataRules ?? []).map((b) => `${b.from}|${b.pattern}|${b.key}|${b.required}`).join(`
+`)), v(null);
+  }, []), m = F(async () => {
     if (a) {
       if (!a.name.trim()) {
-        d("请输入配置名称");
+        v("请输入配置名称");
         return;
       }
-      d(null);
+      v(null);
       try {
-        const h = {};
-        for (const y of s.split(",")) {
-          const [C, x] = y.split("=").map((_) => _ == null ? void 0 : _.trim());
-          C && x && (h[C] = x);
+        const w = {};
+        for (const b of s.split(",")) {
+          const [k, M] = b.split("=").map((y) => y == null ? void 0 : y.trim());
+          k && M && (w[k] = M);
         }
+        const x = l.split(`
+`).map((b) => b.split("|")).filter((b) => b.length >= 3 && b[0].trim() && b[1].trim() && b[2].trim()).map((b) => {
+          var k;
+          return {
+            from: b[0].trim(),
+            pattern: b[1].trim(),
+            key: b[2].trim(),
+            required: ((k = b[3]) == null ? void 0 : k.trim()) !== "false"
+          };
+        });
         await r.hubCommand("industrial/save-file-profile", {
           id: a.id,
           name: a.name.trim(),
@@ -8301,20 +8316,24 @@ function g1({ block: e, ctx: r }) {
           hasHeader: a.hasHeader,
           encoding: a.encoding,
           enabled: a.enabled,
-          mapping: h,
-          required: u.split(",").map((y) => y.trim()).filter(Boolean)
-        }), i(null), await p();
-      } catch (h) {
-        d(h instanceof Error ? h.message : String(h));
+          mapping: w,
+          required: u.split(",").map((b) => b.trim()).filter(Boolean),
+          directoryPattern: a.directoryPattern,
+          datePattern: a.datePattern,
+          flat: a.flat,
+          metadataRules: x
+        }), i(null), await g();
+      } catch (w) {
+        v(w instanceof Error ? w.message : String(w));
       }
     }
-  }, [r, a, p, s, u]);
+  }, [r, a, g, s, l, u]);
   return /* @__PURE__ */ R(Y, { direction: "vertical", size: 12, style: { width: "100%" }, children: [
     /* @__PURE__ */ R(Y, { style: { width: "100%", justifyContent: "space-between" }, children: [
       /* @__PURE__ */ f(U.Title, { level: 4, style: { margin: 0 }, children: "文件格式配置" }),
-      /* @__PURE__ */ f($, { type: "primary", onClick: () => v(), children: "新建文件配置" })
+      /* @__PURE__ */ f(L, { type: "primary", onClick: () => p(), children: "新建文件配置" })
     ] }),
-    l && /* @__PURE__ */ f(Ee, { type: "error", showIcon: !0, message: l }),
+    h && /* @__PURE__ */ f(Ee, { type: "error", showIcon: !0, message: h }),
     /* @__PURE__ */ f(
       Ae,
       {
@@ -8326,7 +8345,7 @@ function g1({ block: e, ctx: r }) {
           { title: "文件匹配", dataIndex: "fileNamePattern" },
           { title: "格式", dataIndex: "format" },
           { title: "版本", dataIndex: "version" },
-          { title: "操作", key: "actions", render: (h, y) => /* @__PURE__ */ f($, { size: "small", onClick: () => v(y), children: "编辑" }) }
+          { title: "操作", key: "actions", render: (w, x) => /* @__PURE__ */ f(L, { size: "small", onClick: () => p(x), children: "编辑" }) }
         ]
       }
     ),
@@ -8338,77 +8357,113 @@ function g1({ block: e, ctx: r }) {
         okText: "保存配置",
         cancelText: "取消",
         onCancel: () => i(null),
-        onOk: () => void g(),
+        onOk: () => void m(),
         children: a && /* @__PURE__ */ R(Y, { direction: "vertical", style: { width: "100%" }, children: [
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "配置名称",
               placeholder: "配置名称",
               value: a.name,
-              onChange: (h) => i({ ...a, name: h.target.value })
+              onChange: (w) => i({ ...a, name: w.target.value })
             }
           ),
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "文件匹配规则",
               placeholder: "文件匹配，例如 *.csv",
               value: a.fileNamePattern,
-              onChange: (h) => i({ ...a, fileNamePattern: h.target.value })
+              onChange: (w) => i({ ...a, fileNamePattern: w.target.value })
             }
           ),
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "文件格式",
               placeholder: "csv / excel / json",
               value: a.format,
-              onChange: (h) => i({ ...a, format: h.target.value })
+              onChange: (w) => i({ ...a, format: w.target.value })
             }
           ),
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "分隔符",
               placeholder: "分隔符",
               value: a.delimiter,
-              onChange: (h) => i({ ...a, delimiter: h.target.value })
+              onChange: (w) => i({ ...a, delimiter: w.target.value })
             }
           ),
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "编码",
               placeholder: "编码",
               value: a.encoding,
-              onChange: (h) => i({ ...a, encoding: h.target.value })
+              onChange: (w) => i({ ...a, encoding: w.target.value })
             }
           ),
           /* @__PURE__ */ f(
-            pt,
+            Hr,
             {
               "aria-label": "首行为表头",
               checked: a.hasHeader,
-              onChange: (h) => i({ ...a, hasHeader: h })
+              onChange: (w) => i({ ...a, hasHeader: w })
             }
           ),
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "字段映射",
               placeholder: "目标字段=来源字段，逗号分隔",
               value: s,
-              onChange: (h) => o(h.target.value)
+              onChange: (w) => o(w.target.value)
             }
           ),
           /* @__PURE__ */ f(
-            Q,
+            V,
             {
               "aria-label": "必填字段",
               placeholder: "必填字段，逗号分隔",
               value: u,
-              onChange: (h) => c(h.target.value)
+              onChange: (w) => c(w.target.value)
+            }
+          ),
+          /* @__PURE__ */ f(
+            V,
+            {
+              "aria-label": "日期目录模板",
+              placeholder: "YYYY-MM-DD / 留空按递归扫描",
+              value: a.directoryPattern,
+              onChange: (w) => i({ ...a, directoryPattern: w.target.value })
+            }
+          ),
+          /* @__PURE__ */ f(
+            V,
+            {
+              "aria-label": "日期文件模板",
+              placeholder: "yyyyMMdd-*.csv / 留空按文件名解析",
+              value: a.datePattern,
+              onChange: (w) => i({ ...a, datePattern: w.target.value })
+            }
+          ),
+          /* @__PURE__ */ f(
+            Hr,
+            {
+              "aria-label": "单文件模式",
+              checked: a.flat,
+              onChange: (w) => i({ ...a, flat: w })
+            }
+          ),
+          /* @__PURE__ */ f(
+            V.TextArea,
+            {
+              "aria-label": "元数据规则",
+              rows: 3,
+              placeholder: "每行：filename|正则(?P<value>...)|字段名|required",
+              value: l,
+              onChange: (w) => d(w.target.value)
             }
           )
         ] })
@@ -8416,7 +8471,7 @@ function g1({ block: e, ctx: r }) {
     )
   ] });
 }
-const $r = (e) => {
+const Lr = (e) => {
   const r = xe(e);
   return Array.isArray(r) ? r : [];
 }, y1 = (e) => new Promise((r, t) => {
@@ -8425,83 +8480,83 @@ const $r = (e) => {
 });
 function m1({ block: e, ctx: r }) {
   var ce, se, he, pe;
-  const [t, n] = I([]), [a, i] = I([]), [s, o] = I([]), [u, c] = I([]), [l, d] = I([]), [p, v] = I([]), [g, h] = I([]), [y, C] = I(), [x, _] = I(1), [A, L] = I("resource-{machine}"), [m, k] = I([]), [N, H] = I(""), [G, S] = I(""), [j, V] = I(null), [z, ie] = I(""), [ue, fe] = I(""), [B, J] = I(null), [E, T] = I("manual"), [M, ve] = I(""), [we, Se] = I(""), [Ze, Er] = I(""), [vr, Sr] = I(""), [We, Rr] = I(""), [ze, Qe] = I(null), [Be, le] = I(null), [ge, te] = I(1), [Re, Ue] = I(""), [er, ne] = I(null), [Ce, ee] = I(!1), X = F(async () => {
+  const [t, n] = q([]), [a, i] = q([]), [s, o] = q([]), [u, c] = q([]), [l, d] = q([]), [h, v] = q([]), [g, p] = q([]), [m, w] = q(), [x, b] = q(1), [k, M] = q("resource-{machine}"), [y, A] = q([]), [N, W] = q(""), [G, S] = q(""), [j, H] = q(null), [z, ie] = q(""), [ue, fe] = q(""), [B, J] = q(null), [E, T] = q("manual"), [$, ve] = q(""), [we, Se] = q(""), [Ze, Er] = q(""), [vr, Sr] = q(""), [We, Rr] = q(""), [ze, Qe] = q(null), [Be, le] = q(null), [ge, te] = q(1), [Re, Ue] = q(""), [er, ne] = q(null), [Ce, ee] = q(!1), X = F(async () => {
     try {
-      n($r(await r.hubQuery((e == null ? void 0 : e.query) ?? "industrial/bindings"))), i($r(await r.hubQuery("industrial/machines"))), o($r(await r.hubQuery("industrial/file-profiles"))), c($r(await r.hubQuery("industrial/workflows"))), d($r(await r.hubQuery("industrial/resources")));
+      n(Lr(await r.hubQuery((e == null ? void 0 : e.query) ?? "industrial/bindings"))), i(Lr(await r.hubQuery("industrial/machines"))), o(Lr(await r.hubQuery("industrial/file-profiles"))), c(Lr(await r.hubQuery("industrial/workflows"))), d(Lr(await r.hubQuery("industrial/resources")));
       try {
         J(await r.hubQuery("industrial/binding-status"));
       } catch {
       }
-    } catch (w) {
-      ne(w instanceof Error ? w.message : String(w));
+    } catch (I) {
+      ne(I instanceof Error ? I.message : String(I));
     }
   }, [e == null ? void 0 : e.query, r]);
   _e(() => {
     X();
   }, [X]);
-  const Ne = ht(() => {
-    const w = [];
-    for (const oe of p) for (const K of g) {
-      const Ye = `binding:${y ?? ""}:v${x}:${oe}:${K}`;
-      t.some((av) => av.id === Ye) && w.push(Ye);
+  const Ne = pt(() => {
+    const I = [];
+    for (const oe of h) for (const K of g) {
+      const Ye = `binding:${m ?? ""}:v${x}:${oe}:${K}`;
+      t.some((av) => av.id === Ye) && I.push(Ye);
     }
-    const P = m.filter((oe) => !l.some((K) => K.id === oe)), W = p.map((oe) => A.replace("{machine}", oe)).filter((oe) => !l.some((K) => K.id === oe));
+    const P = y.filter((oe) => !l.some((K) => K.id === oe)), Q = h.map((oe) => k.replace("{machine}", oe)).filter((oe) => !l.some((K) => K.id === oe));
     return {
-      total: p.length * g.length,
-      create: p.length * g.length - w.length,
-      conflicts: w,
-      missing: [...P, ...W]
+      total: h.length * g.length,
+      create: h.length * g.length - I.length,
+      conflicts: I,
+      missing: [...P, ...Q]
     };
-  }, [t, p, g, l, A, m, x, y]), ur = F(async () => {
-    var P, W, oe;
-    if (!y || p.length === 0 || g.length === 0 || m.length === 0) {
+  }, [t, h, g, l, k, y, x, m]), ur = F(async () => {
+    var P, Q, oe;
+    if (!m || h.length === 0 || g.length === 0 || y.length === 0) {
       ne("请选择工作流、机台、文件配置和目标资源");
       return;
     }
-    const w = {
-      machineIds: p,
+    const I = {
+      machineIds: h,
       fileProfileIds: g,
-      workflowId: y,
+      workflowId: m,
       workflowVersion: x,
-      sourceResourcePattern: A,
-      targetResourceIds: m,
+      sourceResourcePattern: k,
+      targetResourceIds: y,
       triggerKind: E,
-      cron: M || null,
+      cron: $ || null,
       parameters: Object.fromEntries(vr.split(";").map((K) => K.split("=")).filter((K) => K.length === 2 && K[0].trim() && K[1].trim()).map((K) => [K[0].trim(), K[1].trim()])),
       exclusions: We.split(/[,\n;]/).map((K) => K.trim()).filter(Boolean)
     };
     ee(!0), ne(null);
     try {
-      await r.hubCommand("industrial/preview-bindings", w);
+      await r.hubCommand("industrial/preview-bindings", I);
       const K = await r.hubQuery("industrial/binding-preview");
-      if (Qe(K), (((P = K == null ? void 0 : K.errors) == null ? void 0 : P.length) ?? 0) > 0 || (((W = K == null ? void 0 : K.missing) == null ? void 0 : W.length) ?? 0) > 0 || (((oe = K == null ? void 0 : K.conflicts) == null ? void 0 : oe.length) ?? 0) > 0) {
+      if (Qe(K), (((P = K == null ? void 0 : K.errors) == null ? void 0 : P.length) ?? 0) > 0 || (((Q = K == null ? void 0 : K.missing) == null ? void 0 : Q.length) ?? 0) > 0 || (((oe = K == null ? void 0 : K.conflicts) == null ? void 0 : oe.length) ?? 0) > 0) {
         ne("服务端预览发现问题，请检查冲突、缺失资源或例外规则后再创建");
         return;
       }
-      await r.hubCommand("industrial/create-bindings", w), await X();
+      await r.hubCommand("industrial/create-bindings", I), await X();
     } catch (K) {
       ne(K instanceof Error ? K.message : String(K));
     } finally {
       ee(!1);
     }
-  }, [r, M, We, X, g, vr, A, m, E, x, y, p]), Tr = F(async (w, P) => {
+  }, [r, $, We, X, g, vr, k, y, E, x, m, h]), Tr = F(async (I, P) => {
     ee(!0), ne(null);
     try {
-      await r.hubCommand("industrial/set-binding-enabled", { id: w.id, enabled: P }), await X();
-    } catch (W) {
-      ne(W instanceof Error ? W.message : String(W));
+      await r.hubCommand("industrial/set-binding-enabled", { id: I.id, enabled: P }), await X();
+    } catch (Q) {
+      ne(Q instanceof Error ? Q.message : String(Q));
     } finally {
       ee(!1);
     }
-  }, [r, X]), De = F(async (w, P) => {
+  }, [r, X]), De = F(async (I, P) => {
     ee(!0), ne(null);
     try {
       await r.hubCommand("industrial/run-binding", {
-        bindingId: w.id,
+        bindingId: I.id,
         lookbackDays: P
       }), J(await r.hubQuery("industrial/binding-status"));
-    } catch (W) {
-      ne(W instanceof Error ? W.message : String(W));
+    } catch (Q) {
+      ne(Q instanceof Error ? Q.message : String(Q));
     } finally {
       ee(!1);
     }
@@ -8509,8 +8564,8 @@ function m1({ block: e, ctx: r }) {
     ee(!0), ne(null);
     try {
       await r.hubCommand("industrial/import-file-profiles", { csv: we }), Se(""), await X();
-    } catch (w) {
-      ne(w instanceof Error ? w.message : String(w));
+    } catch (I) {
+      ne(I instanceof Error ? I.message : String(I));
     } finally {
       ee(!1);
     }
@@ -8518,19 +8573,19 @@ function m1({ block: e, ctx: r }) {
     ee(!0), ne(null);
     try {
       await r.hubCommand("industrial/import-bindings", { csv: Ze }), Er(""), await X();
-    } catch (w) {
-      ne(w instanceof Error ? w.message : String(w));
+    } catch (I) {
+      ne(I instanceof Error ? I.message : String(I));
     } finally {
       ee(!1);
     }
-  }, [r, X, Ze]), yr = F(async (w, P) => {
+  }, [r, X, Ze]), yr = F(async (I, P) => {
     if (P) {
       ee(!0), ne(null);
       try {
-        const W = w === "profiles" ? "industrial/import-file-profiles" : `industrial/import-${w}`;
-        await r.hubCommand(W, { xlsx: await y1(P) }), await X();
-      } catch (W) {
-        ne(W instanceof Error ? W.message : String(W));
+        const Q = I === "profiles" ? "industrial/import-file-profiles" : `industrial/import-${I}`;
+        await r.hubCommand(Q, { xlsx: await y1(P) }), await X();
+      } catch (Q) {
+        ne(Q instanceof Error ? Q.message : String(Q));
       } finally {
         ee(!1);
       }
@@ -8539,72 +8594,72 @@ function m1({ block: e, ctx: r }) {
     ee(!0), ne(null);
     try {
       await r.hubCommand("industrial/preview-bindings", {
-        machineIds: p,
+        machineIds: h,
         fileProfileIds: g,
-        workflowId: y,
+        workflowId: m,
         workflowVersion: x,
-        sourceResourcePattern: A,
-        targetResourceIds: m,
+        sourceResourcePattern: k,
+        targetResourceIds: y,
         triggerKind: E,
-        cron: M || null,
-        exclusions: We.split(/[,\n;]/).map((w) => w.trim()).filter(Boolean)
+        cron: $ || null,
+        exclusions: We.split(/[,\n;]/).map((I) => I.trim()).filter(Boolean)
       }), Qe(await r.hubQuery("industrial/binding-preview"));
-    } catch (w) {
-      ne(w instanceof Error ? w.message : String(w));
+    } catch (I) {
+      ne(I instanceof Error ? I.message : String(I));
     } finally {
       ee(!1);
     }
-  }, [r, M, We, p, g, g, A, m, E, x, y]), $e = F(async () => {
+  }, [r, $, We, h, g, g, k, y, E, x, m]), Le = F(async () => {
     ee(!0), ne(null);
     try {
       await r.hubCommand("industrial/preview-import", { csv: Ze }), le(await r.hubQuery("industrial/import-preview"));
-    } catch (w) {
-      ne(w instanceof Error ? w.message : String(w));
+    } catch (I) {
+      ne(I instanceof Error ? I.message : String(I));
     } finally {
       ee(!1);
     }
   }, [r, Ze]), Ke = F(async () => {
     ee(!0), ne(null);
     try {
-      const w = t.filter((P) => P.workflowId === y).map((P) => P.id);
-      await r.hubCommand("industrial/upgrade-binding-version", { ids: w, version: ge }), await X();
-    } catch (w) {
-      ne(w instanceof Error ? w.message : String(w));
+      const I = t.filter((P) => P.workflowId === m).map((P) => P.id);
+      await r.hubCommand("industrial/upgrade-binding-version", { ids: I, version: ge }), await X();
+    } catch (I) {
+      ne(I instanceof Error ? I.message : String(I));
     } finally {
       ee(!1);
     }
-  }, [t, r, X, ge, y]), Nt = F(async () => {
+  }, [t, r, X, ge, m]), Nt = F(async () => {
     ee(!0), ne(null);
     try {
-      await r.hubCommand("industrial/import-machines", { csv: N }), H(""), await X();
-    } catch (w) {
-      ne(w instanceof Error ? w.message : String(w));
+      await r.hubCommand("industrial/import-machines", { csv: N }), W(""), await X();
+    } catch (I) {
+      ne(I instanceof Error ? I.message : String(I));
     } finally {
       ee(!1);
     }
-  }, [r, N, X]), et = F(async () => {
+  }, [r, N, X]), rt = F(async () => {
     ne(null);
     try {
-      const w = await r.hubQuery("industrial/export-config"), P = (w == null ? void 0 : w.data) ?? w, W = JSON.stringify(P, null, 2);
-      S(W), V(P);
-      const oe = new Blob([W], { type: "application/json" }), K = window.URL.createObjectURL(oe), Ye = document.createElement("a");
+      const I = await r.hubQuery("industrial/export-config"), P = (I == null ? void 0 : I.data) ?? I, Q = JSON.stringify(P, null, 2);
+      S(Q), H(P);
+      const oe = new Blob([Q], { type: "application/json" }), K = window.URL.createObjectURL(oe), Ye = document.createElement("a");
       Ye.href = K, Ye.download = `gocordis-industrial-config-v${(P == null ? void 0 : P.formatVersion) ?? 1}.json`, Ye.click(), window.URL.revokeObjectURL(K);
-    } catch (w) {
-      ne(w instanceof Error ? w.message : String(w));
+    } catch (I) {
+      ne(I instanceof Error ? I.message : String(I));
     }
-  }, [r]), Lr = (w) => {
+  }, [r]), $r = (I) => {
     const P = {};
-    for (const W of w.split(/[\n,]/)) {
-      const [oe, K] = W.split("=").map((Ye) => Ye == null ? void 0 : Ye.trim());
+    for (const Q of I.split(/[\n,]/)) {
+      const [oe, K] = Q.split("=").map((Ye) => Ye == null ? void 0 : Ye.trim());
       oe && K && (P[oe] = K);
     }
     return P;
-  }, q = F(async (w) => {
-    if (w) {
+  }, C = F(async (I) => {
+    if (I) {
       ne(null);
       try {
-        const P = await w.text();
-        S(P), V(JSON.parse(P));
+        const P = await I.text();
+        S(P), H(JSON.parse(P));
       } catch (P) {
         ne(P instanceof Error ? P.message : String(P));
       }
@@ -8612,10 +8667,10 @@ function m1({ block: e, ctx: r }) {
   }, []), D = F(async () => {
     ee(!0), ne(null);
     try {
-      const w = JSON.parse(G);
-      w.resourceMap = Lr(z), w.credentialMap = Lr(ue), await r.hubCommand("industrial/import-config", w), await X();
-    } catch (w) {
-      ne(w instanceof Error ? w.message : String(w));
+      const I = JSON.parse(G);
+      I.resourceMap = $r(z), I.credentialMap = $r(ue), await r.hubCommand("industrial/import-config", I), await X();
+    } catch (I) {
+      ne(I instanceof Error ? I.message : String(I));
     } finally {
       ee(!1);
     }
@@ -8625,48 +8680,48 @@ function m1({ block: e, ctx: r }) {
     er && /* @__PURE__ */ f(Ee, { type: "error", showIcon: !0, message: er }),
     /* @__PURE__ */ R(Y, { wrap: !0, children: [
       /* @__PURE__ */ f(
-        Q,
+        V,
         {
           "aria-label": "工作流 ID",
           placeholder: "工作流 ID",
-          value: y ?? "",
-          onChange: (w) => C(w.target.value)
+          value: m ?? "",
+          onChange: (I) => w(I.target.value)
         }
       ),
       /* @__PURE__ */ f(
-        it,
+        st,
         {
           "aria-label": "模板版本",
           min: 1,
           value: x,
-          onChange: (w) => _(Number(w) || 1)
+          onChange: (I) => b(Number(I) || 1)
         }
       ),
       /* @__PURE__ */ f(
-        Q,
+        V,
         {
           "aria-label": "机台 ID 列表",
           placeholder: "机台 ID，逗号分隔",
-          value: p.join(","),
-          onChange: (w) => v(w.target.value.split(",").map((P) => P.trim()).filter(Boolean))
+          value: h.join(","),
+          onChange: (I) => v(I.target.value.split(",").map((P) => P.trim()).filter(Boolean))
         }
       ),
       /* @__PURE__ */ f(
-        Q,
+        V,
         {
           "aria-label": "文件配置 ID 列表",
           placeholder: "文件配置 ID，逗号分隔",
           value: g.join(","),
-          onChange: (w) => h(w.target.value.split(",").map((P) => P.trim()).filter(Boolean))
+          onChange: (I) => p(I.target.value.split(",").map((P) => P.trim()).filter(Boolean))
         }
       ),
       /* @__PURE__ */ f(
-        Q,
+        V,
         {
           "aria-label": "目标资源 ID 列表",
           placeholder: "目标资源 ID，逗号分隔",
-          value: m.join(","),
-          onChange: (w) => k(w.target.value.split(",").map((P) => P.trim()).filter(Boolean))
+          value: y.join(","),
+          onChange: (I) => A(I.target.value.split(",").map((P) => P.trim()).filter(Boolean))
         }
       ),
       /* @__PURE__ */ R(
@@ -8674,7 +8729,7 @@ function m1({ block: e, ctx: r }) {
         {
           "aria-label": "绑定触发策略",
           value: E,
-          onChange: (w) => T(w.target.value),
+          onChange: (I) => T(I.target.value),
           children: [
             /* @__PURE__ */ f("option", { value: "manual", children: "手动" }),
             /* @__PURE__ */ f("option", { value: "schedule", children: "定时" })
@@ -8682,47 +8737,47 @@ function m1({ block: e, ctx: r }) {
         }
       ),
       /* @__PURE__ */ f(
-        Q,
+        V,
         {
           "aria-label": "绑定 Cron",
           placeholder: "cron（定时策略）",
-          value: M,
-          onChange: (w) => ve(w.target.value)
+          value: $,
+          onChange: (I) => ve(I.target.value)
         }
       ),
       /* @__PURE__ */ f(
-        Q,
+        V,
         {
           "aria-label": "来源资源模板",
           placeholder: "来源资源模板，{machine} 占位符",
-          value: A,
-          onChange: (w) => L(w.target.value)
+          value: k,
+          onChange: (I) => M(I.target.value)
         }
       ),
       /* @__PURE__ */ f(
-        Q,
+        V,
         {
           "aria-label": "运行参数",
           placeholder: "运行参数，如 lookbackDays=7;shift=day",
           value: vr,
-          onChange: (w) => Sr(w.target.value)
+          onChange: (I) => Sr(I.target.value)
         }
       ),
       /* @__PURE__ */ f(
-        Q,
+        V,
         {
           "aria-label": "例外规则",
           placeholder: "例外规则：机台:文件配置，逗号或换行分隔",
           value: We,
-          onChange: (w) => Rr(w.target.value)
+          onChange: (I) => Rr(I.target.value)
         }
       )
     ] }),
     /* @__PURE__ */ R(Y, { wrap: !0, children: [
-      /* @__PURE__ */ f($, { size: "small", onClick: () => v(a.map((w) => w.id)), children: "全选机台" }),
-      /* @__PURE__ */ f($, { size: "small", onClick: () => h(s.map((w) => w.id)), children: "全选文件配置" }),
-      /* @__PURE__ */ f($, { size: "small", onClick: () => {
-        v([]), h([]);
+      /* @__PURE__ */ f(L, { size: "small", onClick: () => v(a.map((I) => I.id)), children: "全选机台" }),
+      /* @__PURE__ */ f(L, { size: "small", onClick: () => p(s.map((I) => I.id)), children: "全选文件配置" }),
+      /* @__PURE__ */ f(L, { size: "small", onClick: () => {
+        v([]), p([]);
       }, children: "清空范围" })
     ] }),
     /* @__PURE__ */ f(
@@ -8735,9 +8790,9 @@ function m1({ block: e, ctx: r }) {
       }
     ),
     /* @__PURE__ */ R(Y, { wrap: !0, children: [
-      /* @__PURE__ */ f($, { type: "primary", loading: Ce, onClick: () => void ur(), children: "生成绑定" }),
-      /* @__PURE__ */ f($, { loading: Ce, onClick: () => void kr(), children: "预览绑定" }),
-      /* @__PURE__ */ f($, { loading: Ce, onClick: () => void $e(), children: "预览导入" })
+      /* @__PURE__ */ f(L, { type: "primary", loading: Ce, onClick: () => void ur(), children: "生成绑定" }),
+      /* @__PURE__ */ f(L, { loading: Ce, onClick: () => void kr(), children: "预览绑定" }),
+      /* @__PURE__ */ f(L, { loading: Ce, onClick: () => void Le(), children: "预览导入" })
     ] }),
     ze && /* @__PURE__ */ f(
       Ee,
@@ -8756,60 +8811,60 @@ function m1({ block: e, ctx: r }) {
         showIcon: !0,
         "data-testid": "import-preview-report",
         message: `导入预览：${Be.valid ?? 0}/${Be.total ?? 0} 行有效`,
-        description: (Be.errors ?? []).map((w, P) => /* @__PURE__ */ R("div", { "data-testid": `import-error-row-${w.row}`, children: [
+        description: (Be.errors ?? []).map((I, P) => /* @__PURE__ */ R("div", { "data-testid": `import-error-row-${I.row}`, children: [
           "第 ",
-          w.row,
+          I.row,
           " 行：",
-          w.message
+          I.message
         ] }, P))
       }
     ),
     /* @__PURE__ */ R(Y, { wrap: !0, children: [
       /* @__PURE__ */ f(
-        it,
+        st,
         {
           "aria-label": "升级到模板版本",
           min: 1,
           value: ge,
-          onChange: (w) => te(Number(w) || 1)
+          onChange: (I) => te(Number(I) || 1)
         }
       ),
-      /* @__PURE__ */ f($, { loading: Ce, onClick: () => void Ke(), children: "升级当前工作流绑定版本" })
+      /* @__PURE__ */ f(L, { loading: Ce, onClick: () => void Ke(), children: "升级当前工作流绑定版本" })
     ] }),
     /* @__PURE__ */ f(U.Title, { level: 5, style: { margin: 0 }, children: "批量导入机台（CSV）" }),
     /* @__PURE__ */ f(
-      Q.TextArea,
+      V.TextArea,
       {
         "aria-label": "机台 CSV",
         rows: 4,
         value: N,
         placeholder: "id,name,endpoint,credentialId",
-        onChange: (w) => H(w.target.value)
+        onChange: (I) => W(I.target.value)
       }
     ),
-    /* @__PURE__ */ f($, { loading: Ce, onClick: () => void Nt(), children: "导入机台" }),
+    /* @__PURE__ */ f(L, { loading: Ce, onClick: () => void Nt(), children: "导入机台" }),
     /* @__PURE__ */ f(
-      Q.TextArea,
+      V.TextArea,
       {
         "aria-label": "文件配置 CSV",
         rows: 3,
         value: we,
         placeholder: "id,name,fileNamePattern,format,delimiter,hasHeader,encoding,mapping,required",
-        onChange: (w) => Se(w.target.value)
+        onChange: (I) => Se(I.target.value)
       }
     ),
-    /* @__PURE__ */ f($, { loading: Ce, onClick: () => void xr(), children: "导入文件配置" }),
+    /* @__PURE__ */ f(L, { loading: Ce, onClick: () => void xr(), children: "导入文件配置" }),
     /* @__PURE__ */ f(
-      Q.TextArea,
+      V.TextArea,
       {
         "aria-label": "绑定 CSV",
         rows: 3,
         value: Ze,
         placeholder: "id,name,machineId,workflowId,workflowVersion,fileProfileId,sourceResourceId,targetResourceIds,triggerKind,cron",
-        onChange: (w) => Er(w.target.value)
+        onChange: (I) => Er(I.target.value)
       }
     ),
-    /* @__PURE__ */ f($, { loading: Ce, onClick: () => void gr(), children: "导入采集绑定" }),
+    /* @__PURE__ */ f(L, { loading: Ce, onClick: () => void gr(), children: "导入采集绑定" }),
     /* @__PURE__ */ f(U.Title, { level: 5, style: { margin: 0 }, children: "Excel 批量导入（.xlsx，选择即导入）" }),
     /* @__PURE__ */ R(Y, { wrap: !0, children: [
       /* @__PURE__ */ R("label", { children: [
@@ -8820,9 +8875,9 @@ function m1({ block: e, ctx: r }) {
             type: "file",
             accept: ".xlsx",
             "aria-label": "机台 Excel 文件",
-            onChange: (w) => {
+            onChange: (I) => {
               var P;
-              return void yr("machines", (P = w.target.files) == null ? void 0 : P[0]);
+              return void yr("machines", (P = I.target.files) == null ? void 0 : P[0]);
             }
           }
         )
@@ -8835,9 +8890,9 @@ function m1({ block: e, ctx: r }) {
             type: "file",
             accept: ".xlsx",
             "aria-label": "文件配置 Excel 文件",
-            onChange: (w) => {
+            onChange: (I) => {
               var P;
-              return void yr("profiles", (P = w.target.files) == null ? void 0 : P[0]);
+              return void yr("profiles", (P = I.target.files) == null ? void 0 : P[0]);
             }
           }
         )
@@ -8850,9 +8905,9 @@ function m1({ block: e, ctx: r }) {
             type: "file",
             accept: ".xlsx",
             "aria-label": "绑定 Excel 文件",
-            onChange: (w) => {
+            onChange: (I) => {
               var P;
-              return void yr("bindings", (P = w.target.files) == null ? void 0 : P[0]);
+              return void yr("bindings", (P = I.target.files) == null ? void 0 : P[0]);
             }
           }
         )
@@ -8860,8 +8915,8 @@ function m1({ block: e, ctx: r }) {
     ] }),
     /* @__PURE__ */ f(U.Title, { level: 5, style: { margin: 0 }, children: "配置包（不含凭证）" }),
     /* @__PURE__ */ R(Y, { wrap: !0, children: [
-      /* @__PURE__ */ f($, { onClick: () => void et(), children: "导出配置" }),
-      /* @__PURE__ */ f($, { loading: Ce, onClick: () => void D(), children: "导入配置" }),
+      /* @__PURE__ */ f(L, { onClick: () => void rt(), children: "导出配置" }),
+      /* @__PURE__ */ f(L, { loading: Ce, onClick: () => void D(), children: "导入配置" }),
       /* @__PURE__ */ R("label", { children: [
         "上传配置文件",
         /* @__PURE__ */ f(
@@ -8870,9 +8925,9 @@ function m1({ block: e, ctx: r }) {
             type: "file",
             accept: ".json,application/json",
             "aria-label": "上传配置文件",
-            onChange: (w) => {
+            onChange: (I) => {
               var P;
-              return void q((P = w.target.files) == null ? void 0 : P[0]);
+              return void C((P = I.target.files) == null ? void 0 : P[0]);
             }
           }
         )
@@ -8885,72 +8940,72 @@ function m1({ block: e, ctx: r }) {
         showIcon: !0,
         "data-testid": "package-dependencies",
         message: `配置包 v${j.formatVersion ?? 1} · ${j.dependencies.length} 项依赖`,
-        description: j.dependencies.map((w, P) => /* @__PURE__ */ R("div", { children: [
-          w.kind,
+        description: j.dependencies.map((I, P) => /* @__PURE__ */ R("div", { children: [
+          I.kind,
           ": ",
-          w.id,
-          w.version ? ` @ ${w.version}` : ""
+          I.id,
+          I.version ? ` @ ${I.version}` : ""
         ] }, P))
       }
     ),
     /* @__PURE__ */ f(
-      Q,
+      V,
       {
         "aria-label": "资源 ID 映射",
         placeholder: "旧资源ID=新资源ID，逗号或换行分隔",
         value: z,
-        onChange: (w) => ie(w.target.value)
+        onChange: (I) => ie(I.target.value)
       }
     ),
     /* @__PURE__ */ f(
-      Q,
+      V,
       {
         "aria-label": "凭证别名映射",
         placeholder: "旧凭证ID=新凭证ID",
         value: ue,
-        onChange: (w) => fe(w.target.value)
+        onChange: (I) => fe(I.target.value)
       }
     ),
     /* @__PURE__ */ f(
-      Q.TextArea,
+      V.TextArea,
       {
         "aria-label": "配置包",
         rows: 5,
         value: G,
         placeholder: "导出后可跨环境导入；资源 ID 需自行映射",
-        onChange: (w) => S(w.target.value)
+        onChange: (I) => S(I.target.value)
       }
     ),
     /* @__PURE__ */ f(
-      Q,
+      V,
       {
         "aria-label": "绑定筛选",
         placeholder: "按绑定名称/ID筛选",
         value: Re,
-        onChange: (w) => Ue(w.target.value)
+        onChange: (I) => Ue(I.target.value)
       }
     ),
     /* @__PURE__ */ f(
       Ae,
       {
         rowKey: "id",
-        dataSource: t.filter((w) => !Re || `${w.id} ${w.name}`.includes(Re)),
+        dataSource: t.filter((I) => !Re || `${I.id} ${I.name}`.includes(Re)),
         pagination: { pageSize: 20 },
         columns: [
           { title: "绑定", dataIndex: "name" },
           { title: "机台", dataIndex: "machineId" },
           { title: "文件配置", dataIndex: "fileProfileId" },
           { title: "模板版本", dataIndex: "workflowVersion" },
-          { title: "运行参数", key: "parameters", render: (w, P) => /* @__PURE__ */ f("span", { "data-testid": `binding-parameters-${P.id}`, children: Object.entries(P.parameters ?? {}).map(([W, oe]) => `${W}=${oe}`).join(";") || "—" }) },
-          { title: "状态", dataIndex: "enabled", render: (w, P) => /* @__PURE__ */ R(Y, { children: [
-            /* @__PURE__ */ f($, { size: "small", onClick: () => void Tr(P, !P.enabled), children: P.enabled ? "暂停" : "恢复" }),
-            /* @__PURE__ */ f($, { size: "small", onClick: () => void De(P, 7), children: "补采 7 天" }),
-            /* @__PURE__ */ f($, { size: "small", onClick: () => void De(P, 1), children: "运行" })
+          { title: "运行参数", key: "parameters", render: (I, P) => /* @__PURE__ */ f("span", { "data-testid": `binding-parameters-${P.id}`, children: Object.entries(P.parameters ?? {}).map(([Q, oe]) => `${Q}=${oe}`).join(";") || "—" }) },
+          { title: "状态", dataIndex: "enabled", render: (I, P) => /* @__PURE__ */ R(Y, { children: [
+            /* @__PURE__ */ f(L, { size: "small", onClick: () => void Tr(P, !P.enabled), children: P.enabled ? "暂停" : "恢复" }),
+            /* @__PURE__ */ f(L, { size: "small", onClick: () => void De(P, 7), children: "补采 7 天" }),
+            /* @__PURE__ */ f(L, { size: "small", onClick: () => void De(P, 1), children: "运行" })
           ] }) },
-          { title: "排障", key: "diagnostics", render: (w, P) => {
-            const W = ((B == null ? void 0 : B.runs) ?? []).filter((K) => K.workflowId === P.workflowId), oe = ((B == null ? void 0 : B.deliveries) ?? []).filter((K) => K.status === "Failed");
+          { title: "排障", key: "diagnostics", render: (I, P) => {
+            const Q = ((B == null ? void 0 : B.runs) ?? []).filter((K) => K.workflowId === P.workflowId), oe = ((B == null ? void 0 : B.deliveries) ?? []).filter((K) => K.status === "Failed");
             return /* @__PURE__ */ R(U.Text, { style: { fontSize: 11 }, children: [
-              W.length ? `最近运行 ${W[0].status}` : "暂无运行",
+              Q.length ? `最近运行 ${Q[0].status}` : "暂无运行",
               " · 失败交付 ",
               oe.length
             ] });
@@ -9007,10 +9062,10 @@ function _1(e) {
   iv(e);
   const r = typeof document > "u" ? null : document.createElement("style");
   r && (r.dataset.industrialDesigner = "true", r.textContent = b1, document.head.appendChild(r));
-  const t = ({ ctx: i }) => Lo(r1, { ctx: i });
+  const t = ({ ctx: i }) => $o(r1, { ctx: i });
   t.displayName = "IndustrialWorkflowCanvas";
   const n = (i, s) => {
-    const o = ({ block: u, ctx: c }) => Lo(s, { block: u, ctx: c });
+    const o = ({ block: u, ctx: c }) => $o(s, { block: u, ctx: c });
     return o.displayName = i, e.blocks.register(i, o);
   }, a = [
     e.blocks.register("industrial-workflow-canvas", t),

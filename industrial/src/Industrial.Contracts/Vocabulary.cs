@@ -187,13 +187,17 @@ public interface ICredentialVault
 
 /// <summary>Reusable file parsing/mapping/validation configuration. Does not
 /// contain machine identity or connection secrets.</summary>
+public sealed record MetadataRule(string From, string Pattern, string Key, bool Required = true);
+
 public sealed record FileProfileDefinition(
     string Id, string Name, int Version,
     string FileNamePattern, string Format, string Delimiter,
     bool HasHeader, string Encoding,
     IReadOnlyDictionary<string, object?> Mapping,
     IReadOnlyList<string> RequiredFields,
-    bool Enabled, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+    bool Enabled, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
+    string DirectoryPattern = "", string DatePattern = "", bool Flat = false,
+    IReadOnlyList<MetadataRule>? MetadataRules = null);
 
 /// <summary>Binds a machine + file profile + workflow template version to the
 /// concrete resources used at runtime. A binding never stores a copied workflow
@@ -470,6 +474,31 @@ public sealed record CollectionFile(
     DateTimeOffset CollectedAt,
     string Status);
 
+/// <summary>Business date identity: one source/binding day, independent of
+/// WorkflowRun. This is the industrial equivalent of Go's CollectionDate.
+/// </summary>
+public sealed record CollectionDateState(
+    string Id,
+    string BindingId,
+    DateOnly BusinessDate,
+    string Status,
+    int Attempts,
+    string? LeaseToken,
+    DateTimeOffset? LeaseExpiresAt,
+    string? LastRunId,
+    int Files,
+    string? Error);
+
+public static class CollectionDateStatus
+{
+    public const string Pending = "Pending";
+    public const string Running = "Running";
+    public const string Succeeded = "Succeeded";
+    public const string NoData = "NoData";
+    public const string Failed = "Failed";
+    public const string Interrupted = "Interrupted";
+}
+
 public sealed record FileDelivery(
     string Id,
     string CollectionFileId,
@@ -588,6 +617,12 @@ public interface ICollectionLedger
         string runId, string status, string? error, CancellationToken ct = default);
     ValueTask<CollectionRun> FinalizeRunAsync(string runId, CancellationToken ct = default);
     ValueTask<CollectionRun> CancelRunAsync(string runId, string reason, CancellationToken ct = default);
+    /// <summary>Business-date ledger: ids are bindingId|YYYY-MM-DD.</summary>
+    ValueTask<IReadOnlyList<CollectionDateState>> ListDatesAsync(CancellationToken ct = default);
+    ValueTask<CollectionDateState?> ClaimDateAsync(
+        string bindingId, DateOnly date, string runId, TimeSpan lease, CancellationToken ct = default);
+    ValueTask CompleteDateAsync(
+        string id, string token, string status, int files, string? error, CancellationToken ct = default);
     ValueTask<int> RecoverExpiredLeasesAsync(DateTimeOffset now, CancellationToken ct = default);
     ValueTask<int> RecoverAbandonedLeasesAsync(CancellationToken ct = default);
     /// <summary>Atomic at-most-once claim for a scheduled cron occurrence.
@@ -632,6 +667,10 @@ public interface ICollectionLedger
     /// silently repointed at another execution's stage data.</summary>
     ValueTask<bool> SetRunInstanceAsync(string runId, string instanceId, CancellationToken ct = default);
     ValueTask<string?> GetRunInstanceAsync(string runId, CancellationToken ct = default);
+    /// <summary>The exact definition snapshot used by the run, including
+    /// binding parameters and FileProfile substitution.</summary>
+    ValueTask SetRunDefinitionAsync(string runId, string definitionJson, CancellationToken ct = default);
+    ValueTask<string?> GetRunDefinitionAsync(string runId, CancellationToken ct = default);
     ValueTask<IReadOnlyList<CollectionRun>> ListRunsAsync(CancellationToken ct = default);
     ValueTask<CollectionFile> DiscoverAsync(string collectionId, DiscoveredFile file, CancellationToken ct = default);
     ValueTask<CollectionFile?> GetFileByIdentityAsync(string identityKey, CancellationToken ct = default);

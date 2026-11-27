@@ -80,10 +80,20 @@ public sealed class LocalFileSource : IFileSource
         var root = resource.Configuration.TryGetValue("root", out var value)
             ? value?.ToString()
             : null;
-        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+        if (string.IsNullOrWhiteSpace(root)) return [];
+        // Flat mode: the resource root is the file itself (Go's single-file
+        // source), not a directory that happens to contain one file.
+        if (File.Exists(root))
         {
-            return [];
+            var parent = Path.GetDirectoryName(Path.GetFullPath(root)) ?? root;
+            var identity = FileIdentityFactory.Create(root, parent, resource.Id);
+            var flatDate = FileIdentityFactory.ParseSourceDate(Path.GetFileName(root))
+                           ?? identity.LastWriteUtc;
+            return flatDate < range.FromInclusive || flatDate >= range.ToExclusive
+                ? []
+                : [new DiscoveredFile(identity, root, flatDate, resource.Id)];
         }
+        if (!Directory.Exists(root)) return [];
 
         var result = new List<DiscoveredFile>();
         var files = DiscoveredFilePatterns.Enumerate(root, _extensions);

@@ -89,6 +89,7 @@ public sealed class IndustrialElsaComponent : Component
     private readonly ConcurrentDictionary<string, string> _lastScheduleError = new(StringComparer.Ordinal);
     private JsonObject? _lastBackfillPreview;
     private JsonObject? _lastBindingTick;
+    private JsonObject? _lastBindingValues;
     private int _bindingConcurrency = 8;
 
     public IndustrialElsaComponent() : this(null) { }
@@ -318,6 +319,8 @@ public sealed class IndustrialElsaComponent : Component
                         ledger, resources, vault, planner, source, reader, stage,
                         sinkFactories, sink, archive, context.CancellationToken);
                 }, owner);
+                api.RegisterQuery("industrial/binding-run-parameters", () =>
+                    _lastBindingValues is null ? null : (JsonNode)_lastBindingValues.DeepClone(), owner);
                 api.RegisterQuery("industrial/binding-scheduler-status", () =>
                     _lastBindingTick is null
                         ? null
@@ -1290,8 +1293,11 @@ public sealed class IndustrialElsaComponent : Component
             ["Binding"] = binding.Id,
             ["Machine"] = binding.MachineId,
             ["Profile"] = binding.FileProfileId,
+            ["FileProfile"] = binding.FileProfileId,
             ["SourceResource"] = binding.SourceResourceId,
         };
+        foreach (var pair in binding.Parameters ?? new Dictionary<string, object?>())
+            values[pair.Key] = pair.Value?.ToString() ?? string.Empty;
         for (var index = 0; index < binding.TargetResourceIds.Count; index++)
         {
             values[index == 0 ? "TargetResource" : $"TargetResource{index + 1}"] =
@@ -1311,6 +1317,8 @@ public sealed class IndustrialElsaComponent : Component
             values["Required"] = string.Join(";", profile.RequiredFields);
         }
 
+        _lastBindingValues = new JsonObject(values
+            .Select(pair => KeyValuePair.Create<string, JsonNode?>(pair.Key, JsonValue.Create(pair.Value))));
         var bound = WorkflowBinding.BindParameters(published.Definition, values);
         var layout = new Dictionary<string, object?>(bound.Layout, StringComparer.Ordinal)
         {

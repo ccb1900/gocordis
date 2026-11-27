@@ -104,13 +104,15 @@ public sealed class CollectionBindingRegistry(Func<IndustrialDbContext> db) : IC
             """
             INSERT OR REPLACE INTO CollectionBindings
               (Id, Name, MachineId, WorkflowId, WorkflowVersion, FileProfileId,
-               SourceResourceId, TargetJson, TriggerJson, Enabled, CreatedAt, UpdatedAt)
-            VALUES ({0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11});
+               SourceResourceId, TargetJson, TriggerJson, ParametersJson, Enabled, CreatedAt, UpdatedAt)
+            VALUES ({0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11},{12});
             """,
             [next.Id, next.Name, next.MachineId, next.WorkflowId, next.WorkflowVersion,
              next.FileProfileId, next.SourceResourceId,
              JsonSerializer.Serialize(next.TargetResourceIds, Json),
-             JsonSerializer.Serialize(next.Trigger, Json), next.Enabled ? 1 : 0,
+             JsonSerializer.Serialize(next.Trigger, Json),
+             JsonSerializer.Serialize(next.Parameters ?? new Dictionary<string, object?>(), Json),
+             next.Enabled ? 1 : 0,
              next.CreatedAt.ToString("O"), DateTimeOffset.UtcNow.ToString("O")], ct);
         return next;
     }
@@ -134,7 +136,8 @@ public sealed class CollectionBindingRegistry(Func<IndustrialDbContext> db) : IC
     public async ValueTask<BindingPreview> PreviewBulkAsync(
         IReadOnlyList<string> machineIds, IReadOnlyList<string> fileProfileIds,
         string workflowId, int workflowVersion, string sourceResourcePattern,
-        IReadOnlyList<string> targetResourceIds, CancellationToken ct = default)
+        IReadOnlyList<string> targetResourceIds, IReadOnlyList<string>? exclusions = null,
+        CancellationToken ct = default)
     {
         await using var context = db();
         var errors = new List<string>();
@@ -164,10 +167,12 @@ public sealed class CollectionBindingRegistry(Func<IndustrialDbContext> db) : IC
         foreach (var machine in machineIds)
         foreach (var profile in fileProfileIds)
         {
+            if (IsExcluded(machine, profile, exclusions)) continue;
             var id = BindingId(workflowId, workflowVersion, machine, profile);
             if (existing.Any(b => b.Id == id)) conflicts.Add(id);
         }
-        var total = machineIds.Count * fileProfileIds.Count;
+        var total = machineIds.Sum(machine => fileProfileIds.Count(
+            profile => !IsExcluded(machine, profile, exclusions)));
         return new BindingPreview(total, total - conflicts.Count - errors.Count,
             conflicts, missing, errors);
     }
@@ -176,15 +181,17 @@ public sealed class CollectionBindingRegistry(Func<IndustrialDbContext> db) : IC
         IReadOnlyList<string> machineIds, IReadOnlyList<string> fileProfileIds,
         string workflowId, int workflowVersion, string sourceResourcePattern,
         IReadOnlyList<string> targetResourceIds, string triggerKind = "manual",
-        string? cron = null, CancellationToken ct = default)
+        string? cron = null, IReadOnlyDictionary<string, object?>? parameters = null,
+        IReadOnlyList<string>? exclusions = null, CancellationToken ct = default)
     {
         var preview = await PreviewBulkAsync(machineIds, fileProfileIds, workflowId, workflowVersion,
-            sourceResourcePattern, targetResourceIds, ct);
+            sourceResourcePattern, targetResourceIds, exclusions, ct);
         if (preview.Errors.Count > 0 || preview.MissingResources.Count > 0) return preview;
         var created = 0;
         foreach (var machine in machineIds)
         foreach (var profile in fileProfileIds)
         {
+            if (IsExcluded(machine, profile, exclusions)) continue;
             var id = BindingId(workflowId, workflowVersion, machine, profile);
             if (preview.Conflicts.Contains(id)) continue;
             await RegisterAsync(new CollectionBindingDefinition(
@@ -192,7 +199,7 @@ public sealed class CollectionBindingRegistry(Func<IndustrialDbContext> db) : IC
                 sourceResourcePattern.Replace("{machine}", machine, StringComparison.Ordinal),
                 targetResourceIds,
                 new TriggerDefinition(triggerKind, cron, null, new Dictionary<string, object?>()),
-                true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow), ct);
+                true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, parameters), ct);
             created++;
         }
         return preview with { Created = created };
@@ -205,6 +212,9 @@ public sealed class CollectionBindingRegistry(Func<IndustrialDbContext> db) : IC
             "DELETE FROM CollectionBindings WHERE Id = {0};", [id], ct) > 0;
     }
 
+    private static bool IsExcluded(string machine, string profile, IReadOnlyList<string>? exclusions) =>
+        exclusions?.Contains($"{machine}:{profile}", StringComparer.Ordinal) == true;
+
     private static string BindingId(string workflowId, int version, string machine, string profile) =>
         $"binding:{workflowId}:v{version}:{machine}:{profile}";
 
@@ -216,7 +226,9 @@ public sealed class CollectionBindingRegistry(Func<IndustrialDbContext> db) : IC
         ?? new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
         row.Enabled != 0,
         DateTimeOffset.Parse(row.CreatedAt, CultureInfo.InvariantCulture),
-        DateTimeOffset.Parse(row.UpdatedAt, CultureInfo.InvariantCulture));
+        DateTimeOffset.Parse(row.UpdatedAt, CultureInfo.InvariantCulture),
+        JsonSerializer.Deserialize<Dictionary<string, object?>>(
+            string.IsNullOrWhiteSpace(row.ParametersJson) ? "{}" : row.ParametersJson, Json) ?? []);
 
     private sealed class BindingRow
     {
@@ -224,7 +236,8 @@ public sealed class CollectionBindingRegistry(Func<IndustrialDbContext> db) : IC
         public string MachineId { get; set; } = ""; public string WorkflowId { get; set; } = "";
         public int WorkflowVersion { get; set; } public string FileProfileId { get; set; } = "";
         public string SourceResourceId { get; set; } = ""; public string TargetJson { get; set; } = "[]";
-        public string TriggerJson { get; set; } = "{}"; public int Enabled { get; set; }
+        public string TriggerJson { get; set; } = "{}";
+        public string ParametersJson { get; set; } = "{}"; public int Enabled { get; set; }
         public string CreatedAt { get; set; } = ""; public string UpdatedAt { get; set; } = "";
     }
 

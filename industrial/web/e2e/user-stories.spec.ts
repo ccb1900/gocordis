@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import fs from "node:fs";
 
 
 async function chooseAntd(page: any, label: string, option: string) {
@@ -67,12 +68,26 @@ test("a user configures a schedule and sees its next run", async ({ page }) => {
 });
 
 test("a user previews a backfill before running it", async ({ page }) => {
-  await page.request.post("/api/command/industrial/save-workflow", { data: flow });
+  const sourceDir = "/tmp/gocordis-backfill-preview-source";
+  fs.mkdirSync(sourceDir, { recursive: true });
+  fs.writeFileSync(`${sourceDir}/recent.csv`, "record_id,reading\n1,42\n");
+  expect((await page.request.post("/api/command/industrial/save-resource", { data: {
+    id: "backfill-source", name: "Backfill source", type: "filesystem.local",
+    provider: "local", config: { root: sourceDir }, enabled: true,
+  } })).ok()).toBe(true);
+  const previewFlow = {
+    ...flow,
+    nodes: flow.nodes.map((node) => node.id === "src"
+      ? { ...node, config: { resourceId: "backfill-source" } } : node),
+    resourceReferences: ["backfill-source"],
+  };
+  expect((await page.request.post("/api/command/industrial/save-workflow", { data: previewFlow })).ok()).toBe(true);
   await page.goto("/industrial/designer?workflowId=browser-user-flow");
   await page.getByTestId("open-backfill-preview").click();
+  await page.getByLabel("运行资源").selectOption("backfill-source").catch(() => {});
   await page.getByRole("button", { name: /扫描最近 1 天/ }).click();
   await expect(page.getByText(/发现 \d+ 个文件/)).toBeVisible();
-  await expect(page.getByText(/recent\.csv/).first()).toBeVisible();
+  await expect.poll(async () => page.getByText(/recent\.csv/).count()).toBeGreaterThan(0);
 });
 
 test("a user sees per-file processing details and classified failures", async ({ page }) => {

@@ -204,7 +204,8 @@ public sealed record CollectionBindingDefinition(
     string FileProfileId, string SourceResourceId,
     IReadOnlyList<string> TargetResourceIds,
     TriggerDefinition Trigger,
-    bool Enabled, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+    bool Enabled, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
+    IReadOnlyDictionary<string, object?>? Parameters = null);
 
 public sealed record BindingPreview(
     int Total, int Created, IReadOnlyList<string> Conflicts,
@@ -226,12 +227,14 @@ public interface ICollectionBindingRegistry
     ValueTask<BindingPreview> PreviewBulkAsync(
         IReadOnlyList<string> machineIds, IReadOnlyList<string> fileProfileIds,
         string workflowId, int workflowVersion, string sourceResourcePattern,
-        IReadOnlyList<string> targetResourceIds, CancellationToken ct = default);
+        IReadOnlyList<string> targetResourceIds, IReadOnlyList<string>? exclusions = null,
+        CancellationToken ct = default);
     ValueTask<BindingPreview> CreateBulkAsync(
         IReadOnlyList<string> machineIds, IReadOnlyList<string> fileProfileIds,
         string workflowId, int workflowVersion, string sourceResourcePattern,
         IReadOnlyList<string> targetResourceIds, string triggerKind = "manual",
-        string? cron = null, CancellationToken ct = default);
+        string? cron = null, IReadOnlyDictionary<string, object?>? parameters = null,
+        IReadOnlyList<string>? exclusions = null, CancellationToken ct = default);
     ValueTask<bool> RemoveAsync(string id, CancellationToken ct = default);
 }
 

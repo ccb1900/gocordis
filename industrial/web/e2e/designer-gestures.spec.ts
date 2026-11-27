@@ -55,7 +55,11 @@ test("G6 native gestures: port drag connects, node drag moves, canvas drag pans,
   // below must create it again.
   await page.getByTestId("toggle-properties").click();
   await expect(page.getByText(/相关连线 \(3/ )).toBeVisible();
-  await page.getByRole("row").filter({ hasText: "src → read" })
+  const related = page.getByText(/相关连线/);
+  if (!(await related.isVisible())) await page.getByTestId("toggle-properties").click();
+  await expect(related).toBeVisible();
+  await page.getByLabel("连线 0 起点节点")
+    .locator("xpath=ancestor::tr")
     .getByRole("button", { name: "删" }).click();
   await expect(page.getByText(/相关连线 \(2/ )).toBeVisible();
   await page.getByTestId("toggle-properties").click();

@@ -118,8 +118,26 @@ export function workflowToG6(
   };
 }
 
+/** Grid used by the snapline plugin and by committed drag positions. */
+export const GRID_SIZE = 20;
+
+/** Nodes whose snapped positions line up expose an alignment guide. The same
+ * values drive G6's snapline plugin and the browser-visible hint. */
+export function alignmentGuides(positions: Record<string, { x: number; y: number }>): string[] {
+  const values = Object.values(positions);
+  const guides = new Set<string>();
+  for (let first = 0; first < values.length; first++) {
+    for (let second = first + 1; second < values.length; second++) {
+      if (values[first].x === values[second].x) guides.add(`x=${values[first].x}`);
+      if (values[first].y === values[second].y) guides.add(`y=${values[first].y}`);
+    }
+  }
+  return [...guides];
+}
+
 /** Read positions back from G6. `onlyIds` limits a node drag to the nodes G6
- * actually moved; passing all ids used to commit the whole layout. */
+ * actually moved; passing all ids used to commit the whole layout. Positions
+ * are snapped to the visible grid so committed definitions match the guide. */
 export function positionsFromG6(
   data: G6GraphData,
   allowedIds: ReadonlySet<string>,
@@ -132,7 +150,12 @@ export function positionsFromG6(
     if (moved && !moved.has(node.id)) continue;
     const x = node.style.x;
     const y = node.style.y;
-    if (typeof x === "number" && typeof y === "number") positions[node.id] = { x, y };
+    if (typeof x === "number" && typeof y === "number") {
+      positions[node.id] = {
+        x: Math.round(x / GRID_SIZE) * GRID_SIZE,
+        y: Math.round(y / GRID_SIZE) * GRID_SIZE,
+      };
+    }
   }
   return positions;
 }
@@ -162,10 +185,13 @@ export function graphOptions(data: G6GraphData, container: string | HTMLElement)
         labelFontSize: 10,
         stroke: "#8a93a6",
         endArrow: true,
+        // Orthogonal routing keeps edges out of node bodies and reduces
+        // crossings in left-to-right industrial pipelines.
+        router: { type: "orth" },
       },
     },
     plugins: [
-      { type: "grid-line", size: 20, stroke: "#e8edf4" },
+      { type: "grid-line", size: GRID_SIZE, stroke: "#e8edf4" },
       { type: "minimap", size: [180, 110], position: "right-bottom" },
       { type: "snapline", lineWidth: 1, stroke: "#4d6bfe" },
     ],
@@ -197,6 +223,7 @@ export interface GraphBehaviorHandlers {
   /** Shared arm state so a port-origin drag remains a connect gesture until pointerup. */
   connectionState?: { armed: boolean };
   onPositions?: (positions: Record<string, { x: number; y: number }>) => void;
+  onAlign?: (guides: string[]) => void;
   onSelectIds?: (ids: string[]) => void;
   allowedIds?: () => ReadonlySet<string>;
   onCreateEdge?: (source: string, target: string) => { sourcePort: string; targetPort: string } | null;
@@ -232,6 +259,24 @@ const isPortGesture = (handlers: GraphBehaviorHandlers, event: GestureEvent): bo
  * connect, drag the background (or Space/middle button) to pan. No modes. */
 export function graphBehaviors(handlers: GraphBehaviorHandlers = {}): any[] {
   const connection = handlers.connectionState ?? { armed: false };
+  const commitPositions = (ids?: string[] | string) => {
+    const graph = handlers.graph;
+    if (!graph || !handlers.onPositions) return;
+    const moved = Array.isArray(ids) ? ids : ids ? [String(ids)] : undefined;
+    const nodes = graph.getNodeData().map((node: any) => ({
+      id: String(node.id),
+      data: (node.data ?? {}) as Record<string, unknown>,
+      style: (node.style ?? {}) as Record<string, unknown> & { x?: number; y?: number },
+    }));
+    const positions = positionsFromG6(
+      { nodes, edges: [] }, handlers.allowedIds?.() ?? new Set<string>(), moved);
+    handlers.onPositions(positions);
+    // Compare against every node, not only the moved ones: alignment is a
+    // relationship between the dragged node and the rest of the canvas.
+    const allPositions = positionsFromG6(
+      { nodes, edges: [] }, handlers.allowedIds?.() ?? new Set<string>());
+    handlers.onAlign?.(alignmentGuides(allPositions));
+  };
   return [
     "zoom-canvas",
     {
@@ -259,36 +304,13 @@ export function graphBehaviors(handlers: GraphBehaviorHandlers = {}): any[] {
       enable: (event: GestureEvent) =>
         (event.targetType === "node" || event.targetType === "combo") &&
         !isPortGesture(handlers, event) && !isPanGesture(handlers, event),
-      onFinish: (ids?: string[] | string) => {
-        const graph = handlers.graph;
-        if (!graph) return;
-        const moved = Array.isArray(ids) ? ids : ids ? [String(ids)] : undefined;
-        const nodes = graph.getNodeData().map((node: any) => ({
-          id: String(node.id),
-          data: (node.data ?? {}) as Record<string, unknown>,
-          style: (node.style ?? {}) as Record<string, unknown> & { x?: number; y?: number },
-        }));
-        handlers.onPositions?.(positionsFromG6(
-          { nodes, edges: [] }, handlers.allowedIds?.() ?? new Set<string>(), moved));
-      },
+      onFinish: commitPositions,
     },
     {
       type: "drag-element",
       state: "__industrial_selected__",
       enable: (event: GestureEvent) => event.targetType === "node" && event.shiftKey === true,
-      onFinish: (ids?: string[] | string) =>
-      {
-        const graph = handlers.graph;
-        if (!graph || !handlers.onPositions) return;
-        const moved = Array.isArray(ids) ? ids : ids ? [String(ids)] : [];
-        handlers.onPositions(positionsFromG6(
-          { nodes: graph.getNodeData().map((node: any) => ({
-            id: String(node.id),
-            data: (node.data ?? {}) as Record<string, unknown>,
-            style: (node.style ?? {}) as Record<string, unknown> & { x?: number; y?: number },
-          })), edges: [] },
-          handlers.allowedIds?.() ?? new Set<string>(), moved));
-      },
+      onFinish: commitPositions,
     },
     {
       type: "create-edge",

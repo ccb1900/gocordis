@@ -49,9 +49,9 @@ public sealed class IndustrialNodesComponent : Component
                 ["type"] = "object",
                 ["properties"] = new Dictionary<string, object?>
                 {
-                    ["delimiter"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "分隔符", ["default"] = "," },
-                    ["hasHeaderRecord"] = new Dictionary<string, object?> { ["type"] = "boolean", ["title"] = "包含表头", ["default"] = true },
-                    ["encoding"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "编码", ["default"] = "utf-8" },
+                    ["delimiter"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "分隔符", ["default"] = ",", ["description"] = "单字符列分隔符", ["examples"] = new[] { ",", ";" } },
+                    ["hasHeaderRecord"] = new Dictionary<string, object?> { ["type"] = "boolean", ["title"] = "包含表头", ["default"] = true, ["description"] = "首行是否为列名" },
+                    ["encoding"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "编码", ["default"] = "utf-8", ["description"] = "文件字符编码", ["examples"] = new[] { "utf-8", "gbk" } },
                     ["recordIdColumn"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "记录 ID 列" },
                     ["recordTimeColumn"] = new Dictionary<string, object?> { ["type"] = "string", ["title"] = "记录时间列" },
                     ["onBadData"] = EnumField("坏数据处理", ["drop", "warn", "fail"], "drop"),
@@ -153,6 +153,8 @@ public sealed class IndustrialNodesComponent : Component
                     ["type"] = "string",
                     ["title"] = title,
                     ["format"] = "resource",
+                    ["description"] = "选择已配置的数据资源；连接状态与凭证在下方显示。",
+                    ["examples"] = new[] { "source-1", "scale-target" },
                 },
             },
         };

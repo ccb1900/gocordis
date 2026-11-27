@@ -5,7 +5,7 @@
 
 import type { Graph } from "@antv/g6";
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
-import { graphBehaviors, graphOptions, workflowToG6 } from "./graph-model";
+import { alignmentGuides, graphBehaviors, graphOptions, positionsFromG6, workflowToG6 } from "./graph-model";
 import type { NodeDescriptor, WorkflowDefinition } from "./types";
 
 export interface GraphCanvasProps {
@@ -49,6 +49,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const connectionStateRef = useRef({ armed: false });
   const gestureOriginRef = useRef<{ x: number; y: number } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; type: "node" | "edge"; id: string } | null>(null);
+  const [alignGuides, setAlignGuides] = useState<string[]>([]);
   const callbacks = useRef<Callbacks>({ onSelect, onDropNode, onCreateEdge, onPositions });
   callbacks.current = { onSelect, onDropNode, onCreateEdge, onPositions, onSelectEdge };
 
@@ -100,6 +101,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
           connectionState: connectionStateRef.current,
           allowedIds: () => allowedRef.current,
           onPositions: (positions) => callbacks.current.onPositions(positions),
+          onAlign: (guides) => setAlignGuides((previous) =>
+            guides.length > 0 ? guides : previous),
           onSelectIds: (ids) => onSelectIds?.(ids),
           onCreateEdge: (source, target) => callbacks.current.onCreateEdge(source, target),
         }),
@@ -158,6 +161,20 @@ export function GraphCanvas(props: GraphCanvasProps) {
     readyRef.current = false;
   }, []);
 
+  const snapToGrid = () => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    const nodes = graph.getNodeData().map((node: any) => ({
+      id: String(node.id),
+      data: (node.data ?? {}) as Record<string, unknown>,
+      style: (node.style ?? {}) as Record<string, unknown> & { x?: number; y?: number },
+    }));
+    const positions = positionsFromG6({ nodes, edges: [] }, allowedRef.current);
+    callbacks.current.onPositions(positions);
+    const guides = alignmentGuides(positions);
+    setAlignGuides(guides.length > 0 ? guides : ["已对齐到网格"]);
+  };
+
   const drop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     const typeId = event.dataTransfer.getData("application/x-industrial-node") ||
@@ -193,8 +210,14 @@ export function GraphCanvas(props: GraphCanvasProps) {
             <button onClick={() => { onDeleteEdgeById?.(menu.id); setMenu(null); }}>删除连线</button>
           </>}
         </div>}
+        {alignGuides.length > 0 && (
+          <div className="industrial-align-guide" data-testid="align-guide">
+            已对齐 {alignGuides.join(" · ")}
+          </div>
+        )}
         <div className="industrial-graph-hint">
           Shift+拖拽框选 · 拖节点移动 · 端口拖拽连线 · 滚轮缩放 · 空格/中键平移
+          <button type="button" data-testid="designer-snap" onClick={snapToGrid}>对齐到网格</button>
         </div>
       </div>
     </div>

@@ -33,6 +33,8 @@ public sealed class IndustrialUiComponent : Component
 
     private readonly IReadOnlyDictionary<string, object?> _config;
     private readonly ConcurrentDictionary<string, ResourceTestResult> _resourceTests = new(StringComparer.Ordinal);
+    private JsonObject? _lastImportPreview;
+    private JsonObject? _lastBindingPreview;
 
     public IndustrialUiComponent() : this(FromEnvironment()) { }
 
@@ -451,6 +453,10 @@ public sealed class IndustrialUiComponent : Component
             }),
             ("industrial/export-config", () => (JsonNode)ConfigurationPackage(
                 workflows, nodes, resources, fileProfiles, configBindings)),
+            ("industrial/binding-preview", () => _lastBindingPreview is null
+                ? null : (JsonNode)_lastBindingPreview.DeepClone()),
+            ("industrial/import-preview", () => _lastImportPreview is null
+                ? null : (JsonNode)_lastImportPreview.DeepClone()),
             ("industrial/file-profiles", () => new JsonArray(fileProfiles.ListAsync()
                 .GetAwaiter().GetResult()
                 .Select(profile => (JsonNode?)JsonSerializer.SerializeToNode(profile, WireJson)).ToArray())),
@@ -553,6 +559,8 @@ public sealed class IndustrialUiComponent : Component
                     new ValueTask(ImportBindingsAsync(payload, bindings).AsTask()), owner);
                 api.RegisterCommand("industrial/import-machines", payload =>
                     new ValueTask(ImportMachinesAsync(payload, machines).AsTask()), owner);
+                api.RegisterCommand("industrial/preview-import", payload =>
+                    new ValueTask(PreviewImportAsync(payload).AsTask()), owner);
                 api.RegisterCommand("industrial/save-file-profile", payload =>
                     new ValueTask(SaveFileProfileAsync(payload, fileProfiles).AsTask()), owner);
                 api.RegisterCommand("industrial/preview-bindings", payload =>
@@ -1001,6 +1009,64 @@ public sealed class IndustrialUiComponent : Component
         }
     }
 
+    /// <summary>Row-level import report. Nothing is written; the browser can
+    /// show conflicts and actionable error rows before committing a workbook.
+    /// </summary>
+    private ValueTask PreviewImportAsync(JsonNode? payload)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var (header, rows) = Tabular(body);
+        var errors = new JsonArray();
+        var accepted = new HashSet<string>(StringComparer.Ordinal);
+        var valid = 0;
+        if (!header.Contains("id"))
+        {
+            errors.Add((JsonNode)new JsonObject
+            {
+                ["row"] = 0, ["code"] = "HEADER_MISSING", ["message"] = "missing required column: id",
+            });
+        }
+        else
+        {
+            for (var index = 0; index < rows.Count; index++)
+            {
+                var cells = rows[index];
+                var id = Cell(header, cells, "id");
+                var problems = new List<string>();
+                if (id.Length == 0) problems.Add("id is required");
+                else if (!accepted.Add(id)) problems.Add($"duplicate id '{id}'");
+                var trigger = Cell(header, cells, "triggerKind", "manual");
+                if (trigger is not ("manual" or "schedule" or "event"))
+                    problems.Add($"unknown triggerKind '{trigger}'");
+                var cron = Cell(header, cells, "cron");
+                if (trigger == "schedule" && cron.Length == 0)
+                    problems.Add("schedule trigger requires cron");
+                var versionText = Cell(header, cells, "workflowVersion", "1");
+                if (!int.TryParse(versionText, out var version) || version < 1)
+                    problems.Add($"invalid workflowVersion '{versionText}'");
+                if (Cell(header, cells, "machineId").Length == 0)
+                    problems.Add("machineId is required");
+                if (problems.Count > 0)
+                {
+                    errors.Add((JsonNode)new JsonObject
+                    {
+                        ["row"] = index + 1,
+                        ["code"] = "INVALID_ROW",
+                        ["message"] = string.Join("; ", problems),
+                    });
+                }
+                else valid++;
+            }
+        }
+        _lastImportPreview = new JsonObject
+        {
+            ["total"] = rows.Count,
+            ["valid"] = valid,
+            ["errors"] = errors,
+        };
+        return ValueTask.CompletedTask;
+    }
+
     private static async ValueTask ImportBindingsAsync(
         JsonNode? payload, ICollectionBindingRegistry bindings)
     {
@@ -1013,6 +1079,12 @@ public sealed class IndustrialUiComponent : Component
             if (id.Length == 0) continue;
             var kind = Cell(header, cells, "triggerKind", "manual");
             var cron = Cell(header, cells, "cron");
+            var parameters = new Dictionary<string, object?>(StringComparer.Ordinal);
+            foreach (var pair in Cell(header, cells, "parameters").Split(';'))
+            {
+                var parts = pair.Split('=').Select(part => part.Trim()).ToArray();
+                if (parts.Length == 2 && parts[0].Length > 0) parameters[parts[0]] = parts[1];
+            }
             await bindings.RegisterAsync(new CollectionBindingDefinition(
                 id, Cell(header, cells, "name", id), Cell(header, cells, "machineId"),
                 Cell(header, cells, "workflowId"),
@@ -1022,7 +1094,7 @@ public sealed class IndustrialUiComponent : Component
                     .Select(x => x.Trim()).ToArray(),
                 new TriggerDefinition(kind, cron.Length > 0 ? cron : null, null,
                     new Dictionary<string, object?>()),
-                true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+                true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, parameters));
         }
     }
 
@@ -1088,24 +1160,41 @@ public sealed class IndustrialUiComponent : Component
                 ? parsed : 1,
             Text(body, "sourceResourcePattern") ?? "resource-{machine}",
             List("targetResourceIds"), Text(body, "triggerKind") ?? "manual",
-            Text(body, "cron"));
+            Text(body, "cron"),
+            body["parameters"] is JsonObject parameters
+                ? parameters.ToDictionary(pair => pair.Key,
+                    pair => (object?)pair.Value?.ToString(), StringComparer.Ordinal)
+                : new Dictionary<string, object?>(StringComparer.Ordinal),
+            body["exclusions"] is JsonArray exclusions
+                ? exclusions.Select(node => node?.GetValue<string>() ?? string.Empty)
+                    .Where(value => value.Length > 0).ToArray()
+            : (Text(body, "exclusions") ?? string.Empty)
+                .Split([',', '\n', ';'], StringSplitOptions.RemoveEmptyEntries)
+                .Select(value => value.Trim()).Where(value => value.Length > 0).ToArray());
     }
 
     private sealed record BindingRequest(
         IReadOnlyList<string> MachineIds, IReadOnlyList<string> FileProfileIds,
         string WorkflowId, int WorkflowVersion, string SourceResourcePattern,
-        IReadOnlyList<string> TargetResourceIds, string TriggerKind, string? Cron);
+        IReadOnlyList<string> TargetResourceIds, string TriggerKind, string? Cron,
+        IReadOnlyDictionary<string, object?> Parameters,
+        IReadOnlyList<string> Exclusions);
 
-    private static async ValueTask PreviewBindingsAsync(JsonNode? payload, ICollectionBindingRegistry bindings)
+    private async ValueTask PreviewBindingsAsync(JsonNode? payload, ICollectionBindingRegistry bindings)
     {
         var request = ReadBindingRequest(payload as JsonObject
             ?? throw new InvalidOperationException("JSON payload required"));
         var preview = await bindings.PreviewBulkAsync(request.MachineIds, request.FileProfileIds,
             request.WorkflowId, request.WorkflowVersion, request.SourceResourcePattern,
-            request.TargetResourceIds);
-        // Command result is carried through an exception-free query in the UI;
-        // here we only validate that the preview can be produced.
-        _ = preview;
+            request.TargetResourceIds, request.Exclusions);
+        _lastBindingPreview = new JsonObject
+        {
+            ["total"] = preview.Total,
+            ["create"] = preview.Created,
+            ["conflicts"] = new JsonArray(preview.Conflicts.Select(id => (JsonNode?)id).ToArray()),
+            ["missing"] = new JsonArray(preview.MissingResources.Select(id => (JsonNode?)id).ToArray()),
+            ["errors"] = new JsonArray(preview.Errors.Select(message => (JsonNode?)message).ToArray()),
+        };
     }
 
     private static async ValueTask CreateBindingsAsync(JsonNode? payload, ICollectionBindingRegistry bindings)
@@ -1114,7 +1203,8 @@ public sealed class IndustrialUiComponent : Component
             ?? throw new InvalidOperationException("JSON payload required"));
         await bindings.CreateBulkAsync(request.MachineIds, request.FileProfileIds,
             request.WorkflowId, request.WorkflowVersion, request.SourceResourcePattern,
-            request.TargetResourceIds, request.TriggerKind, request.Cron);
+            request.TargetResourceIds, request.TriggerKind, request.Cron, request.Parameters,
+            request.Exclusions);
     }
 
     private static async ValueTask DeleteCredentialAsync(

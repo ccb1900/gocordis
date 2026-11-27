@@ -29,6 +29,7 @@ export interface PropertyEditorProps {
   onCreateEdge: (from: string, to: string) => void;
   onUpdateEdge: (index: number, edge: WorkflowEdge) => void;
   onSelectNode: (id: string) => void;
+  onCreateResource?: () => void;
   selectedEdgeId?: string | null;
   sampleLines?: string[];
 }
@@ -58,9 +59,10 @@ function JsonValueField({ value, onChange }: {
   );
 }
 
-function ResourcePicker({ value, onChange, resources, resourceType, label }: {
+function ResourcePicker({ value, onChange, resources, resourceType, label, onCreate }: {
   value?: string; onChange?: (next: string | undefined) => void;
   resources: readonly ResourceOption[]; resourceType?: string; label?: string;
+  onCreate?: () => void;
 }) {
   const options = resources
     .filter((resource) => resource.enabled !== false &&
@@ -79,26 +81,32 @@ function ResourcePicker({ value, onChange, resources, resourceType, label }: {
           <option key={option.value} value={option.value}>{option.label}</option>
         ))}
       </select>
-      {selected?.credentialId && (
-        <Typography.Text type="secondary" style={{ fontSize: 11, display: "block" }}>
-          凭证：{selected.credentialName ?? selected.credentialId}
+      {selected && (
+        <Typography.Text type={selected.enabled === false ? "danger" : "success"}
+          data-testid="resource-picker-status" style={{ fontSize: 11, display: "block" }}>
+          {selected.name} · {selected.type} · {selected.enabled === false ? "已停用" : "已启用"}
+          {selected.credentialId ? ` · 凭证 ${selected.credentialName ?? selected.credentialId}` : ""}
         </Typography.Text>
       )}
+      <Button type="link" size="small" data-testid="resource-picker-create" onClick={onCreate}>
+        新建资源
+      </Button>
     </div>
   );
 }
 
-function SchemaField({ name, schema, required, resources, resourceType, properties, config }: {
+function SchemaField({ name, schema, required, resources, resourceType, properties, config, onCreateResource }: {
   name: string; schema: JsonSchemaLike; required: boolean;
   resources: readonly ResourceOption[]; resourceType?: string;
   properties: Record<string, JsonSchemaLike>; config: Record<string, unknown>;
+  onCreateResource?: () => void;
 }) {
   let control: ReactNode;
   let valuePropName: "value" | "checked" = "value";
   switch (editorKindForSchema(schema)) {
     case "resource":
       control = <ResourcePicker resources={resources} resourceType={resourceType}
-        label={String(schema.title ?? name)} />;
+        label={String(schema.title ?? name)} onCreate={onCreateResource} />;
       break;
     case "enum":
       control = (
@@ -138,6 +146,18 @@ function SchemaField({ name, schema, required, resources, resourceType, properti
   return (
     <Form.Item
       key={name} name={name} label={schema.title ?? name} tooltip={schema.description}
+      extra={(() => {
+        const examples = (schema as { examples?: unknown[] }).examples;
+        const hints = [
+          schema.description,
+          schema.default === undefined ? null : `默认：${JSON.stringify(schema.default)}`,
+          Array.isArray(examples) && examples.length > 0
+            ? `示例：${examples.map((item) => String(item)).join("、")}` : null,
+        ].filter((hint): hint is string => typeof hint === "string" && hint.length > 0);
+        return hints.length > 0
+          ? <span data-testid={`field-hint-${name}`}>{hints.join(" · ")}</span>
+          : undefined;
+      })()}
       valuePropName={valuePropName}
       rules={required && valuePropName === "value"
         ? [{ required: true, message: `请填写 ${schema.title ?? name}` }]
@@ -156,7 +176,7 @@ interface EdgeRow extends WorkflowEdge {
 export function PropertyEditor(props: PropertyEditorProps) {
   const {
     node, descriptor, nodes, edges, catalog, resources, issues, onApplyConfig, onDeleteNode,
-    onDeleteEdge, onCreateEdge, onUpdateEdge, onSelectNode, selectedEdgeId, sampleLines,
+    onDeleteEdge, onCreateEdge, onUpdateEdge, onSelectNode, onCreateResource, selectedEdgeId, sampleLines,
   } = props;
   const [form] = Form.useForm<Record<string, unknown>>();
   const [json, setJson] = useState("{}");
@@ -202,9 +222,22 @@ export function PropertyEditor(props: PropertyEditorProps) {
   }));
   const edgeColumns: TableColumnsType<EdgeRow> = [
     {
-      title: "连线", dataIndex: "source", key: "source", width: 110,
-      render: (_: unknown, row: EdgeRow) =>
-        <Typography.Text style={{ fontSize: 11 }}>{row.source} → {row.target}</Typography.Text>,
+      title: "起点节点", key: "reconnect-source", width: 108,
+      render: (_: unknown, row: EdgeRow) => (
+        <select aria-label={`连线 ${row.index} 起点节点`} value={row.source}
+          onChange={(event) => onUpdateEdge(row.index, { ...row, source: event.target.value })}>
+          {nodes.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+        </select>
+      ),
+    },
+    {
+      title: "终点节点", key: "reconnect-target", width: 108,
+      render: (_: unknown, row: EdgeRow) => (
+        <select aria-label={`连线 ${row.index} 终点节点`} value={row.target}
+          onChange={(event) => onUpdateEdge(row.index, { ...row, target: event.target.value })}>
+          {nodes.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+        </select>
+      ),
     },
     {
       title: "端口", key: "ports",
@@ -275,6 +308,7 @@ export function PropertyEditor(props: PropertyEditorProps) {
                   : undefined}
                 properties={descriptor?.configurationSchema.properties ?? {}}
                 config={node?.config ?? {}}
+                onCreateResource={onCreateResource}
               />
             ))}
           </Form>

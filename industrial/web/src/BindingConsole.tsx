@@ -43,6 +43,10 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
   const [cron, setCron] = useState("");
   const [profileCsv, setProfileCsv] = useState("");
   const [bindingCsv, setBindingCsv] = useState("");
+  const [runParameters, setRunParameters] = useState("");
+  const [exclusions, setExclusions] = useState("");
+  const [bindingPreviewReport, setBindingPreviewReport] = useState<any>(null);
+  const [importPreviewReport, setImportPreviewReport] = useState<any>(null);
   const [upgradeVersion, setUpgradeVersion] = useState(1);
   const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -79,18 +83,23 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
     if (!workflowId || machineIds.length === 0 || profileIds.length === 0 || targetIds.length === 0) {
       setError("请选择工作流、机台、文件配置和目标资源"); return;
     }
-    if (preview.missing.length > 0) { setError("存在缺失资源，请先创建后再导入"); return; }
+    // The preview is advisory; the registry repeats the same validation on the
+    // server so a stale client snapshot can never silently create bad bindings.
     setBusy(true); setError(null);
     try {
       await ctx.hubCommand("industrial/create-bindings", {
         machineIds, fileProfileIds: profileIds, workflowId, workflowVersion: version,
         sourceResourcePattern: sourcePattern, targetResourceIds: targetIds,
         triggerKind, cron: cron || null,
+        parameters: Object.fromEntries(runParameters.split(";").map((pair) => pair.split("="))
+          .filter((parts) => parts.length === 2 && parts[0].trim() && parts[1].trim())
+          .map((parts) => [parts[0].trim(), parts[1].trim()])),
+        exclusions: exclusions.split(/[,\n;]/).map((item: string) => item.trim()).filter(Boolean),
       });
       await load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
-  }, [ctx, cron, load, preview.missing.length, profileIds, sourcePattern, targetIds, triggerKind, version, workflowId, machineIds]);
+  }, [ctx, cron, exclusions, load, profileIds, runParameters, sourcePattern, targetIds, triggerKind, version, workflowId, machineIds]);
 
   const setEnabled = useCallback(async (binding: any, enabled: boolean) => {
     setBusy(true); setError(null);
@@ -143,6 +152,29 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
   }, [ctx, load]);
+
+  const previewBindings = useCallback(async () => {
+    setBusy(true); setError(null);
+    try {
+      await ctx.hubCommand("industrial/preview-bindings", {
+        machineIds, fileProfileIds: profileIds, workflowId, workflowVersion: version,
+        sourceResourcePattern: sourcePattern, targetResourceIds: targetIds,
+        triggerKind, cron: cron || null,
+        exclusions: exclusions.split(/[,\n;]/).map((item: string) => item.trim()).filter(Boolean),
+      });
+      setBindingPreviewReport(await ctx.hubQuery("industrial/binding-preview"));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  }, [ctx, cron, exclusions, machineIds, profileIds, profileIds, sourcePattern, targetIds, triggerKind, version, workflowId]);
+
+  const previewImport = useCallback(async () => {
+    setBusy(true); setError(null);
+    try {
+      await ctx.hubCommand("industrial/preview-import", { csv: bindingCsv });
+      setImportPreviewReport(await ctx.hubQuery("industrial/import-preview"));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  }, [ctx, bindingCsv]);
 
   const upgradeVersionAll = useCallback(async () => {
     setBusy(true); setError(null);
@@ -238,6 +270,10 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
           onChange={(e: any) => setCron(e.target.value)} />
         <Input aria-label="来源资源模板" placeholder="来源资源模板，{machine} 占位符" value={sourcePattern}
           onChange={(e: any) => setSourcePattern(e.target.value)} />
+        <Input aria-label="运行参数" placeholder="运行参数，如 lookbackDays=7;shift=day" value={runParameters}
+          onChange={(e: any) => setRunParameters(e.target.value)} />
+        <Input aria-label="例外规则" placeholder="例外规则：机台:文件配置，逗号或换行分隔" value={exclusions}
+          onChange={(e: any) => setExclusions(e.target.value)} />
       </Space>
       <Space wrap>
         <Button size="small" onClick={() => setMachineIds(machines.map((item) => item.id))}>全选机台</Button>
@@ -247,7 +283,25 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
       <Alert type="info" showIcon
         message={`预计生成 ${preview.total} 条绑定；可创建 ${preview.create} 条`}
         description={`冲突 ${preview.conflicts.length} 条；缺失资源 ${preview.missing.length} 条`} />
-      <Button type="primary" loading={busy} onClick={() => void create()}>生成绑定</Button>
+      <Space wrap>
+        <Button type="primary" loading={busy} onClick={() => void create()}>生成绑定</Button>
+        <Button loading={busy} onClick={() => void previewBindings()}>预览绑定</Button>
+        <Button loading={busy} onClick={() => void previewImport()}>预览导入</Button>
+      </Space>
+      {bindingPreviewReport && (
+        <Alert type="info" showIcon data-testid="binding-preview-report"
+          message={`批量预览：${bindingPreviewReport.total} 组合，创建 ${bindingPreviewReport.create}`}
+          description={`冲突 ${bindingPreviewReport.conflicts?.length ?? 0}；缺失 ${bindingPreviewReport.missing?.length ?? 0}；错误 ${bindingPreviewReport.errors?.length ?? 0}`} />
+      )}
+      {importPreviewReport && (
+        <Alert type={importPreviewReport.errors?.length ? "warning" : "success"} showIcon
+          data-testid="import-preview-report"
+          message={`导入预览：${importPreviewReport.valid ?? 0}/${importPreviewReport.total ?? 0} 行有效`}
+          description={(importPreviewReport.errors ?? []).map((error: any, index: number) =>
+            <div key={index} data-testid={`import-error-row-${error.row}`}>
+              第 {error.row} 行：{error.message}
+            </div>)} />
+      )}
       <Space wrap>
         <InputNumber aria-label="升级到模板版本" min={1} value={upgradeVersion}
           onChange={(value: number | null) => setUpgradeVersion(Number(value) || 1)} />
@@ -303,6 +357,10 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
           { title: "机台", dataIndex: "machineId" },
           { title: "文件配置", dataIndex: "fileProfileId" },
           { title: "模板版本", dataIndex: "workflowVersion" },
+          { title: "运行参数", key: "parameters", render: (_: unknown, row: any) =>
+            <span data-testid={`binding-parameters-${row.id}`}>
+              {Object.entries(row.parameters ?? {}).map(([key, value]) => `${key}=${value}`).join(";") || "—"}
+            </span> },
           { title: "状态", dataIndex: "enabled", render: (value: boolean, row: any) =>
             <Space>
               <Button size="small" onClick={() => void setEnabled(row, !row.enabled)}>

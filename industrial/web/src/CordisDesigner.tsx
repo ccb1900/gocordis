@@ -26,6 +26,7 @@ import type {
 export interface DesignerContext {
   hubQuery: <T = unknown>(name: string, params?: Record<string, string>) => Promise<T>;
   hubCommand: (name: string, body: unknown) => Promise<void>;
+  navigate?: (route: string) => void;
 }
 
 const { Header, Content } = Layout;
@@ -151,6 +152,13 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
       messageApi.error(`加载工作流失败: ${error instanceof Error ? error.message : String(error)}`);
     }
   }, [ctx, messageApi]);
+
+  // Located configuration errors are derived from the one WorkflowDefinition,
+  // never from G6 render state. Each issue path points to a node and field.
+  useEffect(() => {
+    if (!definition.workflowId) return;
+    setIssues(validateWorkflow(definition, catalog, new Set(resources.map((resource) => resource.id))));
+  }, [catalog, definition, resources]);
 
   const refreshExecution = useCallback(async () => {
     try {
@@ -546,6 +554,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
           onDeleteEdge={(index) => commit(removeEdge(definition, index))}
           onCreateEdge={(from, to) => void createEdge(from, to)}
           onUpdateEdge={updateEdge}
+          onCreateResource={() => ctx.navigate?.("/industrial/resources")}
           selectedEdgeId={selectedEdgeId}
           sampleLines={selectedNode
             ? samples[String(selectedNode.config?.resourceId ?? selectedNode.config?.targetResourceId ?? "")] ?? []

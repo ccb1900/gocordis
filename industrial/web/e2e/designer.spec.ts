@@ -24,7 +24,7 @@ test("real browser edits and saves a complete workflow", async ({ page }) => {
   const seeded = await page.request.post("/api/command/industrial/save-workflow", { data: validDefinition });
   expect(seeded.ok()).toBe(true);
 
-  await page.goto("/industrial/designer");
+  await page.goto("/industrial/designer?workflowId=browser-flow");
   await expect(page.getByText("Industrial Workflow", { exact: true })).toBeVisible();
   await expect(page.locator(".industrial-backfill-input input")).toHaveValue("1");
   await expect(page.locator(".industrial-graph-host")).toBeVisible();

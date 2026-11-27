@@ -346,7 +346,8 @@ public static class IndustrialStore
                 Id TEXT NOT NULL PRIMARY KEY, Name TEXT NOT NULL, MachineId TEXT NOT NULL,
                 WorkflowId TEXT NOT NULL, WorkflowVersion INTEGER NOT NULL,
                 FileProfileId TEXT NOT NULL, SourceResourceId TEXT NOT NULL,
-                TargetJson TEXT NOT NULL, TriggerJson TEXT NOT NULL, Enabled INTEGER NOT NULL,
+                TargetJson TEXT NOT NULL, TriggerJson TEXT NOT NULL,
+                ParametersJson TEXT NOT NULL DEFAULT '{{}}', Enabled INTEGER NOT NULL,
                 CreatedAt TEXT NOT NULL, UpdatedAt TEXT NOT NULL);
             """);
     }
@@ -371,6 +372,7 @@ public static class IndustrialStore
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN LastAttemptRunId TEXT NULL;");
         Execute(context, "ALTER TABLE Resources ADD COLUMN MachineId TEXT NULL;");
         Execute(context, "ALTER TABLE ScheduleCheckpoints ADD COLUMN BacklogTruncated INTEGER NOT NULL DEFAULT 0;");
+        Execute(context, "ALTER TABLE CollectionBindings ADD COLUMN ParametersJson TEXT NOT NULL DEFAULT '{{}}';");
         Execute(context, "CREATE INDEX IF NOT EXISTS IX_CollectionRuns_InstanceId ON CollectionRuns(InstanceId);");
         Execute(context, """
             CREATE TABLE IF NOT EXISTS CollectionRunDeliveries (

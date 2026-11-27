@@ -27,6 +27,8 @@ export const DESIGNER_CSS = `
 .industrial-graph{position:relative;width:100%;height:100%}
 .industrial-graph-host{width:100%;height:100%;cursor:grab}
 .industrial-graph-hint{position:absolute;left:10px;top:10px;z-index:2;pointer-events:none;padding:3px 9px;border-radius:999px;background:rgba(16,37,66,.78);color:#fff;font-size:11px}
+.industrial-align-guide{position:absolute;left:50%;top:10px;transform:translateX(-50%);z-index:3;pointer-events:none;padding:3px 9px;border-radius:999px;background:#4d6bfe;color:#fff;font-size:11px}
+.industrial-graph-hint button{pointer-events:auto;margin-left:8px;border:0;border-radius:999px;background:#fff;color:#102548;padding:1px 8px;font-size:11px;cursor:pointer}
 .industrial-properties-drawer .ant-drawer-body{padding:14px 18px}
 .industrial-properties-body{min-width:0}
 .industrial-edge-ports{display:flex;flex-direction:column;gap:4px}

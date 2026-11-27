@@ -284,7 +284,16 @@ public sealed record ScheduleFireClaim(string Key, string Token, int Attempts);
 public sealed record ScheduleFireView(
     string Key, string WorkflowId, int Version, DateTimeOffset DueAtUtc,
     string Status, int Attempts, string? Error, DateTimeOffset? FinishedAtUtc,
-    long LeaseExpiresAtUnixMs = 0);
+    long LeaseExpiresAtUnixMs = 0)
+{
+    /// <summary>All predicates live in one place so workflow/version scoping
+    /// cannot be lost to operator-precedence mistakes at a call site.</summary>
+    public bool IsRecoverable(string workflowId, int version, long nowUnixMs) =>
+        string.Equals(WorkflowId, workflowId, StringComparison.Ordinal) &&
+        Version == version &&
+        ((Status is ScheduleFireStatus.Pending or ScheduleFireStatus.Failed) ||
+         (Status == ScheduleFireStatus.Running && LeaseExpiresAtUnixMs <= nowUnixMs));
+}
 
 public sealed record FileIdentity(
     string Key,
@@ -507,6 +516,13 @@ public interface ICollectionLedger
     ValueTask SetScheduleCheckpointAsync(
         string workflowId, int version, DateTimeOffset checkpoint, int skippedIncrement,
         CancellationToken ct = default);
+    /// <summary>Atomically materializes planned fires and advances the scan
+    /// checkpoint. Returns false when another tick already moved the checkpoint.
+    /// </summary>
+    ValueTask<bool> CommitScheduleWindowAsync(
+        string workflowId, int version, DateTimeOffset? expectedCheckpoint,
+        DateTimeOffset nextCheckpoint, IReadOnlyList<DateTimeOffset> dueInstants,
+        int skippedIncrement, CancellationToken ct = default);
     ValueTask MarkDeliveryContestedAsync(
         string runId, string deliveryId, string reason, CancellationToken ct = default);
     ValueTask<CollectionRun?> GetRunAsync(string runId, CancellationToken ct = default);

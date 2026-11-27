@@ -569,7 +569,8 @@ public sealed class CrashRecoveryTests
                 var failed = (await ledger.ListAllDeliveriesAsync()).Single(candidate =>
                     candidate.TargetId == "target-b" && candidate.Status == CollectionStatus.Failed);
                 deliveryId = failed.Id;
-                lastRunId = (await ledger.GetRunIdsByDeliveryAsync(deliveryId)).Last();
+                lastRunId = failed.LastAttemptRunId
+                            ?? throw new InvalidOperationException("delivery has no last attempt run");
                 Assert.Equal(instanceId, await ledger.GetRunInstanceAsync(lastRunId));
                 Assert.Equal(lastRunId, failed.LastAttemptRunId);
             }
@@ -594,6 +595,68 @@ public sealed class CrashRecoveryTests
                 .GetProperty("value").GetString() ?? string.Empty)
             .OrderBy(value => value, StringComparer.Ordinal).ToArray());
         Assert.False(string.IsNullOrWhiteSpace(lastRunId));
+    }
+
+    [Fact]
+    public async Task StreamingPipelineKeepsLiveHeapBoundedOnLargeInput()
+    {
+        const int rowCount = 100_000;
+        using var temp = new TempDir();
+        var sourceRoot = Path.Combine(temp.Root, "source");
+        Directory.CreateDirectory(sourceRoot);
+        var now = DateTimeOffset.UtcNow;
+        var file = Path.Combine(sourceRoot, $"{now:yyyyMMdd}.csv");
+        await using (var writer = new StreamWriter(file))
+        {
+            await writer.WriteLineAsync("record_id,reading");
+            for (var i = 0; i < rowCount; i++) await writer.WriteLineAsync($"{i},{i}");
+        }
+        File.SetLastWriteTimeUtc(file, now.AddHours(-1).UtcDateTime);
+        var target = Path.Combine(temp.Root, "target.db");
+        var factories = new FactorySet(target, Path.Combine(temp.Root, "unused.db"));
+        var definition = new WorkflowDefinition(
+            "memory-flow", "Memory flow", 1,
+            [
+                new WorkflowNode("src", "industrial.filesystem.local",
+                    new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
+                new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
+                new WorkflowNode("store", "industrial.sink.sqlite",
+                    new Dictionary<string, object?> { ["targetResourceId"] = "target-a" }, 200, 0),
+            ],
+            [
+                new WorkflowEdge("src", "files", "read", "input"),
+                new WorkflowEdge("read", "records", "store", "records"),
+            ],
+            new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            ["source-1"], new Dictionary<string, object?>());
+
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        var baseline = GC.GetTotalMemory(true);
+        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, api) =>
+        {
+            var registered = DateTimeOffset.UtcNow;
+            await resources.RegisterAsync(new ResourceDefinition(
+                "target-a", "target-a", "target-a", "fixture",
+                new Dictionary<string, object?> { ["database"] = target }, null, 0, true, registered, registered));
+            Assert.True(await api.ExecuteAsync("industrial/save-workflow",
+                JsonSerializer.SerializeToNode(definition)));
+            Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
+                new JsonObject { ["workflowId"] = definition.WorkflowId }));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = definition.WorkflowId, ["resourceId"] = "source-1",
+            }));
+            var delivery = (await ledger.ListAllDeliveriesAsync())
+                .Single(candidate => candidate.TargetId == "target-a");
+            Assert.Equal(rowCount, delivery.Records);
+        });
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        var after = GC.GetTotalMemory(true);
+        // A full batch of 100k RecordEnvelopes would be tens of MB; streaming
+        // through disk-backed stage datasets must stay far below that.
+        Assert.True(after - baseline < 64L * 1024 * 1024,
+            $"live heap grew by {(after - baseline) / (1024 * 1024)} MB");
+        Assert.Equal(rowCount, await CountRowsAsync(target));
     }
 
     [Fact]

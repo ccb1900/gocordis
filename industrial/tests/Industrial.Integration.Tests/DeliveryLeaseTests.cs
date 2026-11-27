@@ -210,6 +210,41 @@ public sealed class DeliveryLeaseTests
     }
 
     [Fact]
+    public void ScheduleFireRecoveryPredicateIsScopedToItsOwnWorkflowAndVersion()
+    {
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var now = DateTimeOffset.FromUnixTimeMilliseconds(nowMs);
+        var foreign = new ScheduleFireView(
+            "foreign", "other-flow", 2, now, ScheduleFireStatus.Running, 1, null, null, 0);
+        var mine = new ScheduleFireView(
+            "mine", "my-flow", 1, now, ScheduleFireStatus.Running, 1, null, null, 0);
+        Assert.False(foreign.IsRecoverable("my-flow", 1, nowMs));
+        Assert.True(mine.IsRecoverable("my-flow", 1, nowMs));
+        Assert.True(mine.IsRecoverable("my-flow", 1, nowMs - 1)); // lease expired
+        Assert.False(new ScheduleFireView("active", "my-flow", 1, now,
+            ScheduleFireStatus.Running, 1, null, null, nowMs + 60_000)
+            .IsRecoverable("my-flow", 1, nowMs));
+    }
+
+    [Fact]
+    public async Task ScheduleWindowCommitsFiresAndCheckpointAtomically()
+    {
+        using var fixture = new Fixture();
+        var checkpoint = DateTimeOffset.UtcNow.AddMinutes(-2);
+        var due = new[] { checkpoint.AddMinutes(1) };
+        Assert.True(await fixture.Ledger.CommitScheduleWindowAsync(
+            "flow", 1, null, checkpoint, due, 0));
+        Assert.False(await fixture.Ledger.CommitScheduleWindowAsync(
+            "flow", 1, null, checkpoint.AddMinutes(1), due, 0),
+            "a stale checkpoint must not be allowed to advance");
+        var fire = Assert.Single(await fixture.Ledger.ListScheduleFiresAsync());
+        Assert.Equal(due[0].ToUniversalTime(), fire.DueAtUtc.ToUniversalTime());
+        var (stored, skipped) = await fixture.Ledger.GetScheduleCheckpointAsync("flow", 1);
+        Assert.Equal(checkpoint.ToUniversalTime(), stored!.Value.ToUniversalTime());
+        Assert.Equal(0, skipped);
+    }
+
+    [Fact]
     public async Task ManyIndependentWritersClaimTheSameDeliveryExactlyOnce()
     {
         using var fixture = new Fixture();

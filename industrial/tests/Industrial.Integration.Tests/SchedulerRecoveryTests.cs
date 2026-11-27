@@ -100,8 +100,14 @@ public sealed class SchedulerRecoveryTests
             failedClaim!.Key, failedClaim.Token, ScheduleFireStatus.Failed, "previous execution failed");
         var pending = missed.AddMinutes(1);
         await ledger.EnsureScheduleFiresAsync(definition.WorkflowId, 1, new[] { pending });
+        // One day of minute ticks with a catch-up limit of three: the bounded
+        // buffer must materialize only the latest three and count the rest.
+        await ledger.SetScheduleCheckpointAsync(
+            definition.WorkflowId, 1, DateTimeOffset.UtcNow.AddDays(-1), 0);
 
         Assert.True(await api.ExecuteAsync("industrial/scheduler-tick", new JsonObject()));
+        var (_, skippedFires) = await ledger.GetScheduleCheckpointAsync(definition.WorkflowId, 1);
+        Assert.True(skippedFires > 0, "overdue fires beyond the catch-up limit must be counted");
         var recovered = (await ledger.ListScheduleFiresAsync())
             .Single(fire => fire.Key == failedClaim.Key);
         Assert.Equal(ScheduleFireStatus.Succeeded, recovered.Status);
@@ -208,6 +214,87 @@ public sealed class SchedulerRecoveryTests
         Assert.NotNull(checkpoint);
         Assert.True(checkpoint!.Value > oldCheckpoint);
         Assert.True(skipped >= 0);
+    }
+
+    [Fact]
+    public async Task ExpiredFiresAreRecoveredOnlyByTheirOwnWorkflow()
+    {
+        using var temp = new TempDir();
+        var sourceRoot = Path.Combine(temp.Root, "source");
+        Directory.CreateDirectory(sourceRoot);
+        var now = DateTimeOffset.UtcNow;
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, $"{now:yyyyMMdd}.csv"),
+            "record_id,reading\n1,42\n");
+        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, $"{now:yyyyMMdd}.csv"),
+            now.AddHours(-1).UtcDateTime);
+        var targetDb = Path.Combine(temp.Root, "target.db");
+
+        WorkflowDefinition Definition(string id) => new(
+            id, id, 1,
+            [
+                new WorkflowNode("src", "industrial.filesystem.local",
+                    new Dictionary<string, object?> { ["resourceId"] = "late-source" }, 0, 0),
+                new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
+                new WorkflowNode("store", "industrial.sink.sqlite",
+                    new Dictionary<string, object?> { ["targetResourceId"] = "target-a" }, 200, 0),
+            ],
+            [
+                new WorkflowEdge("src", "files", "read", "input"),
+                new WorkflowEdge("read", "records", "store", "records"),
+            ],
+            new TriggerDefinition("schedule", "0 2 * * 1", null,
+                new Dictionary<string, object?> { ["resourceId"] = "late-source", ["timezone"] = "UTC" }),
+            ["late-source"], new Dictionary<string, object?>());
+
+        await using var runtime = new Gocordis.Core.Runtime();
+        var console = new ConsoleHost(runtime);
+        await using var registry = new PluginRegistry(runtime);
+        console.AttachRegistry(registry);
+        registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
+        registry.ExternalCapabilities.Add(ApiGateway.Key);
+        registry.ExternalCapabilities.Add(TimerKeys.Service);
+        await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
+        await runtime.LoadAsync(new TimerExtensionComponent());
+        IndustrialComponents.RegisterFactories(registry, new Dictionary<string, object?>
+        {
+            ["allowDevelopmentKey"] = "true", ["root"] = temp.Root,
+            ["seedResource"] = "false", ["sourceRoot"] = sourceRoot,
+        });
+        await registry.ApplyAsync(IndustrialComponents.Types
+            .Select(type => IndustrialComponents.Declaration(type)).ToArray());
+        var ledger = runtime.RequireCapability(IndustrialKeys.CollectionLedger);
+        var resources = runtime.RequireCapability(IndustrialKeys.ResourceRegistry);
+        var api = console.Api;
+        var registered = DateTimeOffset.UtcNow;
+        await resources.RegisterAsync(new ResourceDefinition(
+            "target-a", "sqlite", "target-a", "fixture",
+            new Dictionary<string, object?> { ["database"] = targetDb }, null, 0, true, registered, registered));
+        await resources.RegisterAsync(new ResourceDefinition(
+            "late-source", "filesystem.local", "late-source", "fixture",
+            new Dictionary<string, object?> { ["root"] = sourceRoot }, null, 0, true, registered, registered));
+
+        var clock = DateTimeOffset.UtcNow;
+        var boundary = new DateTimeOffset(clock.Year, clock.Month, clock.Day, 2, 0, 0, TimeSpan.Zero).AddDays(-1);
+        foreach (var workflowId in new[] { "flow-a", "flow-b" })
+        {
+            Assert.True(await api.ExecuteAsync("industrial/save-workflow",
+                JsonSerializer.SerializeToNode(Definition(workflowId))));
+            Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
+                new JsonObject { ["workflowId"] = workflowId }));
+            var claim = await ledger.TryStartScheduleFireAsync(workflowId, 1, boundary, TimeSpan.Zero);
+            Assert.NotNull(claim);
+        }
+
+        Assert.True(await api.ExecuteAsync("industrial/scheduler-tick", new JsonObject()));
+        var fires = await ledger.ListScheduleFiresAsync();
+        Assert.Equal(2, fires.Count);
+        Assert.All(fires, fire =>
+        {
+            Assert.Equal(ScheduleFireStatus.Succeeded, fire.Status);
+            Assert.StartsWith(fire.WorkflowId, fire.Key, StringComparison.Ordinal);
+        });
+        Assert.Contains(fires, fire => fire.WorkflowId == "flow-a" && fire.Key.StartsWith("flow-a:v1:", StringComparison.Ordinal));
+        Assert.Contains(fires, fire => fire.WorkflowId == "flow-b" && fire.Key.StartsWith("flow-b:v1:", StringComparison.Ordinal));
     }
 
     private sealed class TempDir : IDisposable

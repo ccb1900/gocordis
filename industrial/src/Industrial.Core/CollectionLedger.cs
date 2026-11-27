@@ -286,6 +286,52 @@ public sealed class CollectionLedger : ICollectionLedger
             workflowId, version, checkpoint.ToUniversalTime().ToString("O"), skippedIncrement, ct);
     }
 
+    public async ValueTask<bool> CommitScheduleWindowAsync(
+        string workflowId, int version, DateTimeOffset? expectedCheckpoint,
+        DateTimeOffset nextCheckpoint, IReadOnlyList<DateTimeOffset> dueInstants,
+        int skippedIncrement, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var rows = await db.Database.SqlQueryRaw<ScheduleCheckpointRow>(
+            """
+            SELECT CheckpointUtc, Skipped FROM ScheduleCheckpoints
+             WHERE WorkflowId = {0} AND Version = {1};
+            """, workflowId, version).ToListAsync(ct);
+        var current = rows.Count == 0 ? null : rows[0].CheckpointUtc;
+        var expected = expectedCheckpoint?.ToUniversalTime().ToString("O") ?? string.Empty;
+        if (!string.Equals(current ?? string.Empty, expected, StringComparison.Ordinal))
+        {
+            await tx.RollbackAsync(ct);
+            return false;
+        }
+
+        var planned = DateTimeOffset.UtcNow.ToString("O");
+        foreach (var instant in dueInstants)
+        {
+            await Exec(db,
+                """
+                INSERT OR IGNORE INTO ScheduleFires
+                    (Key, WorkflowId, Version, DueAtUtc, FiredAtUtc, Status, Attempts, PlannedAtUtc)
+                VALUES ({0}, {1}, {2}, {3}, {4}, {5}, 0, {6});
+                """,
+                ScheduleFireKey(workflowId, version, instant), workflowId, version,
+                instant.ToUniversalTime().ToString("O"), string.Empty,
+                ScheduleFireStatus.Pending, planned, ct);
+        }
+        await Exec(db,
+            """
+            INSERT INTO ScheduleCheckpoints (WorkflowId, Version, CheckpointUtc, Skipped)
+            VALUES ({0}, {1}, {2}, {3})
+            ON CONFLICT(WorkflowId, Version) DO UPDATE SET
+                CheckpointUtc = excluded.CheckpointUtc,
+                Skipped = ScheduleCheckpoints.Skipped + excluded.Skipped;
+            """,
+            workflowId, version, nextCheckpoint.ToUniversalTime().ToString("O"), skippedIncrement, ct);
+        await tx.CommitAsync(ct);
+        return true;
+    }
+
     private sealed class ScheduleCheckpointRow
     {
         public string CheckpointUtc { get; set; } = string.Empty;

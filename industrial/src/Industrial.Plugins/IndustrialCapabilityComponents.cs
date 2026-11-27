@@ -39,7 +39,28 @@ public abstract class IndustrialCapabilityComponent : Component
             ? value.ToString()!
             : fallback;
 
-    protected string Root => Setting("root", Path.Combine(Path.GetTempPath(), "gocordis-industrial"));
+    protected string Root => EnsurePersistentRoot(
+        Setting("root", Path.Combine(Path.GetTempPath(), "gocordis-industrial")), AllowDevelopmentKey);
+
+    /// <summary>Production must never persist ledgers/Elsa state/stages in a
+    /// temp directory. Development and explicit test hosts opt in via the
+    /// development key switch (or a dedicated temporary-root override).</summary>
+    public static string EnsurePersistentRoot(string root, bool allowDevelopmentKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        var full = Path.GetFullPath(root);
+        var temp = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar)
+                   + Path.DirectorySeparatorChar;
+        var temporary = full.StartsWith(temp, StringComparison.Ordinal);
+        var optedIn = allowDevelopmentKey || string.Equals(
+            Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_ALLOW_TEMP_ROOT"),
+            "true", StringComparison.OrdinalIgnoreCase);
+        if (temporary && !optedIn)
+            throw new InvalidOperationException(
+                "GOCORDIS_INDUSTRIAL_ROOT must point at a persistent directory; " +
+                "temporary roots are only allowed for development/test hosts");
+        return full;
+    }
 
     protected Func<IndustrialDbContext> LedgerDb =>
         () => IndustrialStore.Create(Path.Combine(Root, "industrial-ledger.db"));
@@ -185,7 +206,7 @@ public sealed class IndustrialCollectionComponent : IndustrialCapabilityComponen
     public override IReadOnlyList<ICapabilityKey> Provide() =>
         [IndustrialKeys.CollectionCoordinator, IndustrialKeys.FileSource,
          IndustrialKeys.RecordReader, IndustrialKeys.RecordReaderBroker,
-         IndustrialKeys.RecordSinkFactories,
+         IndustrialKeys.RecordSinkFactories, IndustrialKeys.NodeExecutionHandlers,
          IndustrialKeys.RecordSink, IndustrialKeys.ArchiveSink];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
@@ -241,6 +262,10 @@ public sealed class IndustrialCollectionComponent : IndustrialCapabilityComponen
         context.Provide(IndustrialKeys.FileSource, source);
         context.Provide(IndustrialKeys.RecordReaderBroker, broker);
         context.Provide(IndustrialKeys.RecordSinkFactories, sinkFactories);
+        // Extension point for contributed node execution handlers. Registration
+        // is Fiber-owned: disabling the plugin withdraws its exact node route.
+        context.Provide(IndustrialKeys.NodeExecutionHandlers,
+            new Broker<IIndustrialNodeHandler>());
         context.Provide(IndustrialKeys.RecordReader, reader);
         context.Provide(IndustrialKeys.RecordSink, sink);
         context.Provide(IndustrialKeys.ArchiveSink, archive);

@@ -28,7 +28,8 @@ public sealed class PostgreSqlSinkTests
             Assert.Equal(2, records.Count);
             Assert.True(records[0].Values.ContainsKey("record_id"),
                 "CSV header must carry record_id: " + string.Join(",", records[0].Values.Keys));
-            var sink = new PostgreSqlRecordSink(connectionString);
+            var sink = new PostgreSqlRecordSink(connectionString, "postgresql",
+                SinkWriteOptions.From(new Dictionary<string, object?> { ["keyScope"] = "global" }));
 
             var first = await sink.WriteAsync("file-1", Stream(records), "key-1");
             var second = await sink.WriteAsync("file-1", Stream(records), "key-1");

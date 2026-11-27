@@ -85,7 +85,8 @@ public sealed class SqlServerSinkFactory : IRecordSinkFactory
         var config = new NodeConfigReader(nodeConfig);
         var connectionString = await BuildConnectionStringAsync(resource, vault, ct);
         return new SqlServerRecordSink(connectionString, table, resource.Id,
-            config.GetString("writeMode", "append"), config.GetString("businessKey"));
+            config.GetString("writeMode", "append"), config.GetString("businessKey"),
+            SinkWriteOptions.From(nodeConfig));
     }
 }
 

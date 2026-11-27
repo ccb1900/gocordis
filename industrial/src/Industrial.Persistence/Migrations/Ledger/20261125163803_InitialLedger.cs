@@ -122,6 +122,7 @@ namespace Industrial.Persistence.Migrations.Ledger
                     Name = table.Column<string>(type: "TEXT", nullable: false),
                     Endpoint = table.Column<string>(type: "TEXT", nullable: false),
                     CredentialId = table.Column<string>(type: "TEXT", nullable: true),
+                    MachineId = table.Column<string>(type: "TEXT", nullable: true),
                     Enabled = table.Column<bool>(type: "INTEGER", nullable: false),
                     CreatedAt = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
                     UpdatedAt = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
@@ -141,6 +142,7 @@ namespace Industrial.Persistence.Migrations.Ledger
                     Provider = table.Column<string>(type: "TEXT", nullable: false),
                     ConfigurationJson = table.Column<string>(type: "TEXT", nullable: false),
                     CredentialId = table.Column<string>(type: "TEXT", nullable: true),
+                    MachineId = table.Column<string>(type: "TEXT", nullable: true),
                     Version = table.Column<long>(type: "INTEGER", nullable: false),
                     Enabled = table.Column<bool>(type: "INTEGER", nullable: false),
                     CreatedAt = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),

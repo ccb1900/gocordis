@@ -13,9 +13,13 @@ public sealed class SqliteRecordSink : IRecordSink
 {
     private readonly Func<IndustrialTargetDbContext> _db;
 
-    public SqliteRecordSink(Func<IndustrialTargetDbContext> db, string? targetId = null)
+    private readonly SinkWriteOptions _options;
+
+    public SqliteRecordSink(Func<IndustrialTargetDbContext> db, string? targetId = null,
+        SinkWriteOptions? options = null)
     {
         _db = db;
+        _options = options ?? SinkWriteOptions.From(null);
         TargetId = targetId ?? "sqlite";
     }
 
@@ -31,8 +35,7 @@ public sealed class SqliteRecordSink : IRecordSink
         var count = 0;
         await foreach (var record in records.WithCancellation(ct))
         {
-            var recordId = record.Values.GetValueOrDefault("record_id")?.ToString()
-                           ?? throw new InvalidOperationException("record_id is required for idempotent delivery");
+            var recordId = _options.ResolveId(record);
             if (await db.Records.AnyAsync(row => row.RecordId == recordId, ct))
             {
                 continue;
@@ -60,15 +63,19 @@ public sealed class SqlServerRecordSink : IRecordSink
     private readonly string _connectionString;
     private readonly string _table;
     private readonly string _writeMode;
-    private readonly string? _businessKey;
+    private readonly SinkWriteOptions _options;
 
     public SqlServerRecordSink(string connectionString, string table = "IndustrialRecords",
-        string? targetId = null, string writeMode = "append", string? businessKey = null)
+        string? targetId = null, string writeMode = "append", string? businessKey = null,
+        SinkWriteOptions? options = null)
     {
         _connectionString = connectionString;
         _table = SqlIdentifier.QuoteTable(table);
-        _writeMode = writeMode is "append" or "upsert" or "replace" ? writeMode : "append";
-        _businessKey = string.IsNullOrWhiteSpace(businessKey) ? null : businessKey;
+        _options = options ?? SinkWriteOptions.From(new Dictionary<string, object?>
+        {
+            ["writeMode"] = writeMode, ["businessKey"] = businessKey,
+        });
+        _writeMode = _options.WriteMode;
         TargetId = targetId ?? "sqlserver";
     }
 
@@ -102,15 +109,7 @@ public sealed class SqlServerRecordSink : IRecordSink
         var replacedSources = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var record in records.WithCancellation(ct))
         {
-            var recordId = _businessKey is not null &&
-                           record.Values.TryGetValue(_businessKey, out var businessValue) &&
-                           businessValue is not null
-                ? businessValue.ToString()
-                : record.Values.GetValueOrDefault("record_id")?.ToString();
-            if (string.IsNullOrWhiteSpace(recordId))
-            {
-                throw new InvalidOperationException("record_id is required for idempotent delivery");
-            }
+            var recordId = _options.ResolveId(record);
 
             if (_writeMode == "replace" && replacedSources.Add(record.Source.Key))
             {

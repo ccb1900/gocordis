@@ -35,6 +35,48 @@ public sealed class WorkflowValidationTests
     }
 
     [Fact]
+    public async Task IncompleteDraftCanBeSavedAndReloadedButCannotBePublished()
+    {
+        using var fixture = new Fixture();
+        var incomplete = new WorkflowDefinition(
+            "draft-only", "Draft only", 1,
+            [new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 0, 0)],
+            [],
+            new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            [], new Dictionary<string, object?>());
+
+        await fixture.Workflows.SaveDraftAsync(incomplete);
+        var reloaded = await fixture.Workflows.GetAsync("draft-only");
+        Assert.NotNull(reloaded);
+        Assert.Equal(incomplete.WorkflowId, reloaded!.WorkflowId);
+        Assert.Equal(incomplete.Nodes.Count, reloaded.Nodes.Count);
+        Assert.Single(reloaded.Nodes);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await fixture.Workflows.PublishAsync("draft-only", "{}"));
+    }
+
+    [Fact]
+    public async Task PublishedDefinitionVersionMatchesPublishedVersion()
+    {
+        using var fixture = new Fixture();
+        await fixture.Catalog.RegisterAsync(Source());
+        await fixture.Catalog.RegisterAsync(Reader());
+        await fixture.Catalog.RegisterAsync(Sink());
+        await fixture.Workflows.SaveDraftAsync(Definition());
+        for (var expected = 1; expected <= 3; expected++)
+        {
+            var version = await fixture.Workflows.NextPublishVersionAsync("daily");
+            Assert.Equal(expected, version);
+            var published = await fixture.Workflows.PublishAsync("daily", version, $"{{\"version\":{version}}}");
+            Assert.NotNull(published);
+            Assert.Equal(version, published!.Version);
+            Assert.Equal(version, published.Definition.Version);
+            var stored = (await fixture.Workflows.GetPublishedVersionAsync("daily", version))!;
+            Assert.Equal(version, stored.Definition.Version);
+        }
+    }
+
+    [Fact]
     public async Task ValidationErrorsPointToTheExactNodeOrEdge()
     {
         using var fixture = new Fixture();

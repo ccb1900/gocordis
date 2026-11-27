@@ -242,7 +242,7 @@ public sealed class CollectionPipelineTests
 
         await using var target = fixture.NewTargetDb();
         var row = Assert.Single(target.Records.AsNoTracking()
-            .Where(record => record.RecordId == "3").ToList());
+            .Where(record => record.RecordId.Contains("|3")).ToList());
         Assert.Equal(new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero), row.RecordTime);
     }
 

@@ -4,6 +4,8 @@ import { ResourceConsole } from "./ResourceConsole";
 import { CredentialConsole } from "./CredentialConsole";
 import { ExecutionCenter } from "./ExecutionCenter";
 import { FileDetails } from "./FileDetails";
+import { MachineConsole } from "./MachineConsole";
+import { CollectionWizard } from "./CollectionWizard";
 import { setFacade } from "./facade";
 import { createElement } from "./facade-react";
 import { DESIGNER_CSS } from "./styles";
@@ -35,6 +37,8 @@ export function register(api: any) {
     wrap("industrial-credential-console", CredentialConsole),
     wrap("industrial-execution-center", ExecutionCenter),
     wrap("industrial-file-details", FileDetails),
+    wrap("industrial-machine-console", MachineConsole),
+    wrap("industrial-collection-wizard", CollectionWizard),
   ];
   return () => {
     for (const dispose of disposers) dispose?.();

@@ -69,6 +69,7 @@ public interface IIndustrialNodeExecutor
 
 public sealed class IndustrialElsaComponent : Component
 {
+    private Broker<IIndustrialNodeHandler>? _nodeHandlers;
     private static readonly System.Text.Json.JsonSerializerOptions WebJson =
         new(System.Text.Json.JsonSerializerDefaults.Web);
 
@@ -106,7 +107,8 @@ public sealed class IndustrialElsaComponent : Component
          IndustrialKeys.HistoricalRangePlanner, IndustrialKeys.FileSource,
          IndustrialKeys.RecordReader, IndustrialKeys.RecordSinkFactories,
          IndustrialKeys.StageOutputStore, TimerKeys.Service,
-         IndustrialKeys.RecordSink, IndustrialKeys.ArchiveSink];
+         IndustrialKeys.RecordSink, IndustrialKeys.ArchiveSink,
+         IndustrialKeys.NodeExecutionHandlers];
     public override IReadOnlyList<ICapabilityKey> Provide() => [IndustrialKeys.ElsaActivityCatalog];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
@@ -126,6 +128,7 @@ public sealed class IndustrialElsaComponent : Component
         var sinkFactories = context.Require(IndustrialKeys.RecordSinkFactories);
         var sink = context.Require(IndustrialKeys.RecordSink);
         var archive = context.Require(IndustrialKeys.ArchiveSink);
+        _nodeHandlers = context.Require(IndustrialKeys.NodeExecutionHandlers);
         var timers = context.Require(TimerKeys.Service);
         var owner = ContributionOwner.ForContext(context, "industrial", "elsa-publish");
         foreach (var type in IndustrialActivityTypes.All)
@@ -209,8 +212,10 @@ public sealed class IndustrialElsaComponent : Component
 
                     var definition = await workflows.GetAsync(id)
                                      ?? throw new InvalidOperationException($"workflow '{id}' not found");
-                    var elsJson = await ElsaDefinitionConverter.ToElsaJson(definition);
-                    var published = await workflows.PublishAsync(id, elsJson);
+                    var version = await workflows.NextPublishVersionAsync(id);
+                    var snapshot = definition with { Version = version };
+                    var elsJson = await ElsaDefinitionConverter.ToElsaJson(snapshot);
+                    var published = await workflows.PublishAsync(id, version, elsJson);
                     if (published is null)
                     {
                         throw new InvalidOperationException($"failed to publish workflow '{id}'");
@@ -447,7 +452,7 @@ public sealed class IndustrialElsaComponent : Component
                             $"published version {instance.WorkflowId}:v{instance.Version} was not found");
         var executor = CreateExecutor(published.Definition, resourceId, ledger, resources, vault,
             planner, source, reader, stage, factories, defaultSink, archive,
-            delivery.Id, delivery.TargetId);
+            delivery.Id, delivery.TargetId, _nodeHandlers);
         await ElsaPersistedExecution.RunAsync(published, executor, resourceId, ElsaDbPath,
             instance.InstanceId, resume: true);
     }
@@ -768,10 +773,11 @@ public sealed class IndustrialElsaComponent : Component
         IResourceRegistry resources, ICredentialVault vault, IHistoricalRangePlanner planner,
         IFileSource source, IRecordReader reader, IStageOutputStore stage,
         Broker<IRecordSinkFactory> factories, IRecordSink defaultSink, IArchiveSink archive,
-        string? retryDeliveryId = null, string? retryTargetId = null) =>
+        string? retryDeliveryId = null, string? retryTargetId = null,
+        Broker<IIndustrialNodeHandler>? handlers = null) =>
         new(definition.WorkflowId, resourceId, definition, null!, ledger, resources, vault,
             planner, source, reader, stage, factories, defaultSink, archive,
-            retryDeliveryId, retryTargetId);
+            retryDeliveryId, retryTargetId, handlers);
 
     private async ValueTask RecoverAllAsync(
         IWorkflowRegistry workflows, ICollectionLedger ledger, IResourceRegistry resources,
@@ -807,7 +813,7 @@ public sealed class IndustrialElsaComponent : Component
                     }
                     var executor = CreateExecutor(published.Definition, instance.ResourceId,
                         ledger, resources, vault, planner, source, reader, stage,
-                        factories, defaultSink, archive);
+                        factories, defaultSink, archive, handlers: _nodeHandlers);
                     var result = await ElsaPersistedExecution.RunAsync(published, executor, instance.ResourceId,
                         ElsaDbPath, instance.InstanceId, resume: true);
                     _lastInstanceId = result.InstanceId;
@@ -876,7 +882,8 @@ public sealed class IndustrialElsaComponent : Component
         // consulted here: publishing v1 and editing v2 must not change a run.
         var definition = published.Definition;
         var executor = CreateExecutor(definition, resourceId, ledger, resources, vault,
-            planner, source, reader, stage, sinkFactories, defaultSink, archive);
+            planner, source, reader, stage, sinkFactories, defaultSink, archive,
+            handlers: _nodeHandlers);
         var instanceId = body["instanceId"]?.GetValue<string>();
         var resume = body["resume"] is JsonValue flag && flag.TryGetValue<bool>(out var shouldResume) && shouldResume;
         _lastError = null;
@@ -909,6 +916,7 @@ public sealed class IndustrialElsaComponent : Component
         private readonly Broker<IRecordSinkFactory> _factories;
         private readonly IRecordSink _defaultSink;
         private readonly IArchiveSink _archive;
+        private readonly Broker<IIndustrialNodeHandler>? _handlers;
         private readonly Dictionary<string, List<DiscoveredFile>> _files = new(StringComparer.Ordinal);
         private readonly Dictionary<string, CollectionFile> _ledgerFiles = new(StringComparer.Ordinal);
         private readonly List<string> _executed = [];
@@ -927,8 +935,10 @@ public sealed class IndustrialElsaComponent : Component
             IHistoricalRangePlanner planner, IFileSource source, IRecordReader reader,
             IStageOutputStore stage, Broker<IRecordSinkFactory> factories,
             IRecordSink defaultSink, IArchiveSink archive,
-            string? retryDeliveryId = null, string? retryTargetId = null)
+            string? retryDeliveryId = null, string? retryTargetId = null,
+            Broker<IIndustrialNodeHandler>? handlers = null)
         {
+            _handlers = handlers;
             _retryDeliveryId = retryDeliveryId;
             _retryTargetId = retryTargetId;
             _workflowId = workflowId;
@@ -944,13 +954,13 @@ public sealed class IndustrialElsaComponent : Component
             _factories = factories;
             _defaultSink = defaultSink;
             _archive = archive;
+            // Every delivery-shaped node (database sink AND archive) owns one
+            // completion slot; the run is terminal only after all of them are
+            // done, independent of their order in the flowchart.
             foreach (var node in definition.Nodes.Where(node =>
                          IsSink(node.Type) || node.Type.Contains("archive", StringComparison.OrdinalIgnoreCase)))
             {
-                if (!node.Type.Contains("archive", StringComparison.OrdinalIgnoreCase))
-                {
-                    Interlocked.Increment(ref _remainingConsequences);
-                }
+                Interlocked.Increment(ref _remainingConsequences);
             }
         }
 
@@ -1070,6 +1080,22 @@ public sealed class IndustrialElsaComponent : Component
             var view = View(nodeId);
             try
             {
+                var custom = _handlers?.Providers.FirstOrDefault(handler =>
+                    string.Equals(handler.NodeType, node.Type, StringComparison.Ordinal));
+                if (custom is not null)
+                {
+                    await custom.ExecuteAsync(new IndustrialNodeExecutionContext(
+                        _definition, node, _instanceId, _runId, Inputs(node.Id).ToArray(),
+                        RecordsFromAsync, _stage, _ledger, _resources, _vault, _factories,
+                        _defaultSink, _source, _reader,
+                        (count, samples) =>
+                        {
+                            view.Records = count;
+                            view.Samples = samples;
+                        }), cancellationToken);
+                    if (view.Status == "Running") view.Status = "Succeeded";
+                    return;
+                }
                 if (nodeType.Contains("source", StringComparison.OrdinalIgnoreCase))
                 {
                     await ExecuteSourceAsync(node, cancellationToken);
@@ -1435,6 +1461,7 @@ public sealed class IndustrialElsaComponent : Component
             {
                 View(node.Id).Status = "Reused";
                 View(node.Id).Files = cachedArchive.Records;
+                await FinishRunIfComplete(ct);
                 return;
             }
             var archived = 0;
@@ -1486,6 +1513,7 @@ public sealed class IndustrialElsaComponent : Component
                     new DeliveryResultRef($"archive-stage-{Guid.NewGuid():N}", _archive.TargetId, archived,
                         IdempotencyKey: string.Empty), ct);
             }
+            await FinishRunIfComplete(ct);
         }
 
         /// <summary>Keeps a long delivery alive while the sink consumes it.

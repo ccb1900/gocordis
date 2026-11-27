@@ -60,8 +60,11 @@ public sealed class RecoveryTests
         await coordinator.RunAsync("workflow", "source-1", fixture.Range, reader, [sink], null);
 
         await using var target = fixture.NewTargetDb();
-        Assert.Equal(20_000, await target.Records.AsNoTracking().CountAsync());
-        Assert.Equal(20_000, target.Records.AsNoTracking().Select(row => row.RecordId).Distinct().Count());
+        // The fixture also contains the small 20261125.csv, so two additional
+        // source-scoped identities are expected; replay must not duplicate any.
+        Assert.Equal(20_002, await target.Records.AsNoTracking().CountAsync());
+        Assert.Equal(20_002, await target.Records.AsNoTracking()
+            .Select(row => row.RecordId).Distinct().CountAsync());
     }
 
     [Fact]

@@ -158,8 +158,7 @@ internal static class Program
             var written = 0;
             await foreach (var record in records.WithCancellation(ct))
             {
-                var recordId = record.Values.GetValueOrDefault("record_id")?.ToString()
-                               ?? throw new InvalidOperationException("record_id is required");
+                var recordId = new SinkWriteOptions("append", null).ResolveId(record);
                 if (!await context.Records.AnyAsync(row => row.RecordId == recordId, ct))
                 {
                     context.Records.Add(new TargetRecordEntity

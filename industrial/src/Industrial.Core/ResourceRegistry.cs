@@ -51,6 +51,7 @@ public sealed class ResourceRegistry : IResourceRegistry
         existing.Provider = resource.Provider;
         existing.ConfigurationJson = JsonSerializer.Serialize(resource.Configuration, Json);
         existing.CredentialId = resource.CredentialId;
+        existing.MachineId = resource.MachineId;
         existing.Version = resource.Version + 1;
         existing.Enabled = resource.Enabled;
         existing.UpdatedAt = now;
@@ -127,5 +128,6 @@ internal static class ResourceMapping
         entity.Version,
         entity.Enabled,
         entity.CreatedAt,
-        entity.UpdatedAt);
+        entity.UpdatedAt,
+        entity.MachineId);
 }

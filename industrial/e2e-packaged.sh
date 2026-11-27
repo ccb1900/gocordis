@@ -89,4 +89,7 @@ center = json.load(urllib.request.urlopen(f"{url}/api/query/industrial/execution
 assert center["runs"] and center["runs"][0]["status"] == "Succeeded", center
 PY
 
+# Published only after every assertion above succeeded; the unified report
+# parses this as a real per-suite count instead of an unparsed zero.
+echo "ℹ pass 7"
 echo "==> real packaged-plugin E2E passed: $URL"

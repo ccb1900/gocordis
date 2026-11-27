@@ -27,7 +27,37 @@ public sealed class SinkWriteOptionsTests
             {
                 ["record_id"] = "fallback", ["serial"] = "SN-1",
             }, identity, DateTimeOffset.UtcNow);
-            Assert.Equal("SN-1", options.ResolveId(record));
+            Assert.EndsWith("|SN-1", options.ResolveId(record), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SameRecordIdFromTwoSourcesDoesNotCollideByDefault()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "industrial-sink-scope-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var machineA = Path.Combine(root, "machine-a.csv");
+            var machineB = Path.Combine(root, "machine-b.csv");
+            await File.WriteAllTextAsync(machineA, "record_id,reading\n1,10\n");
+            await File.WriteAllTextAsync(machineB, "record_id,reading\n1,20\n");
+            var values = new Dictionary<string, object?> { ["record_id"] = "1", ["reading"] = "10" };
+            var a = new RecordEnvelope(values,
+                FileIdentityFactory.Create(machineA, root, "machine-a"), DateTimeOffset.UtcNow);
+            var b = new RecordEnvelope(values,
+                FileIdentityFactory.Create(machineB, root, "machine-b"), DateTimeOffset.UtcNow);
+
+            var scoped = SinkWriteOptions.From(null);
+            Assert.Equal(SinkWriteOptions.SourceScope, scoped.KeyScope);
+            Assert.NotEqual(scoped.ResolveId(a), scoped.ResolveId(b));
+
+            var global = SinkWriteOptions.From(new Dictionary<string, object?> { ["keyScope"] = "global" });
+            Assert.Equal(global.ResolveId(a), global.ResolveId(b));
         }
         finally
         {

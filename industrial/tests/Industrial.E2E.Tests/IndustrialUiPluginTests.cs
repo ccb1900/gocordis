@@ -153,7 +153,10 @@ public sealed class IndustrialUiPluginTests
                 ["allowDevelopmentKey"] = "true",
             }),
             Decl("credential", new Dictionary<string, object?> { ["allowDevelopmentKey"] = "true" }),
-            Decl("workflow", new Dictionary<string, object?> { ["root"] = temp.Root }),
+            Decl("workflow", new Dictionary<string, object?>
+            {
+                ["root"] = temp.Root, ["allowDevelopmentKey"] = "true",
+            }),
         ]);
 
         var resources = runtime.RequireCapability(IndustrialKeys.ResourceRegistry);

@@ -23,6 +23,8 @@ run industrial-browser-e2e bash industrial/e2e-browser.sh
 run industrial-user-flow bash industrial/e2e-user-flow.sh
 run industrial-packaged-e2e bash industrial/e2e-packaged.sh
 run industrial-postgresql bash industrial/e2e-database.sh
+run industrial-sqlserver bash -c 'DOTNET_ROLL_FORWARD=LatestMajor dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --nologo -m:1 --filter FullyQualifiedName~SqlServerSink'
+run industrial-mysql bash -c 'DOTNET_ROLL_FORWARD=LatestMajor dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --nologo -m:1 --filter FullyQualifiedName~MySqlSink' 
 run windows-unc bash -c 'DOTNET_ROLL_FORWARD=LatestMajor dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --nologo -m:1 --filter FullyQualifiedName~WindowsUnc'
 run console-runtime bash -c 'cd web/console-runtime && npm test'
 run console-shell bash -c 'cd web/console && npm test && npm run build'
@@ -111,6 +113,8 @@ report = {
         {"requirement": "Windows UNC/SMB execution on this macOS host", "status": "not-executed", "evidence": "external windows-latest runner row below is the acceptance evidence; local suite records an explicit skip"},
         {"requirement": "real packaged-plugin E2E", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-packaged-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-packaged-e2e.log"},
         {"requirement": "PostgreSQL integration", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-postgresql")["exitCode"] == 0 else "failed", "evidence": "industrial-postgresql.log"},
+        {"requirement": "SQL Server real-server integration", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-sqlserver")["passed"] else "not-executed", "evidence": "industrial-sqlserver.log; GOCORDIS_SQLSERVER_CONNECTION gated"},
+        {"requirement": "MySQL real-server integration", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-mysql")["passed"] else "not-executed", "evidence": "industrial-mysql.log; GOCORDIS_MYSQL_CONNECTION gated"},
         {"requirement": "Windows UNC/SMB integration", "status": unc_evidence.get("status", "blocked"), "passingResult": unc_evidence.get("url") if unc_evidence.get("status") == "passed" else None, "evidence": "artifacts/windows-unc-result.json; " + unc_evidence.get("url", "artifacts/windows-unc-blocker.md"), "runner": "windows-latest", "script": "industrial/e2e-windows-unc.ps1"},
         {"requirement": "real OS process kill mid-write resumes original instance and retries only incomplete delivery", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; industrial/tests/Industrial.ProcessCrashFixture"},
         {"requirement": "two-target mid-write crash resumes original instance and retries only incomplete delivery", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},

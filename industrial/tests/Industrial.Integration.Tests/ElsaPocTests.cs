@@ -221,9 +221,62 @@ public sealed class ElsaPocTests
         Assert.Single(ledger.CollectionFiles.AsNoTracking().ToList());
         Assert.True(ledger.FileDeliveries.AsNoTracking().Count() == 2,
             "sink and archive each get one delivery from one collection run");
+        var run = Assert.Single(ledger.CollectionRuns.AsNoTracking().ToList());
+        Assert.True(CollectionStatus.IsTerminal(run.Status),
+            $"run must be terminal after sink AND archive complete, was {run.Status}");
         await using var target = Industrial.Persistence.IndustrialStore.CreateTarget(
             Path.Combine(temp.Root, "industrial-target.db"));
         Assert.Single(target.Records.AsNoTracking().ToList());
+    }
+
+    [Fact]
+    public async Task RepublishKeepsVersionConsistentAcrossRowDefinitionAndElsaGraph()
+    {
+        using var temp = new TempDir();
+        await ComposeRuntime(temp.Root, async (catalog, workflows, api) =>
+        {
+            await catalog.RegisterAsync(new NodeDescriptor(
+                "v.source", "Source", "Source", "source", "Folder", "1.0.0",
+                [], [new NodePort("files", Industrial.Contracts.PortType.FileBatch, true)],
+                new Dictionary<string, object?>(), IndustrialActivityTypes.All[1], []));
+            await catalog.RegisterAsync(new NodeDescriptor(
+                "v.reader", "Reader", "Reader", "reader", "FileText", "1.0.0",
+                [new NodePort("input", Industrial.Contracts.PortType.FileBatch, true)],
+                [new NodePort("records", Industrial.Contracts.PortType.RecordSet, true)],
+                new Dictionary<string, object?>(), IndustrialActivityTypes.All[2], []));
+            await catalog.RegisterAsync(new NodeDescriptor(
+                "v.sink", "Sink", "Sink", "sink", "Database", "1.0.0",
+                [new NodePort("records", Industrial.Contracts.PortType.RecordSet, true)], [],
+                new Dictionary<string, object?>(), IndustrialActivityTypes.All[7], []));
+
+            var definition = new WorkflowDefinition(
+                "version-flow", "Version flow", 1,
+                [
+                    new WorkflowNode("src", "v.source", new Dictionary<string, object?>(), 0, 0),
+                    new WorkflowNode("read", "v.reader", new Dictionary<string, object?>(), 100, 0),
+                    new WorkflowNode("store", "v.sink", new Dictionary<string, object?>(), 200, 0),
+                ],
+                [
+                    new WorkflowEdge("src", "files", "read", "input"),
+                    new WorkflowEdge("read", "records", "store", "records"),
+                ],
+                new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+                [], new Dictionary<string, object?>());
+            Assert.True(await api.ExecuteAsync("industrial/save-workflow",
+                System.Text.Json.JsonSerializer.SerializeToNode(definition)));
+
+            for (var expected = 1; expected <= 3; expected++)
+            {
+                Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
+                    new JsonObject { ["workflowId"] = "version-flow" }));
+                var published = await workflows.GetPublishedAsync("version-flow");
+                Assert.NotNull(published);
+                Assert.Equal(expected, published!.Version);
+                Assert.Equal(expected, published.Definition.Version);
+                var graph = JsonNode.Parse(published.ElsaDefinitionJson)!["elsa"]!.AsObject();
+                Assert.Equal(expected, graph["version"]!.GetValue<int>());
+            }
+        });
     }
 
     [Fact]
@@ -289,7 +342,7 @@ public sealed class ElsaPocTests
             Path.Combine(temp.Root, "industrial-target.db"));
         var rows = target.Records.AsNoTracking().ToList();
         Assert.Single(rows);
-        Assert.Equal("1", rows[0].RecordId);
+        Assert.EndsWith("|1", rows[0].RecordId, StringComparison.Ordinal);
         Assert.Contains("\"value\"", rows[0].PayloadJson, StringComparison.Ordinal);
         Assert.Contains("42", rows[0].PayloadJson, StringComparison.Ordinal);
     }

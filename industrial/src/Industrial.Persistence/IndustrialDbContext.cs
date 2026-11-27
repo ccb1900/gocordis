@@ -91,6 +91,7 @@ public sealed class ResourceEntity
     public string Provider { get; set; } = string.Empty;
     public string ConfigurationJson { get; set; } = string.Empty;
     public string? CredentialId { get; set; }
+    public string? MachineId { get; set; }
     public long Version { get; set; }
     public bool Enabled { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
@@ -346,6 +347,7 @@ public static class IndustrialStore
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN StatisticsJson TEXT NULL;");
         Execute(context, "ALTER TABLE CollectionRuns ADD COLUMN InstanceId TEXT NULL;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN LastAttemptRunId TEXT NULL;");
+        Execute(context, "ALTER TABLE Resources ADD COLUMN MachineId TEXT NULL;");
         Execute(context, "CREATE INDEX IF NOT EXISTS IX_CollectionRuns_InstanceId ON CollectionRuns(InstanceId);");
         Execute(context, """
             CREATE TABLE IF NOT EXISTS CollectionRunDeliveries (

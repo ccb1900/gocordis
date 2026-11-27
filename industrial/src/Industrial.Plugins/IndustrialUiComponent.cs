@@ -175,9 +175,26 @@ public sealed class IndustrialUiComponent : Component
                     ["query"] = "industrial/file-details",
                 }),
                 Order: 65, Group: "Industrial"),
-            Page("industrial.machines", "Machine Management", "/industrial/machines", "generic", "Desktop",
-                "industrial/machines", 70, "Industrial",
-                [("id", "Id"), ("name", "Name"), ("endpoint", "Endpoint"), ("enabled", "Enabled")]),
+            new UiPageDefinition(
+                "industrial.machines", "Machine Management", "/industrial/machines", "generic", "Desktop",
+                "Manage machines and the resources bound to them",
+                new JsonArray(new JsonObject
+                {
+                    ["kind"] = "industrial-machine-console",
+                    ["query"] = "industrial/machines",
+                    ["resourcesQuery"] = "industrial/machine-resources",
+                }),
+                Order: 70, Group: "Industrial"),
+            new UiPageDefinition(
+                "industrial.wizard", "Quick Collection", "/industrial/wizard", "generic", "Thunderbolt",
+                "Create a simple directory-to-database collection task",
+                new JsonArray(new JsonObject
+                {
+                    ["kind"] = "industrial-collection-wizard",
+                    ["query"] = "industrial/resources",
+                    ["nodesQuery"] = "industrial/nodes",
+                }),
+                Order: 5, Group: "Industrial"),
             new UiPageDefinition(
                 "industrial.credentials", "Credential Management", "/industrial/credentials", "generic", "Key",
                 "Manage credential references without exposing secrets",
@@ -236,6 +253,8 @@ public sealed class IndustrialUiComponent : Component
                                              credentialNames.TryGetValue(id, out var name)
                             ? JsonValue.Create(name)
                             : null,
+                        ["machineId"] = resource.MachineId is null
+                            ? null : JsonValue.Create(resource.MachineId),
                         // Configuration contains no secrets; credentials are separate.
                         ["config"] = JsonSerializer.SerializeToNode(resource.Configuration, WireJson),
                     }).ToArray());
@@ -304,6 +323,16 @@ public sealed class IndustrialUiComponent : Component
                         ? null
                         : JsonValue.Create(machine.CredentialId),
                     ["enabled"] = machine.Enabled,
+                }).ToArray())),
+            ("industrial/machine-resources", () => new JsonArray(resources.ListAsync()
+                .GetAwaiter().GetResult()
+                .Where(resource => !string.IsNullOrWhiteSpace(resource.MachineId))
+                .Select(resource => (JsonNode?)new JsonObject
+                {
+                    ["id"] = resource.Id,
+                    ["name"] = resource.Name,
+                    ["type"] = resource.Type,
+                    ["machineId"] = resource.MachineId,
                 }).ToArray())),
             ("industrial/execution-center", () => new JsonObject
             {
@@ -473,7 +502,8 @@ public sealed class IndustrialUiComponent : Component
             existing?.Version ?? 0,
             enabled,
             existing?.CreatedAt ?? DateTimeOffset.UtcNow,
-            DateTimeOffset.UtcNow));
+            DateTimeOffset.UtcNow,
+            body["machineId"] is null ? existing?.MachineId : Text(body, "machineId")));
     }
 
     private static async ValueTask DeleteResourceAsync(JsonNode? payload, IResourceRegistry resources)

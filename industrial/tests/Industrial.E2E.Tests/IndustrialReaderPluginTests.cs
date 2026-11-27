@@ -99,7 +99,7 @@ public sealed class IndustrialReaderPluginTests
             var rows = await target.Records
                 .Select(record => new { record.RecordId, record.PayloadJson })
                 .ToListAsync();
-            Assert.Contains(rows, row => row.RecordId == "json-1" && row.PayloadJson.Contains("\"value\""));
+            Assert.Contains(rows, row => row.RecordId.EndsWith("|json-1", StringComparison.Ordinal) && row.PayloadJson.Contains("\"value\""));
 
             await registry.ApplyAsync(declarations.Select(declaration =>
                 declaration.Id == "industrial.reader.json"

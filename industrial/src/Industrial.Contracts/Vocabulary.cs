@@ -25,6 +25,9 @@ public static class IndustrialKeys
     /// Credentials stay in the vault; node configuration only carries an id.</summary>
     public static readonly Key<Broker<IRecordSinkFactory>> RecordSinkFactories =
         new("industrial.delivery.sink-factories");
+    /// <summary>Plugins may contribute an exact-node-type execution handler.</summary>
+    public static readonly Key<Broker<IIndustrialNodeHandler>> NodeExecutionHandlers =
+        new("industrial.execution.node-handlers");
     public static readonly Key<IFileSource> FileSource = new("industrial.source.file");
     public static readonly Key<IElsaActivityCatalog> ElsaActivityCatalog = new("industrial.elsa.activity-catalog");
     public static readonly Key<IRecordReader> RecordReader = new("industrial.reader.record");
@@ -80,7 +83,8 @@ public sealed record ResourceDefinition(
     long Version,
     bool Enabled,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? MachineId = null);
 
 /// <summary>A collectable machine is an independent domain object, distinct
 /// from a resource (a connection target) and a credential (secret material).</summary>
@@ -233,8 +237,12 @@ public interface IWorkflowRegistry
     ValueTask<WorkflowDefinition> SaveDraftAsync(WorkflowDefinition definition, CancellationToken ct = default);
     ValueTask<WorkflowDefinition?> GetAsync(string workflowId, CancellationToken ct = default);
     ValueTask<IReadOnlyList<WorkflowDefinition>> ListAsync(CancellationToken ct = default);
+    /// <summary>Next immutable published version for a workflow.</summary>
+    ValueTask<int> NextPublishVersionAsync(string workflowId, CancellationToken ct = default);
     ValueTask<PublishedWorkflow?> PublishAsync(
         string workflowId, string elsaDefinitionJson, CancellationToken ct = default);
+    ValueTask<PublishedWorkflow?> PublishAsync(
+        string workflowId, int version, string elsaDefinitionJson, CancellationToken ct = default);
     ValueTask<PublishedWorkflow?> GetPublishedAsync(string workflowId, CancellationToken ct = default);
     ValueTask<PublishedWorkflow?> GetPublishedVersionAsync(
         string workflowId, int version, CancellationToken ct = default);
@@ -438,6 +446,29 @@ public interface IArchiveSink
     string TargetId { get; }
     ValueTask ArchiveAsync(DiscoveredFile file, string idempotencyKey, CancellationToken ct = default);
 }
+
+public interface IIndustrialNodeHandler
+{
+    string NodeType { get; }
+    ValueTask ExecuteAsync(IndustrialNodeExecutionContext context, CancellationToken ct = default);
+}
+
+public sealed record IndustrialNodeExecutionContext(
+    WorkflowDefinition Definition,
+    WorkflowNode Node,
+    string InstanceId,
+    string? RunId,
+    IReadOnlyList<string> Inputs,
+    Func<string, CancellationToken, IAsyncEnumerable<RecordEnvelope>> Records,
+    IStageOutputStore Stage,
+    ICollectionLedger Ledger,
+    IResourceRegistry Resources,
+    ICredentialVault Vault,
+    Broker<IRecordSinkFactory> SinkFactories,
+    IRecordSink DefaultSink,
+    IFileSource Source,
+    IRecordReader Reader,
+    Action<int, IReadOnlyList<string>> Complete);
 
 public interface ICollectionLedger
 {

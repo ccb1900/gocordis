@@ -327,7 +327,7 @@ test("a quick wizard creates and publishes a standard workflow", async ({ page }
   expect(source && target).toBeTruthy();
   await page.getByLabel("任务名称").fill("Wizard flow");
   await chooseAntd(page, "数据来源", `${source.name} (${source.type})`);
-  await chooseAntdByTyping(page, "目标资源", `${target.name} (${target.type})`);
+  await page.getByLabel("目标资源 ID 列表").selectOption(target.id);
   const savedRequest = page.waitForRequest(request =>
     request.method() === "POST" && request.url().includes("/api/command/industrial/save-workflow"));
   const publishedResponse = page.waitForResponse(response =>
@@ -430,7 +430,7 @@ test("a user upgrades bindings only to a published template version", async ({ p
   await expect.poll(async () => (await readBinding())?.workflowVersion).toBe(1);
   expect((await readBinding()).trigger.kind).toBe("schedule");
 
-  await chooseAntdByTyping(page, "工作流模板", "Version impact template");
+  await page.getByLabel("工作流 ID").fill(workflowId);
   await page.getByLabel("升级到模板版本").fill("2");
   await page.getByRole("button", { name: "升级当前工作流绑定版本" }).click();
   // The command endpoint must surface its own diagnostic, not a flat HTTP 500,
@@ -491,11 +491,9 @@ test("a user generates bulk bindings instead of copying workflows", async ({ pag
   const selectedProfiles = ["Profile A", "Profile B"]
     .map((name) => profiles.find((row: { name: string }) => row.name === name)?.id);
   expect(selectedProfiles.every(Boolean)).toBe(true);
-  await chooseAntdByTyping(page, "工作流模板", "Bulk template");
-  await chooseAntd(page, "机台范围", "Bulk 1");
-  await chooseAntd(page, "机台范围", "Bulk 2");
-  await chooseAntd(page, "文件配置范围", "Profile A");
-  await chooseAntd(page, "文件配置范围", "Profile B");
+  await page.getByLabel("工作流 ID").fill("bulk-template");
+  await page.getByLabel("机台 ID 列表").fill("bulk-1,bulk-2");
+  await page.getByLabel("文件配置 ID 列表").fill(selectedProfiles.join(","));
   const available = (await (await page.request.get("/api/query/industrial/resources")).json()).data;
   const target = available.find((row: { type: string }) => row.type === "sqlite") ?? available[0];
   await page.getByLabel("目标资源 ID 列表").fill(target.id);

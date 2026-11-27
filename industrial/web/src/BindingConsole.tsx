@@ -259,24 +259,27 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
       <Typography.Title level={4} style={{ margin: 0 }}>采集任务绑定</Typography.Title>
       {error && <Alert type="error" showIcon message={error} />}
       <Space wrap>
-        <Select aria-label="工作流模板" mode="single" style={{ width: 220 }} value={workflowId}
-          onChange={(value: string) => setWorkflowId(value)}
-          options={workflows.map((item) => ({ value: item.workflowId, label: item.name }))} />
+        <Input aria-label="工作流 ID" placeholder="工作流 ID" value={workflowId ?? ""}
+          onChange={(e: any) => setWorkflowId(e.target.value)} />
         <InputNumber aria-label="模板版本" min={1} value={version}
           onChange={(value: number | null) => setVersion(Number(value) || 1)} />
-        <Select aria-label="机台范围" mode="multiple" style={{ width: 300 }} value={machineIds}
-          onChange={(values: string[]) => setMachineIds(values)}
-          options={machines.map((item) => ({ value: item.id, label: item.name }))} />
-        <Select aria-label="文件配置范围" mode="multiple" style={{ width: 300 }} value={profileIds}
-          onChange={(values: string[]) => setProfileIds(values)}
-          options={profiles.map((item) => ({ value: item.id, label: item.name }))} />
+        <Input aria-label="机台 ID 列表" placeholder="机台 ID，逗号分隔"
+          value={machineIds.join(",")}
+          onChange={(e: any) => setMachineIds(e.target.value.split(",")
+            .map((item: string) => item.trim()).filter(Boolean))} />
+        <Input aria-label="文件配置 ID 列表" placeholder="文件配置 ID，逗号分隔"
+          value={profileIds.join(",")}
+          onChange={(e: any) => setProfileIds(e.target.value.split(",")
+            .map((item: string) => item.trim()).filter(Boolean))} />
         <Input aria-label="目标资源 ID 列表" placeholder="目标资源 ID，逗号分隔"
           value={targetIds.join(",")}
           onChange={(e: any) => setTargetIds(e.target.value.split(",")
             .map((item: string) => item.trim()).filter(Boolean))} />
-        <Select aria-label="绑定触发策略" style={{ width: 160 }} value={triggerKind}
-          onChange={(value: string) => setTriggerKind(value)}
-          options={[{ value: "manual", label: "手动" }, { value: "schedule", label: "定时" }]} />
+        <select aria-label="绑定触发策略" value={triggerKind}
+          onChange={(e: any) => setTriggerKind(e.target.value)}>
+          <option value="manual">手动</option>
+          <option value="schedule">定时</option>
+        </select>
         <Input aria-label="绑定 Cron" placeholder="cron（定时策略）" value={cron}
           onChange={(e: any) => setCron(e.target.value)} />
         <Input aria-label="来源资源模板" placeholder="来源资源模板，{machine} 占位符" value={sourcePattern}

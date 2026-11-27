@@ -1,8 +1,8 @@
 name: windows-unc
 
-# Final selector rebind: re-run after portable payload path fixes so the evidence head_sha follows the code.
+# Native control rebind: re-run after portable payload path fixes so the evidence head_sha follows the code.
 # Browser-level UNC acceptance has its own workflow and evidence row.
-# Final selector rebind: re-running this file re-binds the evidence to the newly tested head sha.
+# Native control rebind: re-running this file re-binds the evidence to the newly tested head sha.
 # Product fixes must carry their own UNC evidence row.
 # Each push of this workflow re-binds the evidence to the tested head sha.
 # The run id produced by this workflow is recorded in

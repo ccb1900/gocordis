@@ -109,9 +109,14 @@ export function CollectionWizard({ block, ctx }: {
           onChange={(value: string) => setFormat(value)}
           options={["csv", "excel", "json"].map((value) => ({ value, label: value.toUpperCase() }))} />
       </Space>
-      <Select aria-label="目标资源" mode="multiple" style={{ width: 420 }} placeholder="目标资源"
-        value={targetIds} onChange={(value: string[]) => setTargetIds(value)}
-        options={targets.map((resource) => ({ value: resource.id, label: `${resource.name} (${resource.type})` }))} />
+      <select aria-label="目标资源 ID 列表" multiple style={{ width: 420, minHeight: 72 }}
+        value={targetIds}
+        onChange={(event: any) => setTargetIds(Array.from(event.target.selectedOptions)
+          .map((option: any) => option.value))}>
+        {targets.map((resource) => (
+          <option key={resource.id} value={resource.id}>{resource.name} ({resource.type})</option>
+        ))}
+      </select>
       <Button type="primary" loading={busy} onClick={() => void create()}>创建并发布</Button>
     </Space>
   );

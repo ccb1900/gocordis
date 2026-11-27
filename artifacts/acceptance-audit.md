@@ -86,6 +86,11 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | 80 machines x 10 file profiles generate 800 bindings, not 800 workflows | `FileProfileRegistry`, `CollectionBindingRegistry`, `CollectionBindingTests.BulkBindingsCreateEightHundredRowsWithoutCopyingWorkflows` | Pass |
 | Binding parameterization and secret-free config import/export | `WorkflowBinding.BindParameters`, `industrial/export-config`, `industrial/import-config`, browser E2E | Pass |
 
-Unified report: 982 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `dafb3563c010e9e5af85857d5f370962c8f16235` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+| Binding pause/resume/backfill with status and diagnostics | `industrial/set-binding-enabled`, `industrial/binding-status`, `industrial/run-binding`, browser E2E | Pass |
+| Cross-environment resource/credential ID mapping on import | `ImportConfigAsync` maps, browser E2E | Pass |
+| Designer snapline, batch move, context menus, edge selection/delete and sample preview | `graph-model.ts`, `GraphCanvas.tsx`, `PropertyEditor.tsx`, `designer-usability.spec.ts` | Pass |
+| Per-backend credential parsing/auth verification | `CredentialBackendTests` for UNC/SQL Server/PostgreSQL/MySQL/SQLite | Pass |
+
+Unified report: 988 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `f761b310621e513f7521bbcb4286abc4f1e821ae` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

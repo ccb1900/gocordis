@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-11-27T07:16:53.034175+00:00",
+  "generatedAt": "2026-11-27T07:27:53.438570+00:00",
   "source": "tools/release/test-report.sh",
-  "commit": "9636a55ac9e5ffa71bd67107ee69cf04da0da1d6",
+  "commit": "dafb3563c010e9e5af85857d5f370962c8f16235",
   "statusVocabulary": [
     "passed",
     "skipped",

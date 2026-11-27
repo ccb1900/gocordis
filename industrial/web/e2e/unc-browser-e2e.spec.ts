@@ -110,7 +110,9 @@ test("blank environment: UI creates UNC machine, credential and resource, reads 
     response.request().method() === "POST" &&
     response.url().includes("/api/command/industrial/test-resource"));
   await sourceRow.getByRole("button", { name: "测试连接" }).click();
-  expect((await badTest).ok()).toBe(true);
+  // A failed connection test is reported as a rejected command with an
+  // actionable diagnostic; the detailed result is still stored for the page.
+  expect((await badTest).ok()).toBe(false);
   await expect.poll(async () => {
     const rows = (await (await page.request.get("/api/query/industrial/resource-tests")).json()).data;
     return rows.find((row: { resourceId: string }) => row.resourceId === "unc-source")?.ok;

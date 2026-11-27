@@ -1,5 +1,9 @@
 name: windows-unc
 
+# The run id produced by this workflow is recorded in
+# artifacts/windows-unc-result.json with the head_sha it tested. The unified
+# report treats evidence from any other commit as not-executed.
+
 on:
   workflow_dispatch:
   push:

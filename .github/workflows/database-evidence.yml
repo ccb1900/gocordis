@@ -1,5 +1,8 @@
 name: database-evidence
 
+# Run ids are recorded in artifacts/{sqlserver,mysql}-result.json together with
+# the head_sha they tested; the unified report rejects stale evidence.
+
 on:
   workflow_dispatch:
   push:
@@ -42,9 +45,19 @@ jobs:
           exit 1
       - name: SqlServerSinkTests against a real server
         run: |
-          GOCORDIS_SQLSERVER_CONNECTION="Server=127.0.0.1,1433;Database=master;User Id=sa;Password=Gocordis!2026Sql;TrustServerCertificate=True;Encrypt=False" \
-            dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj \
-              --nologo -m:1 --filter FullyQualifiedName~SqlServerSink
+          # The TCP listener opens before SQL authentication is ready. Retry the
+          # real test itself; every attempt talks to the same real SQL Server.
+          for attempt in $(seq 1 12); do
+            echo "SQL Server integration attempt $attempt"
+            if GOCORDIS_SQLSERVER_CONNECTION="Server=127.0.0.1,1433;Database=master;User Id=sa;Password=Gocordis!2026Sql;TrustServerCertificate=True;Encrypt=False" \
+              dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj \
+                --nologo -m:1 --filter FullyQualifiedName~SqlServerSink; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "SQL Server integration failed after bounded retries" >&2
+          exit 1
 
   mysql:
     name: MySQL real-server integration

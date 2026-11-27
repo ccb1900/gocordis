@@ -63,6 +63,14 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Sink partitions input by source in one pass; 100k-row heap bound verified | `PublishedNodeExecutor.ExecuteSinkAsync`, `CrashRecoveryTests.StreamingPipelineKeepsLiveHeapBoundedOnLargeInput` | Pass |
 | Retry test asserts `LastAttemptRunId` directly | `CrashRecoveryTests.RetryUsesTheLastRunThatAttemptedTheSameDelivery` | Pass |
 
-Unified report: 958 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `1395b1647a38c7716e5fd41e7a5e42b2c88fa614` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+| Long-outage cron catch-up scans backward from now | `RunDueSchedulesAsync.LastOccurrenceBefore`, `CronReverseCatchUpTests` | Pass |
+| Skipped lower bound and backlog truncation reported separately | `ScheduleCheckpoints.BacklogTruncated`, `industrial/trigger-status` | Pass |
+| Sink partitions use bounded channels with guaranteed spool cleanup | `PublishedNodeExecutor.ExecuteSinkAsync` | Pass |
+| Peak live heap during streaming is bounded | `CrashRecoveryTests.StreamingPipelineKeepsLiveHeapBoundedOnLargeInput`, batched `SqliteRecordSink` | Pass |
+| Custom delivery handlers complete/fail the Run | `IndustrialNodeCompletion.Delivery`, `CustomNodeHandlerTests` | Pass |
+| Publish persists an explicit immutable snapshot under concurrent draft edits | `IWorkflowRegistry.PublishAsync(snapshot)`, `WorkflowValidationTests.PublishPersistsTheExplicitSnapshotEvenIfDraftChanges` | Pass |
+| Machine IDs independent of names, unbind via explicit null, delete guarded | `MachineConsole.tsx`, `SaveResourceAsync`, `MachineRegistry.RemoveAsync`, browser E2E | Pass |
+
+Unified report: 963 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `b7098d90efe6b10ec605700817a02087c3ef8ead` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

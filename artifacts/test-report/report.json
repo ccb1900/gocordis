@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-11-27T00:48:42.156198+00:00",
+  "generatedAt": "2026-11-27T02:42:49.369834+00:00",
   "source": "tools/release/test-report.sh",
-  "commit": "1395b1647a38c7716e5fd41e7a5e42b2c88fa614",
+  "commit": "b7098d90efe6b10ec605700817a02087c3ef8ead",
   "statusVocabulary": [
     "passed",
     "skipped",
@@ -60,7 +60,7 @@
       "exitCode": 0,
       "executionStatus": "passed",
       "countStatus": "parsed",
-      "passed": 15,
+      "passed": 16,
       "skipped": 0,
       "log": "industrial-browser-e2e.log"
     },
@@ -69,7 +69,7 @@
       "exitCode": 0,
       "executionStatus": "passed",
       "countStatus": "parsed",
-      "passed": 100,
+      "passed": 104,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
@@ -156,7 +156,7 @@
     }
   ],
   "totals": {
-    "passed": 958,
+    "passed": 963,
     "skipped": 7,
     "failedSuites": [],
     "unparsedSuites": [],

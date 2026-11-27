@@ -75,7 +75,7 @@ test("blank environment: UI creates UNC machine, credential and resource, reads 
   await page.goto("/industrial/wizard");
   await page.getByLabel("任务名称").fill("UNC browser flow");
   await choose(page, "数据来源", `UNC source (filesystem.unc)`);
-  await choose(page, "目标资源", `UNC target (sqlite)`);
+  await page.getByLabel("目标资源 ID 列表").selectOption("unc-target");
   await page.getByRole("button", { name: "创建并发布" }).click();
   await expect(page).toHaveURL(/\/industrial\/designer\?workflowId=quick-/);
   await page.getByRole("button", { name: /运\s*行/ }).click();

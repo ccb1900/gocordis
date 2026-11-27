@@ -1,7 +1,7 @@
 name: windows-unc-browser
 
-# Native control rebind: re-run on packaging fixes because packaged UI is part of this story.
-# Native control rebind: browser-level acceptance for the Windows UNC UI story. The run id and tested
+# UNC wizard selector rebind: re-run on packaging fixes because packaged UI is part of this story.
+# UNC wizard selector rebind: browser-level acceptance for the Windows UNC UI story. The run id and tested
 # head sha are recorded in artifacts/windows-unc-browser-result.json.
 
 on:

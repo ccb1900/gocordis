@@ -56,7 +56,9 @@ export function MachineConsole({ block, ctx }: {
     setError(null);
     try {
       await ctx.hubCommand("industrial/save-machine", {
-        id: `machine-${name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+        id: `machine-${typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID().replace(/-/g, "").slice(0, 12)
+          : Date.now().toString(36)}`,
         name: name.trim(), endpoint: endpoint.trim(), enabled: true,
       });
       setName(""); setEndpoint(""); await load();

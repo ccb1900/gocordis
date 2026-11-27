@@ -255,19 +255,20 @@ public sealed class CollectionLedger : ICollectionLedger
             .ToArray();
     }
 
-    public async ValueTask<(DateTimeOffset? Checkpoint, int Skipped)> GetScheduleCheckpointAsync(
+    public async ValueTask<(DateTimeOffset? Checkpoint, int Skipped, bool BacklogTruncated)> GetScheduleCheckpointAsync(
         string workflowId, int version, CancellationToken ct = default)
     {
         await using var db = _db();
         var rows = await db.Database.SqlQueryRaw<ScheduleCheckpointRow>(
             """
-            SELECT CheckpointUtc, Skipped FROM ScheduleCheckpoints
+            SELECT CheckpointUtc, Skipped, BacklogTruncated FROM ScheduleCheckpoints
              WHERE WorkflowId = {0} AND Version = {1};
             """, workflowId, version).ToListAsync(ct);
-        if (rows.Count == 0) return (null, 0);
+        if (rows.Count == 0) return (null, 0, false);
         var row = rows[0];
         return (string.IsNullOrWhiteSpace(row.CheckpointUtc)
-            ? null : DateTimeOffset.Parse(row.CheckpointUtc, CultureInfo.InvariantCulture), row.Skipped);
+            ? null : DateTimeOffset.Parse(row.CheckpointUtc, CultureInfo.InvariantCulture),
+            row.Skipped, row.BacklogTruncated != 0);
     }
 
     public async ValueTask SetScheduleCheckpointAsync(
@@ -289,13 +290,13 @@ public sealed class CollectionLedger : ICollectionLedger
     public async ValueTask<bool> CommitScheduleWindowAsync(
         string workflowId, int version, DateTimeOffset? expectedCheckpoint,
         DateTimeOffset nextCheckpoint, IReadOnlyList<DateTimeOffset> dueInstants,
-        int skippedIncrement, CancellationToken ct = default)
+        int skippedIncrement, bool backlogTruncated, CancellationToken ct = default)
     {
         await using var db = _db();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         var rows = await db.Database.SqlQueryRaw<ScheduleCheckpointRow>(
             """
-            SELECT CheckpointUtc, Skipped FROM ScheduleCheckpoints
+            SELECT CheckpointUtc, Skipped, BacklogTruncated FROM ScheduleCheckpoints
              WHERE WorkflowId = {0} AND Version = {1};
             """, workflowId, version).ToListAsync(ct);
         var current = rows.Count == 0 ? null : rows[0].CheckpointUtc;
@@ -321,13 +322,15 @@ public sealed class CollectionLedger : ICollectionLedger
         }
         await Exec(db,
             """
-            INSERT INTO ScheduleCheckpoints (WorkflowId, Version, CheckpointUtc, Skipped)
-            VALUES ({0}, {1}, {2}, {3})
+            INSERT INTO ScheduleCheckpoints (WorkflowId, Version, CheckpointUtc, Skipped, BacklogTruncated)
+            VALUES ({0}, {1}, {2}, {3}, {4})
             ON CONFLICT(WorkflowId, Version) DO UPDATE SET
                 CheckpointUtc = excluded.CheckpointUtc,
-                Skipped = ScheduleCheckpoints.Skipped + excluded.Skipped;
+                Skipped = ScheduleCheckpoints.Skipped + excluded.Skipped,
+                BacklogTruncated = excluded.BacklogTruncated;
             """,
-            workflowId, version, nextCheckpoint.ToUniversalTime().ToString("O"), skippedIncrement, ct);
+            workflowId, version, nextCheckpoint.ToUniversalTime().ToString("O"),
+            skippedIncrement, backlogTruncated ? 1 : 0, ct);
         await tx.CommitAsync(ct);
         return true;
     }
@@ -336,6 +339,7 @@ public sealed class CollectionLedger : ICollectionLedger
     {
         public string CheckpointUtc { get; set; } = string.Empty;
         public int Skipped { get; set; }
+        public int BacklogTruncated { get; set; }
     }
 
     private sealed class ScheduleFireAttemptRow

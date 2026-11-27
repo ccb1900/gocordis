@@ -216,7 +216,7 @@ public sealed class IndustrialElsaComponent : Component
                     var version = await workflows.NextPublishVersionAsync(id);
                     var snapshot = definition with { Version = version };
                     var elsJson = await ElsaDefinitionConverter.ToElsaJson(snapshot);
-                    var published = await workflows.PublishAsync(id, version, elsJson);
+                    var published = await workflows.PublishAsync(id, snapshot, elsJson);
                     if (published is null)
                     {
                         throw new InvalidOperationException($"failed to publish workflow '{id}'");
@@ -243,9 +243,11 @@ public sealed class IndustrialElsaComponent : Component
                 // tests. Uses the same single path as the timer, never a second
                 // scheduler implementation.
                 api.RegisterCommand("industrial/scheduler-tick", async _ =>
+                {
                     await RunDueSchedulesAsync(workflows, coordinator, ledger, resources, vault,
                         planner, source, reader, stage, sinkFactories, sink, archive,
-                        context.CancellationToken), owner);
+                        context.CancellationToken);
+                }, owner);
                 api.RegisterQuery("industrial/recovery", () => _lastRecovery is null
                     ? null
                     : JsonNode.Parse(_lastRecovery), owner);
@@ -522,10 +524,44 @@ public sealed class IndustrialElsaComponent : Component
                     ["lastFireDueAt"] = lastFire is null ? null : JsonValue.Create(lastFire.DueAtUtc.ToString("O")),
                     ["lastFireAttempts"] = lastFire is null ? null : JsonValue.Create(lastFire.Attempts),
                     ["skippedFires"] = checkpoint.Skipped == 0 ? null : JsonValue.Create(checkpoint.Skipped),
+                    ["backlogTruncated"] = checkpoint.BacklogTruncated
+                        ? JsonValue.Create(true) : null,
                     ["lastError"] = scheduleError is null ? null : JsonValue.Create(scheduleError),
                 };
             }).ToArray();
-        return new JsonObject { ["triggers"] = new JsonArray(rows) };
+        return new JsonObject
+        {
+            ["triggers"] = new JsonArray(rows),
+
+        };
+    }
+
+    /// <summary>Binary-searches the latest cron occurrence strictly before
+    /// <paramref name="upperExclusive"/> and at/after the checkpoint. Used for
+    /// reverse catch-up so long outages do not require enumerating every tick.
+    /// </summary>
+    private static DateTimeOffset? LastOccurrenceBefore(
+        CronExpression expression, TimeZoneInfo zone,
+        DateTimeOffset checkpoint, DateTimeOffset upperExclusive)
+    {
+        DateTimeOffset? best = null;
+        var lo = checkpoint;
+        var hi = upperExclusive.AddTicks(-1);
+        while (lo <= hi)
+        {
+            var mid = lo + TimeSpan.FromTicks((hi - lo).Ticks / 2);
+            var occurrence = expression.GetNextOccurrence(mid, zone, true)?.ToUniversalTime();
+            if (occurrence is not null && occurrence < upperExclusive)
+            {
+                best = occurrence;
+                lo = mid.AddTicks(1);
+            }
+            else
+            {
+                hi = mid.AddTicks(-1);
+            }
+        }
+        return best;
     }
 
     private async ValueTask RunDueSchedulesAsync(
@@ -559,7 +595,7 @@ public sealed class IndustrialElsaComponent : Component
                 if (isSchedule && item.Version == latest[item.WorkflowId])
                 {
                     const int catchUpLimit = 3;
-                    const int scanBudget = 10_000;
+                    const int countBudget = 10_000;
                     var checkpointState = await ledger.GetScheduleCheckpointAsync(
                         item.WorkflowId, item.Version, ct);
                     if (checkpointState.Checkpoint is null)
@@ -567,36 +603,46 @@ public sealed class IndustrialElsaComponent : Component
                         // First install starts at "now": a fresh deployment
                         // must not replay history that predates the product.
                         await ledger.CommitScheduleWindowAsync(
-                            item.WorkflowId, item.Version, null, now, [], 0, ct);
+                            item.WorkflowId, item.Version, null, now, [], 0, false, ct);
                     }
                     else
                     {
                         var expression = CronExpression.Parse(trigger.Cron!);
                         var zone = ScheduleZone(trigger);
-                        var cursor = checkpointState.Checkpoint.Value;
-                        // Fixed-size bounded buffer: never hold every missed
-                        // occurrence, even for a minute cron after a long outage.
-                        var recent = new Queue<DateTimeOffset>();
-                        var scanned = 0;
-                        while (scanned < scanBudget)
+                        var checkpoint = checkpointState.Checkpoint.Value;
+                        // Scan BACKWARD from now: the work is proportional to
+                        // the catch-up limit, not to the length of downtime.
+                        var upper = now.AddTicks(1);
+                        for (var i = 0; i < catchUpLimit; i++)
                         {
-                            var next = expression.GetNextOccurrence(cursor, zone, true);
-                            if (next is null) break;
-                            var instant = next.Value.ToUniversalTime();
-                            if (instant > now) break;
-                            recent.Enqueue(instant);
-                            if (recent.Count > catchUpLimit) recent.Dequeue();
-                            scanned++;
-                            cursor = next.Value.AddSeconds(1);
+                            var found = LastOccurrenceBefore(expression, zone, checkpoint, upper);
+                            if (found is null) break;
+                            dueInstants.Add(found.Value);
+                            upper = found.Value;
                         }
-                        var truncated = scanned >= scanBudget;
-                        dueInstants.AddRange(recent);
-                        // Fires beyond the catch-up limit and a truncated scan
-                        // are both counted, never silently dropped.
-                        var skipped = Math.Max(0, scanned - recent.Count) + (truncated ? 1 : 0);
+                        dueInstants.Reverse();
+
+                        // Count skipped occurrences from the checkpoint up to the
+                        // first materialized fire with a bounded budget. If the
+                        // budget is exhausted Skipped is a LOWER BOUND and the
+                        // truncation flag is set separately.
+                        var skipped = 0;
+                        var truncated = false;
+                        if (dueInstants.Count > 0)
+                        {
+                            var cursor = checkpoint;
+                            while (skipped < countBudget)
+                            {
+                                var next = expression.GetNextOccurrence(cursor, zone, true)?.ToUniversalTime();
+                                if (next is null || next >= dueInstants[0]) break;
+                                skipped++;
+                                cursor = next.Value;
+                            }
+                            truncated = skipped >= countBudget;
+                        }
                         if (!await ledger.CommitScheduleWindowAsync(
-                                item.WorkflowId, item.Version, checkpointState.Checkpoint,
-                                now, dueInstants, skipped, ct))
+                                item.WorkflowId, item.Version, checkpoint, now,
+                                dueInstants, skipped, truncated, ct))
                         {
                             continue;
                         }
@@ -969,10 +1015,15 @@ public sealed class IndustrialElsaComponent : Component
             // Every delivery-shaped node (database sink AND archive) owns one
             // completion slot; the run is terminal only after all of them are
             // done, independent of their order in the flowchart.
-            foreach (var node in definition.Nodes.Where(node =>
-                         IsSink(node.Type) || node.Type.Contains("archive", StringComparison.OrdinalIgnoreCase)))
+            foreach (var node in definition.Nodes)
             {
-                Interlocked.Increment(ref _remainingConsequences);
+                var custom = handlers?.Providers.FirstOrDefault(handler =>
+                    string.Equals(handler.NodeType, node.Type, StringComparison.Ordinal));
+                if (custom?.Completion == IndustrialNodeCompletion.Delivery ||
+                    IsSink(node.Type) || node.Type.Contains("archive", StringComparison.OrdinalIgnoreCase))
+                {
+                    Interlocked.Increment(ref _remainingConsequences);
+                }
             }
         }
 
@@ -1106,6 +1157,8 @@ public sealed class IndustrialElsaComponent : Component
                             view.Samples = samples;
                         }), cancellationToken);
                     if (view.Status == "Running") view.Status = "Succeeded";
+                    if (custom.Completion == IndustrialNodeCompletion.Delivery)
+                        await FinishRunIfComplete(cancellationToken);
                     return;
                 }
                 if (nodeType.Contains("source", StringComparison.OrdinalIgnoreCase))
@@ -1419,23 +1472,48 @@ public sealed class IndustrialElsaComponent : Component
             }
             // One pass partitions the stage dataset by source; each source is
             // then written once from its own partition instead of rescanning
-            // the full dataset for every file.
-            await foreach (var record in RecordsFromAsync(node.Id, ct).WithCancellation(ct))
-            {
-                sinkSample.Add(record);
-                if (!partitions.TryGetValue(record.Source.Key, out var partition))
-                {
-                    var channel = Channel.CreateUnbounded<RecordEnvelope>();
-                    partition = (channel, _stage.SpoolAsync(
-                        _instanceId, $"{node.Id}-partition-{partitionIndex++}", Fingerprint(node),
-                        Drain(channel.Reader, ct), ct));
-                    partitions.Add(record.Source.Key, partition);
-                }
-                await partition.Channel.Writer.WriteAsync(record, ct);
-            }
-            foreach (var partition in partitions.Values) partition.Channel.Writer.TryComplete();
+            // the full dataset for every file. Bounded channels apply backpressure
+            // so fast reads cannot accumulate an unbounded in-memory queue.
             var datasets = new Dictionary<string, DatasetRef>(StringComparer.Ordinal);
-            foreach (var pair in partitions) datasets[pair.Key] = await pair.Value.Spool;
+            try
+            {
+                await foreach (var record in RecordsFromAsync(node.Id, ct).WithCancellation(ct))
+                {
+                    sinkSample.Add(record);
+                    if (!partitions.TryGetValue(record.Source.Key, out var partition))
+                    {
+                        var channel = Channel.CreateBounded<RecordEnvelope>(new BoundedChannelOptions(128)
+                        {
+                            FullMode = BoundedChannelFullMode.Wait,
+                            SingleReader = true,
+                            SingleWriter = true,
+                        });
+                        partition = (channel, _stage.SpoolAsync(
+                            _instanceId, $"{node.Id}-partition-{partitionIndex++}", Fingerprint(node),
+                            Drain(channel.Reader, ct), ct));
+                        partitions.Add(record.Source.Key, partition);
+                    }
+                    await partition.Channel.Writer.WriteAsync(record, ct);
+                }
+            }
+            finally
+            {
+                // Always close writers and drain spool tasks, including on a
+                // failed upstream read, so no background task or file handle leaks.
+                foreach (var partition in partitions.Values) partition.Channel.Writer.TryComplete();
+                List<Exception>? failures = null;
+                foreach (var pair in partitions)
+                {
+                    try { datasets[pair.Key] = await pair.Value.Spool; }
+                    catch (Exception ex)
+                    {
+                        failures ??= [];
+                        failures.Add(ex);
+                    }
+                }
+                if (failures is not null && !ct.IsCancellationRequested)
+                    throw new AggregateException("sink partition spooling failed", failures);
+            }
             View(node.Id).Samples = sinkSample.Values;
             foreach (var sourceKey in partitions.Keys)
             {

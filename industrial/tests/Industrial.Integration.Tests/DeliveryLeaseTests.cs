@@ -233,15 +233,16 @@ public sealed class DeliveryLeaseTests
         var checkpoint = DateTimeOffset.UtcNow.AddMinutes(-2);
         var due = new[] { checkpoint.AddMinutes(1) };
         Assert.True(await fixture.Ledger.CommitScheduleWindowAsync(
-            "flow", 1, null, checkpoint, due, 0));
+            "flow", 1, null, checkpoint, due, 0, false));
         Assert.False(await fixture.Ledger.CommitScheduleWindowAsync(
-            "flow", 1, null, checkpoint.AddMinutes(1), due, 0),
+            "flow", 1, null, checkpoint.AddMinutes(1), due, 0, false),
             "a stale checkpoint must not be allowed to advance");
         var fire = Assert.Single(await fixture.Ledger.ListScheduleFiresAsync());
         Assert.Equal(due[0].ToUniversalTime(), fire.DueAtUtc.ToUniversalTime());
-        var (stored, skipped) = await fixture.Ledger.GetScheduleCheckpointAsync("flow", 1);
+        var (stored, skipped, truncated) = await fixture.Ledger.GetScheduleCheckpointAsync("flow", 1);
         Assert.Equal(checkpoint.ToUniversalTime(), stored!.Value.ToUniversalTime());
         Assert.Equal(0, skipped);
+        Assert.False(truncated);
     }
 
     [Fact]

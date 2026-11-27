@@ -77,6 +77,27 @@ public sealed class WorkflowValidationTests
     }
 
     [Fact]
+    public async Task PublishPersistsTheExplicitSnapshotEvenIfDraftChanges()
+    {
+        using var fixture = new Fixture();
+        await fixture.Catalog.RegisterAsync(Source());
+        await fixture.Catalog.RegisterAsync(Reader());
+        await fixture.Catalog.RegisterAsync(Sink());
+        var original = Definition() with { WorkflowId = "race-flow", Name = "Original" };
+        await fixture.Workflows.SaveDraftAsync(original);
+        var originalElsa = "{\"version\":1,\"snapshot\":\"Original\"}";
+        // Simulate a concurrent editor changing the draft after the Elsa graph
+        // was produced but before publish was persisted.
+        await fixture.Workflows.SaveDraftAsync(original with { Name = "Changed" });
+        var published = await fixture.Workflows.PublishAsync("race-flow", original, originalElsa);
+        Assert.NotNull(published);
+        Assert.Equal("Original", published!.Definition.Name);
+        Assert.Equal("Original", (await fixture.Workflows.GetPublishedAsync("race-flow"))!.Definition.Name);
+        Assert.Equal(originalElsa, published.ElsaDefinitionJson);
+        Assert.Equal("Changed", (await fixture.Workflows.GetAsync("race-flow"))!.Name);
+    }
+
+    [Fact]
     public async Task ValidationErrorsPointToTheExactNodeOrEdge()
     {
         using var fixture = new Fixture();

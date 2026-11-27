@@ -503,7 +503,9 @@ public sealed class IndustrialUiComponent : Component
             enabled,
             existing?.CreatedAt ?? DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow,
-            body["machineId"] is null ? existing?.MachineId : Text(body, "machineId")));
+            body.ContainsKey("machineId")
+                ? (body["machineId"] is null ? null : Text(body, "machineId"))
+                : existing?.MachineId));
     }
 
     private static async ValueTask DeleteResourceAsync(JsonNode? payload, IResourceRegistry resources)

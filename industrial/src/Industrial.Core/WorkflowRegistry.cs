@@ -110,16 +110,28 @@ public sealed class WorkflowRegistry : IWorkflowRegistry
         return latest == 0 ? 1 : latest + 1;
     }
 
-    public ValueTask<PublishedWorkflow?> PublishAsync(
-        string workflowId, string elsaDefinitionJson, CancellationToken ct = default) =>
-        PublishAsync(workflowId, 0, elsaDefinitionJson, ct);
+    public async ValueTask<PublishedWorkflow?> PublishAsync(
+        string workflowId, string elsaDefinitionJson, CancellationToken ct = default)
+    {
+        var definition = await GetAsync(workflowId, ct)
+                         ?? throw new InvalidOperationException($"workflow '{workflowId}' not found");
+        return await PublishAsync(workflowId, definition, elsaDefinitionJson, ct);
+    }
 
     public async ValueTask<PublishedWorkflow?> PublishAsync(
         string workflowId, int version, string elsaDefinitionJson, CancellationToken ct = default)
     {
         var definition = await GetAsync(workflowId, ct)
                          ?? throw new InvalidOperationException($"workflow '{workflowId}' not found");
-        var errors = await _validator.ValidateAsync(definition, ct);
+        var snapshot = definition with { Version = version > 0 ? version : definition.Version };
+        return await PublishAsync(workflowId, snapshot, elsaDefinitionJson, ct);
+    }
+
+    public async ValueTask<PublishedWorkflow?> PublishAsync(
+        string workflowId, WorkflowDefinition snapshot, string elsaDefinitionJson,
+        CancellationToken ct = default)
+    {
+        var errors = await _validator.ValidateAsync(snapshot, ct);
         if (errors.Count > 0)
         {
             throw new InvalidOperationException("cannot publish an invalid workflow: " +
@@ -129,20 +141,15 @@ public sealed class WorkflowRegistry : IWorkflowRegistry
         await using var db = _db();
         var previous = await db.Workflows
             .SingleOrDefaultAsync(x => x.WorkflowId == workflowId && x.IsPublished, ct);
-        if (previous is not null)
-        {
-            previous.IsPublished = false;
-        }
-        var publishedVersion = version > 0 ? version : previous is null ? definition.Version : previous.Version + 1;
-        // Immutable snapshot: the definition's own version, the persisted row
-        // and the Elsa graph all carry the same number.
-        var snapshot = definition with { Version = publishedVersion };
+        if (previous is not null) previous.IsPublished = false;
+        var nextVersion = await NextPublishVersionAsync(workflowId, ct);
+        var immutable = snapshot with { WorkflowId = workflowId, Version = nextVersion };
         var published = new WorkflowEntity
         {
             WorkflowId = workflowId,
-            Version = publishedVersion,
+            Version = nextVersion,
             Kind = "Published",
-            DefinitionJson = JsonSerializer.Serialize(snapshot, Json),
+            DefinitionJson = JsonSerializer.Serialize(immutable, Json),
             ElsaDefinitionJson = elsaDefinitionJson,
             IsPublished = true,
             PublishedAt = DateTimeOffset.UtcNow,
@@ -150,7 +157,7 @@ public sealed class WorkflowRegistry : IWorkflowRegistry
         db.Workflows.Add(published);
         await db.SaveChangesAsync(ct);
         return new PublishedWorkflow(
-            workflowId, publishedVersion, snapshot, elsaDefinitionJson, published.PublishedAt!.Value);
+            workflowId, nextVersion, immutable, elsaDefinitionJson, published.PublishedAt!.Value);
     }
 
     public async ValueTask<PublishedWorkflow?> GetPublishedVersionAsync(

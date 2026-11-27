@@ -632,6 +632,18 @@ public sealed class CrashRecoveryTests
 
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
         var baseline = GC.GetTotalMemory(true);
+        using var sampling = new CancellationTokenSource();
+        var peak = baseline;
+        var sampler = Task.Run(async () =>
+        {
+            while (!sampling.IsCancellationRequested)
+            {
+                // Force collection so we measure LIVE heap, not uncollected garbage.
+                var live = GC.GetTotalMemory(true);
+                if (live > peak) peak = live;
+                await Task.Delay(50, sampling.Token);
+            }
+        });
         await Compose(temp.Root, factories, async (_, workflows, resources, ledger, api) =>
         {
             var registered = DateTimeOffset.UtcNow;
@@ -650,12 +662,17 @@ public sealed class CrashRecoveryTests
                 .Single(candidate => candidate.TargetId == "target-a");
             Assert.Equal(rowCount, delivery.Records);
         });
+        sampling.Cancel();
+        try { await sampler; } catch (OperationCanceledException) { }
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
         var after = GC.GetTotalMemory(true);
         // A full batch of 100k RecordEnvelopes would be tens of MB; streaming
-        // through disk-backed stage datasets must stay far below that.
+        // through disk-backed stage datasets must stay far below that. Check
+        // PEAK live heap during execution, not only post-GC survivor heap.
+        Assert.True(peak - baseline < 64L * 1024 * 1024,
+            $"peak live heap grew by {(peak - baseline) / (1024 * 1024)} MB");
         Assert.True(after - baseline < 64L * 1024 * 1024,
-            $"live heap grew by {(after - baseline) / (1024 * 1024)} MB");
+            $"surviving heap grew by {(after - baseline) / (1024 * 1024)} MB");
         Assert.Equal(rowCount, await CountRowsAsync(target));
     }
 

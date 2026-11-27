@@ -123,7 +123,8 @@ export function TriggerEditor({
                 render: (_: string | null, row: TriggerStatusRow) =>
                   row.lastFireStatus
                     ? `${row.lastFireStatus} · ${row.lastFireDueAt ?? "—"} · ${row.lastFireAttempts ?? 0} 次` +
-                      (row.skippedFires ? ` · 超限 ${row.skippedFires}` : "")
+                      (row.skippedFires ? ` · 跳过≥${row.skippedFires}` : "") +
+                      (row.backlogTruncated ? " · 积压扫描截断" : "")
                     : "—" },
               { title: "错误", dataIndex: "lastError", render: (v: string | null) => v ?? "—" },
             ]}

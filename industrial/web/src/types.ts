@@ -172,6 +172,7 @@ export interface TriggerStatusRow {
   lastFireDueAt: string | null;
   lastFireAttempts: number | null;
   skippedFires: number | null;
+  backlogTruncated: boolean | null;
   lastError: string | null;
 }
 

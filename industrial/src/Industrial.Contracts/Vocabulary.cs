@@ -243,6 +243,9 @@ public interface IWorkflowRegistry
         string workflowId, string elsaDefinitionJson, CancellationToken ct = default);
     ValueTask<PublishedWorkflow?> PublishAsync(
         string workflowId, int version, string elsaDefinitionJson, CancellationToken ct = default);
+    ValueTask<PublishedWorkflow?> PublishAsync(
+        string workflowId, WorkflowDefinition snapshot, string elsaDefinitionJson,
+        CancellationToken ct = default);
     ValueTask<PublishedWorkflow?> GetPublishedAsync(string workflowId, CancellationToken ct = default);
     ValueTask<PublishedWorkflow?> GetPublishedVersionAsync(
         string workflowId, int version, CancellationToken ct = default);
@@ -456,9 +459,18 @@ public interface IArchiveSink
     ValueTask ArchiveAsync(DiscoveredFile file, string idempotencyKey, CancellationToken ct = default);
 }
 
+public enum IndustrialNodeCompletion
+{
+    None,
+    /// <summary>The handler owns one or more durable deliveries and therefore
+    /// participates in the run completion decision.</summary>
+    Delivery,
+}
+
 public interface IIndustrialNodeHandler
 {
     string NodeType { get; }
+    IndustrialNodeCompletion Completion => IndustrialNodeCompletion.None;
     ValueTask ExecuteAsync(IndustrialNodeExecutionContext context, CancellationToken ct = default);
 }
 
@@ -511,7 +523,7 @@ public interface ICollectionLedger
     /// <summary>Per-version scan position for cron catch-up. Skipped is the
     /// cumulative count of overdue fires exceeding the bounded catch-up limit.
     /// </summary>
-    ValueTask<(DateTimeOffset? Checkpoint, int Skipped)> GetScheduleCheckpointAsync(
+    ValueTask<(DateTimeOffset? Checkpoint, int Skipped, bool BacklogTruncated)> GetScheduleCheckpointAsync(
         string workflowId, int version, CancellationToken ct = default);
     ValueTask SetScheduleCheckpointAsync(
         string workflowId, int version, DateTimeOffset checkpoint, int skippedIncrement,
@@ -522,7 +534,7 @@ public interface ICollectionLedger
     ValueTask<bool> CommitScheduleWindowAsync(
         string workflowId, int version, DateTimeOffset? expectedCheckpoint,
         DateTimeOffset nextCheckpoint, IReadOnlyList<DateTimeOffset> dueInstants,
-        int skippedIncrement, CancellationToken ct = default);
+        int skippedIncrement, bool backlogTruncated, CancellationToken ct = default);
     ValueTask MarkDeliveryContestedAsync(
         string runId, string deliveryId, string reason, CancellationToken ct = default);
     ValueTask<CollectionRun?> GetRunAsync(string runId, CancellationToken ct = default);

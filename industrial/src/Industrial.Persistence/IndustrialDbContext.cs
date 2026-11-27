@@ -325,6 +325,7 @@ public static class IndustrialStore
                 Version INTEGER NOT NULL,
                 CheckpointUtc TEXT NOT NULL,
                 Skipped INTEGER NOT NULL DEFAULT 0,
+                BacklogTruncated INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (WorkflowId, Version));
             """);
     }
@@ -348,6 +349,7 @@ public static class IndustrialStore
         Execute(context, "ALTER TABLE CollectionRuns ADD COLUMN InstanceId TEXT NULL;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN LastAttemptRunId TEXT NULL;");
         Execute(context, "ALTER TABLE Resources ADD COLUMN MachineId TEXT NULL;");
+        Execute(context, "ALTER TABLE ScheduleCheckpoints ADD COLUMN BacklogTruncated INTEGER NOT NULL DEFAULT 0;");
         Execute(context, "CREATE INDEX IF NOT EXISTS IX_CollectionRuns_InstanceId ON CollectionRuns(InstanceId);");
         Execute(context, """
             CREATE TABLE IF NOT EXISTS CollectionRunDeliveries (

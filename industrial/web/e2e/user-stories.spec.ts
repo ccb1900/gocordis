@@ -271,7 +271,39 @@ test("a user manages machines and binds resources to a machine", async ({ page }
     request.method() === "POST" && request.url().includes("/api/command/industrial/save-resource"));
   await chooseAntd(page, `资源 ${source.name} 的设备`, "line-1");
   const saved = JSON.parse((await saveRequest).postData() ?? "{}");
-  expect(saved.machineId).toBe("machine-line-1");
+  expect(saved.machineId).toMatch(/^machine-/);
+  const machines = (await (await page.request.get("/api/query/industrial/machines")).json()).data;
+  expect(machines.find((row: { name: string }) => row.name === "line-1")).toBeTruthy();
+
+  // A bound machine cannot be deleted until the resource is unbound.
+  const blocked = await page.request.post("/api/command/industrial/delete-machine", {
+    data: { id: saved.machineId },
+  });
+  expect(blocked.ok()).toBe(false);
+
+  // Clearing the binding sends an explicit null, which must remove the link.
+  const cleared = await page.request.post("/api/command/industrial/save-resource", {
+    data: { id: source.id, machineId: null },
+  });
+  expect(cleared.ok()).toBe(true);
+  const afterUnbind = (await (await page.request.get("/api/query/industrial/resources")).json()).data
+    .find((row: { id: string }) => row.id === source.id);
+  expect(afterUnbind.machineId).toBeNull();
+});
+
+test("Chinese machine names get distinct ids", async ({ page }) => {
+  await page.goto("/industrial/machines");
+  await page.getByLabel("设备名称").fill("一号机台");
+  await page.getByLabel("设备地址").fill("10.0.0.2");
+  await page.getByRole("button", { name: "新增设备" }).click();
+  await expect(page.getByText("一号机台", { exact: true }).first()).toBeVisible();
+  await page.getByLabel("设备名称").fill("二号机台");
+  await page.getByLabel("设备地址").fill("10.0.0.3");
+  await page.getByRole("button", { name: "新增设备" }).click();
+  await expect(page.getByText("二号机台", { exact: true }).first()).toBeVisible();
+  const machines = (await (await page.request.get("/api/query/industrial/machines")).json()).data;
+  expect(machines.filter((row: { name: string }) => row.name.startsWith("号")).length).toBe(0);
+  expect(machines.filter((row: { name: string }) => row.name.includes("机台")).length).toBe(2);
 });
 
 test("a quick wizard creates and publishes a standard workflow", async ({ page }) => {

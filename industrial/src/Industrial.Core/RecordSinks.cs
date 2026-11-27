@@ -32,7 +32,9 @@ public sealed class SqliteRecordSink : IRecordSink
         CancellationToken ct = default)
     {
         await using var db = _db();
+        const int batchSize = 500;
         var count = 0;
+        var pending = 0;
         await foreach (var record in records.WithCancellation(ct))
         {
             var recordId = _options.ResolveId(record);
@@ -49,9 +51,17 @@ public sealed class SqliteRecordSink : IRecordSink
                 PayloadJson = JsonSerializer.Serialize(record.Values),
             });
             count++;
+            if (++pending >= batchSize)
+            {
+                await db.SaveChangesAsync(ct);
+                // Release change-tracked entities so live memory stays bounded
+                // regardless of input size.
+                db.ChangeTracker.Clear();
+                pending = 0;
+            }
         }
 
-        await db.SaveChangesAsync(ct);
+        if (pending > 0) await db.SaveChangesAsync(ct);
         return new DeliveryResultRef(idempotencyKey, TargetId, count);
     }
 }

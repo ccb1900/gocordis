@@ -105,9 +105,13 @@ public sealed class SchedulerRecoveryTests
         await ledger.SetScheduleCheckpointAsync(
             definition.WorkflowId, 1, DateTimeOffset.UtcNow.AddDays(-1), 0);
 
+        var cpState = await ledger.GetScheduleCheckpointAsync(definition.WorkflowId, 1);
+        Assert.True(cpState.Checkpoint is not null, "checkpoint missing");
         Assert.True(await api.ExecuteAsync("industrial/scheduler-tick", new JsonObject()));
-        var (_, skippedFires) = await ledger.GetScheduleCheckpointAsync(definition.WorkflowId, 1);
+        var (_, skippedFires, backlogTruncated) = await ledger.GetScheduleCheckpointAsync(definition.WorkflowId, 1);
+        var cpAfter = await ledger.GetScheduleCheckpointAsync(definition.WorkflowId, 1);
         Assert.True(skippedFires > 0, "overdue fires beyond the catch-up limit must be counted");
+        Assert.True(backlogTruncated, "a one-day minute backlog must be marked as truncated");
         var recovered = (await ledger.ListScheduleFiresAsync())
             .Single(fire => fire.Key == failedClaim.Key);
         Assert.Equal(ScheduleFireStatus.Succeeded, recovered.Status);
@@ -210,7 +214,7 @@ public sealed class SchedulerRecoveryTests
         Assert.Contains(fires, fire =>
             fire.DueAtUtc.ToUniversalTime().ToString("O") == pending.ToUniversalTime().ToString("O") &&
             fire.Status == ScheduleFireStatus.Succeeded);
-        var (checkpoint, skipped) = await ledger.GetScheduleCheckpointAsync("weekly-flow", 2);
+        var (checkpoint, skipped, _) = await ledger.GetScheduleCheckpointAsync("weekly-flow", 2);
         Assert.NotNull(checkpoint);
         Assert.True(checkpoint!.Value > oldCheckpoint);
         Assert.True(skipped >= 0);

@@ -59,6 +59,11 @@ public sealed class MachineRegistry : IMachineRegistry
         await using var db = _db();
         var entity = await db.Machines.SingleOrDefaultAsync(x => x.Id == id, ct);
         if (entity is null) return false;
+        if (await db.Resources.AnyAsync(resource => resource.MachineId == id, ct))
+        {
+            throw new InvalidOperationException(
+                $"machine '{id}' is still referenced by resources; unbind them before deletion");
+        }
         db.Machines.Remove(entity);
         await db.SaveChangesAsync(ct);
         return true;

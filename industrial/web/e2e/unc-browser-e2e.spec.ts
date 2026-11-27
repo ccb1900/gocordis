@@ -143,7 +143,7 @@ test("blank environment: UI creates UNC machine, credential and resource, reads 
   await expect(sourceRow).toContainText(/目录可访问|目录存在/);
 
   // The workflow still references this resource: deletion must be refused.
-  await sourceRow.getByRole("button", { name: "删除" }).click();
+  await sourceRow.getByRole("button", { name: /删\s*除/ }).click();
   await expect.poll(async () => {
     const rows = (await (await page.request.get("/api/query/industrial/resources")).json()).data;
     return rows.some((row: { id: string }) => row.id === "unc-source");

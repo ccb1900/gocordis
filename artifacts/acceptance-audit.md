@@ -57,6 +57,6 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Machine-resource association and quick collection wizard | `ResourceDefinition.MachineId`, `industrial/machine-resources`, `MachineConsole.tsx`, `CollectionWizard.tsx`, browser E2E | Pass |
 | SQL Server / MySQL opt-in real-server tests and parsed packaged E2E counts | `SqlServerSinkTests`, `MySqlSinkTests`, `industrial/e2e-packaged.sh`, report status vocabulary | Pass |
 
-Unified report: 954 passed, 3 explicitly skipped, 0 failed suites, generated for tested code commit `06961f733c12236e3068697b7dad6814f70d4fd5` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+Unified report: 954 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `06961f733c12236e3068697b7dad6814f70d4fd5` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

@@ -1,6 +1,6 @@
 name: windows-unc
 
-# Re-run after UI packaging fixes so the evidence head_sha follows the code.
+# Re-run after portable payload path fixes so the evidence head_sha follows the code.
 # Browser-level UNC acceptance has its own workflow and evidence row.
 # Re-running this file re-binds the evidence to the newly tested head sha.
 # Product fixes must carry their own UNC evidence row.

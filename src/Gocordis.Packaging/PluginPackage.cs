@@ -511,7 +511,13 @@ public static class PluginPackageWriter
 
     internal static string RelativePath(string root, string file)
     {
-        var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(file));
+        // Package payload paths are a portable wire format: on Windows
+        // Path.GetRelativePath uses '\\', which would not match the '/'
+        // separators declared in gocordis-ui.json or any package manifest.
+        var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(file))
+            .Replace(Path.DirectorySeparatorChar, '/')
+            .Replace(Path.AltDirectorySeparatorChar, '/')
+            .Replace('\\', '/');
         EnsureSafeRelativePath(relative);
         return relative;
     }

@@ -431,6 +431,9 @@ test("a user upgrades bindings only to a published template version", async ({ p
   expect((await readBinding()).trigger.kind).toBe("schedule");
   // Let the console's initial load finish before triggering a mutation: its
   // load clears the error alert, which could otherwise race the diagnostic.
+  // Filter first because earlier stories create hundreds of bindings and the
+  // table is paginated.
+  await page.getByLabel("绑定筛选").fill("Version binding");
   await expect(page.getByText("Version binding")).toBeVisible();
 
   await page.getByLabel("工作流 ID").fill(workflowId);

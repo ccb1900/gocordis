@@ -551,6 +551,10 @@ public sealed class CollectionLedger : ICollectionLedger
             try { await db.SaveChangesAsync(ct); }
             catch (DbUpdateException) when (!ct.IsCancellationRequested)
             {
+                // Another run inserted the same file/target between our read
+                // and write. Drop the failed Added entity so the later
+                // CollectionRunDelivery SaveChanges does not retry that insert.
+                db.Entry(entity).State = EntityState.Detached;
                 entity = await db.FileDeliveries.AsNoTracking().SingleAsync(
                     x => x.CollectionFileId == collectionFileId && x.TargetId == targetId, ct);
             }

@@ -1,6 +1,6 @@
 name: database-evidence
 
-# Re-run after MSYS path fixes so the evidence head_sha follows the code.
+# Re-run after UI packaging fixes so the evidence head_sha follows the code.
 # Resource reference guards are part of the tested product surface.
 # Run ids are recorded in artifacts/{sqlserver,mysql}-result.json together with
 # the head_sha they tested; the unified report rejects stale evidence.

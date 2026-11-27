@@ -40,7 +40,14 @@ pack() {
   # so a generic Platform host serves it without any pre-registered factory.
   if [[ "$id" == "industrial.ui" ]]; then
     mkdir -p "$stage/ui/industrial-designer"
-    cp -r "$ROOT/industrial/web/dist/." "$stage/ui/industrial-designer/"
+    # Copy individual files: cp -r <dir>/. is unreliable on Git Bash/Windows
+    # and used to produce a package missing its declared client module.
+    find "$ROOT/industrial/web/dist" -maxdepth 1 -type f \
+      -exec cp {} "$stage/ui/industrial-designer/" \;
+    if [[ ! -f "$stage/ui/industrial-designer/module.js" ]]; then
+      echo "industrial.ui package is missing module.js" >&2
+      exit 1
+    fi
     cat > "$stage/gocordis-ui.json" <<'JSON'
 {
   "resources": [

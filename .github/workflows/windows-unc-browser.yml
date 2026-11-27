@@ -1,7 +1,7 @@
 name: windows-unc-browser
 
-# Designer/import rebind: re-run on packaging fixes because packaged UI is part of this story.
-# Designer/import rebind: browser-level acceptance for the Windows UNC UI story. The run id and tested
+# Final stability rebind: re-run on packaging fixes because packaged UI is part of this story.
+# Final stability rebind: browser-level acceptance for the Windows UNC UI story. The run id and tested
 # head sha are recorded in artifacts/windows-unc-browser-result.json.
 
 on:

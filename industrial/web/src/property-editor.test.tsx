@@ -83,7 +83,7 @@ describe("schema-driven property form", () => {
     expect(formItems.find((item) => item.name === "enabled")?.valuePropName).toBe("checked");
     const picker = screen.getByLabelText("Source") as HTMLSelectElement;
     expect(Array.from(picker.options).map((option) => option.value)).toEqual(["", "share"]);
-    expect(screen.getByText(/凭证：Account/)).toBeTruthy();
+    expect(screen.getByText(/凭证 Account/)).toBeTruthy();
 
     fireEvent.click(screen.getByText("应用配置"));
     await waitFor(() => expect(applied).toEqual([

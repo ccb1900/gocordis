@@ -37,8 +37,9 @@ test("80 machines x 10 profiles generates 800 bindings with policy, restart and 
   await page.goto("/industrial/bindings");
   const machines = Array.from({ length: 80 }, (_, i) =>
     `scale-${i},Scale ${i},10.0.0.${i % 255}`).join("\n");
-  await page.getByLabel("机台 CSV").fill(`id,name,endpoint\n${machines}`);
-  await page.getByRole("button", { name: "导入机台" }).click();
+  expect((await page.request.post("/api/command/industrial/import-machines", {
+    data: { csv: `id,name,endpoint\n${machines}` },
+  })).ok()).toBe(true);
   await expect.poll(async () => {
     const rows = (await (await page.request.get("/api/query/industrial/machines")).json()).data;
     return rows.filter((row: { id: string }) => row.id.startsWith("scale-")).length;
@@ -46,9 +47,11 @@ test("80 machines x 10 profiles generates 800 bindings with policy, restart and 
 
   const profiles = Array.from({ length: 10 }, (_, i) =>
     `profile-scale-${i},Scale profile ${i},*.csv,csv,,true,utf-8,value=reading,value`).join("\n");
-  await page.getByLabel("文件配置 CSV").fill(
-    `id,name,fileNamePattern,format,delimiter,hasHeader,encoding,mapping,required\n${profiles}`);
-  await page.getByRole("button", { name: "导入文件配置" }).click();
+  expect((await page.request.post("/api/command/industrial/import-file-profiles", {
+    data: {
+      csv: `id,name,fileNamePattern,format,delimiter,hasHeader,encoding,mapping,required\n${profiles}`,
+    },
+  })).ok()).toBe(true);
   await expect.poll(async () => {
     const rows = (await (await page.request.get("/api/query/industrial/file-profiles")).json()).data;
     return rows.filter((row: { id: string }) => row.id.startsWith("profile-scale-")).length;

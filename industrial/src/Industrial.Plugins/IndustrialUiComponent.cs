@@ -425,6 +425,27 @@ public sealed class IndustrialUiComponent : Component
                         ["deliveries"] = new JsonArray(rows),
                     };
                 }).ToArray())),
+            ("industrial/file-samples", () =>
+            {
+                var result = new JsonObject();
+                foreach (var resource in resources.ListAsync().GetAwaiter().GetResult())
+                {
+                    try
+                    {
+                        var root = resource.Configuration.TryGetValue("root", out var configured)
+                            ? configured?.ToString() : null;
+                        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) continue;
+                        var file = Directory.GetFiles(root, "*.*", SearchOption.TopDirectoryOnly)
+                            .OrderByDescending(path => File.GetLastWriteTimeUtc(path)).FirstOrDefault();
+                        if (file is null) continue;
+                        result[resource.Id] = new JsonArray(File.ReadLines(file).Take(4)
+                            .Select(line => (JsonNode?)JsonValue.Create(line)).ToArray());
+                    }
+                    catch (IOException) { /* sample is diagnostics only */ }
+                    catch (UnauthorizedAccessException) { }
+                }
+                return result;
+            }),
             ("industrial/export-config", () =>
             {
                 var profiles = fileProfiles.ListAsync().GetAwaiter().GetResult();
@@ -443,6 +464,32 @@ public sealed class IndustrialUiComponent : Component
             ("industrial/file-profiles", () => new JsonArray(fileProfiles.ListAsync()
                 .GetAwaiter().GetResult()
                 .Select(profile => (JsonNode?)JsonSerializer.SerializeToNode(profile, WireJson)).ToArray())),
+            ("industrial/binding-status", () => new JsonObject
+            {
+                ["bindings"] = new JsonArray(bindings.ListAsync().GetAwaiter().GetResult()
+                    .Select(binding => (JsonNode?)new JsonObject
+                    {
+                        ["id"] = binding.Id,
+                        ["enabled"] = binding.Enabled,
+                        ["machineId"] = binding.MachineId,
+                        ["fileProfileId"] = binding.FileProfileId,
+                        ["workflowVersion"] = binding.WorkflowVersion,
+                    }).ToArray()),
+                ["runs"] = new JsonArray(ledger.ListRunsAsync().GetAwaiter().GetResult()
+                    .Select(run => (JsonNode?)new JsonObject
+                    {
+                        ["id"] = run.Id, ["workflowId"] = run.WorkflowId,
+                        ["status"] = run.Status, ["startedAt"] = run.StartedAt.ToString("O"),
+                        ["error"] = run.Error is null ? null : JsonValue.Create(run.Error),
+                    }).ToArray()),
+                ["deliveries"] = new JsonArray(ledger.ListAllDeliveriesAsync().GetAwaiter().GetResult()
+                    .Select(delivery => (JsonNode?)new JsonObject
+                    {
+                        ["id"] = delivery.Id, ["targetId"] = delivery.TargetId,
+                        ["status"] = delivery.Status, ["error"] = delivery.Error is null
+                            ? null : JsonValue.Create(delivery.Error),
+                    }).ToArray()),
+            }),
             ("industrial/bindings", () => new JsonArray(bindings.ListAsync()
                 .GetAwaiter().GetResult()
                 .Select(binding => (JsonNode?)JsonSerializer.SerializeToNode(binding, WireJson)).ToArray())),
@@ -495,6 +542,8 @@ public sealed class IndustrialUiComponent : Component
                     new ValueTask(RotateCredentialAsync(payload, credentials).AsTask()), owner);
                 api.RegisterCommand("industrial/delete-credential", payload =>
                     new ValueTask(DeleteCredentialAsync(payload, credentials, resources, machines).AsTask()), owner);
+                api.RegisterCommand("industrial/set-binding-enabled", payload =>
+                    new ValueTask(SetBindingEnabledAsync(payload, bindings).AsTask()), owner);
                 api.RegisterCommand("industrial/import-config", payload =>
                     new ValueTask(ImportConfigAsync(payload, workflows, fileProfiles, bindings).AsTask()), owner);
                 api.RegisterCommand("industrial/import-machines", payload =>
@@ -601,6 +650,31 @@ public sealed class IndustrialUiComponent : Component
         await credentials.RotateAsync(id, Text(body, "secret") ?? string.Empty);
     }
 
+    private static Dictionary<string, string> ReadMap(JsonObject? body)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (body is null) return map;
+        foreach (var pair in body)
+        {
+            var value = pair.Value?.GetValue<string>();
+            if (!string.IsNullOrWhiteSpace(value)) map[pair.Key] = value;
+        }
+        return map;
+    }
+
+    private static async ValueTask SetBindingEnabledAsync(
+        JsonNode? payload, ICollectionBindingRegistry bindings)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var id = Text(body, "id") ?? throw new InvalidOperationException("binding id is required");
+        var binding = await bindings.GetAsync(id)
+                      ?? throw new InvalidOperationException($"binding '{id}' not found");
+        if (body["enabled"] is not JsonValue flag ||
+            !flag.TryGetValue<bool>(out var enabled))
+            throw new InvalidOperationException("enabled is required");
+        await bindings.RegisterAsync(binding with { Enabled = enabled });
+    }
+
     private static async ValueTask ImportConfigAsync(
         JsonNode? payload, IWorkflowRegistry workflows,
         IFileProfileRegistry profiles, ICollectionBindingRegistry bindings)
@@ -609,13 +683,33 @@ public sealed class IndustrialUiComponent : Component
         var format = Text(body, "format");
         if (format != "gocordis-industrial-config-v1")
             throw new InvalidOperationException("unsupported configuration package format");
+        var resourceMap = ReadMap(body["resourceMap"] as JsonObject);
+        var credentialMap = ReadMap(body["credentialMap"] as JsonObject);
+        string Map(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+            if (credentialMap.TryGetValue(value, out var credential)) return credential;
+            return resourceMap.TryGetValue(value, out var resource) ? resource : value;
+        }
         if (body["workflows"] is JsonArray workflowRows)
         {
             foreach (var row in workflowRows)
             {
                 var definition = JsonSerializer.Deserialize<WorkflowDefinition>(
                     row?.ToJsonString() ?? "{}", WireJson);
-                if (definition is not null) await workflows.SaveDraftAsync(definition);
+                if (definition is null) continue;
+                definition = definition with
+                {
+                    Nodes = definition.Nodes.Select(node => node with
+                    {
+                        Config = node.Config.ToDictionary(pair => pair.Key, pair =>
+                            pair.Key is "resourceId" or "targetResourceId" && pair.Value is string text
+                                ? Map(text) : pair.Value, StringComparer.Ordinal),
+                    }).ToArray(),
+                    ResourceReferences = definition.ResourceReferences.Select(Map)
+                        .Where(value => value.Length > 0).ToArray(),
+                };
+                await workflows.SaveDraftAsync(definition);
             }
         }
         if (body["fileProfiles"] is JsonArray profileRows)
@@ -633,7 +727,12 @@ public sealed class IndustrialUiComponent : Component
             {
                 var binding = JsonSerializer.Deserialize<CollectionBindingDefinition>(
                     row?.ToJsonString() ?? "{}", WireJson);
-                if (binding is not null) await bindings.RegisterAsync(binding);
+                if (binding is null) continue;
+                await bindings.RegisterAsync(binding with
+                {
+                    SourceResourceId = Map(binding.SourceResourceId),
+                    TargetResourceIds = binding.TargetResourceIds.Select(Map).ToArray(),
+                });
             }
         }
     }

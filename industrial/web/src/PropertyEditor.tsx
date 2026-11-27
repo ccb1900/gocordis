@@ -3,7 +3,7 @@
 // listed with editable ports so a type mismatch can always be corrected.
 
 import {
-  Button, Divider, Empty, Form, Input, InputNumber, Select, Space, Switch, Table, Tag, Typography,
+  Alert, Button, Divider, Empty, Form, Input, InputNumber, Select, Space, Switch, Table, Tag, Typography,
   type TableColumnsType,
 } from "antd";
 import { useEffect, useState, type ReactNode } from "react";
@@ -29,6 +29,8 @@ export interface PropertyEditorProps {
   onCreateEdge: (from: string, to: string) => void;
   onUpdateEdge: (index: number, edge: WorkflowEdge) => void;
   onSelectNode: (id: string) => void;
+  selectedEdgeId?: string | null;
+  sampleLines?: string[];
 }
 
 function JsonValueField({ value, onChange }: {
@@ -154,7 +156,7 @@ interface EdgeRow extends WorkflowEdge {
 export function PropertyEditor(props: PropertyEditorProps) {
   const {
     node, descriptor, nodes, edges, catalog, resources, issues, onApplyConfig, onDeleteNode,
-    onDeleteEdge, onCreateEdge, onUpdateEdge, onSelectNode,
+    onDeleteEdge, onCreateEdge, onUpdateEdge, onSelectNode, selectedEdgeId, sampleLines,
   } = props;
   const [form] = Form.useForm<Record<string, unknown>>();
   const [json, setJson] = useState("{}");
@@ -258,6 +260,11 @@ export function PropertyEditor(props: PropertyEditorProps) {
               <Tag key={`out-${port.name}`} color="green">输出 {port.name} · {port.type}</Tag>
             ))}
           </Space>
+          {(node.type.includes("reader") || node.type.includes("mapping") ||
+            node.type.includes("source") || node.type.includes("filesystem")) && sampleLines && sampleLines.length > 0 && <>
+            <Typography.Text strong style={{ fontSize: 12 }}>样本预览</Typography.Text>
+            <pre className="industrial-sample-preview">{sampleLines.join("\n")}</pre>
+          </>}
           <Form form={form} layout="vertical" size="small" style={{ marginTop: 12 }}>
             {fields.map(([name, schema]) => (
               <SchemaField
@@ -302,6 +309,15 @@ export function PropertyEditor(props: PropertyEditorProps) {
           <Button danger block style={{ marginTop: 8 }} onClick={onDeleteNode}>删除节点</Button>
         </>
       )}
+      {selectedEdgeId && (() => {
+        const index = edges.findIndex((edge) =>
+          `e:${edge.source}:${edge.sourcePort}>${edge.target}:${edge.targetPort}` === selectedEdgeId);
+        if (index < 0) return null;
+        const edge = edges[index];
+        return <Alert type="info" showIcon style={{ marginTop: 8 }}
+          message={`当前连线：${edge.source}.${edge.sourcePort} → ${edge.target}.${edge.targetPort}`}
+          description={<Button size="small" danger onClick={() => onDeleteEdge(index)}>删除此连线</Button>} />;
+      })()}
       <Divider plain style={{ margin: "16px 0 8px" }}>相关连线 ({edgeRows.length} / {edges.length})</Divider>
       {node && <Button type="link" size="small" onClick={() => setShowAllEdges((value) => !value)}>
         {showAllEdges ? "仅看当前节点" : "显示全部连线"}

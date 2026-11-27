@@ -9,6 +9,7 @@ import type { CredentialRow, ResourceRow, ResourceTestRow } from "./types";
 interface Context {
   hubQuery: <T = unknown>(name: string, params?: Record<string, string>) => Promise<T>;
   hubCommand: (name: string, body: unknown) => Promise<void>;
+  navigate?: (route: string) => void;
 }
 
 interface Draft {
@@ -173,7 +174,10 @@ export function ResourceConsole({ block, ctx }: { block?: { query?: string }; ct
     <Space direction="vertical" size={12} style={{ width: "100%" }}>
       <Space style={{ width: "100%", justifyContent: "space-between" }}>
         <Typography.Title level={4} style={{ margin: 0 }}>数据源与目标</Typography.Title>
-        <Button type="primary" onClick={() => { setDraft(emptyDraft); setOpen(true); }}>新建资源</Button>
+        <Space>
+          <Button onClick={() => ctx.navigate?.("/industrial/designer")}>返回设计器</Button>
+          <Button type="primary" onClick={() => { setDraft(emptyDraft); setOpen(true); }}>新建资源</Button>
+        </Space>
       </Space>
       {error && <Alert type="error" showIcon message={error} />}
       <Table

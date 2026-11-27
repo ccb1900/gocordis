@@ -4,7 +4,7 @@
 // drag pans; Space/middle-button pans over any target.
 
 import type { Graph } from "@antv/g6";
-import { useEffect, useMemo, useRef, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { graphBehaviors, graphOptions, workflowToG6 } from "./graph-model";
 import type { NodeDescriptor, WorkflowDefinition } from "./types";
 
@@ -18,6 +18,10 @@ export interface GraphCanvasProps {
   onPositions: (positions: Record<string, { x: number; y: number }>) => void;
   onSelectIds?: (ids: string[]) => void;
   onGraphReady?: (graph: any) => void;
+  onSelectEdge?: (id: string | null) => void;
+  onDeleteNodeById?: (id: string) => void;
+  onDuplicateNode?: (id: string) => void;
+  onDeleteEdgeById?: (id: string) => void;
 }
 
 interface Callbacks {
@@ -26,6 +30,7 @@ interface Callbacks {
   onCreateEdge: GraphCanvasProps["onCreateEdge"];
   onPositions: GraphCanvasProps["onPositions"];
   onSelectIds?: GraphCanvasProps["onSelectIds"];
+  onSelectEdge?: GraphCanvasProps["onSelectEdge"];
 }
 
 const nodeIdOf = (event: unknown): string | undefined => {
@@ -35,15 +40,17 @@ const nodeIdOf = (event: unknown): string | undefined => {
 
 export function GraphCanvas(props: GraphCanvasProps) {
   const { definition, catalog, selectedId,
-    onSelect, onDropNode, onCreateEdge, onPositions, onSelectIds, onGraphReady } = props;
+    onSelect, onDropNode, onCreateEdge, onPositions, onSelectIds, onGraphReady,
+    onSelectEdge, onDeleteNodeById, onDuplicateNode, onDeleteEdgeById } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
   const readyRef = useRef(false);
   const panModifierRef = useRef(false);
   const connectionStateRef = useRef({ armed: false });
   const gestureOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; type: "node" | "edge"; id: string } | null>(null);
   const callbacks = useRef<Callbacks>({ onSelect, onDropNode, onCreateEdge, onPositions });
-  callbacks.current = { onSelect, onDropNode, onCreateEdge, onPositions };
+  callbacks.current = { onSelect, onDropNode, onCreateEdge, onPositions, onSelectEdge };
 
   const data = useMemo(
     () => workflowToG6(definition, catalog, selectedId),
@@ -101,7 +108,20 @@ export function GraphCanvas(props: GraphCanvasProps) {
         const id = nodeIdOf(event);
         if (id) callbacks.current.onSelect(id);
       });
-      graph.on("edge:click", () => callbacks.current.onSelect(null));
+      graph.on("edge:click", (event: unknown) => {
+        const e = event as { target?: { id?: string } };
+        callbacks.current.onSelectEdge?.(e.target?.id ?? null);
+      });
+      graph.on("node:contextmenu", (event: unknown) => {
+        const e = event as { client?: { x: number; y: number }; target?: { id?: string } };
+        if (e.target?.id) setMenu({ x: e.client?.x ?? 0, y: e.client?.y ?? 0,
+          type: "node", id: e.target.id });
+      });
+      graph.on("edge:contextmenu", (event: unknown) => {
+        const e = event as { client?: { x: number; y: number }; target?: { id?: string } };
+        if (e.target?.id) setMenu({ x: e.client?.x ?? 0, y: e.client?.y ?? 0,
+          type: "edge", id: e.target.id });
+      });
       graph.on("canvas:click", () => callbacks.current.onSelect(null));
       graph.on("pointerdown", (event: unknown) => {
         const e = event as { client?: { x: number; y: number } };
@@ -164,6 +184,15 @@ export function GraphCanvas(props: GraphCanvasProps) {
           onDrop={drop}
           data-testid="industrial-graph"
         />
+        {menu && <div className="industrial-context-menu" style={{ left: menu.x, top: menu.y }}>
+          {menu.type === "node" ? <>
+            <button onClick={() => { onDuplicateNode?.(menu.id); setMenu(null); }}>复制节点</button>
+            <button onClick={() => { onDeleteNodeById?.(menu.id); setMenu(null); }}>删除节点</button>
+          </> : <>
+            <button onClick={() => { onSelectEdge?.(menu.id); setMenu(null); }}>编辑连线</button>
+            <button onClick={() => { onDeleteEdgeById?.(menu.id); setMenu(null); }}>删除连线</button>
+          </>}
+        </div>}
         <div className="industrial-graph-hint">
           Shift+拖拽框选 · 拖节点移动 · 端口拖拽连线 · 滚轮缩放 · 空格/中键平移
         </div>

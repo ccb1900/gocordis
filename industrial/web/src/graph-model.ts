@@ -167,6 +167,7 @@ export function graphOptions(data: G6GraphData, container: string | HTMLElement)
     plugins: [
       { type: "grid-line", size: 20, stroke: "#e8edf4" },
       { type: "minimap", size: [180, 110], position: "right-bottom" },
+      { type: "snapline", lineWidth: 1, stroke: "#4d6bfe" },
     ],
     behaviors: graphBehaviors(),
   };
@@ -269,6 +270,24 @@ export function graphBehaviors(handlers: GraphBehaviorHandlers = {}): any[] {
         }));
         handlers.onPositions?.(positionsFromG6(
           { nodes, edges: [] }, handlers.allowedIds?.() ?? new Set<string>(), moved));
+      },
+    },
+    {
+      type: "drag-element",
+      state: "__industrial_selected__",
+      enable: (event: GestureEvent) => event.targetType === "node" && event.shiftKey === true,
+      onFinish: (ids?: string[] | string) =>
+      {
+        const graph = handlers.graph;
+        if (!graph || !handlers.onPositions) return;
+        const moved = Array.isArray(ids) ? ids : ids ? [String(ids)] : [];
+        handlers.onPositions(positionsFromG6(
+          { nodes: graph.getNodeData().map((node: any) => ({
+            id: String(node.id),
+            data: (node.data ?? {}) as Record<string, unknown>,
+            style: (node.style ?? {}) as Record<string, unknown> & { x?: number; y?: number },
+          })), edges: [] },
+          handlers.allowedIds?.() ?? new Set<string>(), moved));
       },
     },
     {

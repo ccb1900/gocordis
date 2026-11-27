@@ -42,6 +42,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const [loadErrors, setLoadErrors] = useState<string[]>([]);
   const [definition, setDefinition] = useState<WorkflowDefinition>(() => emptyWorkflow());
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const [busy, setBusy] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(true);
@@ -53,6 +54,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const graphRef = useRef<any>(null);
   const clipboardRef = useRef<WorkflowNode | null>(null);
   const [execution, setExecution] = useState<ExecutionStateView | null>(null);
+  const [samples, setSamples] = useState<Record<string, string[]>>({});
   const [triggerOpen, setTriggerOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const idRef = useRef(1);
@@ -69,7 +71,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
       hub("industrial/nodes"),
       hub("industrial/workflows"),
       hub("industrial/resources"),
-    ]).then(([nodes, workflows, resources]) => {
+    ]).then(async ([nodes, workflows, resources]) => {
       if (!alive) return;
       const errors: string[] = [];
       if (nodes.status === "fulfilled") setDescriptors(parseNodeDescriptors(nodes.value));
@@ -91,6 +93,10 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
         setResourceId((current) => current || ids[0] || "");
       } else errors.push(`资源: ${String(resources.reason)}`);
       setLoadErrors(errors);
+      try {
+        const raw = await ctxRef.current.hubQuery("industrial/file-samples");
+        if (alive) setSamples((raw as any)?.data ?? raw ?? {});
+      } catch { /* sample preview is diagnostics only */ }
     }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -340,6 +346,29 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
     }
   }, [definition, catalog, resourceIds, messageApi]);
 
+  const deleteNodeById = useCallback((id: string) => {
+    commit(removeNode(definition, id));
+    if (selectedId === id) setSelectedId(null);
+  }, [commit, definition, selectedId]);
+
+  const duplicateNode = useCallback((id: string) => {
+    const source = definition.nodes.find((node) => node.id === id);
+    if (!source) return;
+    const descriptor = descriptorOf(catalog, source.type);
+    if (!descriptor) return;
+    const nextId = `n${idRef.current++}`;
+    const spot = freePosition(definition, source.x + 40, source.y + 40);
+    commit({ ...definition, nodes: [...definition.nodes,
+      { ...makeNode(descriptor, nextId, spot.x, spot.y), config: { ...source.config } }] });
+    setSelectedId(nextId);
+  }, [catalog, commit, definition]);
+
+  const deleteEdgeById = useCallback((id: string) => {
+    const index = definition.edges.findIndex((edge) =>
+      `e:${edge.source}:${edge.sourcePort}>${edge.target}:${edge.targetPort}` === id);
+    if (index >= 0) commit(removeEdge(definition, index));
+  }, [commit, definition]);
+
   const updateEdge = useCallback((index: number, edge: WorkflowEdge) => {
     commit({ ...definition,
       edges: definition.edges.map((existing, at) => at === index ? edge : existing) });
@@ -446,6 +475,10 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
             onPositions={(positions) => commit(applyPositions(definition, positions))}
             onSelectIds={(ids) => { if (ids.length) setSelectedId(ids[0]); }}
             onGraphReady={(graph: any) => { graphRef.current = graph; }}
+            onSelectEdge={(id) => setSelectedEdgeId(id)}
+            onDeleteNodeById={deleteNodeById}
+            onDuplicateNode={duplicateNode}
+            onDeleteEdgeById={deleteEdgeById}
           />
         </section>
       </Content>
@@ -513,6 +546,10 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
           onDeleteEdge={(index) => commit(removeEdge(definition, index))}
           onCreateEdge={(from, to) => void createEdge(from, to)}
           onUpdateEdge={updateEdge}
+          selectedEdgeId={selectedEdgeId}
+          sampleLines={selectedNode
+            ? samples[String(selectedNode.config?.resourceId ?? selectedNode.config?.targetResourceId ?? "")] ?? []
+            : []}
           onSelectNode={(id) => {
             setSelectedId(id);
             setPropertiesOpen(true);

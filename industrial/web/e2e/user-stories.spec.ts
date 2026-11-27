@@ -427,6 +427,8 @@ test("a user generates bulk bindings instead of copying workflows", async ({ pag
   const target = available.find((row: { type: string }) => row.type === "sqlite") ?? available[0];
   await chooseMulti("目标资源", [`${target.name} (${target.type})`]);
   await expect(page.getByText(/预计生成 4 条绑定/)).toBeVisible();
+  await page.getByLabel("资源 ID 映射").fill("old-source=resource-bulk-1");
+  await page.getByLabel("凭证别名映射").fill("old-cred=machine-credential");
   await page.getByRole("button", { name: "生成绑定" }).click();
   await expect.poll(async () => {
     const rows = (await (await page.request.get("/api/query/industrial/bindings")).json()).data;
@@ -434,6 +436,22 @@ test("a user generates bulk bindings instead of copying workflows", async ({ pag
   }).toBe(4);
   const workflows = (await (await page.request.get("/api/query/industrial/workflows")).json()).data;
   expect(workflows.length).toBeLessThan(20);
+
+  const bindingsNow = (await (await page.request.get("/api/query/industrial/bindings")).json()).data;
+  const firstBinding = bindingsNow.find((row: { id: string }) =>
+    row.id.startsWith("binding:bulk-template:v1:bulk-1:"));
+  await page.getByRole("row").filter({ hasText: "bulk-1 /" }).first()
+    .getByRole("button", { name: /暂\s*停/ }).click();
+  await expect.poll(async () => {
+    const rows = (await (await page.request.get("/api/query/industrial/bindings")).json()).data;
+    return rows.find((row: { id: string }) => row.id === firstBinding.id)?.enabled;
+  }).toBe(false);
+  await page.getByRole("row").filter({ hasText: "bulk-1 /" }).first()
+    .getByRole("button", { name: /恢\s*复/ }).click();
+  await expect.poll(async () => {
+    const rows = (await (await page.request.get("/api/query/industrial/bindings")).json()).data;
+    return rows.find((row: { id: string }) => row.id === firstBinding.id)?.enabled;
+  }).toBe(true);
 
   const exported = await (await page.request.get("/api/query/industrial/export-config")).text();
   expect(exported).toContain("gocordis-industrial-config-v1");

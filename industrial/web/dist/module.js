@@ -1,4 +1,4 @@
-import { r as a, r as s } from "./module-Ceswi8g4.js";
+import { r as a, r as s } from "./module-3bhoGXmO.js";
 export {
   a as default,
   s as register

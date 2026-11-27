@@ -29,6 +29,9 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
   const [targetIds, setTargetIds] = useState<string[]>([]);
   const [csv, setCsv] = useState("");
   const [packageText, setPackageText] = useState("");
+  const [resourceMap, setResourceMap] = useState("");
+  const [credentialMap, setCredentialMap] = useState("");
+  const [status, setStatus] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -39,6 +42,7 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
       setProfiles(rows(await ctx.hubQuery("industrial/file-profiles")));
       setWorkflows(rows(await ctx.hubQuery("industrial/workflows")));
       setResources(rows(await ctx.hubQuery("industrial/resources")));
+      try { setStatus(await ctx.hubQuery("industrial/binding-status")); } catch { /* diagnostics only */ }
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   }, [block?.query, ctx]);
   useEffect(() => { void load(); }, [load]);
@@ -74,6 +78,26 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
     finally { setBusy(false); }
   }, [ctx, load, preview.missing.length, profileIds, sourcePattern, targetIds, version, workflowId, machineIds]);
 
+  const setEnabled = useCallback(async (binding: any, enabled: boolean) => {
+    setBusy(true); setError(null);
+    try {
+      await ctx.hubCommand("industrial/set-binding-enabled", { id: binding.id, enabled });
+      await load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  }, [ctx, load]);
+
+  const runBinding = useCallback(async (binding: any, lookbackDays: number) => {
+    setBusy(true); setError(null);
+    try {
+      await ctx.hubCommand("industrial/run-binding", {
+        bindingId: binding.id, lookbackDays,
+      });
+      setStatus(await ctx.hubQuery("industrial/binding-status"));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  }, [ctx]);
+
   const importCsv = useCallback(async () => {
     setBusy(true); setError(null);
     try {
@@ -92,14 +116,26 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   }, [ctx]);
 
+  const parseMap = (text: string): Record<string, string> => {
+    const result: Record<string, string> = {};
+    for (const pair of text.split(/[\n,]/)) {
+      const [from, to] = pair.split("=").map((part) => part?.trim());
+      if (from && to) result[from] = to;
+    }
+    return result;
+  };
+
   const importConfig = useCallback(async () => {
     setBusy(true); setError(null);
     try {
-      await ctx.hubCommand("industrial/import-config", JSON.parse(packageText));
+      const payload = JSON.parse(packageText);
+      payload.resourceMap = parseMap(resourceMap);
+      payload.credentialMap = parseMap(credentialMap);
+      await ctx.hubCommand("industrial/import-config", payload);
       await load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
-  }, [ctx, load, packageText]);
+  }, [ctx, credentialMap, load, packageText, resourceMap]);
 
   return (
     <Space direction="vertical" size={12} style={{ width: "100%" }}>
@@ -136,6 +172,10 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
         <Button onClick={() => void exportConfig()}>导出配置</Button>
         <Button loading={busy} onClick={() => void importConfig()}>导入配置</Button>
       </Space>
+      <Input aria-label="资源 ID 映射" placeholder="旧资源ID=新资源ID，逗号或换行分隔" value={resourceMap}
+        onChange={(e: any) => setResourceMap(e.target.value)} />
+      <Input aria-label="凭证别名映射" placeholder="旧凭证ID=新凭证ID" value={credentialMap}
+        onChange={(e: any) => setCredentialMap(e.target.value)} />
       <Input.TextArea aria-label="配置包" rows={5} value={packageText}
         placeholder="导出后可跨环境导入；资源 ID 需自行映射" onChange={(e: any) => setPackageText(e.target.value)} />
       <Table rowKey="id" dataSource={bindings} pagination={false}
@@ -144,7 +184,23 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
           { title: "机台", dataIndex: "machineId" },
           { title: "文件配置", dataIndex: "fileProfileId" },
           { title: "模板版本", dataIndex: "workflowVersion" },
-          { title: "状态", dataIndex: "enabled", render: (value: boolean) => value ? "启用" : "停用" },
+          { title: "状态", dataIndex: "enabled", render: (value: boolean, row: any) =>
+            <Space>
+              <Button size="small" onClick={() => void setEnabled(row, !row.enabled)}>
+                {row.enabled ? "暂停" : "恢复"}
+              </Button>
+              <Button size="small" onClick={() => void runBinding(row, 7)}>补采 7 天</Button>
+              <Button size="small" onClick={() => void runBinding(row, 1)}>运行</Button>
+            </Space> },
+          { title: "排障", key: "diagnostics", render: (_: unknown, row: any) => {
+            const runs = (status?.runs ?? []).filter((run: any) =>
+              run.workflowId === row.workflowId);
+            const failed = (status?.deliveries ?? []).filter((delivery: any) =>
+              delivery.status === "Failed");
+            return <Typography.Text style={{ fontSize: 11 }}>
+              {runs.length ? `最近运行 ${runs[0].status}` : "暂无运行"} · 失败交付 {failed.length}
+            </Typography.Text>;
+          } },
         ]} />
     </Space>
   );

@@ -254,7 +254,7 @@ public sealed class UncFileSource : IFileSource
         DiscoveredFile file, TimeSpan quietPeriod, CancellationToken ct = default) =>
         ValueTask.FromResult(File.Exists(file.FullPath));
 
-    internal static (string? User, string? Password, string? Domain) ParseCredential(string? secret)
+    public static (string? User, string? Password, string? Domain) ParseCredential(string? secret)
     {
         if (string.IsNullOrWhiteSpace(secret)) return (null, null, null);
         try

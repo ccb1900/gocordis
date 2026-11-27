@@ -55,3 +55,83 @@ test("designer repairs collapsed layout, auto-arranges and supports history", as
   await page.getByTestId("designer-redo").click();
   expect(await positions(page)).toEqual(arranged);
 });
+
+test("designer context menus, edge selection and sample preview work through real gestures", async ({ page }) => {
+  await page.request.post("/api/command/industrial/save-workflow", { data: collapsed });
+  await page.goto("/industrial/designer?workflowId=usability-flow");
+  await page.waitForFunction(() => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    return el?.__industrialGraph?.getNodeData()?.length === 4;
+  });
+
+  const nodePoint = await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    const graph = el.__industrialGraph;
+    const node = graph.getNodeData().find((item: any) => item.id === "src") as any;
+    const [x, y] = graph.getClientByCanvas([node.style.x, node.style.y]);
+    return { x, y };
+  });
+  await page.evaluate((point) => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    el.__industrialGraph.emit("node:contextmenu", {
+      targetType: "node", target: { id: "src" }, client: point,
+    });
+  }, nodePoint);
+  await expect(page.getByText("复制节点", { exact: true })).toBeVisible();
+  await page.getByText("复制节点", { exact: true }).click();
+  await page.waitForFunction(() => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    return el?.__industrialGraph?.getNodeData()?.length === 5;
+  });
+  const duplicateId = await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    return (el.__industrialGraph.getNodeData() as any[])
+      .find((item) => /^n\d+$/.test(item.id))?.id;
+  });
+  const duplicatePoint = await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    const graph = el.__industrialGraph;
+    const node = graph.getNodeData().find((item: any) => /^n\d+$/.test(item.id)) as any;
+    const [x, y] = graph.getClientByCanvas([node.style.x, node.style.y]);
+    return { x, y };
+  });
+  await page.evaluate(({ point, id }) => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    el.__industrialGraph.emit("node:contextmenu", {
+      targetType: "node", target: { id }, client: point,
+    });
+  }, { point: duplicatePoint, id: duplicateId });
+  await page.getByText("删除节点", { exact: true }).click();
+  await page.waitForFunction(() => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    return el?.__industrialGraph?.getNodeData()?.length === 4;
+  });
+
+  if (!(await page.getByText("节点属性", { exact: true }).isVisible())) {
+    await page.getByTestId("toggle-properties").click();
+  }
+  await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    const graph = el.__industrialGraph;
+    const edge = graph.getEdgeData()[0] as any;
+    graph.emit("edge:click", { targetType: "edge", target: { id: edge.id } });
+  });
+  await expect(page.getByText(/当前连线/)).toBeVisible();
+  await page.getByRole("button", { name: "删除此连线" }).click();
+  await page.waitForFunction(() => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    return el?.__industrialGraph?.getEdgeData()?.length === 2;
+  });
+
+  await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    const graph = el.__industrialGraph;
+    const node = graph.getNodeData().find((item: any) => item.id === "src") as any;
+    const [x, y] = graph.getClientByCanvas([node.style.x, node.style.y]);
+    graph.emit("node:click", { targetType: "node", target: { id: node.id }, client: { x, y } });
+  });
+  if (!(await page.getByText("节点属性", { exact: true }).isVisible())) {
+    await page.getByTestId("toggle-properties").click();
+  }
+  await expect(page.getByText("样本预览", { exact: true })).toBeVisible();
+});

@@ -2,14 +2,14 @@
   "status": "passed",
   "runner": "windows-latest",
   "workflow": "windows-unc-browser",
-  "runId": 46066953334,
-  "jobId": 140734463365,
-  "headSha": "c3d65618ad6949e8dacdddb435cbed05b3645c4c",
-  "url": "https://github.com/ccb1900/gocordis/actions/runs/46066953334",
-  "startedAt": "2026-11-27T20:56:13Z",
+  "runId": 46069318968,
+  "jobId": 140742181078,
+  "headSha": "a60dba09adb592cdbac07a898147bf4c2314009c",
+  "url": "https://github.com/ccb1900/gocordis/actions/runs/46069318968",
+  "startedAt": "2026-11-27T21:17:28Z",
   "conclusion": "success",
   "test": "blank environment: UI creates UNC machine, credential and resource, reads a file and rotates the credential",
   "command": "pwsh ./industrial/e2e-unc-browser.ps1",
   "note": "Real SMB share with two local accounts, blank packaged host, real Chromium. UI creates machine/credential/UNC resource, tests connection, reads a real file, proves rotation reaches the SMB session (wrong password fails, correct second identity succeeds) and proves a referenced resource cannot be deleted.",
-  "completedAt": "2026-11-27T21:00:57Z"
+  "completedAt": "2026-11-27T21:21:47Z"
 }

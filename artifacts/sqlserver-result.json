@@ -3,14 +3,14 @@
   "runner": "ubuntu-latest",
   "workflow": "database-evidence",
   "job": "sqlserver",
-  "runId": 46066953037,
-  "jobId": 140734462311,
-  "headSha": "c3d65618ad6949e8dacdddb435cbed05b3645c4c",
-  "url": "https://github.com/ccb1900/gocordis/actions/runs/46066953037",
-  "startedAt": "2026-11-27T20:56:12Z",
+  "runId": 46069319061,
+  "jobId": 140742181303,
+  "headSha": "a60dba09adb592cdbac07a898147bf4c2314009c",
+  "url": "https://github.com/ccb1900/gocordis/actions/runs/46069319061",
+  "startedAt": "2026-11-27T21:17:28Z",
   "conclusion": "success",
   "test": "Industrial.Database.Tests.SqlServerSinkTests.SqlServerSinkIsIdempotentAgainstARealServer",
   "command": "GOCORDIS_SQLSERVER_CONNECTION=<real SQL Server 2019 service> dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --filter FullyQualifiedName~SqlServerSink",
   "note": "Real SQL Server 2019 service container; write count and replay idempotency through SqlServerRecordSink and Microsoft.Data.SqlClient.",
-  "completedAt": "2026-11-27T20:57:01Z"
+  "completedAt": "2026-11-27T21:18:13Z"
 }

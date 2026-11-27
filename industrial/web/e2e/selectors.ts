@@ -30,5 +30,10 @@ export async function chooseAntdByFilter(page: any, label: string, filter: strin
 }
 
 export async function chooseAntdByTyping(page: any, label: string, value: string) {
-  await chooseAntd(page, label, value);
+  await page.getByLabel(label).click();
+  await page.keyboard.type(value);
+  await page.locator(".ant-select-dropdown:visible .ant-select-item-option")
+    .filter({ hasText: value }).last()
+    .evaluate((element: HTMLElement) => element.click());
+  await page.keyboard.press("Escape");
 }

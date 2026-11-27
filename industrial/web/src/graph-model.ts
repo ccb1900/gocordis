@@ -166,6 +166,7 @@ export function graphOptions(data: G6GraphData, container: string | HTMLElement)
     },
     plugins: [
       { type: "grid-line", size: 20, stroke: "#e8edf4" },
+      { type: "minimap", size: [180, 110], position: "right-bottom" },
     ],
     behaviors: graphBehaviors(),
   };

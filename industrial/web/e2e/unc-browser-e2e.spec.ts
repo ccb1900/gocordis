@@ -30,7 +30,16 @@ test("blank environment: UI creates UNC machine, credential and resource, reads 
   await choose(page, "凭证类型", "domain-account");
   await page.getByLabel("用户名").fill(userA);
   await page.getByLabel("密码").fill(passwordA);
+  const credentialSaved = page.waitForResponse(response =>
+    response.request().method() === "POST" &&
+    response.url().includes("/api/command/industrial/save-credential"));
   await page.getByRole("button", { name: "保存凭证" }).click();
+  const credentialResponse = await credentialSaved;
+  expect(credentialResponse.ok(), await credentialResponse.text()).toBe(true);
+  await expect.poll(async () => {
+    const rows = (await (await page.request.get("/api/query/industrial/credentials")).json()).data;
+    return rows.some((row: { id: string }) => row.id === "unc-credential");
+  }).toBe(true);
   await expect(page.getByText("unc-credential", { exact: true })).toBeVisible();
   await expect(page.getByText(passwordA)).toHaveCount(0);
 

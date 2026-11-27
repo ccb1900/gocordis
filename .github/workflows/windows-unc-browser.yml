@@ -52,6 +52,14 @@ jobs:
             const tail = fs.existsSync(logPath)
               ? fs.readFileSync(logPath, 'utf8').slice(-8000)
               : 'no browser log was produced at ' + logPath;
+            const resultDir = require('path').join(process.env.GITHUB_WORKSPACE || '.', 'industrial', 'web', 'test-results');
+            let contextText = '';
+            if (fs.existsSync(resultDir)) {
+              for (const dir of fs.readdirSync(resultDir)) {
+                const file = require('path').join(resultDir, dir, 'error-context.md');
+                if (fs.existsSync(file)) contextText += '\n--- ' + dir + ' ---\n' + fs.readFileSync(file, 'utf8').slice(-6000);
+              }
+            }
             await github.rest.checks.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -62,6 +70,6 @@ jobs:
               output: {
                 title: 'Windows UNC browser E2E tail',
                 summary: 'Tail of the real-browser UNC acceptance run',
-                text: tail,
+                text: tail + '\n\nBROWSER ERROR CONTEXT:' + (contextText || ' none'),
               },
             });

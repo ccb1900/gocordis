@@ -1,6 +1,6 @@
 name: database-evidence
 
-# Final evidence rebind: re-run after portable payload path fixes so the evidence head_sha follows the code.
+# Diagnostic rebind: re-run after portable payload path fixes so the evidence head_sha follows the code.
 # Resource reference guards are part of the tested product surface.
 # Run ids are recorded in artifacts/{sqlserver,mysql}-result.json together with
 # the head_sha they tested; the unified report rejects stale evidence.

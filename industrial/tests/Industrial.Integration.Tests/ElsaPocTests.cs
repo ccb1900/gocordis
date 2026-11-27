@@ -18,6 +18,56 @@ namespace Industrial.Tests;
 public sealed class ElsaPocTests
 {
     [Fact]
+    public async Task ConcurrentPublishesAllocateDistinctConsistentVersions()
+    {
+        using var temp = new TempDir();
+        await ComposeRuntime(temp.Root, async (catalog, workflows, api) =>
+        {
+            await catalog.RegisterAsync(new NodeDescriptor(
+                "pub.source", "Source", "Source", "source", "Folder", "1.0.0",
+                [], [new NodePort("files", Industrial.Contracts.PortType.FileBatch, true)],
+                new Dictionary<string, object?>(), IndustrialActivityTypes.All[1], []));
+            await catalog.RegisterAsync(new NodeDescriptor(
+                "pub.reader", "Reader", "Reader", "reader", "FileText", "1.0.0",
+                [new NodePort("input", Industrial.Contracts.PortType.FileBatch, true)],
+                [new NodePort("records", Industrial.Contracts.PortType.RecordSet, true)],
+                new Dictionary<string, object?>(), IndustrialActivityTypes.All[2], []));
+            await catalog.RegisterAsync(new NodeDescriptor(
+                "pub.sink", "Sink", "Sink", "sink", "Database", "1.0.0",
+                [new NodePort("records", Industrial.Contracts.PortType.RecordSet, true)], [],
+                new Dictionary<string, object?>(), IndustrialActivityTypes.All[7], []));
+            var definition = new WorkflowDefinition(
+                "concurrent-publish", "Concurrent publish", 1,
+                [
+                    new WorkflowNode("src", "pub.source", new Dictionary<string, object?>(), 0, 0),
+                    new WorkflowNode("read", "pub.reader", new Dictionary<string, object?>(), 100, 0),
+                    new WorkflowNode("store", "pub.sink", new Dictionary<string, object?>(), 200, 0),
+                ],
+                [
+                    new WorkflowEdge("src", "files", "read", "input"),
+                    new WorkflowEdge("read", "records", "store", "records"),
+                ],
+                new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+                [], new Dictionary<string, object?>());
+            Assert.True(await api.ExecuteAsync("industrial/save-workflow",
+                System.Text.Json.JsonSerializer.SerializeToNode(definition)));
+            var results = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ =>
+                api.ExecuteAsync("industrial/publish-workflow",
+                    new JsonObject { ["workflowId"] = "concurrent-publish" })));
+            Assert.All(results, Assert.True);
+            var published = (await workflows.ListPublishedAsync("concurrent-publish")).ToArray();
+            Assert.Equal(2, published.Length);
+            Assert.Equal(new[] { 1, 2 }, published.Select(item => item.Version).OrderBy(version => version));
+            foreach (var item in published)
+            {
+                Assert.Equal(item.Version, item.Definition.Version);
+                var graph = JsonNode.Parse(item.ElsaDefinitionJson)!["elsa"]!.AsObject();
+                Assert.Equal(item.Version, graph["version"]!.GetValue<int>());
+            }
+        });
+    }
+
+    [Fact]
     public async Task ElsaExecutesAPluginContributedActivity()
     {
         var before = CollectFileActivity.ExecutionCount;

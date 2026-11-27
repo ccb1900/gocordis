@@ -246,6 +246,9 @@ public interface IWorkflowRegistry
     ValueTask<PublishedWorkflow?> PublishAsync(
         string workflowId, WorkflowDefinition snapshot, string elsaDefinitionJson,
         CancellationToken ct = default);
+    ValueTask<PublishedWorkflow?> PublishAsync(
+        string workflowId, WorkflowDefinition snapshot, int version, string elsaDefinitionJson,
+        CancellationToken ct = default);
     ValueTask<PublishedWorkflow?> GetPublishedAsync(string workflowId, CancellationToken ct = default);
     ValueTask<PublishedWorkflow?> GetPublishedVersionAsync(
         string workflowId, int version, CancellationToken ct = default);

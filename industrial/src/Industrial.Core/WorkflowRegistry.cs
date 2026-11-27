@@ -131,6 +131,14 @@ public sealed class WorkflowRegistry : IWorkflowRegistry
         string workflowId, WorkflowDefinition snapshot, string elsaDefinitionJson,
         CancellationToken ct = default)
     {
+        var version = await NextPublishVersionAsync(workflowId, ct);
+        return await PublishAsync(workflowId, snapshot, version, elsaDefinitionJson, ct);
+    }
+
+    public async ValueTask<PublishedWorkflow?> PublishAsync(
+        string workflowId, WorkflowDefinition snapshot, int version, string elsaDefinitionJson,
+        CancellationToken ct = default)
+    {
         var errors = await _validator.ValidateAsync(snapshot, ct);
         if (errors.Count > 0)
         {
@@ -142,7 +150,7 @@ public sealed class WorkflowRegistry : IWorkflowRegistry
         var previous = await db.Workflows
             .SingleOrDefaultAsync(x => x.WorkflowId == workflowId && x.IsPublished, ct);
         if (previous is not null) previous.IsPublished = false;
-        var nextVersion = await NextPublishVersionAsync(workflowId, ct);
+        var nextVersion = version > 0 ? version : await NextPublishVersionAsync(workflowId, ct);
         var immutable = snapshot with { WorkflowId = workflowId, Version = nextVersion };
         var published = new WorkflowEntity
         {

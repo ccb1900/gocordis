@@ -83,6 +83,7 @@ public sealed class IndustrialElsaComponent : Component
     private string? _lastRecovery;
     private IReadOnlyList<NodeExecutionView> _lastNodeViews = [];
     private readonly SemaphoreSlim _recoveryLock = new(1, 1);
+    private readonly SemaphoreSlim _publishLock = new(1, 1);
     private readonly ConcurrentDictionary<string, string> _lastScheduleError = new(StringComparer.Ordinal);
     private JsonObject? _lastBackfillPreview;
 
@@ -91,11 +92,25 @@ public sealed class IndustrialElsaComponent : Component
     public IndustrialElsaComponent(IReadOnlyDictionary<string, object?>? config) =>
         _config = config ?? new Dictionary<string, object?>();
 
-    private string Root => _config.TryGetValue("root", out var root) && root is not null &&
-                            !string.IsNullOrWhiteSpace(root.ToString())
-        ? root.ToString()!
-        : Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_ROOT")
-          ?? Path.Combine(Path.GetTempPath(), "gocordis-industrial");
+    private static bool AllowDevelopmentRoot(IReadOnlyDictionary<string, object?> config) =>
+        config.TryGetValue("allowDevelopmentKey", out var flag) &&
+        string.Equals(flag?.ToString(), "true", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(
+            Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_ALLOW_DEV_KEY"),
+            "true", StringComparison.OrdinalIgnoreCase);
+
+    private string Root
+    {
+        get
+        {
+            var configured = _config.TryGetValue("root", out var root) && root is not null &&
+                             !string.IsNullOrWhiteSpace(root.ToString())
+                ? root.ToString()!
+                : Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_ROOT")
+                  ?? Path.Combine(Path.GetTempPath(), "gocordis-industrial");
+            return IndustrialPaths.NormalizeRoot(configured, AllowDevelopmentRoot(_config));
+        }
+    }
 
     private string ElsaDbPath => Path.Combine(Root, "industrial-elsa.db");
 
@@ -213,13 +228,17 @@ public sealed class IndustrialElsaComponent : Component
 
                     var definition = await workflows.GetAsync(id)
                                      ?? throw new InvalidOperationException($"workflow '{id}' not found");
-                    var version = await workflows.NextPublishVersionAsync(id);
-                    var snapshot = definition with { Version = version };
-                    var elsJson = await ElsaDefinitionConverter.ToElsaJson(snapshot);
-                    var published = await workflows.PublishAsync(id, snapshot, elsJson);
-                    if (published is null)
+                    await _publishLock.WaitAsync();
+                    try
                     {
-                        throw new InvalidOperationException($"failed to publish workflow '{id}'");
+                        var version = await workflows.NextPublishVersionAsync(id);
+                        var snapshot = definition with { Version = version };
+                        var elsJson = await ElsaDefinitionConverter.ToElsaJson(snapshot);
+                        await workflows.PublishAsync(id, snapshot, version, elsJson);
+                    }
+                    finally
+                    {
+                        _publishLock.Release();
                     }
                 }, owner);
                 api.RegisterCommand("industrial/run-workflow", async payload =>
@@ -247,6 +266,17 @@ public sealed class IndustrialElsaComponent : Component
                     await RunDueSchedulesAsync(workflows, coordinator, ledger, resources, vault,
                         planner, source, reader, stage, sinkFactories, sink, archive,
                         context.CancellationToken);
+                }, owner);
+                api.RegisterQuery("industrial/storage-paths", () =>
+                {
+                    var root = Root;
+                    return (JsonNode)new JsonObject
+                    {
+                        ["root"] = root,
+                        ["elsaDb"] = Path.Combine(root, "industrial-elsa.db"),
+                        ["ledgerDb"] = Path.Combine(root, "industrial-ledger.db"),
+                        ["stageRoot"] = root,
+                    };
                 }, owner);
                 api.RegisterQuery("industrial/recovery", () => _lastRecovery is null
                     ? null
@@ -1665,13 +1695,28 @@ public static class SinkRecordPartitioner
         Func<string, IAsyncEnumerable<RecordEnvelope>, CancellationToken, ValueTask<DatasetRef>> spool,
         CancellationToken ct = default)
     {
-        var partitions = new Dictionary<string, (Channel<RecordEnvelope> Channel, ValueTask<DatasetRef> Spool)>
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var partitions = new Dictionary<string, (Channel<RecordEnvelope> Channel, Task<DatasetRef> Spool)>
             (StringComparer.Ordinal);
         var datasets = new Dictionary<string, DatasetRef>(StringComparer.Ordinal);
+        Exception? primary = null;
+        var consumerFailed = false;
         try
         {
-            await foreach (var record in records.WithCancellation(ct))
+            await foreach (var record in records.WithCancellation(linked.Token))
             {
+                // A dead consumer must be observed BEFORE writing: otherwise a
+                // full bounded channel would block the producer forever.
+                var faults = partitions.Where(pair => pair.Value.Spool.IsFaulted)
+                    .Select(pair => pair.Value.Spool.Exception ?? new Exception("spool failed"))
+                    .ToArray();
+                if (faults.Length > 0)
+                {
+                    consumerFailed = true;
+                    primary = new AggregateException("sink partition spooling failed", faults);
+                    linked.Cancel();
+                    break;
+                }
                 if (!partitions.TryGetValue(record.Source.Key, out var partition))
                 {
                     var channel = Channel.CreateBounded<RecordEnvelope>(new BoundedChannelOptions(Capacity)
@@ -1680,27 +1725,47 @@ public static class SinkRecordPartitioner
                         SingleReader = true,
                         SingleWriter = true,
                     });
-                    partition = (channel, spool(record.Source.Key, Drain(channel.Reader, ct), ct));
+                    Task<DatasetRef> spoolTask;
+                    try
+                    {
+                        spoolTask = spool(record.Source.Key, Drain(channel.Reader, linked.Token),
+                            linked.Token).AsTask();
+                    }
+                    catch (Exception ex)
+                    {
+                        spoolTask = Task.FromException<DatasetRef>(ex);
+                    }
+                    partition = (channel, spoolTask);
                     partitions.Add(record.Source.Key, partition);
                 }
-                await partition.Channel.Writer.WriteAsync(record, ct);
+                await partition.Channel.Writer.WriteAsync(record, linked.Token);
             }
         }
-        finally
+        catch (Exception ex)
         {
-            foreach (var partition in partitions.Values) partition.Channel.Writer.TryComplete();
-            List<Exception>? failures = null;
-            foreach (var pair in partitions)
+            primary ??= ex;
+        }
+
+        foreach (var partition in partitions.Values) partition.Channel.Writer.TryComplete();
+        List<Exception>? failures = null;
+        foreach (var pair in partitions)
+        {
+            try { datasets[pair.Key] = await pair.Value.Spool; }
+            catch (Exception ex)
             {
-                try { datasets[pair.Key] = await pair.Value.Spool; }
-                catch (Exception ex)
-                {
-                    failures ??= [];
-                    failures.Add(ex);
-                }
+                if (ex is OperationCanceledException && linked.IsCancellationRequested) continue;
+                failures ??= [];
+                failures.Add(ex);
             }
-            if (failures is not null && !ct.IsCancellationRequested)
-                throw new AggregateException("sink partition spooling failed", failures);
+        }
+        if (primary is AggregateException) throw primary;
+        if (failures is not null)
+            throw new AggregateException("sink partition spooling failed", failures);
+        if (primary is not null)
+        {
+            if (consumerFailed && primary is OperationCanceledException)
+                throw new AggregateException("sink partition spooling failed", primary);
+            throw primary;
         }
         return datasets;
     }

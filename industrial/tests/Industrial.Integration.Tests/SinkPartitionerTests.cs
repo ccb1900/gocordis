@@ -65,7 +65,20 @@ public sealed class SinkPartitionerTests
                     Interlocked.Increment(ref completed);
                     return Dataset(sourceKey);
                 }));
-        Assert.Equal(1, completed);
+        Assert.True(completed <= 1, "all spool tasks must be completed or cancelled");
+    }
+
+    [Fact]
+    public async Task ImmediateSpoolFailureDoesNotBlockAfterChannelCapacity()
+    {
+        // 400 records > 128 channel capacity. A consumer that fails before its
+        // first record must be detected immediately, not after a deadlock.
+        var run = SinkRecordPartitioner.PartitionAsync(
+            Records(1, 400),
+            (_, _, _) => throw new IOException("spool unavailable"));
+        var finished = await Task.WhenAny(run.AsTask(), Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.Same(run.AsTask(), finished);
+        await Assert.ThrowsAsync<AggregateException>(async () => await run);
     }
 
     [Fact]

@@ -17,13 +17,16 @@ CLI=(dotnet "$ROOT/tools/Gocordis.Cli/bin/Debug/net10.0/Gocordis.Cli.dll")
 # them into the GENERIC platform output so packaged plugins can open the ledger.
 NATIVE_SRC="$ROOT/industrial/src/Industrial.Host/bin/Debug/net10.0/runtimes"
 PLATFORM_BIN="$ROOT/src/Gocordis.Platform/bin/Debug/net10.0"
+PACKAGED_HOST_BIN="$ROOT/industrial/src/Industrial.PackagedHost/bin/Debug/net10.0"
 if [[ -d "$NATIVE_SRC" ]]; then
-  mkdir -p "$PLATFORM_BIN/runtimes"
-  while IFS= read -r -d '' asset; do
-    rel="${asset#"$NATIVE_SRC"/}"
-    mkdir -p "$PLATFORM_BIN/runtimes/$(dirname "$rel")"
-    cp "$asset" "$PLATFORM_BIN/runtimes/$rel"
-  done < <(find "$NATIVE_SRC" -name '*e_sqlite3*' -print0)
+  for target in "$PLATFORM_BIN" "$PACKAGED_HOST_BIN"; do
+    mkdir -p "$target/runtimes"
+    while IFS= read -r -d '' asset; do
+      rel="${asset#"$NATIVE_SRC"/}"
+      mkdir -p "$target/runtimes/$(dirname "$rel")"
+      cp "$asset" "$target/runtimes/$rel"
+    done < <(find "$NATIVE_SRC" -name '*e_sqlite3*' -print0)
+  done
 fi
 
 pack() {

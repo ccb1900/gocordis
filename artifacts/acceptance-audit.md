@@ -71,6 +71,9 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Publish persists an explicit immutable snapshot under concurrent draft edits | `IWorkflowRegistry.PublishAsync(snapshot)`, `WorkflowValidationTests.PublishPersistsTheExplicitSnapshotEvenIfDraftChanges` | Pass |
 | Machine IDs independent of names, unbind via explicit null, delete guarded | `MachineConsole.tsx`, `SaveResourceAsync`, `MachineRegistry.RemoveAsync`, browser E2E | Pass |
 
-Unified report: 963 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `b7098d90efe6b10ec605700817a02087c3ef8ead` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+| Bounded partitioner regressions: slow disk, multi-file backpressure, spool failure, upstream failure, cancellation | `SinkRecordPartitioner`, `SinkPartitionerTests` | Pass |
+| Custom sink + built-in sink completion and custom sink retry | `CustomNodeHandlerTests.CustomSinkAndBuiltInSinkBothCompleteTheRun`, `CustomSinkRetryDoesNotEndTheRunBeforeItsDeliverySucceeds` | Pass |
+
+Unified report: 969 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `ee440524806d85f198e0786df6c8c6634c0623f4` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

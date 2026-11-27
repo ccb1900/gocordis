@@ -132,6 +132,11 @@ public sealed class CustomNodeHandlerTests
             }));
             var failed = (await ledger.ListAllDeliveriesAsync()).Single(delivery =>
                 delivery.TargetId == "custom-sink" && delivery.Status == CollectionStatus.Failed);
+            // The failed attempt must not make the Run terminal: a retry still
+            // owns the unfinished work.
+            var beforeRetry = (await ledger.ListRunsAsync()).Single();
+            Assert.False(CollectionStatus.IsTerminal(beforeRetry.Status),
+                "run ended before the failed custom-sink delivery was retried: " + beforeRetry.Status);
             Assert.True(await api.ExecuteAsync("industrial/retry-failed", new JsonObject
             {
                 ["deliveryId"] = failed.Id,
@@ -139,6 +144,9 @@ public sealed class CustomNodeHandlerTests
             var retried = (await ledger.GetDeliveryAsync(failed.Id))!;
             Assert.Equal(CollectionStatus.Succeeded, retried.Status);
             Assert.Equal(2, retried.Attempts);
+            var afterRetry = (await ledger.ListRunsAsync()).Single();
+            Assert.True(CollectionStatus.IsTerminal(afterRetry.Status),
+                "run did not reach a terminal state after retry: " + afterRetry.Status);
         });
     }
 
@@ -246,7 +254,11 @@ public sealed class CustomNodeHandlerTests
                 context.RunId!, delivery.Id, TimeSpan.FromMinutes(5), ct)
                 ?? throw new InvalidOperationException("custom delivery was not claimed");
             if (attempt == 1)
+            {
                 await context.Ledger.FailDeliveryAsync(delivery.Id, claim.ClaimToken, "temporary outage", ct);
+                // Keep the Elsa activity unfinished; the retry resumes it.
+                throw new IOException("temporary outage");
+            }
             else
                 await context.Ledger.CompleteDeliveryAsync(delivery.Id, claim.ClaimToken, 1, ct);
             context.Complete(1, []);

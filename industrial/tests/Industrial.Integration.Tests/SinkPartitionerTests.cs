@@ -82,6 +82,45 @@ public sealed class SinkPartitionerTests
     }
 
     [Fact]
+    public async Task ConsumerFailureWhileProducerAwaitsFullChannelIsObserved()
+    {
+        // Deterministic ordering: the consumer stops after 64 records and waits
+        // until the producer has filled the 128-slot channel; only then does it
+        // fail. The old pre-write IsFaulted check could not observe this race.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async IAsyncEnumerable<RecordEnvelope> Source()
+        {
+            var identity = Identity(0);
+            for (var i = 0; i < SinkRecordPartitioner.Capacity * 4; i++)
+            {
+                if (i == SinkRecordPartitioner.Capacity + 1) gate.TrySetResult();
+                yield return Envelope(identity, i);
+            }
+            await ValueTask.CompletedTask;
+        }
+
+        var failure = await Assert.ThrowsAsync<AggregateException>(async () =>
+            await SinkRecordPartitioner.PartitionAsync(
+                Source(),
+                async (_, stream, ct) =>
+                {
+                    var consumed = 0;
+                    await foreach (var record in stream.WithCancellation(ct))
+                    {
+                        GC.KeepAlive(record);
+                        if (++consumed == 64)
+                        {
+                            await gate.Task.WaitAsync(ct);
+                            throw new IOException("consumer failed while channel was full");
+                        }
+                    }
+                    return Dataset("sink");
+                }));
+        Assert.Contains(failure.InnerExceptions,
+            ex => ex.Message.Contains("consumer failed", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task UpstreamFailureStillDrainsSpoolTasks()
     {
         var drained = 0;

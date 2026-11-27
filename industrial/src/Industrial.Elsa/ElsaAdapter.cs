@@ -1738,7 +1738,22 @@ public static class SinkRecordPartitioner
                     partition = (channel, spoolTask);
                     partitions.Add(record.Source.Key, partition);
                 }
-                await partition.Channel.Writer.WriteAsync(record, linked.Token);
+                // Race-free failure propagation: wait for EITHER the bounded
+                // write to complete OR the consumer to finish/fail. A consumer
+                // that dies while the producer is blocked on a full channel is
+                // therefore observed immediately.
+                var write = partition.Channel.Writer.WriteAsync(record, linked.Token).AsTask();
+                var winner = await Task.WhenAny(write, partition.Spool);
+                if (!ReferenceEquals(winner, write))
+                {
+                    consumerFailed = true;
+                    primary = new AggregateException("sink partition spooling failed",
+                        partition.Spool.Exception
+                        ?? new Exception("spool completed before its input was fully written"));
+                    linked.Cancel();
+                    break;
+                }
+                await write;
             }
         }
         catch (Exception ex)

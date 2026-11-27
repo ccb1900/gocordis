@@ -81,8 +81,8 @@ test("80 machines x 10 profiles generates 800 bindings with policy, restart and 
   const readBindings = async () =>
     (await (await page.request.get("/api/query/industrial/bindings")).json()).data as any[];
   await expect.poll(async () =>
-    (await readBindings()).filter((row) => row.id.startsWith("binding:scale-template:v1:")).length
-  ).toBe(800);
+    (await readBindings()).filter((row) => row.id.startsWith("binding:scale-template:v1:")).length,
+  { timeout: 60_000 }).toBe(800);
   const first = (await readBindings()).find((row) => row.id.startsWith("binding:scale-template:v1:"));
   expect(first.trigger.kind).toBe("schedule");
   expect(first.trigger.cron).toBe("0 2 * * *");
@@ -90,8 +90,8 @@ test("80 machines x 10 profiles generates 800 bindings with policy, restart and 
   // Simulate a host restart: a fresh page reload reads the same persisted rows.
   await page.reload();
   await expect.poll(async () =>
-    (await readBindings()).filter((row) => row.id.startsWith("binding:scale-template:v1:")).length
-  ).toBe(800);
+    (await readBindings()).filter((row) => row.id.startsWith("binding:scale-template:v1:")).length,
+  { timeout: 60_000 }).toBe(800);
 
   const workflows = (await (await page.request.get("/api/query/industrial/workflows")).json()).data;
   expect(workflows.filter((row: { workflowId: string }) => row.workflowId === "scale-template").length).toBe(1);

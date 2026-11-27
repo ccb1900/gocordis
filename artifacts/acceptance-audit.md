@@ -80,6 +80,12 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 
 | Consumer failure during a blocked bounded write is propagated immediately | `SinkRecordPartitioner.PartitionAsync` `WhenAny(write, spool)`, `SinkPartitionerTests.ConsumerFailureWhileProducerAwaitsFullChannelIsObserved` | Pass |
 
-Unified report: 974 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `602193d448da11acc464ac845a704af043cd81ec` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+| Machine console full CRUD, typed credentials, CSV import and rotation reuse | `MachineConsole.tsx`, `CredentialConsole.tsx`, `ResourceConnectionTesterTests.RotatedCredentialIsUsedByTheNextConnectionTest`, browser E2E | Pass |
+| Designer layout repair, dagre auto-layout, fit/center, domain undo/redo and shortcuts | `layout-model.ts`, `GraphCanvas.tsx`, `CordisDesigner.tsx`, `designer-usability.spec.ts` | Pass |
+| Business-oriented node configuration instead of raw JSON | `PropertyEditor.tsx`, `designer.spec.ts` | Pass |
+| 80 machines x 10 file profiles generate 800 bindings, not 800 workflows | `FileProfileRegistry`, `CollectionBindingRegistry`, `CollectionBindingTests.BulkBindingsCreateEightHundredRowsWithoutCopyingWorkflows` | Pass |
+| Binding parameterization and secret-free config import/export | `WorkflowBinding.BindParameters`, `industrial/export-config`, `industrial/import-config`, browser E2E | Pass |
+
+Unified report: 982 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `9636a55ac9e5ffa71bd67107ee69cf04da0da1d6` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

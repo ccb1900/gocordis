@@ -53,7 +53,7 @@ public sealed class ElsaPocTests
                 System.Text.Json.JsonSerializer.SerializeToNode(definition)));
             var results = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ =>
                 api.ExecuteAsync("industrial/publish-workflow",
-                    new JsonObject { ["workflowId"] = "concurrent-publish" })));
+                    new JsonObject { ["workflowId"] = "concurrent-publish" }).AsTask()));
             Assert.All(results, Assert.True);
             var published = (await workflows.ListPublishedAsync("concurrent-publish")).ToArray();
             Assert.Equal(2, published.Length);

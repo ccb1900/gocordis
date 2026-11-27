@@ -14,7 +14,8 @@ $passwordB = "Gocordis!B$suffix!42"
 $wrongPassword = "Definitely!Wrong$suffix"
 $sharePath = Join-Path $env:TEMP $shareName
 $out = Join-Path $env:TEMP "gocordis-unc-browser-$suffix"
-$outPosix = $out -replace '\\', '/'
+# Git Bash needs an MSYS drive path, not a Windows C:\ path.
+$outPosix = "/" + $out.Substring(0, 1).ToLower() + ($out.Substring(2) -replace '\\', '/')
 $db = Join-Path $out "unc-browser.db"
 $url = "http://127.0.0.1:8192"
 $hostProcess = $null

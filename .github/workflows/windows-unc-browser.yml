@@ -34,7 +34,7 @@ jobs:
         shell: pwsh
         run: |
           try {
-            ./industrial/e2e-unc-browser.ps1 2>&1 | Tee-Object -FilePath unc-browser.log
+            ./industrial/e2e-unc-browser.ps1 2>&1 | Tee-Object -FilePath "$env:GITHUB_WORKSPACE/unc-browser.log"
             if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) { throw "script exit $LASTEXITCODE" }
           } catch {
             $tail = if (Test-Path unc-browser.log) { ((Get-Content unc-browser.log -Tail 25) -join " | ") } else { $_.Exception.Message }
@@ -47,9 +47,10 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const tail = fs.existsSync('unc-browser.log')
-              ? fs.readFileSync('unc-browser.log', 'utf8').slice(-8000)
-              : 'no browser log was produced';
+            const logPath = require('path').join(process.env.GITHUB_WORKSPACE || '.', 'unc-browser.log');
+            const tail = fs.existsSync(logPath)
+              ? fs.readFileSync(logPath, 'utf8').slice(-8000)
+              : 'no browser log was produced at ' + logPath;
             await github.rest.checks.create({
               owner: context.repo.owner,
               repo: context.repo.repo,

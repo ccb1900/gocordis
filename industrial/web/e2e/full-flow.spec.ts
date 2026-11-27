@@ -115,9 +115,15 @@ test("blank environment: browser-only create, configure, run, fail, repair, retr
     await chooseIndex(page, "连线起点", from);
     await chooseIndex(page, "连线终点", to);
     await page.getByRole("button", { name: "添加连线" }).click();
-    await expect(page.getByText(new RegExp(`相关连线 \\(${index + 1}\\)`))).toBeVisible();
+    await page.waitForFunction((count: number) => {
+      const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+      return el?.__industrialGraph?.getEdgeData()?.length === count;
+    }, index + 1);
   }
-  await expect(page.getByText(/相关连线 \(5/ )).toBeVisible();
+  expect(await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    return el?.__industrialGraph?.getEdgeData()?.length ?? 0;
+  })).toBe(5);
 
   await page.getByRole("button", { name: /属\s*性/ }).click();
   await page.getByLabel("运行资源").selectOption("flow-source");

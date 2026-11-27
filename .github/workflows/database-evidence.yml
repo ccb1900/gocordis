@@ -24,16 +24,22 @@ jobs:
           SA_PASSWORD: Gocordis!2026Sql
         ports:
           - 1433:1433
-        options: >-
-          --health-cmd "/opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'Gocordis!2026Sql' -Q 'SELECT 1' -b"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
+      - name: Wait for SQL Server listener
+        run: |
+          for attempt in $(seq 1 60); do
+            if (exec 3<>/dev/tcp/127.0.0.1/1433) 2>/dev/null; then
+              echo "SQL Server is accepting connections"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "SQL Server did not become ready" >&2
+          exit 1
       - name: SqlServerSinkTests against a real server
         run: |
           GOCORDIS_SQLSERVER_CONNECTION="Server=127.0.0.1,1433;Database=master;User Id=sa;Password=Gocordis!2026Sql;TrustServerCertificate=True;Encrypt=False" \

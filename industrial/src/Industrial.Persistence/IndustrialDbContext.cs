@@ -274,7 +274,6 @@ public static class IndustrialStore
         if (existed)
         {
             context.Database.EnsureCreated();
-            UpgradeLedgerSchema(context);
         }
         else
         {
@@ -282,6 +281,10 @@ public static class IndustrialStore
         }
         EnsureScheduleFireTable(context);
         EnsureConfigurationTables(context);
+        // Migrations and EnsureCreated both predate several ledger columns.
+        // UpgradeLedgerSchema is idempotent (duplicate-column errors are
+        // ignored), so fresh and legacy files must converge on one shape.
+        UpgradeLedgerSchema(context);
         return context;
     }
 

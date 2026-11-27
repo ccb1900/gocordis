@@ -429,6 +429,9 @@ test("a user upgrades bindings only to a published template version", async ({ p
   };
   await expect.poll(async () => (await readBinding())?.workflowVersion).toBe(1);
   expect((await readBinding()).trigger.kind).toBe("schedule");
+  // Let the console's initial load finish before triggering a mutation: its
+  // load clears the error alert, which could otherwise race the diagnostic.
+  await expect(page.getByText("Version binding")).toBeVisible();
 
   await page.getByLabel("工作流 ID").fill(workflowId);
   await page.getByLabel("升级到模板版本").fill("2");

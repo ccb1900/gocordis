@@ -35,7 +35,7 @@ public sealed class SqliteRecordSink : IRecordSink
         const int batchSize = 500;
         var count = 0;
         var pending = 0;
-        var writtenIds = new HashSet<string>(StringComparer.Ordinal);
+        var pendingIds = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var record in records.WithCancellation(ct))
         {
             var recordId = _options.ResolveId(record);
@@ -43,7 +43,7 @@ public sealed class SqliteRecordSink : IRecordSink
             {
                 continue;
             }
-            writtenIds.Add(recordId);
+            pendingIds.Add(recordId);
 
             db.Records.Add(new TargetRecordEntity
             {
@@ -56,24 +56,34 @@ public sealed class SqliteRecordSink : IRecordSink
             if (++pending >= batchSize)
             {
                 await db.SaveChangesAsync(ct);
+                await VerifyWrittenAsync(db, pendingIds, ct);
                 // Release change-tracked entities so live memory stays bounded
                 // regardless of input size.
                 db.ChangeTracker.Clear();
+                pendingIds.Clear();
                 pending = 0;
             }
         }
 
-        if (pending > 0) await db.SaveChangesAsync(ct);
-        // Bounded readback: a delivery is not complete until the target proves
-        // it holds every row this write claimed to have inserted.
-        if (writtenIds.Count > 0)
+        if (pending > 0)
         {
-            var stored = await db.Records.CountAsync(row => writtenIds.Contains(row.RecordId), ct);
-            if (stored != writtenIds.Count)
-                throw new InvalidOperationException(
-                    $"target verification failed: wrote {writtenIds.Count} rows but found {stored}");
+            await db.SaveChangesAsync(ct);
+            await VerifyWrittenAsync(db, pendingIds, ct);
         }
         return new DeliveryResultRef(idempotencyKey, TargetId, count);
+    }
+
+    /// <summary>Bounded post-write proof: verify one batch against the target
+    /// before releasing it. A delivery is not complete until the target holds
+    /// every row this write claimed to have inserted.</summary>
+    private static async ValueTask VerifyWrittenAsync(
+        IndustrialTargetDbContext db, HashSet<string> ids, CancellationToken ct)
+    {
+        if (ids.Count == 0) return;
+        var stored = await db.Records.CountAsync(row => ids.Contains(row.RecordId), ct);
+        if (stored != ids.Count)
+            throw new InvalidOperationException(
+                $"target verification failed: wrote {ids.Count} rows but found {stored}");
     }
 }
 

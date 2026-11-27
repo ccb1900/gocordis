@@ -57,6 +57,12 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Machine-resource association and quick collection wizard | `ResourceDefinition.MachineId`, `industrial/machine-resources`, `MachineConsole.tsx`, `CollectionWizard.tsx`, browser E2E | Pass |
 | SQL Server / MySQL opt-in real-server tests and parsed packaged E2E counts | `SqlServerSinkTests`, `MySqlSinkTests`, `industrial/e2e-packaged.sh`, report status vocabulary | Pass |
 
-Unified report: 954 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `06961f733c12236e3068697b7dad6814f70d4fd5` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+| ScheduleFire recovery is scoped to its workflow/version (no operator-precedence cross-talk) | `ScheduleFireView.IsRecoverable`, `DeliveryLeaseTests.ScheduleFireRecoveryPredicateIsScopedToItsOwnWorkflowAndVersion`, `SchedulerRecoveryTests.ExpiredFiresAreRecoveredOnlyByTheirOwnWorkflow` | Pass |
+| Checkpoint advance and fire materialization are one guarded transaction | `ICollectionLedger.CommitScheduleWindowAsync`, `DeliveryLeaseTests.ScheduleWindowCommitsFiresAndCheckpointAtomically` | Pass |
+| Cron catch-up is bounded with an explicit scan budget and first-install policy | `RunDueSchedulesAsync`, `SchedulerRecoveryTests` skipped-count assertion | Pass |
+| Sink partitions input by source in one pass; 100k-row heap bound verified | `PublishedNodeExecutor.ExecuteSinkAsync`, `CrashRecoveryTests.StreamingPipelineKeepsLiveHeapBoundedOnLargeInput` | Pass |
+| Retry test asserts `LastAttemptRunId` directly | `CrashRecoveryTests.RetryUsesTheLastRunThatAttemptedTheSameDelivery` | Pass |
+
+Unified report: 958 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `1395b1647a38c7716e5fd41e7a5e42b2c88fa614` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

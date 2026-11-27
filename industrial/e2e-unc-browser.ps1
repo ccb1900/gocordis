@@ -14,6 +14,7 @@ $passwordB = "Gocordis!B$suffix!42"
 $wrongPassword = "Definitely!Wrong$suffix"
 $sharePath = Join-Path $env:TEMP $shareName
 $out = Join-Path $env:TEMP "gocordis-unc-browser-$suffix"
+$outPosix = $out -replace '\\', '/'
 $db = Join-Path $out "unc-browser.db"
 $url = "http://127.0.0.1:8192"
 $hostProcess = $null
@@ -60,7 +61,7 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "playwright install failed" }
         } finally { Pop-Location }
 
-        bash ./industrial/pack.sh $out
+        bash ./industrial/pack.sh $outPosix
         if ($LASTEXITCODE -ne 0) { throw "plugin packaging failed" }
 
         $arguments = @(

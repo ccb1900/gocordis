@@ -1,7 +1,7 @@
 name: windows-unc-browser
 
-# Delivery poll rebind: re-run on packaging fixes because packaged UI is part of this story.
-# Delivery poll rebind: browser-level acceptance for the Windows UNC UI story. The run id and tested
+# Rotation poll rebind: re-run on packaging fixes because packaged UI is part of this story.
+# Rotation poll rebind: browser-level acceptance for the Windows UNC UI story. The run id and tested
 # head sha are recorded in artifacts/windows-unc-browser-result.json.
 
 on:

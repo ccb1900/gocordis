@@ -106,10 +106,15 @@ test("blank environment: UI creates UNC machine, credential and resource, reads 
   }).toBe(2);
 
   await page.goto("/industrial/resources");
+  const badTest = page.waitForResponse(response =>
+    response.request().method() === "POST" &&
+    response.url().includes("/api/command/industrial/test-resource"));
   await sourceRow.getByRole("button", { name: "测试连接" }).click();
-  const failed = (await (await page.request.get("/api/query/industrial/resource-tests")).json()).data
-    .find((row: { resourceId: string }) => row.resourceId === "unc-source");
-  expect(failed.ok).toBe(false);
+  expect((await badTest).ok()).toBe(true);
+  await expect.poll(async () => {
+    const rows = (await (await page.request.get("/api/query/industrial/resource-tests")).json()).data;
+    return rows.find((row: { resourceId: string }) => row.resourceId === "unc-source")?.ok;
+  }).toBe(false);
 
   // Correct secret for the same rotated identity: the next connection succeeds.
   await page.goto("/industrial/credentials");
@@ -124,11 +129,21 @@ test("blank environment: UI creates UNC machine, credential and resource, reads 
   await expect(page.getByText(passwordB)).toHaveCount(0);
 
   await page.goto("/industrial/resources");
+  const goodTest = page.waitForResponse(response =>
+    response.request().method() === "POST" &&
+    response.url().includes("/api/command/industrial/test-resource"));
   await sourceRow.getByRole("button", { name: "测试连接" }).click();
+  expect((await goodTest).ok()).toBe(true);
+  await expect.poll(async () => {
+    const rows = (await (await page.request.get("/api/query/industrial/resource-tests")).json()).data;
+    return rows.find((row: { resourceId: string }) => row.resourceId === "unc-source")?.ok;
+  }).toBe(true);
   await expect(sourceRow).toContainText(/目录可访问|目录存在/);
 
   // The workflow still references this resource: deletion must be refused.
   await sourceRow.getByRole("button", { name: "删除" }).click();
-  const stillThere = (await (await page.request.get("/api/query/industrial/resources")).json()).data;
-  expect(stillThere.some((row: { id: string }) => row.id === "unc-source")).toBe(true);
+  await expect.poll(async () => {
+    const rows = (await (await page.request.get("/api/query/industrial/resources")).json()).data;
+    return rows.some((row: { id: string }) => row.id === "unc-source");
+  }).toBe(true);
 });

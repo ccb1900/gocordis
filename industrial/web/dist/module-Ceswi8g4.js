@@ -149,7 +149,8 @@ function Qp(e, r) {
       }
     },
     plugins: [
-      { type: "grid-line", size: 20, stroke: "#e8edf4" }
+      { type: "grid-line", size: 20, stroke: "#e8edf4" },
+      { type: "minimap", size: [180, 110], position: "right-bottom" }
     ],
     behaviors: bh()
   };
@@ -271,7 +272,7 @@ function ev(e) {
     const k = c.current;
     if (!k || h.current) return;
     let m = !1;
-    return import("./esm-BEjYIwjJ.js").then(({ Graph: C }) => {
+    return import("./esm-DqcK6hLR.js").then(({ Graph: C }) => {
       if (m || !c.current || h.current) return;
       const O = Qp(S.current, k), L = new C({
         ...O,

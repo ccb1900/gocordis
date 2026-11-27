@@ -144,10 +144,13 @@ public sealed class SqlServerRecordSink : IRecordSink
                     INSERT INTO {_table}(record_id, source_identity, record_time, payload)
                     VALUES (@id, @source, @time, @payload);
                     """,
+                // A single INSERT ... WHERE NOT EXISTS reports 0/1 affected rows.
+                // The older IF NOT EXISTS batch returns -1 from ExecuteNonQuery,
+                // which made correct idempotent writes look like negative counts.
                 _ => $"""
-                    IF NOT EXISTS (SELECT 1 FROM {_table} WHERE record_id = @id)
                     INSERT INTO {_table}(record_id, source_identity, record_time, payload)
-                    VALUES (@id, @source, @time, @payload);
+                    SELECT @id, @source, @time, @payload
+                    WHERE NOT EXISTS (SELECT 1 FROM {_table} WHERE record_id = @id);
                     """,
             };
             command.Parameters.Clear();

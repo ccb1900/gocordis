@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  checks: write
 
 jobs:
   sqlserver:
@@ -61,29 +60,6 @@ jobs:
           done
           echo "SQL Server integration failed after bounded retries" >&2
           exit 1
-      - name: Publish SQL Server diagnostics as a check
-        if: always()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const tail = fs.existsSync('/tmp/sqlserver-test.log')
-              ? fs.readFileSync('/tmp/sqlserver-test.log', 'utf8').slice(-8000)
-              : 'no test log was produced';
-            await github.rest.checks.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'sqlserver-diagnostics-' + context.sha.substring(0, 7),
-              head_sha: context.sha,
-              status: 'completed',
-              conclusion: 'neutral',
-              output: {
-                title: 'SQL Server integration test tail',
-                summary: 'Tail of the real-server SqlServerSinkTests run',
-                text: tail,
-              },
-            });
-
   mysql:
     name: MySQL real-server integration
     runs-on: ubuntu-latest

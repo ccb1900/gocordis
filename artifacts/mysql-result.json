@@ -3,14 +3,14 @@
   "runner": "ubuntu-latest",
   "workflow": "database-evidence",
   "job": "mysql",
-  "runId": 45995327891,
-  "jobId": 140493169244,
-  "headSha": "0a015e56b15e0b0141933e8b9a6907b8771b685e",
-  "url": "https://github.com/ccb1900/gocordis/actions/runs/45995327891",
-  "startedAt": "2026-11-27T12:02:30Z",
-  "completedAt": "2026-11-27T12:03:33Z",
+  "runId": 46000574430,
+  "jobId": 140510865419,
+  "headSha": "ec502f25148533df0aa30f122faa41dac13cb73c",
+  "url": "https://github.com/ccb1900/gocordis/actions/runs/46000574430",
+  "startedAt": "2026-11-27T12:40:17Z",
+  "completedAt": "2026-11-27T12:41:18Z",
   "conclusion": "success",
   "test": "Industrial.Database.Tests.MySqlSinkTests.MySqlSinkIsIdempotentAgainstARealServer",
   "command": "GOCORDIS_MYSQL_CONNECTION=<real MySQL 8 service> dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --filter FullyQualifiedName~MySqlSink",
-  "note": "MySQL 8.0 service container on the runner; the test writes and re-plays through MySqlRecordSink and verifies rows with MySqlConnector. No SQLite substitution."
+  "note": "MySQL 8.0 service container; writes and re-plays through MySqlRecordSink and verifies rows with MySqlConnector. No SQLite substitution."
 }

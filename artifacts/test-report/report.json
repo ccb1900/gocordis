@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-11-27T12:15:01.972078+00:00",
+  "generatedAt": "2026-11-27T12:51:48.249579+00:00",
   "source": "tools/release/test-report.sh",
-  "commit": "0a015e56b15e0b0141933e8b9a6907b8771b685e",
+  "commit": "ec502f25148533df0aa30f122faa41dac13cb73c",
   "statusVocabulary": [
     "passed",
     "skipped",
@@ -60,7 +60,7 @@
       "exitCode": 0,
       "executionStatus": "passed",
       "countStatus": "parsed",
-      "passed": 23,
+      "passed": 24,
       "skipped": 0,
       "log": "industrial-browser-e2e.log"
     },
@@ -69,7 +69,7 @@
       "exitCode": 0,
       "executionStatus": "passed",
       "countStatus": "parsed",
-      "passed": 127,
+      "passed": 130,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
@@ -156,7 +156,7 @@
     }
   ],
   "totals": {
-    "passed": 993,
+    "passed": 997,
     "skipped": 7,
     "failedSuites": [],
     "unparsedSuites": [],
@@ -167,12 +167,12 @@
     "status": "passed",
     "runner": "windows-latest",
     "workflow": "windows-unc",
-    "runId": 45995327916,
-    "jobId": 140493172996,
-    "headSha": "0a015e56b15e0b0141933e8b9a6907b8771b685e",
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/45995327916",
-    "startedAt": "2026-11-27T12:02:31Z",
-    "completedAt": "2026-11-27T12:03:46Z",
+    "runId": 46000574470,
+    "jobId": 140510864809,
+    "headSha": "ec502f25148533df0aa30f122faa41dac13cb73c",
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46000574470",
+    "startedAt": "2026-11-27T12:40:17Z",
+    "completedAt": "2026-11-27T12:41:46Z",
     "conclusion": "success",
     "test": "Industrial.Database.Tests.WindowsUncIntegrationTests.UncSourceDiscoversFilesThroughARealSessionLease",
     "command": "pwsh ./industrial/e2e-windows-unc.ps1",
@@ -185,16 +185,16 @@
     "runner": "ubuntu-latest",
     "workflow": "database-evidence",
     "job": "sqlserver",
-    "runId": 45995327891,
-    "jobId": 140493169564,
-    "headSha": "0a015e56b15e0b0141933e8b9a6907b8771b685e",
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/45995327891",
-    "startedAt": "2026-11-27T12:02:30Z",
-    "completedAt": "2026-11-27T12:03:17Z",
+    "runId": 46000574430,
+    "jobId": 140510864908,
+    "headSha": "ec502f25148533df0aa30f122faa41dac13cb73c",
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46000574430",
+    "startedAt": "2026-11-27T12:40:17Z",
+    "completedAt": "2026-11-27T12:41:18Z",
     "conclusion": "success",
     "test": "Industrial.Database.Tests.SqlServerSinkTests.SqlServerSinkIsIdempotentAgainstARealServer",
     "command": "GOCORDIS_SQLSERVER_CONNECTION=<real SQL Server 2019 service> dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --filter FullyQualifiedName~SqlServerSink",
-    "note": "Real SQL Server 2019 service container; the test verifies write count and replay idempotency through SqlServerRecordSink and Microsoft.Data.SqlClient. This run exposed and validated the fix for negative affected-row counts.",
+    "note": "Real SQL Server 2019 service container; write count and replay idempotency through SqlServerRecordSink and Microsoft.Data.SqlClient.",
     "bound": true
   },
   "mySql": {
@@ -202,16 +202,16 @@
     "runner": "ubuntu-latest",
     "workflow": "database-evidence",
     "job": "mysql",
-    "runId": 45995327891,
-    "jobId": 140493169244,
-    "headSha": "0a015e56b15e0b0141933e8b9a6907b8771b685e",
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/45995327891",
-    "startedAt": "2026-11-27T12:02:30Z",
-    "completedAt": "2026-11-27T12:03:33Z",
+    "runId": 46000574430,
+    "jobId": 140510865419,
+    "headSha": "ec502f25148533df0aa30f122faa41dac13cb73c",
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46000574430",
+    "startedAt": "2026-11-27T12:40:17Z",
+    "completedAt": "2026-11-27T12:41:18Z",
     "conclusion": "success",
     "test": "Industrial.Database.Tests.MySqlSinkTests.MySqlSinkIsIdempotentAgainstARealServer",
     "command": "GOCORDIS_MYSQL_CONNECTION=<real MySQL 8 service> dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --filter FullyQualifiedName~MySqlSink",
-    "note": "MySQL 8.0 service container on the runner; the test writes and re-plays through MySqlRecordSink and verifies rows with MySqlConnector. No SQLite substitution.",
+    "note": "MySQL 8.0 service container; writes and re-plays through MySqlRecordSink and verifies rows with MySqlConnector. No SQLite substitution.",
     "bound": true
   },
   "acceptance": [
@@ -244,6 +244,26 @@
       "requirement": "CSV imports for machines, file profiles and bindings with schedule/manual trigger policy persisted across restart",
       "status": "passed",
       "evidence": "industrial-dotnet.log; ConfigurationImportTests.CsvImportsTriggerPolicyVersionUpgradeAndRestartPersist; industrial-browser-e2e.log; industrial/web/e2e/scale-e2e.spec.ts"
+    },
+    {
+      "requirement": "Excel (.xlsx) batch import for machines, FileProfiles and CollectionBindings from the browser",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; ExcelImportTests.ExcelWorkbooksImportMachinesProfilesAndBindings; industrial-browser-e2e.log; industrial/web/e2e/excel-e2e.spec.ts"
+    },
+    {
+      "requirement": "Per-backend credential parsing and authentication: SQLite/UNC/PostgreSQL/MySQL/SQL Server",
+      "status": "passed",
+      "evidence": "CredentialBackendTests; PostgreSqlSinkTests.PostgreSqlSinkIsIdempotentAgainstARealServer; SqlServerSinkTests; MySqlSinkTests; WindowsUncIntegrationTests; artifacts/windows-unc-result.json; artifacts/sqlserver-result.json; artifacts/mysql-result.json"
+    },
+    {
+      "requirement": "Template config package declares formatVersion and dependency manifest and rejects secret-bearing packages",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; ConfigPackageTests.TemplatePackageDeclaresVersionDependenciesAndParameters; industrial/export-config; industrial/import-config"
+    },
+    {
+      "requirement": "Blank-environment browser chain creates machine, credential and resource, tests the connection and reads a real file",
+      "status": "passed",
+      "evidence": "industrial-user-flow.log; industrial/web/e2e/full-flow.spec.ts; industrial/e2e-user-flow.sh"
     },
     {
       "requirement": "80 machines x 10 file profiles generate 800 bindings, not 800 workflows, with pause/backfill/diagnostics in the browser",
@@ -333,24 +353,24 @@
     {
       "requirement": "SQL Server real-server integration",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/45995327891",
-      "evidence": "artifacts/sqlserver-result.json; https://github.com/ccb1900/gocordis/actions/runs/45995327891",
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46000574430",
+      "evidence": "artifacts/sqlserver-result.json; https://github.com/ccb1900/gocordis/actions/runs/46000574430",
       "runner": "ubuntu-latest",
       "script": ".github/workflows/database-evidence.yml"
     },
     {
       "requirement": "MySQL real-server integration",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/45995327891",
-      "evidence": "artifacts/mysql-result.json; https://github.com/ccb1900/gocordis/actions/runs/45995327891",
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46000574430",
+      "evidence": "artifacts/mysql-result.json; https://github.com/ccb1900/gocordis/actions/runs/46000574430",
       "runner": "ubuntu-latest",
       "script": ".github/workflows/database-evidence.yml"
     },
     {
       "requirement": "Windows UNC/SMB integration",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/45995327916",
-      "evidence": "artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/45995327916",
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46000574470",
+      "evidence": "artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/46000574470",
       "runner": "windows-latest",
       "script": "industrial/e2e-windows-unc.ps1"
     },

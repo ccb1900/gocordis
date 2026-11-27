@@ -67,14 +67,24 @@ for code_path in sorted(out.glob("*.code")):
         "log": f"{name}.log",
     })
 
-unc_evidence_path = out.parent / "windows-unc-result.json"
-unc_evidence = json.loads(unc_evidence_path.read_text()) if unc_evidence_path.exists() else {
-    "status": "blocked", "url": "artifacts/windows-unc-blocker.md"
-}
-
 import subprocess
 commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root,
                         capture_output=True, text=True).stdout.strip()
+
+def load_evidence(filename, blocker):
+    path = out.parent / filename
+    if not path.exists():
+        return {"status": "blocked", "url": blocker, "bound": False}
+    evidence = json.loads(path.read_text())
+    # External evidence is only proof for the commit that actually ran it.
+    evidence["bound"] = evidence.get("headSha") == commit
+    if not evidence["bound"]:
+        evidence["status"] = "not-executed"
+    return evidence
+
+unc_evidence = load_evidence("windows-unc-result.json", "artifacts/windows-unc-blocker.md")
+sqlserver_evidence = load_evidence("sqlserver-result.json", "artifacts/sqlserver-blocker.md")
+mysql_evidence = load_evidence("mysql-result.json", "artifacts/mysql-blocker.md")
 expected_suites = re.findall(r"^run (\S+)", (root / "tools/release/test-report.sh").read_text(), re.M)
 not_executed = [name for name in expected_suites if not (out / f"{name}.code").exists()]
 
@@ -93,6 +103,8 @@ report = {
     },
     "environmentBlockers": [],
     "windowsUnc": unc_evidence,
+    "sqlServer": sqlserver_evidence,
+    "mySql": mysql_evidence,
     "acceptance": [
         {"requirement": "real-browser designer E2E", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log"},
         {"requirement": "blank-environment browser-only full flow (resources, graph, run, failure injection, repair, retry)", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-user-flow")["exitCode"] == 0 else "failed", "evidence": "industrial-user-flow.log; industrial/web/e2e/full-flow.spec.ts"},
@@ -101,6 +113,7 @@ report = {
         {"requirement": "backfill preview before execution", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts"},
         {"requirement": "CSV imports for machines, file profiles and bindings with schedule/manual trigger policy persisted across restart", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 and next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; ConfigurationImportTests.CsvImportsTriggerPolicyVersionUpgradeAndRestartPersist; industrial-browser-e2e.log; industrial/web/e2e/scale-e2e.spec.ts"},
         {"requirement": "80 machines x 10 file profiles generate 800 bindings, not 800 workflows, with pause/backfill/diagnostics in the browser", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 and next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; industrial/web/e2e/scale-e2e.spec.ts; industrial-dotnet.log; ConfigurationImportTests.BindingBackfillRunsThePublishedTemplateWithBoundResources; CollectionBindingTests"},
+        {"requirement": "800 binding cron occurrences dispatch with a bounded concurrency limit and isolated per-binding failures", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; BindingSchedulerTests.EightHundredBindingsScheduleWithBoundedConcurrencyAndIsolatedFailure; industrial/binding-scheduler-status"},
         {"requirement": "template version impact control upgrades existing bindings only to published versions and survives restart", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 and next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; ConfigurationImportTests.CsvImportsTriggerPolicyVersionUpgradeAndRestartPersist; industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts"},
         {"requirement": "file-level processing detail and classified failure diagnosis", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts"},
         {"requirement": "node configuration reaches runtime (CSV delimiter/header/id/time; SQL write strategy)", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
@@ -116,8 +129,8 @@ report = {
         {"requirement": "Windows UNC/SMB execution on this macOS host", "status": "not-executed", "evidence": "external windows-latest runner row below is the acceptance evidence; local suite records an explicit skip"},
         {"requirement": "real packaged-plugin E2E", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-packaged-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-packaged-e2e.log"},
         {"requirement": "PostgreSQL integration", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-postgresql")["exitCode"] == 0 else "failed", "evidence": "industrial-postgresql.log"},
-        {"requirement": "SQL Server real-server integration", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-sqlserver")["passed"] else "not-executed", "evidence": "industrial-sqlserver.log; GOCORDIS_SQLSERVER_CONNECTION gated"},
-        {"requirement": "MySQL real-server integration", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-mysql")["passed"] else "not-executed", "evidence": "industrial-mysql.log; GOCORDIS_MYSQL_CONNECTION gated"},
+        {"requirement": "SQL Server real-server integration", "status": sqlserver_evidence.get("status", "not-executed"), "passingResult": sqlserver_evidence.get("url") if sqlserver_evidence.get("status") == "passed" else None, "evidence": "artifacts/sqlserver-result.json; " + sqlserver_evidence.get("url", "artifacts/sqlserver-blocker.md"), "runner": "ubuntu-latest", "script": ".github/workflows/database-evidence.yml"},
+        {"requirement": "MySQL real-server integration", "status": mysql_evidence.get("status", "not-executed"), "passingResult": mysql_evidence.get("url") if mysql_evidence.get("status") == "passed" else None, "evidence": "artifacts/mysql-result.json; " + mysql_evidence.get("url", "artifacts/mysql-blocker.md"), "runner": "ubuntu-latest", "script": ".github/workflows/database-evidence.yml"},
         {"requirement": "Windows UNC/SMB integration", "status": unc_evidence.get("status", "blocked"), "passingResult": unc_evidence.get("url") if unc_evidence.get("status") == "passed" else None, "evidence": "artifacts/windows-unc-result.json; " + unc_evidence.get("url", "artifacts/windows-unc-blocker.md"), "runner": "windows-latest", "script": "industrial/e2e-windows-unc.ps1"},
         {"requirement": "real OS process kill mid-write resumes original instance and retries only incomplete delivery", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; industrial/tests/Industrial.ProcessCrashFixture"},
         {"requirement": "two-target mid-write crash resumes original instance and retries only incomplete delivery", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},

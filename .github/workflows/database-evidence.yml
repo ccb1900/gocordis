@@ -1,0 +1,69 @@
+name: database-evidence
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dotnet]
+    paths:
+      - 'industrial/**'
+      - '.github/workflows/database-evidence.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  sqlserver:
+    name: SQL Server real-server integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2019-latest
+        env:
+          ACCEPT_EULA: Y
+          SA_PASSWORD: Gocordis!2026Sql
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'Gocordis!2026Sql' -Q 'SELECT 1' -b"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: SqlServerSinkTests against a real server
+        run: |
+          GOCORDIS_SQLSERVER_CONNECTION="Server=127.0.0.1,1433;Database=master;User Id=sa;Password=Gocordis!2026Sql;TrustServerCertificate=True;Encrypt=False" \
+            dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj \
+              --nologo -m:1 --filter FullyQualifiedName~SqlServerSink
+
+  mysql:
+    name: MySQL real-server integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: Gocordis!2026MySql
+          MYSQL_DATABASE: gocordis
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -uroot -pGocordis!2026MySql"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: MySqlSinkTests against a real server
+        run: |
+          GOCORDIS_MYSQL_CONNECTION="Server=127.0.0.1;Port=3306;Database=gocordis;Uid=root;Pwd=Gocordis!2026MySql;AllowUserVariables=True" \
+            dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj \
+              --nologo -m:1 --filter FullyQualifiedName~MySqlSink

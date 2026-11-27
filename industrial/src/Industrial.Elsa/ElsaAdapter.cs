@@ -85,8 +85,11 @@ public sealed class IndustrialElsaComponent : Component
     private IReadOnlyList<NodeExecutionView> _lastNodeViews = [];
     private readonly SemaphoreSlim _recoveryLock = new(1, 1);
     private readonly SemaphoreSlim _publishLock = new(1, 1);
+    private readonly SemaphoreSlim _bindingScheduleLock = new(1, 1);
     private readonly ConcurrentDictionary<string, string> _lastScheduleError = new(StringComparer.Ordinal);
     private JsonObject? _lastBackfillPreview;
+    private JsonObject? _lastBindingTick;
+    private int _bindingConcurrency = 8;
 
     public IndustrialElsaComponent() : this(null) { }
 
@@ -150,6 +153,24 @@ public sealed class IndustrialElsaComponent : Component
         var bindings = context.Require(IndustrialKeys.CollectionBindings);
         var profiles = context.Require(IndustrialKeys.FileProfiles);
         _bindings = bindings;
+        var configuredConcurrency = _config.TryGetValue("bindingConcurrency", out var configuredLimit)
+                                    && int.TryParse(configuredLimit?.ToString(), out var parsedLimit)
+            ? parsedLimit
+            : int.TryParse(
+                Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_BINDING_CONCURRENCY"),
+                out var envLimit)
+                ? envLimit
+                : 8;
+        _bindingConcurrency = Math.Clamp(configuredConcurrency, 1, 64);
+        var schedulerSeconds = _config.TryGetValue("schedulerIntervalSeconds", out var configuredInterval)
+                               && int.TryParse(configuredInterval?.ToString(), out var parsedInterval)
+            ? parsedInterval
+            : int.TryParse(
+                Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_SCHEDULER_INTERVAL_SECONDS"),
+                out var envInterval)
+                ? envInterval
+                : 15;
+        var schedulerInterval = TimeSpan.FromSeconds(Math.Clamp(schedulerSeconds, 1, 3600));
         var timers = context.Require(TimerKeys.Service);
         var owner = ContributionOwner.ForContext(context, "industrial", "elsa-publish");
         foreach (var type in IndustrialActivityTypes.All)
@@ -206,10 +227,15 @@ public sealed class IndustrialElsaComponent : Component
                 }
             },
             () => ValueTask.CompletedTask);
-        timers.IntervalOwned(context, TimeSpan.FromSeconds(15), () =>
-            RunDueSchedulesAsync(workflows, coordinator, ledger, resources, vault,
+        timers.IntervalOwned(context, schedulerInterval, async () =>
+        {
+            await RunDueSchedulesAsync(workflows, coordinator, ledger, resources, vault,
                 planner, source, reader, stage, sinkFactories, sink, archive,
-                context.CancellationToken));
+                context.CancellationToken);
+            await RunDueBindingSchedulesAsync(bindings, profiles, workflows, coordinator,
+                ledger, resources, vault, planner, source, reader, stage, sinkFactories,
+                sink, archive, context.CancellationToken);
+        });
         await context.EffectAsync(
             () =>
             {
@@ -286,6 +312,24 @@ public sealed class IndustrialElsaComponent : Component
                         planner, source, reader, stage, sinkFactories, sink, archive,
                         context.CancellationToken);
                 }, owner);
+                api.RegisterCommand("industrial/binding-scheduler-tick", async _ =>
+                {
+                    await RunDueBindingSchedulesAsync(bindings, profiles, workflows, coordinator,
+                        ledger, resources, vault, planner, source, reader, stage,
+                        sinkFactories, sink, archive, context.CancellationToken);
+                }, owner);
+                api.RegisterQuery("industrial/binding-scheduler-status", () =>
+                    _lastBindingTick is null
+                        ? null
+                        : (JsonNode)new JsonObject
+                        {
+                            ["concurrencyLimit"] = _bindingConcurrency,
+                            ["scanned"] = _lastBindingTick["scanned"]?.DeepClone(),
+                            ["fired"] = _lastBindingTick["fired"]?.DeepClone(),
+                            ["succeeded"] = _lastBindingTick["succeeded"]?.DeepClone(),
+                            ["failed"] = _lastBindingTick["failed"]?.DeepClone(),
+                            ["peakInFlight"] = _lastBindingTick["peakInFlight"]?.DeepClone(),
+                        }, owner);
                 api.RegisterQuery("industrial/storage-paths", () =>
                 {
                     var root = Root;
@@ -947,12 +991,265 @@ public sealed class IndustrialElsaComponent : Component
         }
     }
 
+    private sealed class BindingTickCounters
+    {
+        private int _fired;
+        private int _succeeded;
+        private int _failed;
+        private int _inFlight;
+        private int _peak;
+
+        public void Fired() => Interlocked.Increment(ref _fired);
+        public void Succeeded() => Interlocked.Increment(ref _succeeded);
+        public void Failed() => Interlocked.Increment(ref _failed);
+        public void Enter()
+        {
+            var current = Interlocked.Increment(ref _inFlight);
+            while (true)
+            {
+                var peak = Volatile.Read(ref _peak);
+                if (current <= peak || Interlocked.CompareExchange(ref _peak, current, peak) == peak) break;
+            }
+        }
+        public void Exit() => Interlocked.Decrement(ref _inFlight);
+
+        public JsonObject ToJson() => new()
+        {
+            ["fired"] = Volatile.Read(ref _fired),
+            ["succeeded"] = Volatile.Read(ref _succeeded),
+            ["failed"] = Volatile.Read(ref _failed),
+            ["peakInFlight"] = Volatile.Read(ref _peak),
+        };
+    }
+
+    /// <summary>Dispatches due cron occurrences of enabled CollectionBindings.
+    /// Every binding owns its own ledger checkpoint and fire rows, so one bad
+    /// resource cannot cancel or poison another. A semaphore bounds how many
+    /// bound runs may execute at once; all tasks are awaited and each failure
+    /// is recorded on its own fire row.</summary>
+    private async ValueTask RunDueBindingSchedulesAsync(
+        ICollectionBindingRegistry bindings,
+        IFileProfileRegistry profiles,
+        IWorkflowRegistry workflows,
+        ICollectionCoordinator coordinator,
+        ICollectionLedger ledger,
+        IResourceRegistry resources,
+        ICredentialVault vault,
+        IHistoricalRangePlanner planner,
+        IFileSource source,
+        IRecordReader reader,
+        IStageOutputStore stage,
+        Broker<IRecordSinkFactory> sinkFactories,
+        IRecordSink sink,
+        IArchiveSink archive,
+        CancellationToken ct)
+    {
+        await _bindingScheduleLock.WaitAsync(ct);
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var scheduled = (await bindings.ListAsync(ct))
+                .Where(binding => binding.Enabled && binding.Trigger.Kind == "schedule" &&
+                                  CronExpression.TryParse(binding.Trigger.Cron ?? string.Empty, out _))
+                .OrderBy(binding => binding.Id, StringComparer.Ordinal)
+                .ToArray();
+            var counters = new BindingTickCounters();
+            if (scheduled.Length > 0)
+            {
+                var existingFires = await ledger.ListScheduleFiresAsync(ct);
+                using var gate = new SemaphoreSlim(_bindingConcurrency, _bindingConcurrency);
+                await Task.WhenAll(scheduled.Select(binding =>
+                    ProcessBindingScheduleSafeAsync(binding, existingFires, now, gate, bindings,
+                        profiles, workflows, coordinator, ledger, resources, vault, planner,
+                        source, reader, stage, sinkFactories, sink, archive, counters, ct)
+                    .AsTask()));
+            }
+            _lastBindingTick = new JsonObject
+            {
+                ["at"] = now.ToString("O"),
+                ["scanned"] = scheduled.Length,
+            };
+            foreach (var pair in counters.ToJson()) _lastBindingTick[pair.Key] = pair.Value?.DeepClone();
+        }
+        catch (Exception ex)
+        {
+            _lastScheduleError["binding-scheduler"] = ex.Message;
+            throw;
+        }
+        finally
+        {
+            _bindingScheduleLock.Release();
+        }
+    }
+
+    private async ValueTask ProcessBindingScheduleSafeAsync(
+        CollectionBindingDefinition binding,
+        IReadOnlyList<ScheduleFireView> existingFires,
+        DateTimeOffset now,
+        SemaphoreSlim gate,
+        ICollectionBindingRegistry bindings,
+        IFileProfileRegistry profiles,
+        IWorkflowRegistry workflows,
+        ICollectionCoordinator coordinator,
+        ICollectionLedger ledger,
+        IResourceRegistry resources,
+        ICredentialVault vault,
+        IHistoricalRangePlanner planner,
+        IFileSource source,
+        IRecordReader reader,
+        IStageOutputStore stage,
+        Broker<IRecordSinkFactory> sinkFactories,
+        IRecordSink sink,
+        IArchiveSink archive,
+        BindingTickCounters counters,
+        CancellationToken ct)
+    {
+        try
+        {
+            await ProcessBindingScheduleAsync(binding, existingFires, now, gate, bindings, profiles,
+                workflows, coordinator, ledger, resources, vault, planner, source, reader, stage,
+                sinkFactories, sink, archive, counters, ct);
+        }
+        catch (Exception ex)
+        {
+            counters.Failed();
+            _lastScheduleError[BindingSchedule.FireWorkflowId(binding.Id)] = ex.Message;
+        }
+    }
+
+    private async ValueTask ProcessBindingScheduleAsync(
+        CollectionBindingDefinition binding,
+        IReadOnlyList<ScheduleFireView> existingFires,
+        DateTimeOffset now,
+        SemaphoreSlim gate,
+        ICollectionBindingRegistry bindings,
+        IFileProfileRegistry profiles,
+        IWorkflowRegistry workflows,
+        ICollectionCoordinator coordinator,
+        ICollectionLedger ledger,
+        IResourceRegistry resources,
+        ICredentialVault vault,
+        IHistoricalRangePlanner planner,
+        IFileSource source,
+        IRecordReader reader,
+        IStageOutputStore stage,
+        Broker<IRecordSinkFactory> sinkFactories,
+        IRecordSink sink,
+        IArchiveSink archive,
+        BindingTickCounters counters,
+        CancellationToken ct)
+    {
+        var key = BindingSchedule.FireWorkflowId(binding.Id);
+        const int catchUpLimit = 3;
+        const int countBudget = 10_000;
+        var state = await ledger.GetScheduleCheckpointAsync(key, BindingSchedule.FireVersion, ct);
+        if (state.Checkpoint is null)
+        {
+            // First sighting starts at now: a fresh binding must not replay
+            // history that predates its installation.
+            await ledger.CommitScheduleWindowAsync(key, BindingSchedule.FireVersion,
+                null, now, [], 0, false, ct);
+            return;
+        }
+
+        var expression = CronExpression.Parse(binding.Trigger.Cron!);
+        var zone = ScheduleZone(binding.Trigger);
+        var due = new List<DateTimeOffset>();
+        var upper = now.AddTicks(1);
+        for (var index = 0; index < catchUpLimit; index++)
+        {
+            var found = LastOccurrenceBefore(expression, zone, state.Checkpoint.Value, upper);
+            if (found is null) break;
+            due.Add(found.Value);
+            upper = found.Value;
+        }
+        due.Reverse();
+
+        var skipped = 0;
+        var truncated = false;
+        if (due.Count > 0)
+        {
+            var cursor = state.Checkpoint.Value;
+            while (skipped < countBudget)
+            {
+                var next = expression.GetNextOccurrence(cursor, zone, true)?.ToUniversalTime();
+                if (next is null || next >= due[0]) break;
+                skipped++;
+                cursor = next.Value;
+            }
+            truncated = skipped >= countBudget;
+        }
+        if (!await ledger.CommitScheduleWindowAsync(key, BindingSchedule.FireVersion,
+                state.Checkpoint, now, due, skipped, truncated, ct))
+        {
+            return;
+        }
+
+        foreach (var fire in existingFires.Where(fire => fire.IsRecoverable(
+                     key, BindingSchedule.FireVersion, now.ToUnixTimeMilliseconds())))
+        {
+            if (!due.Contains(fire.DueAtUtc)) due.Add(fire.DueAtUtc);
+        }
+
+        foreach (var instant in due)
+        {
+            await gate.WaitAsync(ct);
+            counters.Enter();
+            try
+            {
+                var claim = await ledger.TryStartScheduleFireAsync(key, BindingSchedule.FireVersion,
+                    instant, TimeSpan.FromMinutes(5), ct);
+                if (claim is null) continue;
+                counters.Fired();
+                try
+                {
+                    var result = await RunBindingAsync(new JsonObject
+                    {
+                        ["bindingId"] = binding.Id,
+                        ["lookbackDays"] = 1,
+                    }, bindings, profiles, workflows, coordinator, ledger, resources, vault,
+                        planner, source, reader, stage, sinkFactories, sink, archive, ElsaDbPath);
+                    var status = result?.Status;
+                    var succeeded = string.Equals(status, "Completed", StringComparison.Ordinal) ||
+                                    string.Equals(status, "Finished", StringComparison.Ordinal);
+                    var error = succeeded ? null
+                        : result?.Error ?? $"binding run did not complete ({status ?? "no result"})";
+                    await ledger.CompleteScheduleFireAsync(claim.Key, claim.Token,
+                        succeeded ? ScheduleFireStatus.Succeeded : ScheduleFireStatus.Failed,
+                        error, ct);
+                    if (succeeded)
+                    {
+                        counters.Succeeded();
+                        _lastScheduleError.TryRemove(key, out _);
+                    }
+                    else
+                    {
+                        counters.Failed();
+                        _lastScheduleError[key] = error ?? "binding run did not complete";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    await ledger.CompleteScheduleFireAsync(claim.Key, claim.Token,
+                        ScheduleFireStatus.Failed, ex.Message, ct);
+                    counters.Failed();
+                    _lastScheduleError[key] = ex.Message;
+                }
+            }
+            finally
+            {
+                counters.Exit();
+                gate.Release();
+            }
+        }
+    }
+
     /// <summary>Runs a binding by substituting its machine/profile/resource
     /// values into an immutable published template snapshot. The published
     /// definition itself is never edited, and no second workflow engine is
     /// involved: the bound snapshot goes through the same RunWorkflowAsync path.
     /// </summary>
-    private async ValueTask RunBindingAsync(
+    private async ValueTask<ElsaPersistedExecution.ExecutionResult?> RunBindingAsync(
         JsonNode? payload,
         ICollectionBindingRegistry bindings,
         IFileProfileRegistry profiles,
@@ -1019,7 +1316,7 @@ public sealed class IndustrialElsaComponent : Component
         {
             ["lookbackDays"] = days,
         };
-        await RunWorkflowAsync(new JsonObject
+        return await RunWorkflowAsync(new JsonObject
         {
             ["workflowId"] = binding.WorkflowId,
             ["version"] = binding.WorkflowVersion,
@@ -1029,7 +1326,7 @@ public sealed class IndustrialElsaComponent : Component
             overrideDefinition: bound with { Layout = layout });
     }
 
-    private async ValueTask RunWorkflowAsync(
+    private async ValueTask<ElsaPersistedExecution.ExecutionResult?> RunWorkflowAsync(
         JsonNode? payload,
         IWorkflowRegistry workflows,
         ICollectionCoordinator coordinator,
@@ -1086,6 +1383,7 @@ public sealed class IndustrialElsaComponent : Component
             : result.Status;
         _lastExecution = new ElsaWorkflowExecutor.Result(result.Executed, productStatus);
         _lastNodeViews = executor.NodeViews;
+        return result with { Status = productStatus };
     }
 
     /// <summary>Executes one persisted node through Cordis capabilities. Each

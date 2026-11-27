@@ -489,6 +489,15 @@ public sealed class IndustrialUiComponent : Component
                         ["status"] = delivery.Status, ["error"] = delivery.Error is null
                             ? null : JsonValue.Create(delivery.Error),
                     }).ToArray()),
+                ["scheduledFires"] = new JsonArray(ledger.ListScheduleFiresAsync().GetAwaiter().GetResult()
+                    .Select(fire => (JsonNode?)new JsonObject
+                    {
+                        ["bindingId"] = BindingSchedule.BindingIdFromFireWorkflowId(fire.WorkflowId),
+                        ["dueAtUtc"] = fire.DueAtUtc.ToString("O"),
+                        ["status"] = fire.Status,
+                        ["attempts"] = fire.Attempts,
+                        ["error"] = fire.Error is null ? null : JsonValue.Create(fire.Error),
+                    }).Where(node => node!["bindingId"] is not null).ToArray()),
             }),
             ("industrial/bindings", () => new JsonArray(bindings.ListAsync()
                 .GetAwaiter().GetResult()

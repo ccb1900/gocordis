@@ -44,6 +44,23 @@ public static class IndustrialKeys
         new("industrial.resource.connection-tester");
 }
 
+/// <summary>Durable identity for a binding's scheduled cron occurrences. It
+/// reuses the ledger's single at-most-once fire table without pretending a
+/// binding is a workflow definition: the sentinel version 0 and this prefix
+/// keep the two namespaces apart.</summary>
+public static class BindingSchedule
+{
+    public const string FirePrefix = "binding-schedule:";
+    public const int FireVersion = 0;
+
+    public static string FireWorkflowId(string bindingId) => FirePrefix + bindingId;
+
+    public static string? BindingIdFromFireWorkflowId(string value) =>
+        value.StartsWith(FirePrefix, StringComparison.Ordinal)
+            ? value[FirePrefix.Length..]
+            : null;
+}
+
 /// <summary>Canonical Activity type ids contributed by the built-in node
 /// plugins. Both the node catalog and the Elsa catalog use this list.</summary>
 public static class IndustrialActivityTypes

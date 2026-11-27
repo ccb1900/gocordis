@@ -76,6 +76,72 @@ public sealed class CustomNodeHandlerTests
         });
     }
 
+    [Fact]
+    public async Task CustomSinkAndBuiltInSinkBothCompleteTheRun()
+    {
+        using var temp = new TempDir();
+        await Compose(temp.Root, new DeliveryHandler(fail: false), async (api, workflows, ledger) =>
+        {
+            var definition = new WorkflowDefinition(
+                "mixed-sink-flow", "Mixed sink flow", 1,
+                [
+                    new WorkflowNode("src", "industrial.filesystem.local",
+                        new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
+                    new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
+                    new WorkflowNode("custom", "test.custom.sink",
+                        new Dictionary<string, object?> { ["targetResourceId"] = "target-a" }, 200, 0),
+                    new WorkflowNode("store", "industrial.sink.sqlite",
+                        new Dictionary<string, object?> { ["targetResourceId"] = "target-a" }, 200, 100),
+                ],
+                [
+                    new WorkflowEdge("src", "files", "read", "input"),
+                    new WorkflowEdge("read", "records", "custom", "input"),
+                    new WorkflowEdge("read", "records", "store", "records"),
+                ],
+                new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+                ["source-1", "target-a"], new Dictionary<string, object?>());
+            Assert.True(await api.ExecuteAsync("industrial/save-workflow",
+                JsonSerializer.SerializeToNode(definition)));
+            Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
+                new JsonObject { ["workflowId"] = "mixed-sink-flow" }));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = "mixed-sink-flow", ["resourceId"] = "source-1",
+            }));
+            Assert.Equal(CollectionStatus.Succeeded,
+                (await ledger.ListRunsAsync()).Single().Status);
+            Assert.Equal(2, (await ledger.ListAllDeliveriesAsync()).Count(delivery =>
+                delivery.Status == CollectionStatus.Succeeded));
+        });
+    }
+
+    [Fact]
+    public async Task CustomSinkRetryDoesNotEndTheRunBeforeItsDeliverySucceeds()
+    {
+        using var temp = new TempDir();
+        await Compose(temp.Root, new FlakyDeliveryHandler(), async (api, workflows, ledger) =>
+        {
+            var definition = Flow("retry-sink-flow", "test.custom.sink", "target-a");
+            Assert.True(await api.ExecuteAsync("industrial/save-workflow",
+                JsonSerializer.SerializeToNode(definition)));
+            Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
+                new JsonObject { ["workflowId"] = "retry-sink-flow" }));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = "retry-sink-flow", ["resourceId"] = "source-1",
+            }));
+            var failed = (await ledger.ListAllDeliveriesAsync()).Single(delivery =>
+                delivery.TargetId == "custom-sink" && delivery.Status == CollectionStatus.Failed);
+            Assert.True(await api.ExecuteAsync("industrial/retry-failed", new JsonObject
+            {
+                ["deliveryId"] = failed.Id,
+            }));
+            var retried = (await ledger.GetDeliveryAsync(failed.Id))!;
+            Assert.Equal(CollectionStatus.Succeeded, retried.Status);
+            Assert.Equal(2, retried.Attempts);
+        });
+    }
+
     private static WorkflowDefinition Flow(string id, string nodeType, string configValue)
     {
         var config = nodeType.EndsWith("sink", StringComparison.Ordinal)
@@ -160,6 +226,30 @@ public sealed class CustomNodeHandlerTests
                     return ValueTask.CompletedTask;
                 });
             return null;
+        }
+    }
+
+    private sealed class FlakyDeliveryHandler : IIndustrialNodeHandler
+    {
+        private int _attempts;
+        public string NodeType => "test.custom.sink";
+        public IndustrialNodeCompletion Completion => IndustrialNodeCompletion.Delivery;
+
+        public async ValueTask ExecuteAsync(IndustrialNodeExecutionContext context, CancellationToken ct = default)
+        {
+            var attempt = Interlocked.Increment(ref _attempts);
+            var file = (await context.Ledger.ListAllFilesAsync(ct)).LastOrDefault()
+                       ?? throw new InvalidOperationException("no source file");
+            var delivery = await context.Ledger.StartDeliveryAsync(
+                file.Id, "custom-sink", $"{file.Id}->custom-sink", "record", context.RunId, ct);
+            var claim = await context.Ledger.TryClaimDeliveryAsync(
+                context.RunId!, delivery.Id, TimeSpan.FromMinutes(5), ct)
+                ?? throw new InvalidOperationException("custom delivery was not claimed");
+            if (attempt == 1)
+                await context.Ledger.FailDeliveryAsync(delivery.Id, claim.ClaimToken, "temporary outage", ct);
+            else
+                await context.Ledger.CompleteDeliveryAsync(delivery.Id, claim.ClaimToken, 1, ct);
+            context.Complete(1, []);
         }
     }
 

@@ -1460,62 +1460,24 @@ public sealed class IndustrialElsaComponent : Component
             var delivered = 0;
             var stageComplete = true;
             var sinkSample = new SampleAccumulator();
-            var partitions = new Dictionary<string, (Channel<RecordEnvelope> Channel, ValueTask<DatasetRef> Spool)>
-                (StringComparer.Ordinal);
-            var partitionIndex = 0;
-            async IAsyncEnumerable<RecordEnvelope> Drain(
-                ChannelReader<RecordEnvelope> reader,
+            async IAsyncEnumerable<RecordEnvelope> Observed(
                 [EnumeratorCancellation] CancellationToken token)
             {
-                await foreach (var record in reader.ReadAllAsync(token).WithCancellation(token))
-                    yield return record;
-            }
-            // One pass partitions the stage dataset by source; each source is
-            // then written once from its own partition instead of rescanning
-            // the full dataset for every file. Bounded channels apply backpressure
-            // so fast reads cannot accumulate an unbounded in-memory queue.
-            var datasets = new Dictionary<string, DatasetRef>(StringComparer.Ordinal);
-            try
-            {
-                await foreach (var record in RecordsFromAsync(node.Id, ct).WithCancellation(ct))
+                await foreach (var record in RecordsFromAsync(node.Id, token).WithCancellation(token))
                 {
                     sinkSample.Add(record);
-                    if (!partitions.TryGetValue(record.Source.Key, out var partition))
-                    {
-                        var channel = Channel.CreateBounded<RecordEnvelope>(new BoundedChannelOptions(128)
-                        {
-                            FullMode = BoundedChannelFullMode.Wait,
-                            SingleReader = true,
-                            SingleWriter = true,
-                        });
-                        partition = (channel, _stage.SpoolAsync(
-                            _instanceId, $"{node.Id}-partition-{partitionIndex++}", Fingerprint(node),
-                            Drain(channel.Reader, ct), ct));
-                        partitions.Add(record.Source.Key, partition);
-                    }
-                    await partition.Channel.Writer.WriteAsync(record, ct);
+                    yield return record;
                 }
             }
-            finally
-            {
-                // Always close writers and drain spool tasks, including on a
-                // failed upstream read, so no background task or file handle leaks.
-                foreach (var partition in partitions.Values) partition.Channel.Writer.TryComplete();
-                List<Exception>? failures = null;
-                foreach (var pair in partitions)
-                {
-                    try { datasets[pair.Key] = await pair.Value.Spool; }
-                    catch (Exception ex)
-                    {
-                        failures ??= [];
-                        failures.Add(ex);
-                    }
-                }
-                if (failures is not null && !ct.IsCancellationRequested)
-                    throw new AggregateException("sink partition spooling failed", failures);
-            }
+            var partitionIndex = 0;
+            var datasets = await SinkRecordPartitioner.PartitionAsync(
+                Observed(ct),
+                (_, stream, token) => _stage.SpoolAsync(
+                    _instanceId, $"{node.Id}-partition-{partitionIndex++}",
+                    Fingerprint(node), stream, token),
+                ct);
             View(node.Id).Samples = sinkSample.Values;
-            foreach (var sourceKey in partitions.Keys)
+            foreach (var sourceKey in datasets.Keys)
             {
                 if (!_ledgerFiles.TryGetValue(sourceKey, out var ledgerFile)) continue;
                 var key = $"{sourceKey}->{sink.TargetId}";
@@ -1545,8 +1507,6 @@ public sealed class IndustrialElsaComponent : Component
                 }
                 catch (OperationCanceledException)
                 {
-                    // Process shutdown is not a delivery failure: leave the
-                    // claim untouched so startup recovery resumes the instance.
                     FatalExit = true;
                     throw;
                 }
@@ -1690,6 +1650,67 @@ public sealed class CollectFileActivity : CodeActivity
     {
         Interlocked.Increment(ref ExecutionCount);
         return ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>Partitions one input stream into per-source stage datasets with
+/// bounded backpressure. Extracted so failure/cancellation behaviour is
+/// independently testable without a full Elsa run.</summary>
+public static class SinkRecordPartitioner
+{
+    public const int Capacity = 128;
+
+    public static async ValueTask<Dictionary<string, DatasetRef>> PartitionAsync(
+        IAsyncEnumerable<RecordEnvelope> records,
+        Func<string, IAsyncEnumerable<RecordEnvelope>, CancellationToken, ValueTask<DatasetRef>> spool,
+        CancellationToken ct = default)
+    {
+        var partitions = new Dictionary<string, (Channel<RecordEnvelope> Channel, ValueTask<DatasetRef> Spool)>
+            (StringComparer.Ordinal);
+        var datasets = new Dictionary<string, DatasetRef>(StringComparer.Ordinal);
+        try
+        {
+            await foreach (var record in records.WithCancellation(ct))
+            {
+                if (!partitions.TryGetValue(record.Source.Key, out var partition))
+                {
+                    var channel = Channel.CreateBounded<RecordEnvelope>(new BoundedChannelOptions(Capacity)
+                    {
+                        FullMode = BoundedChannelFullMode.Wait,
+                        SingleReader = true,
+                        SingleWriter = true,
+                    });
+                    partition = (channel, spool(record.Source.Key, Drain(channel.Reader, ct), ct));
+                    partitions.Add(record.Source.Key, partition);
+                }
+                await partition.Channel.Writer.WriteAsync(record, ct);
+            }
+        }
+        finally
+        {
+            foreach (var partition in partitions.Values) partition.Channel.Writer.TryComplete();
+            List<Exception>? failures = null;
+            foreach (var pair in partitions)
+            {
+                try { datasets[pair.Key] = await pair.Value.Spool; }
+                catch (Exception ex)
+                {
+                    failures ??= [];
+                    failures.Add(ex);
+                }
+            }
+            if (failures is not null && !ct.IsCancellationRequested)
+                throw new AggregateException("sink partition spooling failed", failures);
+        }
+        return datasets;
+    }
+
+    private static async IAsyncEnumerable<RecordEnvelope> Drain(
+        ChannelReader<RecordEnvelope> reader,
+        [EnumeratorCancellation] CancellationToken token)
+    {
+        await foreach (var record in reader.ReadAllAsync(token).WithCancellation(token))
+            yield return record;
     }
 }
 

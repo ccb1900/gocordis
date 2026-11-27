@@ -1,5 +1,13 @@
 import { expect, test } from "@playwright/test";
 
+
+async function chooseAntd(page: any, label: string, option: string) {
+  await page.getByLabel(label).click();
+  await page.locator(".ant-select-item-option")
+    .filter({ hasText: option }).last().click();
+  await page.keyboard.press("Escape");
+}
+
 const flow = {
   workflowId: "browser-user-flow",
   name: "Browser user flow",
@@ -247,4 +255,45 @@ test("a user repairs a failed target and retries only that delivery", async ({ p
     return deliveries.some((delivery: { targetId: string; status: string }) =>
       delivery.targetId === "broken-target" && delivery.status === "Succeeded");
   }, { timeout: 30_000 }).toBe(true);
+});
+
+test("a user manages machines and binds resources to a machine", async ({ page }) => {
+  await page.goto("/industrial/machines");
+  await page.getByLabel("设备名称").fill("line-1");
+  await page.getByLabel("设备地址").fill("10.0.0.1");
+  await page.getByRole("button", { name: "新增设备" }).click();
+  await expect(page.getByText("line-1", { exact: true }).first()).toBeVisible();
+
+  const resources = (await (await page.request.get("/api/query/industrial/resources")).json()).data;
+  const source = resources.find((row: { type: string }) => row.type === "filesystem.local");
+  expect(source).toBeTruthy();
+  const saveRequest = page.waitForRequest(request =>
+    request.method() === "POST" && request.url().includes("/api/command/industrial/save-resource"));
+  await chooseAntd(page, `资源 ${source.name} 的设备`, "line-1");
+  const saved = JSON.parse((await saveRequest).postData() ?? "{}");
+  expect(saved.machineId).toBe("machine-line-1");
+});
+
+test("a quick wizard creates and publishes a standard workflow", async ({ page }) => {
+  await page.goto("/industrial/wizard");
+  await expect(page.getByText("快速创建采集任务", { exact: true })).toBeVisible();
+  const resources = (await (await page.request.get("/api/query/industrial/resources")).json()).data;
+  const source = resources.find((row: { type: string }) => row.type === "filesystem.local");
+  const target = resources.find((row: { type: string }) => row.type === "sqlite");
+  expect(source && target).toBeTruthy();
+  await page.getByLabel("任务名称").fill("Wizard flow");
+  await chooseAntd(page, "数据来源", `${source.name} (${source.type})`);
+  await chooseAntd(page, "目标资源", `${target.name} (${target.type})`);
+  const savedRequest = page.waitForRequest(request =>
+    request.method() === "POST" && request.url().includes("/api/command/industrial/save-workflow"));
+  const publishedResponse = page.waitForResponse(response =>
+    response.request().method() === "POST" &&
+    response.url().includes("/api/command/industrial/publish-workflow"));
+  await page.getByRole("button", { name: "创建并发布" }).click();
+  const saved = JSON.parse((await savedRequest).postData() ?? "{}");
+  expect(saved.name).toBe("Wizard flow");
+  expect(saved.nodes).toHaveLength(3);
+  expect(saved.edges).toHaveLength(2);
+  expect((await publishedResponse).ok()).toBe(true);
+  await expect(page).toHaveURL(/\/industrial\/designer\?workflowId=quick-/);
 });

@@ -28,8 +28,8 @@ public sealed class CrashRecoveryTests
         Directory.CreateDirectory(sourceRoot);
         var csv = string.Join('\n', new[] { "record_id,reading" }
             .Concat(Enumerable.Range(1, 6).Select(index => $"{index},{index * 10}")));
-        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "20261126.csv"), csv);
-        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, "20261126.csv"),
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, $"{DateTimeOffset.UtcNow:yyyyMMdd}.csv"), csv);
+        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, $"{DateTimeOffset.UtcNow:yyyyMMdd}.csv"),
             DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
 
         var targetA = Path.Combine(temp.Root, "target-a.db");
@@ -149,8 +149,8 @@ public sealed class CrashRecoveryTests
         Directory.CreateDirectory(sourceRoot);
         var csv = string.Join('\n', new[] { "record_id,reading" }
             .Concat(Enumerable.Range(1, 6).Select(index => $"{index},{index * 10}")));
-        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "20261126.csv"), csv);
-        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, "20261126.csv"),
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, $"{DateTimeOffset.UtcNow:yyyyMMdd}.csv"), csv);
+        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, $"{DateTimeOffset.UtcNow:yyyyMMdd}.csv"),
             DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
 
         var targetA = Path.Combine(temp.Root, "target-a.db");
@@ -296,9 +296,9 @@ public sealed class CrashRecoveryTests
         using var temp = new TempDir();
         var sourceRoot = Path.Combine(temp.Root, "source");
         Directory.CreateDirectory(sourceRoot);
-        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "20261126.csv"),
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, $"{DateTimeOffset.UtcNow:yyyyMMdd}.csv"),
             "record_id,reading\n1,11\n2,22\n3,33\n");
-        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, "20261126.csv"),
+        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, $"{DateTimeOffset.UtcNow:yyyyMMdd}.csv"),
             DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
         var targetA = Path.Combine(temp.Root, "target-a.db");
         var targetB = Path.Combine(temp.Root, "target-b.db");
@@ -357,7 +357,8 @@ public sealed class CrashRecoveryTests
                 ["resourceId"] = "source-1",
             }));
 
-            var delivery = (await ledger.ListAllDeliveriesAsync()).Single(candidate =>
+            var allDeliveries = await ledger.ListAllDeliveriesAsync();
+            var delivery = allDeliveries.Single(candidate =>
                 candidate.TargetId == "target-b" && candidate.Status == "Failed");
             failedDeliveryId = delivery.Id;
             Assert.True(await api.ExecuteAsync("industrial/retry-failed", new JsonObject
@@ -674,9 +675,9 @@ public sealed class CrashRecoveryTests
         using var temp = new TempDir();
         var sourceRoot = Path.Combine(temp.Root, "source");
         Directory.CreateDirectory(sourceRoot);
-        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "20261126.csv"),
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, $"{DateTimeOffset.UtcNow:yyyyMMdd}.csv"),
             "record_id,reading\n1,11\n2,22\n3,33\n");
-        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, "20261126.csv"),
+        File.SetLastWriteTimeUtc(Path.Combine(sourceRoot, $"{DateTimeOffset.UtcNow:yyyyMMdd}.csv"),
             DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
         var targetA = Path.Combine(temp.Root, "target-a.db");
         var targetB = Path.Combine(temp.Root, "target-b.db");

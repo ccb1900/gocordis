@@ -45,13 +45,15 @@ public sealed class IndustrialUiPluginTests
                 : declaration).ToArray();
         await registry.ApplyAsync(declarations);
 
-        Assert.Equal(10, console.Ui.Pages().Count);
+        Assert.Equal(11, console.Ui.Pages().Count);
         Assert.Contains(console.Ui.Pages(), page => page.Id == "industrial.designer");
+        Assert.Contains(console.Ui.Pages(), page => page.Id == "industrial.wizard");
+        Assert.Contains(console.Ui.Pages(), page => page.Id == "industrial.machines");
         // Pages/routes/navigation/data are code contributions of this plugin;
         // the browser bundle is a UI resource of the same PACKAGE and is bound
         // by UiPackageBinder in the packaged product path, not here.
-        Assert.Equal(10, console.Ui.Routes().Count(route => route.Owner.ComponentId == "industrial-ui"));
-        Assert.Equal(10, console.Ui.Navigations().Count(nav => nav.Owner.ComponentId == "industrial-ui"));
+        Assert.Equal(11, console.Ui.Routes().Count(route => route.Owner.ComponentId == "industrial-ui"));
+        Assert.Equal(11, console.Ui.Navigations().Count(nav => nav.Owner.ComponentId == "industrial-ui"));
         Assert.NotNull(console.Api.Query("industrial/dashboard"));
         Assert.NotNull(console.Api.Query("industrial/nodes"));
         Assert.NotNull(console.Api.Query("industrial/workflow-definitions"));
@@ -85,7 +87,7 @@ public sealed class IndustrialUiPluginTests
         Assert.Equal(13, (await catalog.ListAsync()).Count);
 
         await registry.ApplyAsync(WithUi(true));
-        Assert.Equal(10, console.Ui.Pages().Count);
+        Assert.Equal(11, console.Ui.Pages().Count);
         Assert.NotNull(console.Api.Query("industrial/dashboard"));
     }
 

@@ -74,6 +74,10 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Bounded partitioner regressions: slow disk, multi-file backpressure, spool failure, upstream failure, cancellation | `SinkRecordPartitioner`, `SinkPartitionerTests` | Pass |
 | Custom sink + built-in sink completion and custom sink retry | `CustomNodeHandlerTests.CustomSinkAndBuiltInSinkBothCompleteTheRun`, `CustomSinkRetryDoesNotEndTheRunBeforeItsDeliverySucceeds` | Pass |
 
-Unified report: 969 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `4f0bf6f28bed727c405de2dcc89b910893d4d790` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+| Spool consumer failure cannot block a full bounded channel | `SinkRecordPartitioner`, `SinkPartitionerTests.ImmediateSpoolFailureDoesNotBlockAfterChannelCapacity` | Pass |
+| Elsa/Ledger/Stage share one validated persistence root | `IndustrialPaths`, `industrial/storage-paths`, `ProductionRootTests` | Pass |
+| Concurrent publishes allocate unique consistent versions | `_publishLock`, explicit version in publish snapshot, `ElsaPocTests.ConcurrentPublishesAllocateDistinctConsistentVersions` | Pass |
+
+Unified report: 973 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `d4a50867d5f314e0f4f23cffd9d7d3d5f20033c2` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

@@ -62,8 +62,12 @@ test("80 machines x 10 profiles generates 800 bindings with policy, restart and 
     await page.keyboard.press("Escape");
   };
   await page.getByLabel("工作流 ID").fill("scale-template");
-  await page.getByRole("button", { name: "全选机台" }).click();
-  await page.getByRole("button", { name: "全选文件配置" }).click();
+  // Pin the exact scope: unrelated rows in a shared host must not change the
+  // 80 x 10 contract under test.
+  await page.getByLabel("机台 ID 列表").fill(
+    Array.from({ length: 80 }, (_, index) => `scale-${index}`).join(","));
+  await page.getByLabel("文件配置 ID 列表").fill(
+    Array.from({ length: 10 }, (_, index) => `profile-scale-${index}`).join(","));
   await page.getByLabel("目标资源 ID 列表").fill("scale-target");
   await page.getByLabel("绑定触发策略选择").selectOption("schedule");
   await page.getByLabel("绑定 Cron").fill("0 2 * * *");

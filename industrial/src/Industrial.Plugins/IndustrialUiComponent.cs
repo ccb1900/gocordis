@@ -1,9 +1,12 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Gocordis.Core;
 using Gocordis.Plugins;
+using ExcelDataReader;
 using Industrial.Contracts;
 using Industrial.Core;
 
@@ -446,21 +449,8 @@ public sealed class IndustrialUiComponent : Component
                 }
                 return result;
             }),
-            ("industrial/export-config", () =>
-            {
-                var profiles = fileProfiles.ListAsync().GetAwaiter().GetResult();
-                var bindings = configBindings.ListAsync().GetAwaiter().GetResult();
-                return (JsonNode)new JsonObject
-                {
-                    ["format"] = "gocordis-industrial-config-v1",
-                    ["workflows"] = new JsonArray(workflows.ListAsync().GetAwaiter().GetResult()
-                        .Select(item => (JsonNode?)JsonSerializer.SerializeToNode(item, WireJson)).ToArray()),
-                    ["fileProfiles"] = new JsonArray(profiles
-                        .Select(item => (JsonNode?)JsonSerializer.SerializeToNode(item, WireJson)).ToArray()),
-                    ["bindings"] = new JsonArray(bindings
-                        .Select(item => (JsonNode?)JsonSerializer.SerializeToNode(item, WireJson)).ToArray()),
-                };
-            }),
+            ("industrial/export-config", () => (JsonNode)ConfigurationPackage(
+                workflows, nodes, resources, fileProfiles, configBindings)),
             ("industrial/file-profiles", () => new JsonArray(fileProfiles.ListAsync()
                 .GetAwaiter().GetResult()
                 .Select(profile => (JsonNode?)JsonSerializer.SerializeToNode(profile, WireJson)).ToArray())),
@@ -556,7 +546,7 @@ public sealed class IndustrialUiComponent : Component
                 api.RegisterCommand("industrial/set-binding-enabled", payload =>
                     new ValueTask(SetBindingEnabledAsync(payload, bindings).AsTask()), owner);
                 api.RegisterCommand("industrial/import-config", payload =>
-                    new ValueTask(ImportConfigAsync(payload, workflows, fileProfiles, bindings).AsTask()), owner);
+                    new ValueTask(ImportConfigAsync(payload, workflows, nodes, fileProfiles, bindings).AsTask()), owner);
                 api.RegisterCommand("industrial/import-file-profiles", payload =>
                     new ValueTask(ImportFileProfilesAsync(payload, fileProfiles).AsTask()), owner);
                 api.RegisterCommand("industrial/import-bindings", payload =>
@@ -578,6 +568,151 @@ public sealed class IndustrialUiComponent : Component
 
     private static string? Text(JsonObject? body, string key) =>
         body?[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+
+    /// <summary>One import surface for CSV text and .xlsx workbooks. The browser
+    /// sends an Excel file as base64; both formats become the same header + rows
+    /// shape so machine, profile and binding imports cannot drift apart.</summary>
+    private static (string[] Header, List<string[]> Rows) Tabular(JsonObject body)
+    {
+        var workbook = Text(body, "xlsx") ?? Text(body, "excel");
+        if (!string.IsNullOrWhiteSpace(workbook))
+        {
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            using var stream = new MemoryStream(Convert.FromBase64String(workbook));
+            using var reader = ExcelReaderFactory.CreateOpenXmlReader(stream);
+            var header = new List<string>();
+            var rows = new List<string[]>();
+            var first = true;
+            while (reader.Read())
+            {
+                var cells = Enumerable.Range(0, reader.FieldCount)
+                    .Select(index => reader.GetValue(index)?.ToString()?.Trim() ?? string.Empty)
+                    .ToArray();
+                if (first)
+                {
+                    header.AddRange(cells);
+                    first = false;
+                }
+                else if (cells.Any(cell => cell.Length > 0))
+                {
+                    rows.Add(cells);
+                }
+            }
+            if (header.Count == 0)
+                throw new InvalidOperationException("Excel workbook has no header row");
+            return (header.ToArray(), rows);
+        }
+
+        var csv = Text(body, "csv") ?? string.Empty;
+        var lines = csv.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length == 0) return ([], []);
+        return (lines[0].Split(',').Select(part => part.Trim()).ToArray(),
+            lines.Skip(1).Select(line => line.Split(',')).ToList());
+    }
+
+    private static string Cell(string[] header, string[] cells, string name, string fallback = "")
+    {
+        var index = Array.IndexOf(header, name);
+        return index >= 0 && index < cells.Length && cells[index].Trim().Length > 0
+            ? cells[index].Trim() : fallback;
+    }
+
+    /// <summary>A portable template/config package: explicit format version,
+    /// node/resource/credential dependencies, and template parameter names. It
+    /// never carries credential secrets or database connection strings.</summary>
+    private static JsonObject ConfigurationPackage(
+        IWorkflowRegistry workflows, INodeCatalog nodes, IResourceRegistry resources,
+        IFileProfileRegistry profiles, ICollectionBindingRegistry bindings)
+    {
+        var definitions = workflows.ListAsync().GetAwaiter().GetResult();
+        var descriptors = nodes.ListAsync().GetAwaiter().GetResult();
+        var resourceRows = resources.ListAsync().GetAwaiter().GetResult();
+        var profileRows = profiles.ListAsync().GetAwaiter().GetResult();
+        var bindingRows = bindings.ListAsync().GetAwaiter().GetResult();
+        var nodeIds = new SortedSet<string>(StringComparer.Ordinal);
+        var resourceIds = new SortedSet<string>(StringComparer.Ordinal);
+        var credentialIds = new SortedSet<string>(StringComparer.Ordinal);
+        var parameters = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void Scan(string? text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            foreach (Match match in Regex.Matches(text, @"\{\{([A-Za-z0-9_]+)\}\}"))
+                parameters.Add(match.Groups[1].Value);
+        }
+        void Resource(string? id)
+        {
+            if (string.IsNullOrWhiteSpace(id) || id.Contains("{{", StringComparison.Ordinal)) return;
+            resourceIds.Add(id);
+        }
+
+        foreach (var definition in definitions)
+        {
+            foreach (var node in definition.Nodes)
+            {
+                nodeIds.Add(node.Type);
+                foreach (var value in node.Config.Values) Scan(value?.ToString());
+            }
+            foreach (var reference in definition.ResourceReferences)
+            {
+                Scan(reference);
+                Resource(reference);
+            }
+        }
+        foreach (var binding in bindingRows)
+        {
+            Resource(binding.SourceResourceId);
+            foreach (var target in binding.TargetResourceIds) Resource(target);
+            Scan(binding.FileProfileId);
+        }
+        foreach (var resource in resourceRows)
+            if (!string.IsNullOrWhiteSpace(resource.CredentialId))
+                credentialIds.Add(resource.CredentialId);
+
+        var dependencies = new JsonArray();
+        foreach (var id in nodeIds)
+        {
+            var descriptor = descriptors.FirstOrDefault(item =>
+                string.Equals(item.NodeTypeId, id, StringComparison.Ordinal));
+            dependencies.Add((JsonNode)new JsonObject
+            {
+                ["kind"] = "node", ["id"] = id,
+                ["version"] = descriptor?.Version ?? string.Empty, ["required"] = true,
+            });
+        }
+        foreach (var id in resourceIds)
+            dependencies.Add((JsonNode)new JsonObject
+            {
+                ["kind"] = "resource", ["id"] = id, ["required"] = true,
+            });
+        foreach (var id in profileRows.Select(profile => profile.Id).Distinct(StringComparer.Ordinal))
+            dependencies.Add((JsonNode)new JsonObject
+            {
+                ["kind"] = "fileProfile", ["id"] = id, ["required"] = false,
+            });
+        foreach (var id in credentialIds)
+            dependencies.Add((JsonNode)new JsonObject
+            {
+                ["kind"] = "credential", ["id"] = id,
+                ["required"] = true, ["secretIncluded"] = false,
+            });
+
+        return new JsonObject
+        {
+            ["format"] = "gocordis-industrial-config-v1",
+            ["formatVersion"] = 2,
+            ["generatedAt"] = DateTimeOffset.UtcNow.ToString("O"),
+            ["dependencies"] = dependencies,
+            ["templateParameters"] = new JsonArray(parameters
+                .Select(name => (JsonNode?)JsonValue.Create(name)).ToArray()),
+            ["workflows"] = new JsonArray(definitions
+                .Select(item => (JsonNode?)JsonSerializer.SerializeToNode(item, WireJson)).ToArray()),
+            ["fileProfiles"] = new JsonArray(profileRows
+                .Select(item => (JsonNode?)JsonSerializer.SerializeToNode(item, WireJson)).ToArray()),
+            ["bindings"] = new JsonArray(bindingRows
+                .Select(item => (JsonNode?)JsonSerializer.SerializeToNode(item, WireJson)).ToArray()),
+        };
+    }
 
     private static async ValueTask SaveMachineAsync(JsonNode? payload, IMachineRegistry machines)
     {
@@ -710,14 +845,52 @@ public sealed class IndustrialUiComponent : Component
         await bindings.RegisterAsync(binding with { Enabled = enabled });
     }
 
+    private static void ValidatePackageDependencies(JsonObject body, INodeCatalog nodes, int formatVersion)
+    {
+        if (body["dependencies"] is not JsonArray dependencies)
+        {
+            if (formatVersion >= 2)
+                throw new InvalidOperationException("formatVersion 2 requires a dependency manifest");
+            return;
+        }
+        var available = nodes.ListAsync().GetAwaiter().GetResult()
+            .Select(descriptor => descriptor.NodeTypeId)
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var entry in dependencies)
+        {
+            if (entry is not JsonObject dependency)
+                throw new InvalidOperationException("dependency manifest entries must be objects");
+            var kind = dependency["kind"]?.GetValue<string>();
+            var id = dependency["id"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(kind) || string.IsNullOrWhiteSpace(id))
+                throw new InvalidOperationException("dependency manifest entries require kind and id");
+            if (kind == "credential" &&
+                dependency["secretIncluded"] is JsonValue secret && secret.TryGetValue<bool>(out var included) &&
+                included)
+                throw new InvalidOperationException("configuration packages must not include credential secrets");
+            if (kind == "node" && available.Count > 0 &&
+                dependency["required"] is JsonValue required && required.TryGetValue<bool>(out var mandatory) &&
+                mandatory && !available.Contains(id))
+                throw new InvalidOperationException(
+                    $"package requires node type '{id}'; install its provider plugin before import");
+        }
+    }
+
     private static async ValueTask ImportConfigAsync(
-        JsonNode? payload, IWorkflowRegistry workflows,
+        JsonNode? payload, IWorkflowRegistry workflows, INodeCatalog nodes,
         IFileProfileRegistry profiles, ICollectionBindingRegistry bindings)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var format = Text(body, "format");
         if (format != "gocordis-industrial-config-v1")
             throw new InvalidOperationException("unsupported configuration package format");
+        var formatVersion = body["formatVersion"] is JsonValue version &&
+                            version.TryGetValue<int>(out var parsedVersion)
+            ? parsedVersion
+            : 1;
+        if (formatVersion is < 1 or > 2)
+            throw new InvalidOperationException($"unsupported configuration package formatVersion {formatVersion}");
+        ValidatePackageDependencies(body, nodes, formatVersion);
         var resourceMap = ReadMap(body["resourceMap"] as JsonObject);
         var credentialMap = ReadMap(body["credentialMap"] as JsonObject);
         string Map(string? value)
@@ -776,39 +949,30 @@ public sealed class IndustrialUiComponent : Component
         JsonNode? payload, IFileProfileRegistry profiles)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
-        var csv = Text(body, "csv") ?? string.Empty;
-        var lines = csv.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
-        if (lines.Length == 0) return;
-        var header = lines[0].Split(',').Select(part => part.Trim()).ToArray();
-        int Column(string name) => Array.IndexOf(header, name);
-        var idIndex = Column("id");
-        var nameIndex = Column("name");
+        var (header, rows) = Tabular(body);
+        if (rows.Count == 0) return;
+        var idIndex = Array.IndexOf(header, "id");
+        var nameIndex = Array.IndexOf(header, "name");
         if (idIndex < 0 || nameIndex < 0)
-            throw new InvalidOperationException("file profile CSV requires id and name columns");
-        foreach (var line in lines.Skip(1))
+            throw new InvalidOperationException("file profile import requires id and name columns");
+        foreach (var cells in rows)
         {
-            var cells = line.Split(',');
-            var id = cells[idIndex].Trim();
+            var id = Cell(header, cells, "id");
             if (id.Length == 0) continue;
-            string Cell(string name, string fallback)
-            {
-                var index = Column(name);
-                return index >= 0 && index < cells.Length && cells[index].Trim().Length > 0
-                    ? cells[index].Trim() : fallback;
-            }
+            string Field(string name, string fallback) => Cell(header, cells, name, fallback);
             var mapping = new Dictionary<string, object?>();
-            foreach (var pair in Cell("mapping", string.Empty).Split(';'))
+            foreach (var pair in Field("mapping", string.Empty).Split(';'))
             {
                 var parts = pair.Split('=').Select(x => x.Trim()).ToArray();
                 if (parts.Length == 2 && parts[0].Length > 0 && parts[1].Length > 0) mapping[parts[0]] = parts[1];
             }
             await profiles.RegisterAsync(new FileProfileDefinition(
-                id, cells[nameIndex].Trim(), 0,
-                Cell("fileNamePattern", "*.csv"), Cell("format", "csv"),
-                Cell("delimiter", ","),
-                bool.TryParse(Cell("hasHeader", "true"), out var hasHeader) ? hasHeader : true,
-                Cell("encoding", "utf-8"), mapping,
-                Cell("required", string.Empty).Split(';').Where(x => x.Trim().Length > 0)
+                id, Field("name", id), 0,
+                Field("fileNamePattern", "*.csv"), Field("format", "csv"),
+                Field("delimiter", ","),
+                bool.TryParse(Field("hasHeader", "true"), out var hasHeader) ? hasHeader : true,
+                Field("encoding", "utf-8"), mapping,
+                Field("required", string.Empty).Split(';').Where(x => x.Trim().Length > 0)
                     .Select(x => x.Trim()).ToArray(),
                 true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
         }
@@ -818,29 +982,20 @@ public sealed class IndustrialUiComponent : Component
         JsonNode? payload, ICollectionBindingRegistry bindings)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
-        var csv = Text(body, "csv") ?? string.Empty;
-        var lines = csv.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
-        if (lines.Length == 0) return;
-        var header = lines[0].Split(',').Select(part => part.Trim()).ToArray();
-        int Column(string name) => Array.IndexOf(header, name);
-        foreach (var line in lines.Skip(1))
+        var (header, rows) = Tabular(body);
+        if (rows.Count == 0) return;
+        foreach (var cells in rows)
         {
-            var cells = line.Split(',');
-            string Cell(string name, string fallback = "")
-            {
-                var index = Column(name);
-                return index >= 0 && index < cells.Length && cells[index].Trim().Length > 0
-                    ? cells[index].Trim() : fallback;
-            }
-            var id = Cell("id");
+            var id = Cell(header, cells, "id");
             if (id.Length == 0) continue;
-            var kind = Cell("triggerKind", "manual");
-            var cron = Cell("cron", string.Empty);
+            var kind = Cell(header, cells, "triggerKind", "manual");
+            var cron = Cell(header, cells, "cron");
             await bindings.RegisterAsync(new CollectionBindingDefinition(
-                id, Cell("name", id), Cell("machineId"),
-                Cell("workflowId"), int.TryParse(Cell("workflowVersion", "1"), out var version) ? version : 1,
-                Cell("fileProfileId"), Cell("sourceResourceId"),
-                Cell("targetResourceIds").Split(';').Where(x => x.Trim().Length > 0)
+                id, Cell(header, cells, "name", id), Cell(header, cells, "machineId"),
+                Cell(header, cells, "workflowId"),
+                int.TryParse(Cell(header, cells, "workflowVersion", "1"), out var version) ? version : 1,
+                Cell(header, cells, "fileProfileId"), Cell(header, cells, "sourceResourceId"),
+                Cell(header, cells, "targetResourceIds").Split(';').Where(x => x.Trim().Length > 0)
                     .Select(x => x.Trim()).ToArray(),
                 new TriggerDefinition(kind, cron.Length > 0 ? cron : null, null,
                     new Dictionary<string, object?>()),
@@ -851,27 +1006,19 @@ public sealed class IndustrialUiComponent : Component
     private static async ValueTask ImportMachinesAsync(JsonNode? payload, IMachineRegistry machines)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
-        var csv = Text(body, "csv") ?? string.Empty;
-        var lines = csv.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
-        if (lines.Length == 0) return;
-        var header = lines[0].Split(',').Select(part => part.Trim()).ToArray();
-        var idIndex = Array.IndexOf(header, "id");
-        var nameIndex = Array.IndexOf(header, "name");
-        var endpointIndex = Array.IndexOf(header, "endpoint");
-        var credentialIndex = Array.IndexOf(header, "credentialId");
-        if (idIndex < 0 || nameIndex < 0)
-            throw new InvalidOperationException("machine CSV requires id and name columns");
-        foreach (var line in lines.Skip(1))
+        var (header, rows) = Tabular(body);
+        if (rows.Count == 0) return;
+        if (Array.IndexOf(header, "id") < 0 || Array.IndexOf(header, "name") < 0)
+            throw new InvalidOperationException("machine import requires id and name columns");
+        foreach (var cells in rows)
         {
-            var cells = line.Split(',');
-            var id = cells[idIndex].Trim();
+            var id = Cell(header, cells, "id");
             if (id.Length == 0) continue;
             var existing = await machines.GetAsync(id);
             await machines.RegisterAsync(new MachineDefinition(
-                id, cells[nameIndex].Trim(),
-                endpointIndex >= 0 && endpointIndex < cells.Length ? cells[endpointIndex].Trim() : string.Empty,
-                credentialIndex >= 0 && credentialIndex < cells.Length
-                    ? cells[credentialIndex].Trim() : existing?.CredentialId,
+                id, Cell(header, cells, "name", id),
+                Cell(header, cells, "endpoint"),
+                Cell(header, cells, "credentialId", existing?.CredentialId ?? string.Empty),
                 existing?.Enabled ?? true,
                 existing?.CreatedAt ?? DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
         }

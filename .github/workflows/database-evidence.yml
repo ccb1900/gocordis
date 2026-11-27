@@ -1,5 +1,6 @@
 name: database-evidence
 
+# Re-run on every product commit so the evidence head_sha follows the code.
 # Run ids are recorded in artifacts/{sqlserver,mysql}-result.json together with
 # the head_sha they tested; the unified report rejects stale evidence.
 

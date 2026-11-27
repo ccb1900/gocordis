@@ -1,5 +1,6 @@
 name: windows-unc
 
+# Re-run on every product commit so the evidence head_sha follows the code.
 # Re-running this file re-binds the evidence to the newly tested head sha.
 # Product fixes must carry their own UNC evidence row.
 # Each push of this workflow re-binds the evidence to the tested head sha.

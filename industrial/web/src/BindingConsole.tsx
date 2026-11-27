@@ -15,6 +15,13 @@ const rows = (raw: unknown): any[] => {
   return Array.isArray(data) ? data : [];
 };
 
+const workbookBase64 = (file: File) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+  reader.onerror = () => reject(reader.error ?? new Error("无法读取 Excel 文件"));
+  reader.readAsDataURL(file);
+});
+
 export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx: Context }) {
   const [bindings, setBindings] = useState<any[]>([]);
   const [machines, setMachines] = useState<any[]>([]);
@@ -122,6 +129,20 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
   }, [ctx, load, bindingCsv]);
+
+  const importExcel = useCallback(async (
+    kind: "machines" | "profiles" | "bindings", file?: File) => {
+    if (!file) return;
+    setBusy(true); setError(null);
+    try {
+      const command = kind === "profiles"
+        ? "industrial/import-file-profiles"
+        : `industrial/import-${kind}`;
+      await ctx.hubCommand(command, { xlsx: await workbookBase64(file) });
+      await load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  }, [ctx, load]);
 
   const upgradeVersionAll = useCallback(async () => {
     setBusy(true); setError(null);
@@ -244,6 +265,24 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
         placeholder="id,name,machineId,workflowId,workflowVersion,fileProfileId,sourceResourceId,targetResourceIds,triggerKind,cron"
         onChange={(e: any) => setBindingCsv(e.target.value)} />
       <Button loading={busy} onClick={() => void importBindingRows()}>导入采集绑定</Button>
+      <Typography.Title level={5} style={{ margin: 0 }}>Excel 批量导入（.xlsx，选择即导入）</Typography.Title>
+      <Space wrap>
+        <label>
+          机台 Excel
+          <input type="file" accept=".xlsx" aria-label="机台 Excel 文件"
+            onChange={(event: any) => void importExcel("machines", event.target.files?.[0])} />
+        </label>
+        <label>
+          文件配置 Excel
+          <input type="file" accept=".xlsx" aria-label="文件配置 Excel 文件"
+            onChange={(event: any) => void importExcel("profiles", event.target.files?.[0])} />
+        </label>
+        <label>
+          采集绑定 Excel
+          <input type="file" accept=".xlsx" aria-label="绑定 Excel 文件"
+            onChange={(event: any) => void importExcel("bindings", event.target.files?.[0])} />
+        </label>
+      </Space>
       <Typography.Title level={5} style={{ margin: 0 }}>配置包（不含凭证）</Typography.Title>
       <Space wrap>
         <Button onClick={() => void exportConfig()}>导出配置</Button>

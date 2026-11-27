@@ -52,6 +52,14 @@ test("blank environment: browser-only create, configure, run, fail, repair, retr
   await expect(page.getByText("flow-credential", { exact: true })).toBeVisible();
   await expect(page.getByText("blank-secret")).toHaveCount(0);
 
+  // The operator also registers the machine itself before any resource exists.
+  await page.goto("/industrial/machines");
+  await page.getByRole("button", { name: "新增设备" }).click();
+  await page.getByLabel("设备名称").fill("Flow machine");
+  await page.getByLabel("设备地址").fill("10.0.0.7");
+  await page.getByRole("button", { name: "保存设备" }).click();
+  await expect(page.getByText("Flow machine", { exact: true }).first()).toBeVisible();
+
   await page.goto("/industrial/resources");
   const createResource = async (id: string, name: string, sqlite: boolean, database?: string) => {
     await page.getByRole("button", { name: "新建资源" }).click();

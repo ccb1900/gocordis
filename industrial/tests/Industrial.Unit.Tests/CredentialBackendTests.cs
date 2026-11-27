@@ -82,6 +82,21 @@ public sealed class CredentialBackendTests
         Assert.Contains("database", result.Detail, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task SqliteResourceOpensWithNoCredentialAndReportsRealFile()
+    {
+        var dbPath = TempDb();
+        await using (var store = IndustrialStore.Create(dbPath)) { }
+        var resource = new ResourceDefinition("sqlite-real", "sqlite", "SQLite", "fixture",
+            new Dictionary<string, object?> { ["database"] = dbPath }, null, 0, true,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var tester = new ResourceConnectionTester(
+            new CredentialVault(() => IndustrialStore.Create(TempDb()), allowDevelopmentKey: true));
+        var result = await tester.TestAsync(resource);
+        Assert.True(result.Ok, result.Detail);
+        Assert.Contains("SQLite", result.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string TempDb() =>
         Path.Combine(Path.GetTempPath(), $"industrial-cred-{Guid.NewGuid():N}.db");
 }

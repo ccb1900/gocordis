@@ -1209,6 +1209,7 @@ function dr(e) {
       lastFireDueAt: d("lastFireDueAt"),
       lastFireAttempts: l(a, "lastFireAttempts") == null ? null : q(l(a, "lastFireAttempts")),
       skippedFires: l(a, "skippedFires") == null ? null : q(l(a, "skippedFires")),
+      backlogTruncated: l(a, "backlogTruncated") == null ? null : l(a, "backlogTruncated") === !0,
       lastError: d("lastError")
     };
   });
@@ -1465,7 +1466,7 @@ function hr({
               {
                 title: "触发点",
                 dataIndex: "lastFireStatus",
-                render: (u, S) => S.lastFireStatus ? `${S.lastFireStatus} · ${S.lastFireDueAt ?? "—"} · ${S.lastFireAttempts ?? 0} 次` + (S.skippedFires ? ` · 超限 ${S.skippedFires}` : "") : "—"
+                render: (u, S) => S.lastFireStatus ? `${S.lastFireStatus} · ${S.lastFireDueAt ?? "—"} · ${S.lastFireAttempts ?? 0} 次` + (S.skippedFires ? ` · 跳过≥${S.skippedFires}` : "") + (S.backlogTruncated ? " · 积压扫描截断" : "") : "—"
               },
               { title: "错误", dataIndex: "lastError", render: (u) => u ?? "—" }
             ]

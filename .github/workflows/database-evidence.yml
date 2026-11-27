@@ -12,7 +12,8 @@ on:
       - '.github/workflows/database-evidence.yml'
 
 permissions:
-  contents: write
+  contents: read
+  checks: write
 
 jobs:
   sqlserver:
@@ -60,30 +61,28 @@ jobs:
           done
           echo "SQL Server integration failed after bounded retries" >&2
           exit 1
-      - name: Publish SQL Server evidence for this commit
+      - name: Publish SQL Server diagnostics as a check
         if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OUTCOME: ${{ steps.sqlserver_test.outcome }}
-        run: |
-          mkdir -p evidence
-          python3 - "$OUTCOME" "$GITHUB_SHA" "$GITHUB_RUN_ID" <<'PY'
-          import json, pathlib, sys
-          outcome, sha, run_id = sys.argv[1:4]
-          log = pathlib.Path('/tmp/sqlserver-test.log')
-          tail = log.read_text(errors='replace')[-8000:] if log.exists() else ''
-          payload = {
-              'status': 'passed' if outcome == 'success' else 'failed',
-              'headSha': sha, 'runId': int(run_id), 'outcome': outcome, 'tail': tail,
-          }
-          pathlib.Path('evidence/sqlserver-ci.json').write_text(json.dumps(payload, indent=2))
-          PY
-          git switch -B ci-evidence
-          git config user.name 'gocordis-ci'
-          git config user.email 'ci@gocordis.local'
-          git add -f evidence/sqlserver-ci.json
-          git commit -m "ci(sqlserver): evidence for $GITHUB_SHA" || true
-          git push -f origin ci-evidence
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const tail = fs.existsSync('/tmp/sqlserver-test.log')
+              ? fs.readFileSync('/tmp/sqlserver-test.log', 'utf8').slice(-8000)
+              : 'no test log was produced';
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'sqlserver-diagnostics-' + context.sha.substring(0, 7),
+              head_sha: context.sha,
+              status: 'completed',
+              conclusion: 'neutral',
+              output: {
+                title: 'SQL Server integration test tail',
+                summary: 'Tail of the real-server SqlServerSinkTests run',
+                text: tail,
+              },
+            });
 
   mysql:
     name: MySQL real-server integration

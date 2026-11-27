@@ -1,5 +1,6 @@
 name: windows-unc
 
+# Re-running this file re-binds the evidence to the newly tested head sha.
 # Each push of this workflow re-binds the evidence to the tested head sha.
 # The run id produced by this workflow is recorded in
 # artifacts/windows-unc-result.json with the head_sha it tested. The unified

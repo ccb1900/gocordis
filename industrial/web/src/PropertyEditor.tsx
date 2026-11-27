@@ -161,6 +161,8 @@ export function PropertyEditor(props: PropertyEditorProps) {
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [fromNode, setFromNode] = useState<string | undefined>();
   const [toNode, setToNode] = useState<string | undefined>();
+  const [showAllEdges, setShowAllEdges] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
 
   useEffect(() => {
     form.setFieldsValue(node?.config ?? {});
@@ -189,7 +191,11 @@ export function PropertyEditor(props: PropertyEditorProps) {
     }
   };
 
-  const edgeRows: EdgeRow[] = edges.map((edge, index) => ({
+  const visibleEdges = node && !showAllEdges
+    ? edges.map((edge, index) => ({ edge, index }))
+        .filter(({ edge }) => edge.source === node.id || edge.target === node.id)
+    : edges.map((edge, index) => ({ edge, index }));
+  const edgeRows: EdgeRow[] = visibleEdges.map(({ edge, index }) => ({
     ...edge, index, key: `${index}:${edge.source}->${edge.target}`,
   }));
   const edgeColumns: TableColumnsType<EdgeRow> = [
@@ -235,8 +241,23 @@ export function PropertyEditor(props: PropertyEditorProps) {
       {!node && <Empty description="在画布中选中节点以编辑配置" style={{ marginTop: 24 }} />}
       {node && (
         <>
-          <Typography.Text strong>{descriptor?.name ?? node.type}</Typography.Text>
-          <Tag color="blue" style={{ marginLeft: 8 }}>{node.id}</Tag>
+          <Typography.Title level={5} style={{ margin: 0 }}>{descriptor?.name ?? node.type}</Typography.Title>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>{node.id}</Typography.Text>
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 6 }}>
+            {descriptor?.description ?? "请按业务含义配置该节点。"}
+          </Typography.Paragraph>
+          <Space wrap size={4} style={{ marginBottom: 8 }}>
+            <Tag color="blue">{descriptor?.category ?? "采集节点"}</Tag>
+            <Tag>版本 {descriptor?.version ?? "1.0.0"}</Tag>
+            {descriptor?.inputs.map((port) => (
+              <Tag key={`in-${port.name}`} color={port.required ? "red" : "default"}>
+                输入 {port.name} · {port.type}
+              </Tag>
+            ))}
+            {descriptor?.outputs.map((port) => (
+              <Tag key={`out-${port.name}`} color="green">输出 {port.name} · {port.type}</Tag>
+            ))}
+          </Space>
           <Form form={form} layout="vertical" size="small" style={{ marginTop: 12 }}>
             {fields.map(([name, schema]) => (
               <SchemaField
@@ -251,8 +272,18 @@ export function PropertyEditor(props: PropertyEditorProps) {
             ))}
           </Form>
           {fields.length === 0 && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              此节点无需填写业务参数；保留默认配置即可。
+            </Typography.Text>
+          )}
+          <Button type="link" size="small" onClick={() => setAdvanced((value) => !value)}>
+            {advanced ? "收起高级配置" : "高级配置"}
+          </Button>
+          {advanced && (
             <>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>配置 (JSON)</Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                高级配置直接编辑节点 JSON，仅在需要复杂表达式时使用。
+              </Typography.Text>
               <Input.TextArea
                 rows={8}
                 value={json}
@@ -260,18 +291,21 @@ export function PropertyEditor(props: PropertyEditorProps) {
                 onChange={(event) => setJson(event.target.value)}
               />
               {jsonError && <Typography.Text type="danger" style={{ fontSize: 12 }}>{jsonError}</Typography.Text>}
+              {descriptor?.activityType && (
+                <Typography.Text type="secondary" style={{ fontSize: 11, display: "block" }}>
+                  运行时 Activity：{descriptor.activityType}
+                </Typography.Text>
+              )}
             </>
           )}
           <Button type="primary" block onClick={apply}>应用配置</Button>
           <Button danger block style={{ marginTop: 8 }} onClick={onDeleteNode}>删除节点</Button>
-          {descriptor?.activityType && (
-            <Typography.Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 8 }}>
-              {descriptor.activityType}
-            </Typography.Text>
-          )}
         </>
       )}
-      <Divider plain style={{ margin: "16px 0 8px" }}>连线 ({edges.length})</Divider>
+      <Divider plain style={{ margin: "16px 0 8px" }}>相关连线 ({edgeRows.length} / {edges.length})</Divider>
+      {node && <Button type="link" size="small" onClick={() => setShowAllEdges((value) => !value)}>
+        {showAllEdges ? "仅看当前节点" : "显示全部连线"}
+      </Button>}
       {nodes.length > 1 && <Space wrap style={{ marginBottom: 8 }}>
         <select aria-label="连线起点" value={fromNode ?? ""}
           onChange={(event) => setFromNode(event.target.value || undefined)}>

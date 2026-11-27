@@ -71,6 +71,7 @@ public interface IIndustrialNodeExecutor
 public sealed class IndustrialElsaComponent : Component
 {
     private Broker<IIndustrialNodeHandler>? _nodeHandlers;
+    private ICollectionBindingRegistry? _bindings;
     private static readonly System.Text.Json.JsonSerializerOptions WebJson =
         new(System.Text.Json.JsonSerializerDefaults.Web);
 
@@ -124,7 +125,7 @@ public sealed class IndustrialElsaComponent : Component
          IndustrialKeys.RecordReader, IndustrialKeys.RecordSinkFactories,
          IndustrialKeys.StageOutputStore, TimerKeys.Service,
          IndustrialKeys.RecordSink, IndustrialKeys.ArchiveSink,
-         IndustrialKeys.NodeExecutionHandlers];
+         IndustrialKeys.NodeExecutionHandlers, IndustrialKeys.CollectionBindings];
     public override IReadOnlyList<ICapabilityKey> Provide() => [IndustrialKeys.ElsaActivityCatalog];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
@@ -145,6 +146,7 @@ public sealed class IndustrialElsaComponent : Component
         var sink = context.Require(IndustrialKeys.RecordSink);
         var archive = context.Require(IndustrialKeys.ArchiveSink);
         _nodeHandlers = context.Require(IndustrialKeys.NodeExecutionHandlers);
+        _bindings = context.Require(IndustrialKeys.CollectionBindings);
         var timers = context.Require(TimerKeys.Service);
         var owner = ContributionOwner.ForContext(context, "industrial", "elsa-publish");
         foreach (var type in IndustrialActivityTypes.All)
@@ -942,7 +944,8 @@ public sealed class IndustrialElsaComponent : Component
         Broker<IRecordSinkFactory> sinkFactories,
         IRecordSink defaultSink,
         IArchiveSink archive,
-        string elsaDbPath)
+        string elsaDbPath,
+        WorkflowDefinition? overrideDefinition = null)
     {
         var body = payload as JsonObject ?? new JsonObject();
         var id = body["workflowId"]?.GetValue<string>()
@@ -968,7 +971,7 @@ public sealed class IndustrialElsaComponent : Component
 
         // The RUN input is the persisted published artifact. The draft is never
         // consulted here: publishing v1 and editing v2 must not change a run.
-        var definition = published.Definition;
+        var definition = overrideDefinition ?? published.Definition;
         var executor = CreateExecutor(definition, resourceId, ledger, resources, vault,
             planner, source, reader, stage, sinkFactories, defaultSink, archive,
             handlers: _nodeHandlers);
@@ -1686,6 +1689,39 @@ public sealed class CollectFileActivity : CodeActivity
 /// <summary>Partitions one input stream into per-source stage datasets with
 /// bounded backpressure. Extracted so failure/cancellation behaviour is
 /// independently testable without a full Elsa run.</summary>
+/// <summary>Substitutes template parameters in a published immutable snapshot.
+/// The published version is never mutated; bindings only supply runtime values.
+/// </summary>
+public static class WorkflowBinding
+{
+    public static WorkflowDefinition BindParameters(
+        WorkflowDefinition definition, IReadOnlyDictionary<string, string> values)
+    {
+        string Replace(string? text)
+        {
+            if (string.IsNullOrEmpty(text)) return text ?? string.Empty;
+            foreach (var pair in values)
+                text = text.Replace($"{{{{{pair.Key}}}}}", pair.Value, StringComparison.OrdinalIgnoreCase);
+            return text;
+        }
+        object? ReplaceValue(object? value) => value switch
+        {
+            string text => Replace(text),
+            _ => value,
+        };
+        return definition with
+        {
+            Nodes = definition.Nodes.Select(node => node with
+            {
+                Config = node.Config.ToDictionary(pair => pair.Key,
+                    pair => ReplaceValue(pair.Value), StringComparer.Ordinal),
+            }).ToArray(),
+            ResourceReferences = definition.ResourceReferences.Select(Replace)
+                .Where(value => value.Length > 0).ToArray(),
+        };
+    }
+}
+
 public static class SinkRecordPartitioner
 {
     public const int Capacity = 128;

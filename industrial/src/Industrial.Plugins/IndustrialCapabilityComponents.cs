@@ -191,6 +191,7 @@ public sealed class IndustrialCollectionComponent : IndustrialCapabilityComponen
         [IndustrialKeys.CollectionCoordinator, IndustrialKeys.FileSource,
          IndustrialKeys.RecordReader, IndustrialKeys.RecordReaderBroker,
          IndustrialKeys.RecordSinkFactories, IndustrialKeys.NodeExecutionHandlers,
+         IndustrialKeys.FileProfiles, IndustrialKeys.CollectionBindings,
          IndustrialKeys.RecordSink, IndustrialKeys.ArchiveSink];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
@@ -253,6 +254,8 @@ public sealed class IndustrialCollectionComponent : IndustrialCapabilityComponen
         context.Provide(IndustrialKeys.RecordReader, reader);
         context.Provide(IndustrialKeys.RecordSink, sink);
         context.Provide(IndustrialKeys.ArchiveSink, archive);
+        context.Provide(IndustrialKeys.FileProfiles, new FileProfileRegistry(LedgerDb));
+        context.Provide(IndustrialKeys.CollectionBindings, new CollectionBindingRegistry(LedgerDb));
         context.Provide(IndustrialKeys.CollectionCoordinator,
             new CollectionCoordinator(resources, source, ledger, reader));
         return null;

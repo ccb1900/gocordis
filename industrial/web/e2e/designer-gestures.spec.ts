@@ -54,10 +54,10 @@ test("G6 native gestures: port drag connects, node drag moves, canvas drag pans,
   // Remove the src→read edge through the property panel so the real port drag
   // below must create it again.
   await page.getByTestId("toggle-properties").click();
-  await expect(page.getByText("连线 (3)", { exact: true })).toBeVisible();
+  await expect(page.getByText(/相关连线 \(3/ )).toBeVisible();
   await page.getByRole("row").filter({ hasText: "src → read" })
     .getByRole("button", { name: "删" }).click();
-  await expect(page.getByText("连线 (2)", { exact: true })).toBeVisible();
+  await expect(page.getByText(/相关连线 \(2/ )).toBeVisible();
   await page.getByTestId("toggle-properties").click();
 
   // --- native port drag: output port of src → INPUT port of read ---
@@ -96,8 +96,11 @@ test("G6 native gestures: port drag connects, node drag moves, canvas drag pans,
     return { x, y };
   });
   await page.mouse.click(clicked.x, clicked.y);
+  if (!(await page.getByText("节点属性", { exact: true }).isVisible())) {
+    await page.getByTestId("toggle-properties").click();
+  }
   await expect(page.getByText("节点属性", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: /属\s*性/ }).click();
+  await page.getByTestId("toggle-properties").click();
 
   // --- node drag: a body drag moves the node, it does not create an edge ---
   const before = await graphState(page);

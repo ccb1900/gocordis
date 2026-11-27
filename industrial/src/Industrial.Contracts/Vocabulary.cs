@@ -29,6 +29,9 @@ public static class IndustrialKeys
     public static readonly Key<Broker<IIndustrialNodeHandler>> NodeExecutionHandlers =
         new("industrial.execution.node-handlers");
     public static readonly Key<IFileSource> FileSource = new("industrial.source.file");
+    public static readonly Key<IFileProfileRegistry> FileProfiles = new("industrial.config.file-profiles");
+    public static readonly Key<ICollectionBindingRegistry> CollectionBindings =
+        new("industrial.config.collection-bindings");
     public static readonly Key<IElsaActivityCatalog> ElsaActivityCatalog = new("industrial.elsa.activity-catalog");
     public static readonly Key<IRecordReader> RecordReader = new("industrial.reader.record");
     /// <summary>Multi-implementation reader routes. A new Reader plugin adds a
@@ -135,7 +138,19 @@ public interface IResourceRegistry
 /// <summary>Read-only probe used by the resource management UI. It opens a
 /// connection or checks a directory without writing business data, so a user
 /// can validate configuration before publishing a workflow.</summary>
-public sealed record ResourceTestResult(bool Ok, string Detail);
+public sealed record ResourceTestResult(
+    bool Ok, string Detail, string Code = "OK", DateTimeOffset? TestedAt = null,
+    string? CredentialVersion = null);
+
+/// <summary>Credential shapes understood by the runtime. Structured UI fields
+/// are normalized into the secret JSON consumed by sinks and UNC leases.</summary>
+public static class CredentialKinds
+{
+    public const string UsernamePassword = "username-password";
+    public const string DomainAccount = "domain-account";
+    public const string ApiToken = "api-token";
+    public static readonly string[] All = [UsernamePassword, DomainAccount, ApiToken];
+}
 
 public interface IResourceConnectionTester
 {
@@ -150,6 +165,56 @@ public interface ICredentialVault
     ValueTask<CredentialView?> GetAsync(string id, CancellationToken ct = default);
     ValueTask<IReadOnlyList<CredentialView>> ListAsync(CancellationToken ct = default);
     ValueTask<CredentialView> RotateAsync(string id, string secret, CancellationToken ct = default);
+    ValueTask<bool> RemoveAsync(string id, CancellationToken ct = default);
+}
+
+/// <summary>Reusable file parsing/mapping/validation configuration. Does not
+/// contain machine identity or connection secrets.</summary>
+public sealed record FileProfileDefinition(
+    string Id, string Name, int Version,
+    string FileNamePattern, string Format, string Delimiter,
+    bool HasHeader, string Encoding,
+    IReadOnlyDictionary<string, object?> Mapping,
+    IReadOnlyList<string> RequiredFields,
+    bool Enabled, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+
+/// <summary>Binds a machine + file profile + workflow template version to the
+/// concrete resources used at runtime. A binding never stores a copied workflow
+/// definition and never stores secrets.</summary>
+public sealed record CollectionBindingDefinition(
+    string Id, string Name, string MachineId,
+    string WorkflowId, int WorkflowVersion,
+    string FileProfileId, string SourceResourceId,
+    IReadOnlyList<string> TargetResourceIds,
+    TriggerDefinition Trigger,
+    bool Enabled, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+
+public sealed record BindingPreview(
+    int Total, int Created, IReadOnlyList<string> Conflicts,
+    IReadOnlyList<string> MissingResources, IReadOnlyList<string> Errors);
+
+public interface IFileProfileRegistry
+{
+    ValueTask<FileProfileDefinition> RegisterAsync(FileProfileDefinition profile, CancellationToken ct = default);
+    ValueTask<FileProfileDefinition?> GetAsync(string id, CancellationToken ct = default);
+    ValueTask<IReadOnlyList<FileProfileDefinition>> ListAsync(CancellationToken ct = default);
+    ValueTask<bool> RemoveAsync(string id, CancellationToken ct = default);
+}
+
+public interface ICollectionBindingRegistry
+{
+    ValueTask<CollectionBindingDefinition> RegisterAsync(CollectionBindingDefinition binding, CancellationToken ct = default);
+    ValueTask<CollectionBindingDefinition?> GetAsync(string id, CancellationToken ct = default);
+    ValueTask<IReadOnlyList<CollectionBindingDefinition>> ListAsync(CancellationToken ct = default);
+    ValueTask<BindingPreview> PreviewBulkAsync(
+        IReadOnlyList<string> machineIds, IReadOnlyList<string> fileProfileIds,
+        string workflowId, int workflowVersion, string sourceResourcePattern,
+        IReadOnlyList<string> targetResourceIds, CancellationToken ct = default);
+    ValueTask<BindingPreview> CreateBulkAsync(
+        IReadOnlyList<string> machineIds, IReadOnlyList<string> fileProfileIds,
+        string workflowId, int workflowVersion, string sourceResourcePattern,
+        IReadOnlyList<string> targetResourceIds, CancellationToken ct = default);
+    ValueTask<bool> RemoveAsync(string id, CancellationToken ct = default);
 }
 
 // ---- workflow ---------------------------------------------------------------

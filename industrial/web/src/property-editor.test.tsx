@@ -37,7 +37,7 @@ vi.mock("antd", async () => {
   Switch: Box,
   Table: Box,
   Tag: Box,
-  Typography: Object.assign(Box, { Title: Box, Text }),
+  Typography: Object.assign(Box, { Title: Box, Text, Paragraph: Box }),
   };
 });
 

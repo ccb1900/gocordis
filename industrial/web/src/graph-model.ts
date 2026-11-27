@@ -164,6 +164,9 @@ export function graphOptions(data: G6GraphData, container: string | HTMLElement)
         endArrow: true,
       },
     },
+    plugins: [
+      { type: "grid-line", size: 20, stroke: "#e8edf4" },
+    ],
     behaviors: graphBehaviors(),
   };
 }
@@ -175,6 +178,7 @@ interface GestureEvent {
   canvas?: { x: number; y: number };
   button?: number;
   buttons?: number;
+  shiftKey?: boolean;
 }
 
 export interface GraphBehaviorHandlers {
@@ -191,6 +195,7 @@ export interface GraphBehaviorHandlers {
   /** Shared arm state so a port-origin drag remains a connect gesture until pointerup. */
   connectionState?: { armed: boolean };
   onPositions?: (positions: Record<string, { x: number; y: number }>) => void;
+  onSelectIds?: (ids: string[]) => void;
   allowedIds?: () => ReadonlySet<string>;
   onCreateEdge?: (source: string, target: string) => { sourcePort: string; targetPort: string } | null;
 }
@@ -201,7 +206,8 @@ const DRAG_STATE = "__industrial_drag_target__";
 const CONNECT_STATE = "__industrial_connect_source__";
 
 const isPanGesture = (handlers: GraphBehaviorHandlers, event: GestureEvent): boolean =>
-  (handlers.isPanModifier?.() ?? false) || event.button === 1 || event.buttons === 4;
+  (handlers.isPanModifier?.() ?? false) || event.button === 1 || event.buttons === 4 ||
+  event.shiftKey === true;
 
 /** A draw.io-like hit test: ports are the small circles on the left/right
  * edges of a node. G6 reports port hits as node-scoped events, so geometry is
@@ -226,6 +232,19 @@ export function graphBehaviors(handlers: GraphBehaviorHandlers = {}): any[] {
   const connection = handlers.connectionState ?? { armed: false };
   return [
     "zoom-canvas",
+    {
+      type: "click-select",
+      multiple: true,
+      trigger: ["shift"],
+      state: "__industrial_selected__",
+    },
+    {
+      type: "brush-select",
+      trigger: ["shift"],
+      state: "__industrial_selected__",
+      onSelect: (states: Record<string, unknown>) =>
+        handlers.onSelectIds?.(Object.keys(states ?? {})),
+    },
     {
       type: "drag-canvas",
       enable: (event: GestureEvent) =>

@@ -278,6 +278,7 @@ public static class IndustrialStore
             context.Database.Migrate();
         }
         EnsureScheduleFireTable(context);
+        EnsureConfigurationTables(context);
         return context;
     }
 
@@ -327,6 +328,26 @@ public static class IndustrialStore
                 Skipped INTEGER NOT NULL DEFAULT 0,
                 BacklogTruncated INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (WorkflowId, Version));
+            """);
+    }
+
+    private static void EnsureConfigurationTables(IndustrialDbContext context)
+    {
+        Execute(context, """
+            CREATE TABLE IF NOT EXISTS FileProfiles (
+                Id TEXT NOT NULL PRIMARY KEY, Name TEXT NOT NULL, Version INTEGER NOT NULL,
+                FileNamePattern TEXT NOT NULL, Format TEXT NOT NULL, Delimiter TEXT NOT NULL,
+                HasHeader INTEGER NOT NULL, Encoding TEXT NOT NULL, MappingJson TEXT NOT NULL,
+                RequiredJson TEXT NOT NULL, Enabled INTEGER NOT NULL,
+                CreatedAt TEXT NOT NULL, UpdatedAt TEXT NOT NULL);
+            """);
+        Execute(context, """
+            CREATE TABLE IF NOT EXISTS CollectionBindings (
+                Id TEXT NOT NULL PRIMARY KEY, Name TEXT NOT NULL, MachineId TEXT NOT NULL,
+                WorkflowId TEXT NOT NULL, WorkflowVersion INTEGER NOT NULL,
+                FileProfileId TEXT NOT NULL, SourceResourceId TEXT NOT NULL,
+                TargetJson TEXT NOT NULL, TriggerJson TEXT NOT NULL, Enabled INTEGER NOT NULL,
+                CreatedAt TEXT NOT NULL, UpdatedAt TEXT NOT NULL);
             """);
     }
 

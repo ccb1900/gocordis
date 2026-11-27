@@ -56,6 +56,7 @@ public sealed class IndustrialUiComponent : Component
         IndustrialKeys.ResourceRegistry,
         IndustrialKeys.ResourceConnectionTester,
         IndustrialKeys.MachineRegistry,
+        IndustrialKeys.FileProfiles, IndustrialKeys.CollectionBindings,
         IndustrialKeys.WorkflowRegistry,
         IndustrialKeys.NodeCatalog,
         IndustrialKeys.CollectionLedger,
@@ -74,6 +75,9 @@ public sealed class IndustrialUiComponent : Component
         var resources = context.Require(IndustrialKeys.ResourceRegistry);
         var resourceTester = context.Require(IndustrialKeys.ResourceConnectionTester);
         var machines = context.Require(IndustrialKeys.MachineRegistry);
+        var fileProfiles = context.Require(IndustrialKeys.FileProfiles);
+        var bindings = context.Require(IndustrialKeys.CollectionBindings);
+        var configBindings = bindings;
         var workflows = context.Require(IndustrialKeys.WorkflowRegistry);
         var nodes = context.Require(IndustrialKeys.NodeCatalog);
         var ledger = context.Require(IndustrialKeys.CollectionLedger);
@@ -186,6 +190,24 @@ public sealed class IndustrialUiComponent : Component
                 }),
                 Order: 70, Group: "Industrial"),
             new UiPageDefinition(
+                "industrial.file-profiles", "File Profiles", "/industrial/file-profiles", "generic", "FileText",
+                "Reusable parsing, mapping and validation profiles",
+                new JsonArray(new JsonObject
+                {
+                    ["kind"] = "industrial-file-profiles",
+                    ["query"] = "industrial/file-profiles",
+                }),
+                Order: 78, Group: "Industrial"),
+            new UiPageDefinition(
+                "industrial.bindings", "Collection Bindings", "/industrial/bindings", "generic", "DeploymentUnit",
+                "Bind machines, file profiles and workflow templates without copying workflows",
+                new JsonArray(new JsonObject
+                {
+                    ["kind"] = "industrial-binding-console",
+                    ["query"] = "industrial/bindings",
+                }),
+                Order: 79, Group: "Industrial"),
+            new UiPageDefinition(
                 "industrial.wizard", "Quick Collection", "/industrial/wizard", "generic", "Thunderbolt",
                 "Create a simple directory-to-database collection task",
                 new JsonArray(new JsonObject
@@ -287,6 +309,16 @@ public sealed class IndustrialUiComponent : Component
                     ["name"] = credential.Name,
                     ["kind"] = credential.Kind,
                     ["version"] = credential.Version,
+                }).ToArray())),
+            ("industrial/credential-types", () => new JsonArray(CredentialKinds.All
+                .Select(kind => (JsonNode?)new JsonObject
+                {
+                    ["kind"] = kind,
+                    ["fields"] = new JsonArray(CredentialFields(kind)
+                        .Select(field => (JsonNode?)new JsonObject
+                        {
+                            ["name"] = field, ["label"] = field,
+                        }).ToArray()),
                 }).ToArray())),
             ("industrial/collections", () => new JsonArray(ledger.ListAllFilesAsync()
                 .GetAwaiter().GetResult()
@@ -393,12 +425,35 @@ public sealed class IndustrialUiComponent : Component
                         ["deliveries"] = new JsonArray(rows),
                     };
                 }).ToArray())),
+            ("industrial/export-config", () =>
+            {
+                var profiles = fileProfiles.ListAsync().GetAwaiter().GetResult();
+                var bindings = configBindings.ListAsync().GetAwaiter().GetResult();
+                return (JsonNode)new JsonObject
+                {
+                    ["format"] = "gocordis-industrial-config-v1",
+                    ["workflows"] = new JsonArray(workflows.ListAsync().GetAwaiter().GetResult()
+                        .Select(item => (JsonNode?)JsonSerializer.SerializeToNode(item, WireJson)).ToArray()),
+                    ["fileProfiles"] = new JsonArray(profiles
+                        .Select(item => (JsonNode?)JsonSerializer.SerializeToNode(item, WireJson)).ToArray()),
+                    ["bindings"] = new JsonArray(bindings
+                        .Select(item => (JsonNode?)JsonSerializer.SerializeToNode(item, WireJson)).ToArray()),
+                };
+            }),
+            ("industrial/file-profiles", () => new JsonArray(fileProfiles.ListAsync()
+                .GetAwaiter().GetResult()
+                .Select(profile => (JsonNode?)JsonSerializer.SerializeToNode(profile, WireJson)).ToArray())),
+            ("industrial/bindings", () => new JsonArray(bindings.ListAsync()
+                .GetAwaiter().GetResult()
+                .Select(binding => (JsonNode?)JsonSerializer.SerializeToNode(binding, WireJson)).ToArray())),
             ("industrial/resource-tests", () => new JsonArray(_resourceTests
                 .Select(pair => (JsonNode?)new JsonObject
                 {
                     ["resourceId"] = pair.Key,
                     ["ok"] = pair.Value.Ok,
                     ["detail"] = pair.Value.Detail,
+                    ["code"] = pair.Value.Code,
+                    ["testedAt"] = pair.Value.TestedAt?.ToString("O"),
                 }).OrderBy(node => node!["resourceId"]!.GetValue<string>(), StringComparer.Ordinal).ToArray())),
         };
         foreach (var (name, handler) in queries)
@@ -438,6 +493,18 @@ public sealed class IndustrialUiComponent : Component
                     new ValueTask(SaveCredentialAsync(payload, credentials).AsTask()), owner);
                 api.RegisterCommand("industrial/rotate-credential", payload =>
                     new ValueTask(RotateCredentialAsync(payload, credentials).AsTask()), owner);
+                api.RegisterCommand("industrial/delete-credential", payload =>
+                    new ValueTask(DeleteCredentialAsync(payload, credentials, resources, machines).AsTask()), owner);
+                api.RegisterCommand("industrial/import-config", payload =>
+                    new ValueTask(ImportConfigAsync(payload, workflows, fileProfiles, bindings).AsTask()), owner);
+                api.RegisterCommand("industrial/import-machines", payload =>
+                    new ValueTask(ImportMachinesAsync(payload, machines).AsTask()), owner);
+                api.RegisterCommand("industrial/save-file-profile", payload =>
+                    new ValueTask(SaveFileProfileAsync(payload, fileProfiles).AsTask()), owner);
+                api.RegisterCommand("industrial/preview-bindings", payload =>
+                    new ValueTask(PreviewBindingsAsync(payload, bindings).AsTask()), owner);
+                api.RegisterCommand("industrial/create-bindings", payload =>
+                    new ValueTask(CreateBindingsAsync(payload, bindings).AsTask()), owner);
                 return ValueTask.CompletedTask;
             },
             () => { api.UnregisterAll(owner); return ValueTask.CompletedTask; });
@@ -457,8 +524,9 @@ public sealed class IndustrialUiComponent : Component
             id,
             Text(body, "name") ?? id,
             Text(body, "endpoint") ?? string.Empty,
-            Text(body, "credentialId"),
-            body["enabled"] is JsonValue enabled && enabled.TryGetValue<bool>(out var isEnabled) && isEnabled,
+            body.ContainsKey("credentialId") ? Text(body, "credentialId") : existing?.CredentialId,
+            body["enabled"] is JsonValue enabled && enabled.TryGetValue<bool>(out var isEnabled)
+                ? isEnabled : existing?.Enabled ?? true,
             existing?.CreatedAt ?? DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow));
     }
@@ -519,8 +587,11 @@ public sealed class IndustrialUiComponent : Component
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var id = Text(body, "id") ?? throw new InvalidOperationException("credential id is required");
+        var kind = Text(body, "kind") ?? CredentialKinds.UsernamePassword;
+        if (!CredentialKinds.All.Contains(kind, StringComparer.Ordinal))
+            throw new InvalidOperationException($"unsupported credential kind '{kind}'");
         await credentials.PutAsync(id, Text(body, "name") ?? id,
-            Text(body, "kind") ?? "username-password", Text(body, "secret") ?? string.Empty);
+            kind, Text(body, "secret") ?? string.Empty);
     }
 
     private static async ValueTask RotateCredentialAsync(JsonNode? payload, ICredentialVault credentials)
@@ -529,6 +600,163 @@ public sealed class IndustrialUiComponent : Component
         var id = Text(body, "id") ?? throw new InvalidOperationException("credential id is required");
         await credentials.RotateAsync(id, Text(body, "secret") ?? string.Empty);
     }
+
+    private static async ValueTask ImportConfigAsync(
+        JsonNode? payload, IWorkflowRegistry workflows,
+        IFileProfileRegistry profiles, ICollectionBindingRegistry bindings)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var format = Text(body, "format");
+        if (format != "gocordis-industrial-config-v1")
+            throw new InvalidOperationException("unsupported configuration package format");
+        if (body["workflows"] is JsonArray workflowRows)
+        {
+            foreach (var row in workflowRows)
+            {
+                var definition = JsonSerializer.Deserialize<WorkflowDefinition>(
+                    row?.ToJsonString() ?? "{}", WireJson);
+                if (definition is not null) await workflows.SaveDraftAsync(definition);
+            }
+        }
+        if (body["fileProfiles"] is JsonArray profileRows)
+        {
+            foreach (var row in profileRows)
+            {
+                var profile = JsonSerializer.Deserialize<FileProfileDefinition>(
+                    row?.ToJsonString() ?? "{}", WireJson);
+                if (profile is not null) await profiles.RegisterAsync(profile);
+            }
+        }
+        if (body["bindings"] is JsonArray bindingRows)
+        {
+            foreach (var row in bindingRows)
+            {
+                var binding = JsonSerializer.Deserialize<CollectionBindingDefinition>(
+                    row?.ToJsonString() ?? "{}", WireJson);
+                if (binding is not null) await bindings.RegisterAsync(binding);
+            }
+        }
+    }
+
+    private static async ValueTask ImportMachinesAsync(JsonNode? payload, IMachineRegistry machines)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var csv = Text(body, "csv") ?? string.Empty;
+        var lines = csv.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length == 0) return;
+        var header = lines[0].Split(',').Select(part => part.Trim()).ToArray();
+        var idIndex = Array.IndexOf(header, "id");
+        var nameIndex = Array.IndexOf(header, "name");
+        var endpointIndex = Array.IndexOf(header, "endpoint");
+        var credentialIndex = Array.IndexOf(header, "credentialId");
+        if (idIndex < 0 || nameIndex < 0)
+            throw new InvalidOperationException("machine CSV requires id and name columns");
+        foreach (var line in lines.Skip(1))
+        {
+            var cells = line.Split(',');
+            var id = cells[idIndex].Trim();
+            if (id.Length == 0) continue;
+            var existing = await machines.GetAsync(id);
+            await machines.RegisterAsync(new MachineDefinition(
+                id, cells[nameIndex].Trim(),
+                endpointIndex >= 0 && endpointIndex < cells.Length ? cells[endpointIndex].Trim() : string.Empty,
+                credentialIndex >= 0 && credentialIndex < cells.Length
+                    ? cells[credentialIndex].Trim() : existing?.CredentialId,
+                existing?.Enabled ?? true,
+                existing?.CreatedAt ?? DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+        }
+    }
+
+    private static async ValueTask SaveFileProfileAsync(JsonNode? payload, IFileProfileRegistry registry)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var id = Text(body, "id") ?? throw new InvalidOperationException("file profile id is required");
+        var existing = await registry.GetAsync(id);
+        var profile = new FileProfileDefinition(
+            id,
+            Text(body, "name") ?? id,
+            existing?.Version ?? 0,
+            Text(body, "fileNamePattern") ?? "*.csv",
+            Text(body, "format") ?? "csv",
+            Text(body, "delimiter") ?? ",",
+            body["hasHeader"] is JsonValue header && header.TryGetValue<bool>(out var hasHeader)
+                ? hasHeader : true,
+            Text(body, "encoding") ?? "utf-8",
+            body["mapping"] is JsonObject map
+                ? JsonSerializer.Deserialize<Dictionary<string, object?>>(map.ToJsonString()) ?? []
+                : existing?.Mapping ?? new Dictionary<string, object?>(),
+            body["required"] is JsonArray required
+                ? required.Select(node => node?.GetValue<string>() ?? string.Empty)
+                    .Where(value => value.Length > 0).ToArray()
+                : existing?.RequiredFields ?? [],
+            body["enabled"] is JsonValue flag && flag.TryGetValue<bool>(out var enabled) ? enabled : true,
+            existing?.CreatedAt ?? DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+        await registry.RegisterAsync(profile);
+    }
+
+    private static BindingRequest ReadBindingRequest(JsonObject body)
+    {
+        string[] List(string name) => body[name] is JsonArray array
+            ? array.Select(node => node?.GetValue<string>() ?? string.Empty)
+                .Where(value => value.Length > 0).ToArray()
+            : [];
+        return new BindingRequest(
+            List("machineIds"), List("fileProfileIds"),
+            Text(body, "workflowId") ?? string.Empty,
+            body["workflowVersion"] is JsonValue version && version.TryGetValue<int>(out var parsed)
+                ? parsed : 1,
+            Text(body, "sourceResourcePattern") ?? "resource-{machine}",
+            List("targetResourceIds"));
+    }
+
+    private sealed record BindingRequest(
+        IReadOnlyList<string> MachineIds, IReadOnlyList<string> FileProfileIds,
+        string WorkflowId, int WorkflowVersion, string SourceResourcePattern,
+        IReadOnlyList<string> TargetResourceIds);
+
+    private static async ValueTask PreviewBindingsAsync(JsonNode? payload, ICollectionBindingRegistry bindings)
+    {
+        var request = ReadBindingRequest(payload as JsonObject
+            ?? throw new InvalidOperationException("JSON payload required"));
+        var preview = await bindings.PreviewBulkAsync(request.MachineIds, request.FileProfileIds,
+            request.WorkflowId, request.WorkflowVersion, request.SourceResourcePattern,
+            request.TargetResourceIds);
+        // Command result is carried through an exception-free query in the UI;
+        // here we only validate that the preview can be produced.
+        _ = preview;
+    }
+
+    private static async ValueTask CreateBindingsAsync(JsonNode? payload, ICollectionBindingRegistry bindings)
+    {
+        var request = ReadBindingRequest(payload as JsonObject
+            ?? throw new InvalidOperationException("JSON payload required"));
+        await bindings.CreateBulkAsync(request.MachineIds, request.FileProfileIds,
+            request.WorkflowId, request.WorkflowVersion, request.SourceResourcePattern,
+            request.TargetResourceIds);
+    }
+
+    private static async ValueTask DeleteCredentialAsync(
+        JsonNode? payload, ICredentialVault credentials,
+        IResourceRegistry resources, IMachineRegistry machines)
+    {
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var id = Text(body, "id") ?? throw new InvalidOperationException("credential id is required");
+        var usedByResource = (await resources.ListAsync()).Any(resource => resource.CredentialId == id);
+        var usedByMachine = (await machines.ListAsync()).Any(machine => machine.CredentialId == id);
+        if (usedByResource || usedByMachine)
+            throw new InvalidOperationException(
+                $"credential '{id}' is still referenced by resources or machines");
+        await credentials.RemoveAsync(id);
+    }
+
+    private static string[] CredentialFields(string kind) => kind switch
+    {
+        CredentialKinds.UsernamePassword => ["username", "password"],
+        CredentialKinds.DomainAccount => ["username", "password", "domain"],
+        CredentialKinds.ApiToken => ["token"],
+        _ => ["secret"],
+    };
 
     private static JsonObject Diagnosis(string? error)
     {

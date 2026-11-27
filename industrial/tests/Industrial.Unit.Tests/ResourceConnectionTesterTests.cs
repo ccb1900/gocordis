@@ -60,6 +60,34 @@ public sealed class ResourceConnectionTesterTests
     }
 
     [Fact]
+    public async Task RotatedCredentialIsUsedByTheNextConnectionTest()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), "industrial-vault-" + Guid.NewGuid().ToString("N") + ".db");
+        try
+        {
+            var vault = new CredentialVault(() => IndustrialStore.Create(dbPath), allowDevelopmentKey: true);
+            await vault.PutAsync("unc-cred", "SMB", "username-password",
+                "{\"username\":\"operator\",\"password\":\"old-secret\"}");
+            await vault.RotateAsync("unc-cred",
+                "{\"username\":\"operator\",\"password\":\"new-secret\",\"domain\":\"factory\"}");
+            var native = new FakeNetworkConnection();
+            var tester = new ResourceConnectionTester(vault, native);
+            var resource = new ResourceDefinition(
+                "unc", "filesystem.unc", "UNC", "local",
+                new Dictionary<string, object?> { ["root"] = @"\\factory\share" },
+                "unc-cred", 0, true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+            await tester.TestAsync(resource);
+            Assert.Equal("new-secret", native.LastPassword);
+            Assert.Equal("factory\\operator", native.LastUser);
+        }
+        finally
+        {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
+        }
+    }
+
+    [Fact]
     public async Task UncTestEstablishesCredentialedSessionBeforeProbing()
     {
         var dbPath = Path.Combine(Path.GetTempPath(), "industrial-vault-" + Guid.NewGuid().ToString("N") + ".db");

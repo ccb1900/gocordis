@@ -17,9 +17,10 @@ import {
   addEdge, applyPositions, descriptorOf, emptyWorkflow, makeNode,
   removeEdge, removeNode, resolveEdgePorts, setNodeConfig, validateWorkflow,
 } from "./workflow-model";
+import { autoLayout, freePosition, repairOverlaps } from "./layout-model";
 import type {
   ExecutionStateView, NodeDescriptor, ResourceOption, TriggerDefinition, ValidationIssue,
-  WorkflowDefinition, WorkflowEdge, WorkflowSummary,
+  WorkflowDefinition, WorkflowEdge, WorkflowNode, WorkflowSummary,
 } from "./types";
 
 export interface DesignerContext {
@@ -46,6 +47,11 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   const [libraryOpen, setLibraryOpen] = useState(true);
   const [propertiesOpen, setPropertiesOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const historyPast = useRef<WorkflowDefinition[]>([]);
+  const historyFuture = useRef<WorkflowDefinition[]>([]);
+  const graphRef = useRef<any>(null);
+  const clipboardRef = useRef<WorkflowNode | null>(null);
   const [execution, setExecution] = useState<ExecutionStateView | null>(null);
   const [triggerOpen, setTriggerOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -122,8 +128,12 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
       const parsed = found === undefined
         ? { ...emptyWorkflow(workflowId), name: workflowId }
         : parseWorkflow(found);
-      setDefinition(parsed);
-      setBackfillDays(Number(parsed.layout.lookbackDays ?? 1) || 1);
+      const normalized = repairOverlaps(parsed);
+      setDefinition(normalized);
+      historyPast.current = [];
+      historyFuture.current = [];
+      setHistoryVersion((v) => v + 1);
+      setBackfillDays(Number(normalized.layout.lookbackDays ?? 1) || 1);
       const last = parsed.nodes.map((node) => /^n(\d+)$/.exec(node.id)).filter(Boolean)
         .reduce((max, match) => Math.max(max, Number(match![1])), 0);
       idRef.current = last + 1;
@@ -187,19 +197,87 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
     }
   }, [command, definition.workflowId, dirty, messageApi, refreshExecution, resourceId]);
 
+  const commit = useCallback((next: WorkflowDefinition) => {
+    if (next === definition) return;
+    if (historyPast.current.length >= 50) historyPast.current.shift();
+    historyPast.current.push(definition);
+    historyFuture.current = [];
+    setHistoryVersion((v) => v + 1);
+    setDefinition(next);
+    setDirty(true);
+  }, [definition]);
+
+  const undo = useCallback(() => {
+    const previous = historyPast.current.pop();
+    if (!previous) return;
+    historyFuture.current.push(definition);
+    setDefinition(previous);
+    setDirty(true);
+    setHistoryVersion((v) => v + 1);
+  }, [definition]);
+
+  const redo = useCallback(() => {
+    const next = historyFuture.current.pop();
+    if (!next) return;
+    historyPast.current.push(definition);
+    setDefinition(next);
+    setDirty(true);
+    setHistoryVersion((v) => v + 1);
+  }, [definition]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && /INPUT|TEXTAREA|SELECT/.test(target.tagName)) return;
+      const key = event.key.toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redo(); else undo();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && key === "y") {
+        event.preventDefault(); redo(); return;
+      }
+      if (event.key === "Delete" && selectedId) {
+        event.preventDefault();
+        commit(removeNode(definition, selectedId));
+        setSelectedId(null);
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && key === "c" && selectedId) {
+        clipboardRef.current = definition.nodes.find((node) => node.id === selectedId) ?? null;
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && key === "v" && clipboardRef.current) {
+        event.preventDefault();
+        const descriptor = descriptorOf(catalog, clipboardRef.current.type);
+        if (!descriptor) return;
+        const id = `n${idRef.current++}`;
+        const spot = freePosition(definition, clipboardRef.current.x + 40, clipboardRef.current.y + 40);
+        commit({ ...definition,
+          nodes: [...definition.nodes, makeNode(descriptor, id, spot.x, spot.y)] });
+        setSelectedId(id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [catalog, commit, definition, redo, selectedId, undo]);
+
+  const autoArrange = useCallback(() => {
+    commit(autoLayout(definition));
+    requestAnimationFrame(() => graphRef.current?.fitView?.({ when: "always" }));
+  }, [commit, definition]);
+
   const dropNode = useCallback((type: string, x: number, y: number) => {
     const descriptor = descriptorOf(catalog, type);
     if (!descriptor) return;
     const id = `n${idRef.current++}`;
-    setDefinition((current) => ({
-      ...current,
-      nodes: [...current.nodes, makeNode(descriptor, id, x, y)],
-    }));
+    const spot = freePosition(definition, x, y);
+    commit({ ...definition, nodes: [...definition.nodes, makeNode(descriptor, id, spot.x, spot.y)] });
     setSelectedId(id);
     setPropertiesOpen(true);
     setIssues([]);
-    setDirty(true);
-  }, [catalog]);
+  }, [catalog, commit, definition]);
 
   const addNodeFromPalette = useCallback((type: string) => {
     const index = idRef.current - 1;
@@ -248,10 +326,9 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
       messageApi.info("这条连线已经存在");
       return null;
     }
-    setDefinition(result.definition);
-    setDirty(true);
+    commit(result.definition);
     return ports;
-  }, [catalog, definition, messageApi]);
+  }, [catalog, commit, definition, messageApi]);
 
   const validate = useCallback(() => {
     const found = validateWorkflow(definition, catalog, new Set(resourceIds));
@@ -264,12 +341,9 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
   }, [definition, catalog, resourceIds, messageApi]);
 
   const updateEdge = useCallback((index: number, edge: WorkflowEdge) => {
-    setDefinition((current) => ({
-      ...current,
-      edges: current.edges.map((existing, at) => at === index ? edge : existing),
-    }));
-    setDirty(true);
-  }, []);
+    commit({ ...definition,
+      edges: definition.edges.map((existing, at) => at === index ? edge : existing) });
+  }, [commit, definition]);
 
   if (loading) return <Spin tip="加载节点描述与资源…" />;
 
@@ -297,6 +371,13 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
           <Button size="small" data-testid="open-trigger" onClick={() => setTriggerOpen(true)}>触发器</Button>
           <Button size="small" data-testid="open-backfill-preview"
             onClick={() => setPreviewOpen(true)}>补采预览</Button>
+          <Button size="small" data-testid="designer-undo" disabled={historyPast.current.length === 0}
+            onClick={undo}>撤销</Button>
+          <Button size="small" data-testid="designer-redo" disabled={historyFuture.current.length === 0}
+            onClick={redo}>重做</Button>
+          <Button size="small" data-testid="designer-auto-layout" onClick={autoArrange}>自动布局</Button>
+          <Button size="small" data-testid="designer-fit" onClick={() => graphRef.current?.fitView?.({ when: "always" })}>适应画布</Button>
+          <Button size="small" data-testid="designer-center" onClick={() => graphRef.current?.fitCenter?.()}>居中</Button>
           <span className="industrial-toolbar-divider" />
           <Space size={4}>
             <Button size="small" loading={busy} onClick={() => void save()}>保存</Button>
@@ -362,10 +443,9 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
             }}
             onDropNode={dropNode}
             onCreateEdge={createEdge}
-            onPositions={(positions) => {
-              setDefinition((current) => applyPositions(current, positions));
-              setDirty(true);
-            }}
+            onPositions={(positions) => commit(applyPositions(definition, positions))}
+            onSelectIds={(ids) => { if (ids.length) setSelectedId(ids[0]); }}
+            onGraphReady={(graph: any) => { graphRef.current = graph; }}
           />
         </section>
       </Content>
@@ -424,20 +504,13 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
           resources={resources}
           issues={issues}
           onApplyConfig={(config) => {
-            if (selectedId) {
-              setDefinition((current) => setNodeConfig(current, selectedId, config));
-              setDirty(true);
-            }
+            if (selectedId) commit(setNodeConfig(definition, selectedId, config));
           }}
           onDeleteNode={() => {
-            setDefinition((current) => removeNode(current, selectedId ?? ""));
+            commit(removeNode(definition, selectedId ?? ""));
             setSelectedId(null);
-            setDirty(true);
           }}
-          onDeleteEdge={(index) => {
-            setDefinition((current) => removeEdge(current, index));
-            setDirty(true);
-          }}
+          onDeleteEdge={(index) => commit(removeEdge(definition, index))}
           onCreateEdge={(from, to) => void createEdge(from, to)}
           onUpdateEdge={updateEdge}
           onSelectNode={(id) => {
@@ -455,8 +528,7 @@ export function CordisDesigner({ ctx }: { ctx: DesignerContext }) {
         ctx={ctx}
         onSave={(trigger: TriggerDefinition) => {
           triggerRef.current = trigger;
-          setDefinition((current) => ({ ...current, trigger }));
-          setDirty(true);
+          commit({ ...definition, trigger });
         }}
       />}
       {previewOpen && <BackfillPreview

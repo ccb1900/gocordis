@@ -259,9 +259,10 @@ test("a user repairs a failed target and retries only that delivery", async ({ p
 
 test("a user manages machines and binds resources to a machine", async ({ page }) => {
   await page.goto("/industrial/machines");
+  await page.getByRole("button", { name: "新增设备" }).click();
   await page.getByLabel("设备名称").fill("line-1");
   await page.getByLabel("设备地址").fill("10.0.0.1");
-  await page.getByRole("button", { name: "新增设备" }).click();
+  await page.getByRole("button", { name: "保存设备" }).click();
   await expect(page.getByText("line-1", { exact: true }).first()).toBeVisible();
 
   const resources = (await (await page.request.get("/api/query/industrial/resources")).json()).data;
@@ -293,13 +294,15 @@ test("a user manages machines and binds resources to a machine", async ({ page }
 
 test("Chinese machine names get distinct ids", async ({ page }) => {
   await page.goto("/industrial/machines");
+  await page.getByRole("button", { name: "新增设备" }).click();
   await page.getByLabel("设备名称").fill("一号机台");
   await page.getByLabel("设备地址").fill("10.0.0.2");
-  await page.getByRole("button", { name: "新增设备" }).click();
+  await page.getByRole("button", { name: "保存设备" }).click();
   await expect(page.getByText("一号机台", { exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: "新增设备" }).click();
   await page.getByLabel("设备名称").fill("二号机台");
   await page.getByLabel("设备地址").fill("10.0.0.3");
-  await page.getByRole("button", { name: "新增设备" }).click();
+  await page.getByRole("button", { name: "保存设备" }).click();
   await expect(page.getByText("二号机台", { exact: true }).first()).toBeVisible();
   const machines = (await (await page.request.get("/api/query/industrial/machines")).json()).data;
   expect(machines.filter((row: { name: string }) => row.name.startsWith("号")).length).toBe(0);
@@ -328,4 +331,114 @@ test("a quick wizard creates and publishes a standard workflow", async ({ page }
   expect(saved.edges).toHaveLength(2);
   expect((await publishedResponse).ok()).toBe(true);
   await expect(page).toHaveURL(/\/industrial\/designer\?workflowId=quick-/);
+});
+
+test("a user manages machines end to end and credentials by type", async ({ page }) => {
+  await page.goto("/industrial/credentials");
+  await page.getByRole("button", { name: "新建凭证" }).click();
+  await page.getByLabel("凭证 ID").fill("machine-credential");
+  await page.getByLabel("凭证名称").fill("Machine credential");
+  await chooseAntd(page, "凭证类型", "username-password");
+  await page.getByLabel("用户名").fill("operator");
+  await page.getByLabel("密码").fill("structured-secret");
+  await page.getByRole("button", { name: "保存凭证" }).click();
+  await expect(page.getByText("machine-credential", { exact: true })).toBeVisible();
+  await expect(page.getByText("structured-secret")).toHaveCount(0);
+
+  await page.goto("/industrial/machines");
+  await page.getByRole("button", { name: "新增设备" }).click();
+  await page.getByLabel("设备名称").fill("managed-line");
+  await page.getByLabel("设备地址").fill("10.1.2.3");
+  await chooseAntd(page, "设备凭证", "Machine credential (username-password)");
+  await page.getByRole("button", { name: "保存设备" }).click();
+  await expect(page.getByText("managed-line", { exact: true }).first()).toBeVisible();
+
+  const row = page.getByRole("row").filter({ hasText: "managed-line" });
+  await row.getByRole("button", { name: /编\s*辑/ }).click();
+  await page.getByLabel("设备名称").fill("managed-line-2");
+  await page.getByRole("button", { name: "保存设备" }).click();
+  await expect(page.getByText("managed-line-2", { exact: true }).first()).toBeVisible();
+
+  const machinesBefore = (await (await page.request.get("/api/query/industrial/machines")).json()).data;
+  expect(machinesBefore.some((machine: { name: string }) => machine.name === "managed-line-2")).toBe(true);
+
+  const credentials = (await (await page.request.get("/api/query/industrial/credentials")).json()).data;
+  const credential = credentials.find((row: { id: string }) => row.id === "machine-credential");
+  expect(credential.version).toBe(1);
+  await page.goto("/industrial/credentials");
+  const credentialRow = page.getByRole("row").filter({ hasText: "machine-credential" });
+  await credentialRow.getByRole("button", { name: /轮\s*换/ }).click();
+  await page.getByLabel("用户名").fill("operator2");
+  await page.getByLabel("密码").fill("rotated-secret");
+  await page.getByRole("dialog").getByRole("button", { name: /轮\s*换/ }).click();
+  await expect.poll(async () => {
+    const rows = (await (await page.request.get("/api/query/industrial/credentials")).json()).data;
+    return rows.find((row: { id: string }) => row.id === "machine-credential")?.version;
+  }).toBe(2);
+  await expect(page.getByText("rotated-secret")).toHaveCount(0);
+
+  await page.goto("/industrial/machines");
+  await page.getByRole("row").filter({ hasText: "managed-line-2" })
+    .getByRole("button", { name: /删\s*除/ }).click();
+  await expect(page.getByText("managed-line-2", { exact: true })).toHaveCount(0);
+});
+
+test("a user generates bulk bindings instead of copying workflows", async ({ page }) => {
+  await page.request.post("/api/command/industrial/save-workflow", { data: {
+    workflowId: "bulk-template", name: "Bulk template", version: 1, nodes: [], edges: [],
+    trigger: { kind: "manual", cron: null, eventName: null, config: {} },
+    resourceReferences: [], layout: {},
+  } });
+  await page.request.post("/api/command/industrial/publish-workflow", {
+    data: { workflowId: "bulk-template" },
+  });
+  await page.goto("/industrial/bindings");
+  const csv = ["id,name,endpoint", "bulk-1,Bulk 1,10.0.0.1", "bulk-2,Bulk 2,10.0.0.2"].join("\n");
+  await page.getByLabel("机台 CSV").fill(csv);
+  await page.getByRole("button", { name: "导入机台" }).click();
+  for (const machine of ["bulk-1", "bulk-2"]) {
+    await page.request.post("/api/command/industrial/save-resource", { data: {
+      id: `resource-${machine}`, name: `Source ${machine}`, type: "filesystem.local",
+      provider: "local", config: { root: "/tmp" }, enabled: true,
+    } });
+  }
+  await expect(page.getByText(/预计生成/)).toBeVisible();
+
+  for (const profile of ["Profile A", "Profile B"]) {
+    await page.goto("/industrial/file-profiles");
+    await page.getByRole("button", { name: "新建文件配置" }).click();
+    await page.getByLabel("配置名称").fill(profile);
+    await page.getByRole("button", { name: "保存配置" }).click();
+    await expect(page.getByText(profile, { exact: true }).first()).toBeVisible();
+  }
+
+  await page.goto("/industrial/bindings");
+  const chooseMulti = async (label: string, names: string[]) => {
+    await page.getByLabel(label).click();
+    for (const name of names) {
+      await page.locator(".ant-select-item-option").filter({ hasText: name }).last().click();
+    }
+    await page.keyboard.press("Escape");
+  };
+  await chooseMulti("工作流模板", ["Bulk template"]);
+  await chooseMulti("机台范围", ["Bulk 1", "Bulk 2"]);
+  await chooseMulti("文件配置范围", ["Profile A", "Profile B"]);
+  const available = (await (await page.request.get("/api/query/industrial/resources")).json()).data;
+  const target = available.find((row: { type: string }) => row.type === "sqlite") ?? available[0];
+  await chooseMulti("目标资源", [`${target.name} (${target.type})`]);
+  await expect(page.getByText(/预计生成 4 条绑定/)).toBeVisible();
+  await page.getByRole("button", { name: "生成绑定" }).click();
+  await expect.poll(async () => {
+    const rows = (await (await page.request.get("/api/query/industrial/bindings")).json()).data;
+    return rows.filter((row: { id: string }) => row.id.startsWith("binding:bulk-template:v1:")).length;
+  }).toBe(4);
+  const workflows = (await (await page.request.get("/api/query/industrial/workflows")).json()).data;
+  expect(workflows.length).toBeLessThan(20);
+
+  const exported = await (await page.request.get("/api/query/industrial/export-config")).text();
+  expect(exported).toContain("gocordis-industrial-config-v1");
+  expect(exported).not.toContain("blank-secret");
+  await page.getByLabel("配置包").fill(exported);
+  await page.getByRole("button", { name: "导入配置" }).click();
+  await expect(page.getByText("采集任务绑定", { exact: true })).toBeVisible();
 });

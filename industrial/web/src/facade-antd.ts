@@ -39,6 +39,7 @@ export const Tag = component("Tag");
 export const Typography = Object.assign(component("Typography"), {
   Title: component("Typography.Title"),
   Text: component("Typography.Text"),
+  Paragraph: component("Typography.Paragraph"),
 }) as any;
 export const message = new Proxy({}, {
   get: (_, key: string) => (...args: any[]) => {

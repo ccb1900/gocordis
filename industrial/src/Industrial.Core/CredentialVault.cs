@@ -101,6 +101,16 @@ public sealed class CredentialVault : ICredentialVault
         return await PutAsync(id, existing.Name, existing.Kind, secret, ct);
     }
 
+    public async ValueTask<bool> RemoveAsync(string id, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var entity = await db.Credentials.SingleOrDefaultAsync(x => x.Id == id, ct);
+        if (entity is null) return false;
+        db.Credentials.Remove(entity);
+        await db.SaveChangesAsync(ct);
+        return true;
+    }
+
     private (byte[] Ciphertext, byte[] Nonce, byte[] Tag) Encrypt(string secret)
     {
         var nonce = RandomNumberGenerator.GetBytes(12);

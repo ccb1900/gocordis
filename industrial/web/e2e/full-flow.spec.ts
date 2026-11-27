@@ -115,9 +115,9 @@ test("blank environment: browser-only create, configure, run, fail, repair, retr
     await chooseIndex(page, "连线起点", from);
     await chooseIndex(page, "连线终点", to);
     await page.getByRole("button", { name: "添加连线" }).click();
-    await expect(page.getByText(`连线 (${index + 1})`, { exact: true })).toBeVisible();
+    await expect(page.getByText(new RegExp(`相关连线 \\(${index + 1}\\)`))).toBeVisible();
   }
-  await expect(page.getByText("连线 (5)", { exact: true })).toBeVisible();
+  await expect(page.getByText(/相关连线 \(5/ )).toBeVisible();
 
   await page.getByRole("button", { name: /属\s*性/ }).click();
   await page.getByLabel("运行资源").selectOption("flow-source");

@@ -16,6 +16,8 @@ export interface GraphCanvasProps {
   onDropNode: (nodeTypeId: string, x: number, y: number) => void;
   onCreateEdge: (source: string, target: string) => { sourcePort: string; targetPort: string } | null;
   onPositions: (positions: Record<string, { x: number; y: number }>) => void;
+  onSelectIds?: (ids: string[]) => void;
+  onGraphReady?: (graph: any) => void;
 }
 
 interface Callbacks {
@@ -23,6 +25,7 @@ interface Callbacks {
   onDropNode: GraphCanvasProps["onDropNode"];
   onCreateEdge: GraphCanvasProps["onCreateEdge"];
   onPositions: GraphCanvasProps["onPositions"];
+  onSelectIds?: GraphCanvasProps["onSelectIds"];
 }
 
 const nodeIdOf = (event: unknown): string | undefined => {
@@ -32,7 +35,7 @@ const nodeIdOf = (event: unknown): string | undefined => {
 
 export function GraphCanvas(props: GraphCanvasProps) {
   const { definition, catalog, selectedId,
-    onSelect, onDropNode, onCreateEdge, onPositions } = props;
+    onSelect, onDropNode, onCreateEdge, onPositions, onSelectIds, onGraphReady } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
   const readyRef = useRef(false);
@@ -90,6 +93,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
           connectionState: connectionStateRef.current,
           allowedIds: () => allowedRef.current,
           onPositions: (positions) => callbacks.current.onPositions(positions),
+          onSelectIds: (ids) => onSelectIds?.(ids),
           onCreateEdge: (source, target) => callbacks.current.onCreateEdge(source, target),
         }),
       } as ConstructorParameters<typeof G6Graph>[0]);
@@ -114,6 +118,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
       graphRef.current = graph;
       // Expose the live instance on its container for real-browser E2E.
       (container as HTMLElement & { __industrialGraph?: Graph }).__industrialGraph = graph;
+      onGraphReady?.(graph);
       readyRef.current = true;
       void graph.render();
     });
@@ -160,7 +165,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
           data-testid="industrial-graph"
         />
         <div className="industrial-graph-hint">
-          拖动节点移动 · 从端口拖出连线 · 拖动画布平移（空格或中键可在节点上平移）
+          Shift+拖拽框选 · 拖节点移动 · 端口拖拽连线 · 滚轮缩放 · 空格/中键平移
         </div>
       </div>
     </div>

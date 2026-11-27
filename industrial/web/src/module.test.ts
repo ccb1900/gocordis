@@ -27,6 +27,8 @@ describe("industrial console client module", () => {
       "industrial-file-details",
       "industrial-machine-console",
       "industrial-collection-wizard",
+      "industrial-file-profiles",
+      "industrial-binding-console",
     ]);
     expect(registrations.every((entry) => typeof entry.component === "function")).toBe(true);
     expect(getFacade()).toBe(api);

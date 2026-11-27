@@ -71,3 +71,26 @@ test("industrial product opens on the workflow list and links into a designer", 
   await expect(page).toHaveURL(/\/industrial\/designer\?workflowId=browser-flow$/);
   await expect(page.getByText("Industrial Workflow", { exact: true })).toBeVisible();
 });
+
+test("node configuration explains business meaning without exposing runtime details", async ({ page }) => {
+  await page.request.post("/api/command/industrial/save-workflow", { data: validDefinition });
+  await page.goto("/industrial/designer?workflowId=browser-flow");
+  await expect(page.getByTestId("industrial-graph")).toBeVisible();
+  await page.waitForFunction(() => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    return (el?.__industrialGraph?.getNodeData()?.length ?? 0) >= 3;
+  });
+  await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="industrial-graph"]') as any;
+    el.__industrialGraph.emit("node:click", { targetType: "node", target: { id: "map" } });
+  });
+  if (!(await page.getByText("节点属性", { exact: true }).isVisible())) {
+    await page.getByTestId("toggle-properties").click();
+  }
+  await expect(page.getByText("Field Mapping", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("输入", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText("Advanced", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("高级配置", { exact: true })).toBeVisible();
+  await page.getByText("高级配置", { exact: true }).click();
+  await expect(page.getByText("运行时 Activity", { exact: false }).first()).toBeVisible();
+});

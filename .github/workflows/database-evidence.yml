@@ -12,7 +12,7 @@ on:
       - '.github/workflows/database-evidence.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   sqlserver:
@@ -44,20 +44,46 @@ jobs:
           echo "SQL Server did not become ready" >&2
           exit 1
       - name: SqlServerSinkTests against a real server
+        id: sqlserver_test
         run: |
+          set -o pipefail
           # The TCP listener opens before SQL authentication is ready. Retry the
           # real test itself; every attempt talks to the same real SQL Server.
           for attempt in $(seq 1 12); do
             echo "SQL Server integration attempt $attempt"
             if GOCORDIS_SQLSERVER_CONNECTION="Server=127.0.0.1,1433;Database=master;User Id=sa;Password=Gocordis!2026Sql;TrustServerCertificate=True;Encrypt=False" \
               dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj \
-                --nologo -m:1 --filter FullyQualifiedName~SqlServerSink; then
+                --nologo -m:1 --filter FullyQualifiedName~SqlServerSink 2>&1 | tee /tmp/sqlserver-test.log; then
               exit 0
             fi
             sleep 5
           done
           echo "SQL Server integration failed after bounded retries" >&2
           exit 1
+      - name: Publish SQL Server evidence for this commit
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTCOME: ${{ steps.sqlserver_test.outcome }}
+        run: |
+          mkdir -p evidence
+          python3 - "$OUTCOME" "$GITHUB_SHA" "$GITHUB_RUN_ID" <<'PY'
+          import json, pathlib, sys
+          outcome, sha, run_id = sys.argv[1:4]
+          log = pathlib.Path('/tmp/sqlserver-test.log')
+          tail = log.read_text(errors='replace')[-8000:] if log.exists() else ''
+          payload = {
+              'status': 'passed' if outcome == 'success' else 'failed',
+              'headSha': sha, 'runId': int(run_id), 'outcome': outcome, 'tail': tail,
+          }
+          pathlib.Path('evidence/sqlserver-ci.json').write_text(json.dumps(payload, indent=2))
+          PY
+          git switch -B ci-evidence
+          git config user.name 'gocordis-ci'
+          git config user.email 'ci@gocordis.local'
+          git add -f evidence/sqlserver-ci.json
+          git commit -m "ci(sqlserver): evidence for $GITHUB_SHA" || true
+          git push -f origin ci-evidence
 
   mysql:
     name: MySQL real-server integration

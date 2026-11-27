@@ -1,5 +1,6 @@
 name: windows-unc-browser
 
+# Re-run on packaging fixes because packaged UI is part of this story.
 # Browser-level acceptance for the Windows UNC UI story. The run id and tested
 # head sha are recorded in artifacts/windows-unc-browser-result.json.
 

@@ -534,7 +534,7 @@ public sealed class IndustrialUiComponent : Component
                 api.RegisterCommand("industrial/save-resource", payload =>
                     new ValueTask(SaveResourceAsync(payload, resources).AsTask()), owner);
                 api.RegisterCommand("industrial/delete-resource", payload =>
-                    new ValueTask(DeleteResourceAsync(payload, resources).AsTask()), owner);
+                    new ValueTask(DeleteResourceAsync(payload, resources, workflows, bindings).AsTask()), owner);
                 api.RegisterCommand("industrial/save-credential", payload =>
                     new ValueTask(SaveCredentialAsync(payload, credentials).AsTask()), owner);
                 api.RegisterCommand("industrial/rotate-credential", payload =>
@@ -775,10 +775,33 @@ public sealed class IndustrialUiComponent : Component
                 : existing?.MachineId));
     }
 
-    private static async ValueTask DeleteResourceAsync(JsonNode? payload, IResourceRegistry resources)
+    private static async ValueTask DeleteResourceAsync(
+        JsonNode? payload, IResourceRegistry resources,
+        IWorkflowRegistry workflows, ICollectionBindingRegistry bindings)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var id = Text(body, "id") ?? throw new InvalidOperationException("resource id is required");
+        var references = new List<string>();
+        foreach (var definition in await workflows.ListAsync())
+        {
+            var used = definition.ResourceReferences.Any(reference =>
+                           string.Equals(reference, id, StringComparison.Ordinal)) ||
+                       definition.Nodes.Any(node =>
+                           new[] { "resourceId", "targetResourceId" }.Any(key =>
+                               node.Config.TryGetValue(key, out var configured) &&
+                               string.Equals(configured?.ToString(), id, StringComparison.Ordinal)));
+            if (used) references.Add($"workflow {definition.WorkflowId}");
+        }
+        foreach (var binding in await bindings.ListAsync())
+        {
+            if (string.Equals(binding.SourceResourceId, id, StringComparison.Ordinal) ||
+                binding.TargetResourceIds.Contains(id, StringComparer.Ordinal))
+                references.Add($"binding {binding.Id}");
+        }
+        if (references.Count > 0)
+            throw new InvalidOperationException(
+                $"resource '{id}' is still referenced by {string.Join(", ", references.Distinct().Take(5))}; " +
+                "remove those references before deleting it");
         await resources.RemoveAsync(id);
     }
 

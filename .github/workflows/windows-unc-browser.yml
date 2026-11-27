@@ -1,0 +1,34 @@
+name: windows-unc-browser
+
+# Browser-level acceptance for the Windows UNC UI story. The run id and tested
+# head sha are recorded in artifacts/windows-unc-browser-result.json.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dotnet]
+    paths:
+      - 'industrial/**'
+      - '.github/workflows/windows-unc-browser.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  unc-browser:
+    name: blank-environment UNC browser E2E
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: industrial/web/package-lock.json
+      - name: Run UNC browser E2E
+        shell: pwsh
+        run: ./industrial/e2e-unc-browser.ps1

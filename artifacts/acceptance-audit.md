@@ -74,6 +74,6 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Bounded partitioner regressions: slow disk, multi-file backpressure, spool failure, upstream failure, cancellation | `SinkRecordPartitioner`, `SinkPartitionerTests` | Pass |
 | Custom sink + built-in sink completion and custom sink retry | `CustomNodeHandlerTests.CustomSinkAndBuiltInSinkBothCompleteTheRun`, `CustomSinkRetryDoesNotEndTheRunBeforeItsDeliverySucceeds` | Pass |
 
-Unified report: 969 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `ee440524806d85f198e0786df6c8c6634c0623f4` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
+Unified report: 969 passed, 7 explicitly skipped, 0 failed suites, generated for tested code commit `4f0bf6f28bed727c405de2dcc89b910893d4d790` (`artifacts/test-report/report.json` records the SHA). Windows UNC acceptance is `passed` with the external `windows-latest` run above; the local macOS suite row remains explicitly skipped and is not used as acceptance evidence.
 
 External runner evidence: `artifacts/windows-unc-result.json`; historic probe notes: `artifacts/windows-unc-blocker.md`.

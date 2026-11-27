@@ -56,7 +56,7 @@ public sealed class BindingSchedulerTests
                       string.Join("\n", Enumerable.Range(0, 800).Select(index =>
                           $"b-sched-{index},Binding {index},machine-{index},sched-template,1," +
                           $"p-sched,{(index == 417 ? "missing-source" : "source-1")}," +
-                          "target-1,schedule,*/1 * * * *")) + "\n";
+                          "target-1,schedule,0 0 1 1 *")) + "\n";
             Assert.True(await api.ExecuteAsync("industrial/import-bindings",
                 new JsonObject { ["csv"] = csv }));
             Assert.Equal(800, (await bindings.ListAsync()).Count);
@@ -69,9 +69,10 @@ public sealed class BindingSchedulerTests
 
             // Move every scan position just before the latest minute boundary:
             // exactly one occurrence becomes due for every binding.
+            // Yearly cron gives exactly one occurrence in the window no matter
+            // where the tick lands relative to a minute boundary.
             var now = DateTimeOffset.UtcNow;
-            var lastOccurrence = new DateTimeOffset(now.Year, now.Month, now.Day,
-                now.Hour, now.Minute, 0, TimeSpan.Zero);
+            var lastOccurrence = new DateTimeOffset(now.Year, 1, 1, 0, 0, 0, TimeSpan.Zero);
             foreach (var binding in await bindings.ListAsync())
             {
                 await ledger.SetScheduleCheckpointAsync(

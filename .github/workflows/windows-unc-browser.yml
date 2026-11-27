@@ -1,7 +1,7 @@
 name: windows-unc-browser
 
-# Delete locator rebind: re-run on packaging fixes because packaged UI is part of this story.
-# Delete locator rebind: browser-level acceptance for the Windows UNC UI story. The run id and tested
+# Scheduler determinism rebind: re-run on packaging fixes because packaged UI is part of this story.
+# Scheduler determinism rebind: browser-level acceptance for the Windows UNC UI story. The run id and tested
 # head sha are recorded in artifacts/windows-unc-browser-result.json.
 
 on:

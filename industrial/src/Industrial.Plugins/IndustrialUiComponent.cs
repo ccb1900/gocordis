@@ -44,6 +44,7 @@ public sealed class IndustrialUiComponent : Component
     private const int MaxPreviewResults = 16;
     private JsonObject? _lastImportPreview;
     private JsonObject? _lastBindingPreview;
+    private SnapshotCleanupReport? _lastSnapshotReport;
 
     public IndustrialUiComponent() : this(FromEnvironment()) { }
 
@@ -60,6 +61,24 @@ public sealed class IndustrialUiComponent : Component
         _config.TryGetValue(key, out var value) && value is not null && !string.IsNullOrWhiteSpace(value.ToString())
             ? value.ToString()!
             : fallback;
+
+    private string SnapshotRoot
+    {
+        get
+        {
+            var configured = Setting("root",
+                Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_ROOT")
+                ?? Path.Combine(Path.GetTempPath(), "gocordis-industrial"));
+            var allowDevelopment =
+                (_config.TryGetValue("allowDevelopmentKey", out var flag) &&
+                 string.Equals(flag?.ToString(), "true", StringComparison.OrdinalIgnoreCase)) ||
+                string.Equals(
+                    Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_ALLOW_DEV_KEY"),
+                    "true", StringComparison.OrdinalIgnoreCase);
+            return Path.Combine(
+                IndustrialPaths.NormalizeRoot(configured, allowDevelopment), "industrial-snapshots");
+        }
+    }
 
     public override string Name => "industrial-ui";
 
@@ -476,6 +495,8 @@ public sealed class IndustrialUiComponent : Component
                 ? null : (JsonNode)_lastBindingPreview.DeepClone()),
             ("industrial/import-preview", () => _lastImportPreview is null
                 ? null : (JsonNode)_lastImportPreview.DeepClone()),
+            ("industrial/snapshot-status", () => _lastSnapshotReport is null
+                ? null : (JsonNode)JsonSerializer.SerializeToNode(_lastSnapshotReport, WireJson)!),
             ("industrial/file-profiles", () => new JsonArray(fileProfiles.ListAsync()
                 .GetAwaiter().GetResult()
                 .Select(profile => (JsonNode?)JsonSerializer.SerializeToNode(profile, WireJson)).ToArray())),
@@ -577,6 +598,12 @@ public sealed class IndustrialUiComponent : Component
                     var report = ImportConfigAsync(body, workflows, nodes, fileProfiles, bindings,
                         machines, credentials, resources, _resourceTests).GetAwaiter().GetResult();
                     PublishPreview(api, owner, requestId, report);
+                    return ValueTask.CompletedTask;
+                }, owner);
+                api.RegisterCommand("industrial/maintain-snapshots", _ =>
+                {
+                    _lastSnapshotReport = SnapshotMaintenance.RunAsync(
+                        ledger, SnapshotRoot, context.CancellationToken).GetAwaiter().GetResult();
                     return ValueTask.CompletedTask;
                 }, owner);
                 api.RegisterCommand("industrial/import-file-profiles", payload =>

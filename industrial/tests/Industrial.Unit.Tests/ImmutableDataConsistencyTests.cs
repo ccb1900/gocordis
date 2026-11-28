@@ -52,7 +52,10 @@ public sealed class ImmutableDataConsistencyTests
                 new WorkflowNode("b", "industrial.filesystem.unc",
                     new Dictionary<string, object?> { ["resourceId"] = "unc-b" }, 0, 0),
                 new WorkflowNode("sink", "industrial.sink.sqlite",
-                    new Dictionary<string, object?> { ["targetResourceId"] = "target" }, 0, 0),
+                    new Dictionary<string, object?>
+                    {
+                        ["resourceId"] = "not-a-source", ["targetResourceId"] = "target",
+                    }, 0, 0),
             ],
             [
                 new WorkflowEdge("a", "files", "sink", "records"),
@@ -64,15 +67,44 @@ public sealed class ImmutableDataConsistencyTests
         await using (var scope = await SourceSessionScope.AcquireAsync(
                          source, definition, "default-resource"))
         {
-            Assert.Equal(["default-resource", "unc-a", "unc-b"], source.Leased);
+            Assert.Contains("default-resource", source.Leased);
+            Assert.Contains("unc-a", source.Leased);
+            Assert.Contains("unc-b", source.Leased);
+            Assert.DoesNotContain("not-a-source", source.Leased);
             Assert.Empty(source.Disposed);
         }
 
         Assert.Equal(["unc-b", "unc-a", "default-resource"], source.Disposed);
     }
 
+    [Fact]
+    public async Task FailedLaterLeaseReleasesAlreadyAcquiredSessions()
+    {
+        var source = new RecordingFileSource { FailOn = "unc-b" };
+        var definition = new WorkflowDefinition(
+            "multi-unc-failure", "Multi UNC failure", 1,
+            [
+                new WorkflowNode("a", "industrial.filesystem.unc",
+                    new Dictionary<string, object?> { ["resourceId"] = "unc-a" }, 0, 0),
+                new WorkflowNode("b", "industrial.filesystem.unc",
+                    new Dictionary<string, object?> { ["resourceId"] = "unc-b" }, 0, 0),
+            ],
+            [], new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            ["unc-a", "unc-b"], new Dictionary<string, object?>());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await SourceSessionScope.AcquireAsync(source, definition, "default-resource"));
+
+        Assert.Contains("default-resource", source.Leased);
+        Assert.Contains("unc-a", source.Leased);
+        Assert.DoesNotContain("unc-b", source.Disposed);
+        Assert.Contains("unc-a", source.Disposed);
+        Assert.Contains("default-resource", source.Disposed);
+    }
+
     private sealed class RecordingFileSource : IFileSource
     {
+        public string? FailOn { get; init; }
         public List<string> Leased { get; } = [];
         public List<string> Disposed { get; } = [];
 
@@ -89,6 +121,8 @@ public sealed class ImmutableDataConsistencyTests
             string resourceId, CancellationToken ct = default)
         {
             Leased.Add(resourceId);
+            if (string.Equals(resourceId, FailOn, StringComparison.Ordinal))
+                throw new InvalidOperationException($"authentication failed for {resourceId}");
             return ValueTask.FromResult<IAsyncDisposable?>(new Lease(this, resourceId));
         }
 

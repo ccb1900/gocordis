@@ -473,7 +473,8 @@ public sealed record CollectionFile(
     FileIdentity Identity,
     DateTimeOffset SourceDate,
     DateTimeOffset CollectedAt,
-    string Status);
+    string Status,
+    string? SnapshotPath = null);
 
 /// <summary>Business date identity: one source/binding day, independent of
 /// WorkflowRun. This is the industrial equivalent of Go's CollectionDate.

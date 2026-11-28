@@ -161,6 +161,7 @@ public sealed class CollectionFileEntity
     public DateTimeOffset SourceDate { get; set; }
     public DateTimeOffset CollectedAt { get; set; }
     public string Status { get; set; } = string.Empty;
+    public string? SnapshotPath { get; set; }
     public long Version { get; set; }
 }
 
@@ -394,6 +395,7 @@ public static class IndustrialStore
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN Rejected INTEGER NOT NULL DEFAULT 0;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN Warnings INTEGER NOT NULL DEFAULT 0;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN StatisticsJson TEXT NULL;");
+        Execute(context, "ALTER TABLE CollectionFiles ADD COLUMN SnapshotPath TEXT NULL;");
         Execute(context, "ALTER TABLE CollectionRuns ADD COLUMN InstanceId TEXT NULL;");
         Execute(context, "ALTER TABLE CollectionRuns ADD COLUMN DefinitionJson TEXT NULL;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN LastAttemptRunId TEXT NULL;");

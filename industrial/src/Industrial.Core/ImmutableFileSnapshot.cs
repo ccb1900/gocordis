@@ -47,8 +47,12 @@ public static class ImmutableFileSnapshot
                 await input.CopyToAsync(output, ct);
             }
 
-            var copiedHash = Convert.ToHexString(
-                SHA256.HashData(await File.ReadAllBytesAsync(temporary, ct)));
+            string copiedHash;
+            await using (var copied = new FileStream(temporary, FileMode.Open, FileAccess.Read,
+                             FileShare.None, 64 * 1024, FileOptions.Asynchronous))
+            {
+                copiedHash = Convert.ToHexString(await SHA256.HashDataAsync(copied, ct));
+            }
             if (!string.Equals(copiedHash, discovered.ContentHash, StringComparison.OrdinalIgnoreCase))
             {
                 File.Delete(temporary);

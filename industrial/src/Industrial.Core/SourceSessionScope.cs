@@ -12,10 +12,8 @@ public static class SourceSessionScope
         IFileSource source, WorkflowDefinition definition, string defaultResourceId,
         CancellationToken ct = default)
     {
-        var targets = definition.Edges.Select(edge => edge.Target)
-            .ToHashSet(StringComparer.Ordinal);
         var resourceIds = new HashSet<string>(StringComparer.Ordinal) { defaultResourceId };
-        foreach (var node in definition.Nodes.Where(node => !targets.Contains(node.Id)))
+        foreach (var node in definition.Nodes.Where(node => IndustrialNodeKinds.IsSource(node.Type)))
         {
             if (node.Config.TryGetValue("resourceId", out var configured) &&
                 configured is not null && !string.IsNullOrWhiteSpace(configured.ToString()))
@@ -23,10 +21,21 @@ public static class SourceSessionScope
         }
 
         var leases = new List<IAsyncDisposable>();
-        foreach (var resourceId in resourceIds)
+        try
         {
-            var lease = await source.LeaseScopeAsync(resourceId, ct);
-            if (lease is not null) leases.Add(lease);
+            foreach (var resourceId in resourceIds)
+            {
+                var lease = await source.LeaseScopeAsync(resourceId, ct);
+                if (lease is not null) leases.Add(lease);
+            }
+        }
+        catch
+        {
+            // A later resource may fail authentication after earlier sessions
+            // were established. Release them before propagating the error.
+            for (var index = leases.Count - 1; index >= 0; index--)
+                await leases[index].DisposeAsync();
+            throw;
         }
         return new SessionLeases(leases);
     }

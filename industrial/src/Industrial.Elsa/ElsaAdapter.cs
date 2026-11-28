@@ -1562,14 +1562,11 @@ public sealed class IndustrialElsaComponent : Component
         var bound = WorkflowBinding.ApplyFileProfile(
             WorkflowBinding.BindParameters(published.Definition, values), profile);
         var dateValues = businessDates.Select(date => (object?)date.ToString("yyyy-MM-dd")).ToArray();
-        // A source node is identified by the published graph (no incoming
-        // edge), not by a substring of its provider type: local/UNC sources
-        // are registered as "industrial.filesystem.*".
-        var edgeTargets = bound.Edges.Select(edge => edge.Target)
-            .ToHashSet(StringComparer.Ordinal);
+        // Source identity comes from the node's provider contract, not from
+        // graph topology or an ad-hoc substring check.
         bound = bound with
         {
-            Nodes = bound.Nodes.Select(node => !edgeTargets.Contains(node.Id)
+            Nodes = bound.Nodes.Select(node => IndustrialNodeKinds.IsSource(node.Type)
                 ? node with
                 {
                     Config = new Dictionary<string, object?>(node.Config, StringComparer.Ordinal)

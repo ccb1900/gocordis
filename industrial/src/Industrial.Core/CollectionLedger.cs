@@ -497,7 +497,18 @@ public sealed class CollectionLedger : ICollectionLedger
         await using var db = _db();
         var existing = await db.CollectionFiles.AsNoTracking().SingleOrDefaultAsync(
             x => x.ResourceId == file.ResourceId && x.IdentityKey == file.Identity.Key, ct);
-        if (existing is not null) return ToContract(existing);
+        if (existing is not null)
+        {
+            if (string.IsNullOrWhiteSpace(existing.SnapshotPath) &&
+                !string.IsNullOrWhiteSpace(file.FullPath))
+            {
+                await Exec(db,
+                    "UPDATE CollectionFiles SET SnapshotPath = {0} WHERE Id = {1};",
+                    file.FullPath, existing.Id, ct);
+                return ToContract(existing) with { SnapshotPath = file.FullPath };
+            }
+            return ToContract(existing);
+        }
 
         var entity = new CollectionFileEntity
         {
@@ -512,6 +523,7 @@ public sealed class CollectionLedger : ICollectionLedger
             SourceDate = file.SourceDate,
             CollectedAt = DateTimeOffset.UtcNow,
             Status = "Discovered",
+            SnapshotPath = file.FullPath,
         };
         db.CollectionFiles.Add(entity);
         try
@@ -974,7 +986,7 @@ public sealed class CollectionLedger : ICollectionLedger
         new(entity.Id, entity.CollectionId,
             new FileIdentity(entity.IdentityKey, entity.RelativePath, entity.Length,
                 entity.LastWriteUtc, entity.ContentHash, entity.ResourceId),
-            entity.SourceDate, entity.CollectedAt, entity.Status);
+            entity.SourceDate, entity.CollectedAt, entity.Status, entity.SnapshotPath);
 
     private static FileDelivery ToContract(FileDeliveryEntity entity) =>
         new(entity.Id, entity.CollectionFileId, entity.TargetId, entity.Status,

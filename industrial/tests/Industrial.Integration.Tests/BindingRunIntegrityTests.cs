@@ -287,6 +287,13 @@ public sealed class BindingRunIntegrityTests
             row => row.BusinessDate == businessDate);
         Assert.Equal(CollectionDateStatus.Succeeded, date.Status);
         Assert.Equal(1, date.Files);
+
+        Assert.False(string.IsNullOrWhiteSpace(collected.SnapshotPath));
+        Assert.True(File.Exists(collected.SnapshotPath!));
+        Assert.True(await api.ExecuteAsync("industrial/maintain-snapshots", new JsonObject()));
+        var report = Assert.IsType<JsonObject>(api.Query("industrial/snapshot-status"));
+        Assert.True(report["deleted"]!.GetValue<int>() >= 1);
+        Assert.False(File.Exists(collected.SnapshotPath!));
     }
 
     private static WorkflowDefinition SourceOnlyTemplate(string id) => new(

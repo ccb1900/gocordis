@@ -49,6 +49,8 @@ for code_path in sorted(out.glob("*.code")):
     logs[name] = log
     exit_code = int(code_path.read_text().strip())
     dotnet = [int(x) for x in re.findall(r"(?:Passed|Skipped)!\s+-\s+Failed:\s+\d+,\s+Passed:\s+(\d+)", log)]
+    # normal-verbosity VSTest prints one "Passed: N" line per test assembly
+    dotnet += [int(x) for x in re.findall(r"^\s*Passed:\s+(\d+)\s*$", log, re.M)]
     vitest = [int(x) for x in re.findall(r"Tests\s+(\d+)\s+passed", log)]
     node = [int(x) for x in re.findall(r"^ℹ pass (\d+)$", log, re.M)]
     playwright = [int(x) for x in re.findall(r"^\s*(\d+)\s+passed(?:\s*,|\s+\(|\s*$)", log, re.M)]

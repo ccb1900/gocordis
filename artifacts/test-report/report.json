@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-11-28T10:10:04.551808+00:00",
+  "generatedAt": "2026-11-28T11:26:04.780469+00:00",
   "source": "tools/release/test-report.sh",
-  "commit": "52dbab059d362703ecb3bb4032152e0aa2ed5bee",
+  "commit": "0b3c15b86347235e6e5183b85d21695a39c7be15",
   "statusVocabulary": [
     "passed",
     "skipped",
@@ -69,7 +69,7 @@
       "exitCode": 0,
       "executionStatus": "passed",
       "countStatus": "parsed",
-      "passed": 211,
+      "passed": 213,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
@@ -156,7 +156,7 @@
     }
   ],
   "totals": {
-    "passed": 1088,
+    "passed": 1090,
     "skipped": 7,
     "failedSuites": [],
     "unparsedSuites": [],
@@ -168,16 +168,16 @@
     "runner": "windows-latest",
     "workflow": "windows-unc",
     "job": "unc-integration",
-    "runId": 46132519613,
-    "jobId": 140940590540,
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/46132519613",
-    "startedAt": "2026-11-28T09:52:49Z",
-    "completedAt": "2026-11-28T09:54:14Z",
+    "runId": 46138628435,
+    "jobId": 140959419244,
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46138628435",
+    "startedAt": "2026-11-28T11:10:40Z",
+    "completedAt": "2026-11-28T11:12:24Z",
     "test": "Industrial.Database.Tests.WindowsUncIntegrationTests.UncSourceDiscoversFilesThroughARealSessionLease",
     "command": "pwsh ./industrial/e2e-windows-unc.ps1",
     "share": "ephemeral real SMB share provisioned on the Windows runner by industrial/e2e-windows-unc.ps1",
     "note": "Real Windows SMB client/server through UncConnectionLease; no mock or fake native seam was used.",
-    "headSha": "52dbab059d362703ecb3bb4032152e0aa2ed5bee",
+    "headSha": "0b3c15b86347235e6e5183b85d21695a39c7be15",
     "conclusion": "success",
     "bound": true
   },
@@ -186,15 +186,15 @@
     "runner": "ubuntu-latest",
     "workflow": "database-evidence",
     "job": "sqlserver",
-    "runId": 46132519612,
-    "jobId": 140940590888,
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/46132519612",
-    "startedAt": "2026-11-28T09:52:49Z",
-    "completedAt": "2026-11-28T09:53:40Z",
+    "runId": 46138628459,
+    "jobId": 140959419128,
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46138628459",
+    "startedAt": "2026-11-28T11:10:40Z",
+    "completedAt": "2026-11-28T11:11:33Z",
     "test": "Industrial.Database.Tests.SqlServerSinkTests.SqlServerSinkIsIdempotentAgainstARealServer",
     "command": "GOCORDIS_SQLSERVER_CONNECTION=<real SQL Server 2019 service> dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --filter FullyQualifiedName~SqlServerSink",
     "note": "Real SQL Server 2019 service container; write count and replay idempotency through SqlServerRecordSink and Microsoft.Data.SqlClient.",
-    "headSha": "52dbab059d362703ecb3bb4032152e0aa2ed5bee",
+    "headSha": "0b3c15b86347235e6e5183b85d21695a39c7be15",
     "conclusion": "success",
     "bound": true
   },
@@ -203,15 +203,15 @@
     "runner": "ubuntu-latest",
     "workflow": "database-evidence",
     "job": "mysql",
-    "runId": 46132519612,
-    "jobId": 140940590742,
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/46132519612",
-    "startedAt": "2026-11-28T09:52:49Z",
-    "completedAt": "2026-11-28T09:54:03Z",
+    "runId": 46138628459,
+    "jobId": 140959419441,
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46138628459",
+    "startedAt": "2026-11-28T11:10:39Z",
+    "completedAt": "2026-11-28T11:11:40Z",
     "test": "Industrial.Database.Tests.MySqlSinkTests.MySqlSinkIsIdempotentAgainstARealServer",
     "command": "GOCORDIS_MYSQL_CONNECTION=<real MySQL 8 service> dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --filter FullyQualifiedName~MySqlSink",
     "note": "MySQL 8.0 service container; writes and re-plays through MySqlRecordSink and verifies rows with MySqlConnector. No SQLite substitution.",
-    "headSha": "52dbab059d362703ecb3bb4032152e0aa2ed5bee",
+    "headSha": "0b3c15b86347235e6e5183b85d21695a39c7be15",
     "conclusion": "success",
     "bound": true
   },
@@ -220,15 +220,15 @@
     "runner": "windows-latest",
     "workflow": "windows-unc-browser",
     "job": "unc-browser",
-    "runId": 46132519528,
-    "jobId": 140940590403,
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/46132519528",
-    "startedAt": "2026-11-28T09:52:49Z",
-    "completedAt": "2026-11-28T09:57:18Z",
+    "runId": 46138628393,
+    "jobId": 140959419145,
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46138628393",
+    "startedAt": "2026-11-28T11:10:40Z",
+    "completedAt": "2026-11-28T11:14:05Z",
     "test": "blank environment: UI creates UNC machine, credential and resource, reads a file and rotates the credential; no pre-existing SMB mapping",
     "command": "pwsh ./industrial/e2e-unc-browser.ps1",
     "note": "Real SMB share with two local accounts, blank packaged host, real Chromium. UI creates machine/credential/UNC resource, tests connection, reads a real file, proves rotation reaches the SMB session (wrong password fails, correct second identity succeeds) and proves a referenced resource cannot be deleted.",
-    "headSha": "52dbab059d362703ecb3bb4032152e0aa2ed5bee",
+    "headSha": "0b3c15b86347235e6e5183b85d21695a39c7be15",
     "conclusion": "success",
     "bound": true
   },
@@ -286,8 +286,8 @@
     {
       "requirement": "Windows runner browser E2E: blank environment, UI-created UNC machine/credential/resource, real file read, rotation uses new credential, referenced resource deletion refused",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46132519528",
-      "evidence": "artifacts/windows-unc-browser-result.json; https://github.com/ccb1900/gocordis/actions/runs/46132519528; industrial/e2e-unc-browser.ps1; industrial/web/e2e/unc-browser-e2e.spec.ts; ResourceReferenceGuardTests"
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46138628393",
+      "evidence": "artifacts/windows-unc-browser-result.json; https://github.com/ccb1900/gocordis/actions/runs/46138628393; industrial/e2e-unc-browser.ps1; industrial/web/e2e/unc-browser-e2e.spec.ts; ResourceReferenceGuardTests"
     },
     {
       "requirement": "80 machines x 10 file profiles generate 800 bindings, not 800 workflows, with pause/backfill/diagnostics in the browser",
@@ -522,24 +522,24 @@
     {
       "requirement": "SQL Server real-server integration",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46132519612",
-      "evidence": "artifacts/sqlserver-result.json; https://github.com/ccb1900/gocordis/actions/runs/46132519612",
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46138628459",
+      "evidence": "artifacts/sqlserver-result.json; https://github.com/ccb1900/gocordis/actions/runs/46138628459",
       "runner": "ubuntu-latest",
       "script": ".github/workflows/database-evidence.yml"
     },
     {
       "requirement": "MySQL real-server integration",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46132519612",
-      "evidence": "artifacts/mysql-result.json; https://github.com/ccb1900/gocordis/actions/runs/46132519612",
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46138628459",
+      "evidence": "artifacts/mysql-result.json; https://github.com/ccb1900/gocordis/actions/runs/46138628459",
       "runner": "ubuntu-latest",
       "script": ".github/workflows/database-evidence.yml"
     },
     {
       "requirement": "Windows UNC/SMB integration",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46132519613",
-      "evidence": "artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/46132519613",
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46138628435",
+      "evidence": "artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/46138628435",
       "runner": "windows-latest",
       "script": "industrial/e2e-windows-unc.ps1"
     },
@@ -556,12 +556,12 @@
     {
       "requirement": "concurrent claims, lease renewal and staged-file identity guard",
       "status": "passed",
-      "evidence": "industrial-dotnet.log; DeliveryHeartbeatTests.HeartbeatRenewsOnIntervalAndCompletesSlowOperation=passed; DeliveryHeartbeatTests.FailedRenewalCancelsTheOperationAndSurfacesTheLoss=passed; DeliveryHeartbeatTests.SlowSinkDeliveryKeepsItsLeaseValidAndCompletes=passed; DeliveryHeartbeatTests.FailedRenewalAbortsTheSlowSinkAndLeavesTheClaimFenced=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatRenewsAndCompletesSlowWork=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatLossCancelsSlowWorkAndSurfacesFailure=passed; DeliveryLeaseTests.LeaseRenewalExtendsOnlyTheCurrentClaim=passed; DeliveryLeaseTests.ConcurrentClaimsProduceExactlyOneValidToken=passed"
+      "evidence": "industrial-dotnet.log; DeliveryHeartbeatTests.HeartbeatRenewsOnIntervalAndCompletesSlowOperation=passed; DeliveryHeartbeatTests.FailedRenewalCancelsTheOperationAndSurfacesTheLoss=passed; DeliveryHeartbeatTests.SlowSinkDeliveryKeepsItsLeaseValidAndCompletes=passed; DeliveryHeartbeatTests.FailedRenewalAbortsTheSlowSinkAndLeavesTheClaimFenced=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatRenewsAndCompletesSlowWork=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatActuallyExtendsLedgerLease=passed; ImmutableDataConsistencyTests.HeartbeatWillNotStartAlreadyLostExecutionLease=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatLossCancelsSlowWorkAndSurfacesFailure=passed; DeliveryHeartbeatTests.HeartbeatRenewsOnIntervalAndCompletesSlowOperation=passed; DeliveryHeartbeatTests.FailedRenewalCancelsTheOperationAndSurfacesTheLoss=passed; DeliveryLeaseTests.LeaseRenewalExtendsOnlyTheCurrentClaim=passed; DeliveryLeaseTests.ConcurrentClaimsProduceExactlyOneValidToken=passed"
     },
     {
       "requirement": "ledger claim/lease/retry state machine",
       "status": "passed",
-      "evidence": "industrial-dotnet.log; DeliveryHeartbeatTests.HeartbeatRenewsOnIntervalAndCompletesSlowOperation=passed; DeliveryHeartbeatTests.FailedRenewalCancelsTheOperationAndSurfacesTheLoss=passed; DeliveryHeartbeatTests.SlowSinkDeliveryKeepsItsLeaseValidAndCompletes=passed; DeliveryHeartbeatTests.FailedRenewalAbortsTheSlowSinkAndLeavesTheClaimFenced=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatRenewsAndCompletesSlowWork=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatLossCancelsSlowWorkAndSurfacesFailure=passed; DeliveryLeaseTests.LeaseRenewalExtendsOnlyTheCurrentClaim=passed; DeliveryLeaseTests.ConcurrentClaimsProduceExactlyOneValidToken=passed"
+      "evidence": "industrial-dotnet.log; DeliveryHeartbeatTests.HeartbeatRenewsOnIntervalAndCompletesSlowOperation=passed; DeliveryHeartbeatTests.FailedRenewalCancelsTheOperationAndSurfacesTheLoss=passed; DeliveryHeartbeatTests.SlowSinkDeliveryKeepsItsLeaseValidAndCompletes=passed; DeliveryHeartbeatTests.FailedRenewalAbortsTheSlowSinkAndLeavesTheClaimFenced=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatRenewsAndCompletesSlowWork=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatActuallyExtendsLedgerLease=passed; ImmutableDataConsistencyTests.HeartbeatWillNotStartAlreadyLostExecutionLease=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatLossCancelsSlowWorkAndSurfacesFailure=passed; DeliveryHeartbeatTests.HeartbeatRenewsOnIntervalAndCompletesSlowOperation=passed; DeliveryHeartbeatTests.FailedRenewalCancelsTheOperationAndSurfacesTheLoss=passed; DeliveryLeaseTests.LeaseRenewalExtendsOnlyTheCurrentClaim=passed; DeliveryLeaseTests.ConcurrentClaimsProduceExactlyOneValidToken=passed"
     },
     {
       "requirement": "stage output resume and EF migrations",

@@ -67,15 +67,14 @@ public sealed class CsvRecordReader : IRecordReader
         {
             ct.ThrowIfCancellationRequested();
             var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-            foreach (var header in headers)
+            // Always read by position. With HasHeaderRecord=false there is no
+            // header row for CsvHelper to resolve "Column1" by name, so the
+            // synthetic labels stay dictionary keys only.
+            for (var column = 0; column < headers.Length; column++)
             {
-                if (hasHeader)
+                if (csv.TryGetField<string>(column, out var field))
                 {
-                    values[header] = csv.GetField(header);
-                }
-                else if (csv.TryGetField<string>(header, out var field))
-                {
-                    values[header] = field;
+                    values[headers[column]] = field;
                 }
             }
 

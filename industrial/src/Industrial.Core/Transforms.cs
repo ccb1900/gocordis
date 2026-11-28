@@ -9,6 +9,7 @@ namespace Industrial.Core;
 /// targetField -> sourceField; the technical source identity is untouched.</summary>
 public sealed class MappingTransform
 {
+    private static readonly TimeSpan MetadataRegexTimeout = TimeSpan.FromMilliseconds(100);
     private readonly IReadOnlyDictionary<string, string> _mapping;
     private readonly bool _dropUnmapped;
     private readonly IReadOnlyList<MetadataRule> _metadataRules;
@@ -35,10 +36,21 @@ public sealed class MappingTransform
 
         foreach (var rule in _metadataRules)
         {
-            var relative = record.Source.Key.Split('|').Skip(1).FirstOrDefault() ?? string.Empty;
+            // RelativePath is the authoritative path field on the identity;
+            // splitting the key would couple metadata to key formatting.
+            var relative = (record.Source.RelativePath ?? string.Empty).Replace('\\', '/');
             var text = string.Equals(rule.From, "path", StringComparison.OrdinalIgnoreCase)
                 ? relative : Path.GetFileName(relative);
-            var match = Regex.Match(text, rule.Pattern, RegexOptions.IgnoreCase);
+            Match match;
+            try
+            {
+                match = Regex.Match(text, rule.Pattern, RegexOptions.IgnoreCase, MetadataRegexTimeout);
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                // An operator pattern must not stall the whole collection.
+                match = Match.Empty;
+            }
             var value = match.Success
                 ? (match.Groups["value"].Success ? match.Groups["value"].Value : match.Value)
                 : null;

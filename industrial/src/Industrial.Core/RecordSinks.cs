@@ -39,11 +39,15 @@ public sealed class SqliteRecordSink : IRecordSink
         await foreach (var record in records.WithCancellation(ct))
         {
             var recordId = _options.ResolveId(record);
+            // The unique record_id makes retries safe, but one batch may
+            // contain the same id twice. Ignore repeats inside the pending
+            // batch instead of staging two entities with the same key.
+            if (!pendingIds.Add(recordId)) continue;
             if (await db.Records.AnyAsync(row => row.RecordId == recordId, ct))
             {
+                pendingIds.Remove(recordId);
                 continue;
             }
-            pendingIds.Add(recordId);
 
             db.Records.Add(new TargetRecordEntity
             {

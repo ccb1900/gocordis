@@ -43,8 +43,9 @@ test("import preview reports row errors and bulk exclusions skip invalid combina
   ].join("\n"));
   await page.getByRole("button", { name: "预览导入" }).click();
   await expect(page.getByTestId("import-preview-report")).toContainText("1/3 行有效");
-  await expect(page.getByTestId("import-error-row-2")).toContainText("duplicate id");
-  await expect(page.getByTestId("import-error-row-3")).toContainText("unknown triggerKind");
+  // Row 1 is the header, so the second/third data rows are 3 and 4.
+  await expect(page.getByTestId("import-error-row-3")).toContainText("duplicate id");
+  await expect(page.getByTestId("import-error-row-4")).toContainText("unknown triggerKind");
 
   await page.getByRole("button", { name: "生成绑定" }).click();
   await expect.poll(async () => {

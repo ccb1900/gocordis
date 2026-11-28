@@ -42,11 +42,31 @@ const TYPES = [
   { value: "sqlite", label: "SQLite" },
 ];
 
+// The provider is a function of the resource type, never a separate hidden
+// choice that can drift out of sync with the connection shape.
+const PROVIDER: Record<string, string> = {
+  "filesystem.local": "local",
+  "filesystem.unc": "local",
+  sqlserver: "sqlserver",
+  postgresql: "postgresql",
+  mysql: "mysql",
+  sqlite: "sqlite",
+};
+
+// Suggested values are visible in the form (as real input values for a new
+// resource), not injected silently into the stored configuration.
+const DEFAULTS: Record<string, Partial<Draft>> = {
+  sqlserver: { table: "IndustrialRecords" },
+  postgresql: { port: "5432" },
+  mysql: { port: "3306" },
+};
+
 function configOf(draft: Draft): Record<string, unknown> {
-  // Start from the loaded configuration so editing a name or credential keeps
-  // every field the user did not touch. Empty inputs are not written back.
+  // Include every field of the selected type, including empty inputs: the
+  // backend deletes those keys. Keys of another type are retired server-side
+  // when the type changes, so switching a resource cannot leak stale fields.
   const config: Record<string, unknown> = { ...draft.config };
-  const put = (key: string, value: string) => { if (value.trim()) config[key] = value; };
+  const put = (key: string, value: string) => { config[key] = value.trim(); };
   switch (draft.type) {
     case "filesystem.local":
     case "filesystem.unc":
@@ -56,13 +76,13 @@ function configOf(draft: Draft): Record<string, unknown> {
       put("server", draft.host);
       put("host", draft.host);
       put("database", draft.database);
-      put("table", draft.table || "IndustrialRecords");
+      put("table", draft.table);
       break;
     case "postgresql":
     case "mysql":
       put("host", draft.host);
       put("database", draft.database);
-      put("port", draft.port || (draft.type === "mysql" ? "3306" : "5432"));
+      put("port", draft.port);
       break;
     case "sqlite":
       put("database", draft.database);
@@ -109,7 +129,7 @@ export function ResourceConsole({ block, ctx }: { block?: { query?: string }; ct
       id: row.id,
       name: row.name,
       type: row.type,
-      provider: row.provider,
+      provider: PROVIDER[row.type] ?? row.provider,
       root: value("root", "path"),
       host: value("server", "host", "dataSource", "data_source"),
       database: value("database", "initialCatalog", "initial_catalog", "path"),
@@ -132,11 +152,14 @@ export function ResourceConsole({ block, ctx }: { block?: { query?: string }; ct
         id,
         name: draft.name || id,
         type: draft.type,
-        provider: draft.provider || "manual",
+        provider: PROVIDER[draft.type] ?? "manual",
         config: configOf(draft),
+        // An empty Select is an explicit unbind: null is sent, not omitted.
         credentialId: draft.credentialId || null,
         enabled: draft.enabled,
       });
+      // A saved connection is untested until the user tests it again.
+      setTests((current) => current.filter((test) => test.resourceId !== id));
       setOpen(false);
       setDraft(emptyDraft);
       await load();
@@ -176,7 +199,11 @@ export function ResourceConsole({ block, ctx }: { block?: { query?: string }; ct
         <Typography.Title level={4} style={{ margin: 0 }}>数据源与目标</Typography.Title>
         <Space>
           <Button onClick={() => ctx.navigate?.("/industrial/designer")}>返回设计器</Button>
-          <Button type="primary" onClick={() => { setDraft(emptyDraft); setOpen(true); }}>新建资源</Button>
+          <Button type="primary" onClick={() => {
+            const defaults = DEFAULTS[emptyDraft.type] ?? {};
+            setDraft({ ...emptyDraft, ...defaults, provider: PROVIDER[emptyDraft.type] ?? "manual" });
+            setOpen(true);
+          }}>新建资源</Button>
         </Space>
       </Space>
       {error && <Alert type="error" showIcon message={error} />}
@@ -231,7 +258,13 @@ export function ResourceConsole({ block, ctx }: { block?: { query?: string }; ct
             {TYPES.map((type) => (
               <Button key={type.value} size="small"
                 type={draft.type === type.value ? "primary" : "default"}
-                onClick={() => setDraft({ ...draft, type: type.value })}>
+                onClick={() => {
+                  const defaults = DEFAULTS[type.value] ?? {};
+                  // Show suggested fields for the new type; stale fields of
+                  // the previous type are retired by the backend on save.
+                  setDraft({ ...draft, type: type.value, provider: PROVIDER[type.value] ?? "manual",
+                    root: "", host: "", database: "", port: "", table: "", ...defaults });
+                }}>
                 {type.label}
               </Button>
             ))}
@@ -246,8 +279,8 @@ export function ResourceConsole({ block, ctx }: { block?: { query?: string }; ct
                 onChange={(e: any) => setDraft({ ...draft, host: e.target.value })} />
               <Input aria-label="数据库" placeholder="数据库" value={draft.database}
                 onChange={(e: any) => setDraft({ ...draft, database: e.target.value })} />
-              <Input aria-label="端口" placeholder="端口" value={draft.port}
-                onChange={(e: any) => setDraft({ ...draft, port: e.target.value })} />
+              <Input aria-label="端口" placeholder={draft.type === "mysql" ? "默认 3306" : "默认 5432"}
+                value={draft.port} onChange={(e: any) => setDraft({ ...draft, port: e.target.value })} />
             </Space>
           )}
           {draft.type === "sqlite" && (

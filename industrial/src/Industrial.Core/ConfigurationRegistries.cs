@@ -164,26 +164,43 @@ public sealed class CollectionBindingRegistry(Func<IndustrialDbContext> db) : IC
             errors.Add($"machine {machine} does not exist");
         foreach (var profile in fileProfileIds.Where(id => !existingProfiles.Contains(id)))
             errors.Add($"file profile {profile} does not exist");
-        var missing = targetResourceIds.Where(id => !existingResources.Contains(id)).ToList();
-        var conflicts = new List<string>();
+        var missing = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var target in targetResourceIds)
+        {
+            if (!existingResources.Contains(target)) missing.Add(target);
+        }
         foreach (var machine in machineIds)
         {
             var source = sourceResourcePattern.Replace("{machine}", machine, StringComparison.Ordinal);
             if (!existingResources.Contains(source)) missing.Add(source);
         }
-        var existing = (await context.Database.SqlQueryRaw<BindingRow>(
-            "SELECT * FROM CollectionBindings;").ToListAsync(ct)).Select(ToDefinition).ToArray();
+        var existingIds = (await context.Database.SqlQueryRaw<IdRow>(
+            "SELECT Id FROM CollectionBindings;").ToListAsync(ct))
+            .Select(row => row.Id).ToHashSet(StringComparer.Ordinal);
+        var conflicts = new List<string>();
+        var creatable = 0;
         foreach (var machine in machineIds)
-        foreach (var profile in fileProfileIds)
         {
-            if (IsExcluded(machine, profile, exclusions)) continue;
-            var id = BindingId(workflowId, workflowVersion, machine, profile);
-            if (existing.Any(b => b.Id == id)) conflicts.Add(id);
+            var source = sourceResourcePattern.Replace("{machine}", machine, StringComparison.Ordinal);
+            var machineReady = existingMachines.Contains(machine) && existingResources.Contains(source);
+            foreach (var profile in fileProfileIds)
+            {
+                if (IsExcluded(machine, profile, exclusions)) continue;
+                var id = BindingId(workflowId, workflowVersion, machine, profile);
+                if (existingIds.Contains(id))
+                {
+                    conflicts.Add(id);
+                    continue;
+                }
+                // Only pairs that CreateBulkAsync can actually insert count as
+                // creatable. Global errors and missing resources are reported
+                // separately; subtracting them from pair counts was wrong.
+                if (published && machineReady && existingProfiles.Contains(profile)) creatable++;
+            }
         }
         var total = machineIds.Sum(machine => fileProfileIds.Count(
             profile => !IsExcluded(machine, profile, exclusions)));
-        return new BindingPreview(total, total - conflicts.Count - errors.Count,
-            conflicts, missing, errors);
+        return new BindingPreview(total, creatable, conflicts, missing.OrderBy(id => id, StringComparer.Ordinal).ToArray(), errors);
     }
 
     public async ValueTask<BindingPreview> CreateBulkAsync(
@@ -195,22 +212,36 @@ public sealed class CollectionBindingRegistry(Func<IndustrialDbContext> db) : IC
     {
         var preview = await PreviewBulkAsync(machineIds, fileProfileIds, workflowId, workflowVersion,
             sourceResourcePattern, targetResourceIds, exclusions, ct);
-        if (preview.Errors.Count > 0 || preview.MissingResources.Count > 0) return preview;
+        if (preview.Errors.Count > 0 || preview.MissingResources.Count > 0)
+            return preview with { Created = 0 };
+        await using var context = db();
+        await using var tx = await context.Database.BeginTransactionAsync(ct);
         var created = 0;
+        var trigger = JsonSerializer.Serialize(
+            new TriggerDefinition(triggerKind, cron, null, new Dictionary<string, object?>()), Json);
+        var targets = JsonSerializer.Serialize(targetResourceIds, Json);
+        var parametersJson = JsonSerializer.Serialize(parameters ?? new Dictionary<string, object?>(), Json);
         foreach (var machine in machineIds)
         foreach (var profile in fileProfileIds)
         {
             if (IsExcluded(machine, profile, exclusions)) continue;
-            var id = BindingId(workflowId, workflowVersion, machine, profile);
-            if (preview.Conflicts.Contains(id)) continue;
-            await RegisterAsync(new CollectionBindingDefinition(
-                id, $"{machine} / {profile}", machine, workflowId, workflowVersion, profile,
-                sourceResourcePattern.Replace("{machine}", machine, StringComparison.Ordinal),
-                targetResourceIds,
-                new TriggerDefinition(triggerKind, cron, null, new Dictionary<string, object?>()),
-                true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, parameters), ct);
-            created++;
+            var now = DateTimeOffset.UtcNow.ToString("O");
+            // INSERT OR IGNORE inside one transaction: a concurrent creator
+            // cannot overwrite our row, and neither creator can double-count
+            // the same binding.
+            created += await context.Database.ExecuteSqlRawAsync(
+                """
+                INSERT OR IGNORE INTO CollectionBindings
+                  (Id, Name, MachineId, WorkflowId, WorkflowVersion, FileProfileId,
+                   SourceResourceId, TargetJson, TriggerJson, ParametersJson, Enabled, CreatedAt, UpdatedAt)
+                VALUES ({0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11},{12});
+                """,
+                [BindingId(workflowId, workflowVersion, machine, profile), $"{machine} / {profile}",
+                 machine, workflowId, workflowVersion, profile,
+                 sourceResourcePattern.Replace("{machine}", machine, StringComparison.Ordinal),
+                 targets, trigger, parametersJson, 1, now, now], ct);
         }
+        await tx.CommitAsync(ct);
         return preview with { Created = created };
     }
 

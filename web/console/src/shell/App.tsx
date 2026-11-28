@@ -130,7 +130,9 @@ export default function App() {
     }
   }, [pages, path]);
 
-  // Command dispatch: mark busy, accept, then let observations invalidate.
+  // Command dispatch: the banner is supplementary UI. A rejected command MUST
+  // still reach the caller's try/catch so a component cannot report success
+  // after the server refused the mutation.
   const hubCommand = useCallback(async (name: string, body: unknown) => {
     setBusy(true);
     setHubError(null);
@@ -138,6 +140,7 @@ export default function App() {
       await api.hubCommand(name, body);
     } catch (e) {
       setHubError(e instanceof Error ? e.message : String(e));
+      throw e;
     } finally {
       setBusy(false);
     }

@@ -62,19 +62,30 @@ export function FileProfileConsole({ block, ctx }: { block?: { query?: string };
     setError(null);
     try {
       const map: Record<string, string> = {};
-      for (const pair of mapping.split(",")) {
+      // The form uses commas; older CSV exports use semicolons. Both are
+      // accepted here and by the server so a round-trip cannot drop fields.
+      for (const pair of mapping.split(/[,;]/)) {
         const [target, source] = pair.split("=").map((part) => part?.trim());
         if (target && source) map[target] = source;
       }
-      const metadataRules = metadataText.split("\n").map((line) => line.split("|"))
+      const metadataRules = metadataText.split(/\r?\n/).map((line) => line.split("|"))
         .filter((parts) => parts.length >= 3 && parts[0].trim() && parts[1].trim() && parts[2].trim())
-        .map((parts) => ({ from: parts[0].trim(), pattern: parts[1].trim(),
-          key: parts[2].trim(), required: parts[3]?.trim() !== "false" }));
+        .map((parts, index) => {
+          // The form documents Python-style named groups; normalize to the
+          // .NET/JS-compatible form before validating and storing.
+          const pattern = parts[1].trim().replace(/\(\?P</g, "(?<");
+          try { new RegExp(pattern); }
+          catch (cause) {
+            throw new Error(`元数据规则第 ${index + 1} 行正则无效：${cause instanceof Error ? cause.message : String(cause)}`);
+          }
+          return { from: parts[0].trim(), pattern,
+            key: parts[2].trim(), required: parts[3]?.trim() !== "false" };
+        });
       await ctx.hubCommand("industrial/save-file-profile", {
         id: draft.id, name: draft.name.trim(), fileNamePattern: draft.fileNamePattern,
         format: draft.format, delimiter: draft.delimiter, hasHeader: draft.hasHeader,
         encoding: draft.encoding, enabled: draft.enabled, mapping: map,
-        required: required.split(",").map((part) => part.trim()).filter(Boolean),
+        required: required.split(/[,;]/).map((part) => part.trim()).filter(Boolean),
         directoryPattern: draft.directoryPattern, datePattern: draft.datePattern,
         flat: draft.flat, metadataRules,
       });

@@ -63,6 +63,10 @@ public interface IIndustrialNodeExecutor
 {
     IReadOnlyList<string> Executed { get; }
     IReadOnlyList<NodeExecutionView> NodeViews { get; }
+    /// <summary>The ledger run produced by this execution, if a source node ran.</summary>
+    string? RunId { get; }
+    /// <summary>True when at least one delivery failed inside this execution.</summary>
+    bool AnyFailure { get; }
     bool FatalExit { get; }
     ValueTask ExecuteAsync(
         string instanceId, string nodeId, string activityType, string nodeType,
@@ -78,6 +82,9 @@ public sealed class IndustrialElsaComponent : Component
 
     private readonly ElsaActivityCatalog _catalog = new();
     private readonly IReadOnlyDictionary<string, object?> _config;
+
+    // Query-facing only. Never consulted when deciding the outcome of a run:
+    // concurrent runs would otherwise read each other's status and source dates.
     private ElsaWorkflowExecutor.Result? _lastExecution;
     private string? _lastInstanceId;
     private string? _lastDefinitionId;
@@ -91,9 +98,53 @@ public sealed class IndustrialElsaComponent : Component
     private JsonObject? _lastBackfillPreview;
     private JsonObject? _lastBindingTick;
     private JsonObject? _lastBindingValues;
-    private int _lastSourceFileCount;
-    private IReadOnlyDictionary<DateOnly, int> _lastSourceDates = new Dictionary<DateOnly, int>();
     private int _bindingConcurrency = 8;
+
+    private const int DefaultCatchUpDays = 7;
+    private const int MaxCatchUpDays = 366;
+
+    /// <summary>Identity/derived values owned by the binding or its profile.
+    /// Run parameters must never shadow them, case-insensitively.</summary>
+    private static readonly HashSet<string> ReservedParameters = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Binding", "Machine", "Profile", "FileProfile", "SourceResource",
+        "BusinessDates", "FileNamePattern", "Format", "Delimiter", "HasHeader",
+        "Encoding", "Mapping", "Required",
+    };
+
+    private static bool IsReservedParameter(string key) =>
+        ReservedParameters.Contains(key) ||
+        (key.StartsWith("TargetResource", StringComparison.OrdinalIgnoreCase) &&
+         key.Length > "TargetResource".Length &&
+         key["TargetResource".Length..].All(char.IsDigit));
+
+    /// <summary>All state produced by one execution. Returned to each caller so
+    /// scheduler, binding and retry decisions use that run's own outcome.</summary>
+    private sealed record RunOutcome(
+        string InstanceId,
+        string DefinitionId,
+        string Status,
+        IReadOnlyList<string> Executed,
+        IReadOnlyDictionary<DateOnly, int> SourceDates,
+        IReadOnlySet<DateOnly> SkippedDates,
+        IReadOnlyList<NodeExecutionView> NodeViews,
+        string? Error,
+        string? RunId,
+        string? LedgerStatus,
+        string? LedgerError,
+        bool AnyFailure,
+        string DefinitionJson,
+        string DefinitionHash)
+    {
+        public bool Completed => Status is "Completed" or "Finished";
+
+        public bool DeliveryFailed => Error is not null || AnyFailure ||
+            LedgerStatus is CollectionStatus.Failed or CollectionStatus.PartialFailure or
+                CollectionStatus.Interrupted or CollectionStatus.Cancelled;
+
+        public string? FailureError => Error ?? LedgerError ??
+            (AnyFailure ? "one or more deliveries failed" : $"workflow did not complete ({Status})");
+    }
 
     public IndustrialElsaComponent() : this(null) { }
 
@@ -218,7 +269,8 @@ public sealed class IndustrialElsaComponent : Component
                 try
                 {
                     await RecoverAllAsync(workflows, ledger, resources, vault, planner,
-                        source, reader, stage, sinkFactories, sink, archive, startup: true);
+                        source, reader, stage, sinkFactories, sink, archive, startup: true,
+                        ct: context.CancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -282,7 +334,8 @@ public sealed class IndustrialElsaComponent : Component
                     {
                         await RunWorkflowAsync(
                             payload, workflows, coordinator, ledger, resources, vault, planner,
-                            source, reader, stage, sinkFactories, sink, archive, ElsaDbPath);
+                            source, reader, stage, sinkFactories, sink, archive, ElsaDbPath,
+                            ct: context.CancellationToken);
                     }
                     catch (Exception ex)
                     {
@@ -294,9 +347,9 @@ public sealed class IndustrialElsaComponent : Component
                 {
                     try
                     {
-                        await RunBindingAsync(payload, bindings, profiles, workflows, coordinator,
-                            ledger, resources, vault, planner, source, reader, stage,
-                            sinkFactories, sink, archive, ElsaDbPath);
+                        await RunBindingAsync(payload, bindings, profiles, workflows,
+                            coordinator, ledger, resources, vault, planner, source, reader, stage,
+                            sinkFactories, sink, archive, ElsaDbPath, context.CancellationToken);
                     }
                     catch (Exception ex)
                     {
@@ -306,7 +359,8 @@ public sealed class IndustrialElsaComponent : Component
                 }, owner);
                 api.RegisterCommand("industrial/recover-instances", async _ =>
                     await RecoverAllAsync(workflows, ledger, resources, vault, planner,
-                        source, reader, stage, sinkFactories, sink, archive), owner);
+                        source, reader, stage, sinkFactories, sink, archive,
+                        ct: context.CancellationToken), owner);
                 // Deterministic scheduler tick for diagnostics and integration
                 // tests. Uses the same single path as the timer, never a second
                 // scheduler implementation.
@@ -335,6 +389,7 @@ public sealed class IndustrialElsaComponent : Component
                             ["succeeded"] = _lastBindingTick["succeeded"]?.DeepClone(),
                             ["failed"] = _lastBindingTick["failed"]?.DeepClone(),
                             ["peakInFlight"] = _lastBindingTick["peakInFlight"]?.DeepClone(),
+                            ["lastError"] = _lastBindingTick["lastError"]?.DeepClone(),
                         }, owner);
                 api.RegisterQuery("industrial/storage-paths", () =>
                 {
@@ -405,7 +460,8 @@ public sealed class IndustrialElsaComponent : Component
                             ["version"] = match.Version,
                             ["resourceId"] = resourceId,
                         }, workflows, coordinator, ledger, resources, vault, planner, source, reader,
-                            stage, sinkFactories, sink, archive, ElsaDbPath);
+                            stage, sinkFactories, sink, archive, ElsaDbPath,
+                            ct: context.CancellationToken);
                     }
                 }, owner);
                 api.RegisterCommand("industrial/retry-failed", async payload =>
@@ -415,7 +471,7 @@ public sealed class IndustrialElsaComponent : Component
                         body["deliveryId"]?.GetValue<string>(),
                         body["targetId"]?.GetValue<string>(),
                         workflows, ledger, resources, vault, planner, source, reader,
-                        stage, sinkFactories, sink, archive);
+                        stage, sinkFactories, sink, archive, context.CancellationToken);
                 }, owner);
                 api.RegisterQuery("industrial/trigger-status", () =>
                     TriggerStatus(workflows, ledger), owner);
@@ -475,12 +531,56 @@ public sealed class IndustrialElsaComponent : Component
         return null;
     }
 
+    /// <summary>Updates the last-status queries only. The caller keeps the
+    /// returned outcome for its own decisions; these fields are never read back
+    /// to decide another run's status.</summary>
+    private void RecordLast(RunOutcome outcome)
+    {
+        _lastInstanceId = outcome.InstanceId;
+        _lastDefinitionId = outcome.DefinitionId;
+        _lastExecution = new ElsaWorkflowExecutor.Result(outcome.Executed, outcome.Status);
+        _lastNodeViews = outcome.NodeViews;
+        _lastError = outcome.Error ?? outcome.LedgerError;
+    }
+
+    /// <summary>Completes a claimed fire with a non-cancellable token and reads
+    /// the row back. Completion is only accepted when the claimed token won the
+    /// update; a stale or rejected completion stays visible as a failure.</summary>
+    private static async ValueTask<bool> CompleteFireAsync(
+        ICollectionLedger ledger, ScheduleFireClaim claim, string status, string? error)
+    {
+        await ledger.CompleteScheduleFireAsync(
+            claim.Key, claim.Token, status, error, CancellationToken.None);
+        var fires = await ledger.ListScheduleFiresAsync(CancellationToken.None);
+        var row = fires.FirstOrDefault(fire =>
+            string.Equals(fire.Key, claim.Key, StringComparison.Ordinal));
+        return row is not null &&
+               string.Equals(row.Status, status, StringComparison.Ordinal) &&
+               row.LeaseExpiresAtUnixMs == 0;
+    }
+
+    /// <summary>Same verification for a business-date claim. NoData retires the
+    /// row; other terminal states must be visible with the claim released.</summary>
+    private static async ValueTask<bool> CompleteDateClaimAsync(
+        ICollectionLedger ledger, string id, string token, string status,
+        int files, string? error)
+    {
+        await ledger.CompleteDateAsync(id, token, status, files, error, CancellationToken.None);
+        var dates = await ledger.ListDatesAsync(CancellationToken.None);
+        var row = dates.FirstOrDefault(date => string.Equals(date.Id, id, StringComparison.Ordinal));
+        return status == CollectionDateStatus.NoData
+            ? row is null
+            : row is not null && string.Equals(row.Status, status, StringComparison.Ordinal) &&
+              row.LeaseToken is null;
+    }
+
     private async ValueTask RetryDeliveryAsync(
         string? deliveryId, string? targetId,
         IWorkflowRegistry workflows, ICollectionLedger ledger,
         IResourceRegistry resources, ICredentialVault vault, IHistoricalRangePlanner planner,
         IFileSource source, IRecordReader reader, IStageOutputStore stage,
-        Broker<IRecordSinkFactory> factories, IRecordSink defaultSink, IArchiveSink archive)
+        Broker<IRecordSinkFactory> factories, IRecordSink defaultSink, IArchiveSink archive,
+        CancellationToken ct)
     {
         FileDelivery delivery;
         if (!string.IsNullOrWhiteSpace(deliveryId))
@@ -498,7 +598,7 @@ public sealed class IndustrialElsaComponent : Component
         var file = await ledger.GetFileAsync(delivery.CollectionFileId)
                    ?? throw new InvalidOperationException("the delivery source file was not found");
         var resourceId = file.Identity.SourceResourceId;
-        var instances = await ElsaPersistedExecution.ListInstancesAsync(ElsaDbPath);
+        var instances = await ElsaPersistedExecution.ListInstancesAsync(ElsaDbPath, ct: ct);
         var runIds = await ledger.GetRunIdsByDeliveryAsync(delivery.Id);
         var runs = new List<CollectionRun>();
         foreach (var runId in runIds)
@@ -549,20 +649,54 @@ public sealed class IndustrialElsaComponent : Component
                     $"{compatible.Length} candidates and no persisted last-attempt run");
             instance = compatible[0];
         }
-        var published = await workflows.GetPublishedVersionAsync(instance.WorkflowId, instance.Version)
+        var published = await workflows.GetPublishedVersionAsync(instance.WorkflowId, instance.Version, ct)
                         ?? throw new InvalidOperationException(
                             $"published version {instance.WorkflowId}:v{instance.Version} was not found");
         var runDefinitionJson = string.IsNullOrWhiteSpace(lastRunId)
-            ? null : await ledger.GetRunDefinitionAsync(lastRunId!);
-        var retryDefinition = string.IsNullOrWhiteSpace(runDefinitionJson)
+            ? null : await ledger.GetRunDefinitionAsync(lastRunId!, ct);
+        // The run snapshot, not the published template, is the retry's input.
+        // Both snapshots must agree when the instance carries one; a mismatch
+        // means the original execution cannot be reconstructed faithfully.
+        if (!string.IsNullOrWhiteSpace(instance.DefinitionJson) &&
+            !string.IsNullOrWhiteSpace(runDefinitionJson) &&
+            !string.Equals(instance.DefinitionJson, runDefinitionJson, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"run '{lastRunId}' definition snapshot differs from the original Elsa instance; refusing retry");
+        }
+        if (!string.IsNullOrWhiteSpace(instance.DefinitionJson) &&
+            !string.IsNullOrWhiteSpace(instance.DefinitionHash) &&
+            !string.Equals(instance.DefinitionHash,
+                ElsaPersistedExecution.DefinitionHash(instance.DefinitionJson), StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"instance '{instance.InstanceId}' definition snapshot failed its hash check; refusing retry");
+        }
+        var snapshotJson = !string.IsNullOrWhiteSpace(instance.DefinitionJson)
+            ? instance.DefinitionJson!
+            : runDefinitionJson;
+        var retryDefinition = string.IsNullOrWhiteSpace(snapshotJson)
             ? published.Definition
-            : JsonSerializer.Deserialize<WorkflowDefinition>(runDefinitionJson!, WebJson)
+            : JsonSerializer.Deserialize<WorkflowDefinition>(snapshotJson!, WebJson)
               ?? published.Definition;
+        var effectiveJson = string.IsNullOrWhiteSpace(snapshotJson)
+            ? JsonSerializer.Serialize(retryDefinition, WebJson)
+            : snapshotJson!;
+        var effectiveHash = ElsaPersistedExecution.DefinitionHash(effectiveJson);
         var executor = CreateExecutor(retryDefinition, resourceId, ledger, resources, vault,
             planner, source, reader, stage, factories, defaultSink, archive,
-            delivery.Id, delivery.TargetId, _nodeHandlers);
-        await ElsaPersistedExecution.RunAsync(published, executor, resourceId, ElsaDbPath,
-            instance.InstanceId, resume: true);
+            delivery.Id, delivery.TargetId, _nodeHandlers,
+            definitionJson: effectiveJson, definitionHash: effectiveHash);
+        var result = await ElsaPersistedExecution.RunAsync(published, executor, resourceId, ElsaDbPath,
+            instance.InstanceId, resume: true, definitionJson: effectiveJson,
+            definitionHash: effectiveHash, ct: ct);
+        // Query fields only; no subsequent decision reads them.
+        _lastInstanceId = result.InstanceId;
+        _lastDefinitionId = result.DefinitionId;
+        _lastExecution = new ElsaWorkflowExecutor.Result(result.Executed, result.Status);
+        _lastNodeViews = executor.NodeViews;
+        _lastError = result.Error;
+        if (result.Error is not null) throw new InvalidOperationException(result.Error);
     }
 
     private static IReadOnlySet<DateOnly> PlannedDates(IReadOnlyDictionary<string, object?> config)
@@ -791,7 +925,7 @@ public sealed class IndustrialElsaComponent : Component
                     if (claim is null) continue;
                     try
                     {
-                        await RunWorkflowAsync(new JsonObject
+                        var outcome = await RunWorkflowAsync(new JsonObject
                         {
                             ["workflowId"] = item.WorkflowId,
                             ["version"] = item.Version,
@@ -799,18 +933,23 @@ public sealed class IndustrialElsaComponent : Component
                                              ?? Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_RESOURCE")
                                              ?? "source-1",
                         }, workflows, coordinator, ledger, resources, vault, planner, source, reader,
-                            stage, factories, sink, archive, ElsaDbPath);
-                        var succeeded = string.Equals(_lastExecution?.Status, "Completed", StringComparison.Ordinal);
-                        await ledger.CompleteScheduleFireAsync(claim.Key, claim.Token,
-                            succeeded ? ScheduleFireStatus.Succeeded : ScheduleFireStatus.Failed,
-                            succeeded ? null : _lastError ?? "workflow did not complete", ct);
-                        if (succeeded) _lastScheduleError.TryRemove(key, out _);
-                        else _lastScheduleError[key] = _lastError ?? "workflow did not complete";
+                            stage, factories, sink, archive, ElsaDbPath, ct: ct);
+                        var succeeded = outcome.Completed && !outcome.DeliveryFailed;
+                        var error = succeeded ? null : outcome.FailureError;
+                        var accepted = await CompleteFireAsync(ledger, claim,
+                            succeeded ? ScheduleFireStatus.Succeeded : ScheduleFireStatus.Failed, error);
+                        if (succeeded && accepted) _lastScheduleError.TryRemove(key, out _);
+                        else _lastScheduleError[key] = error ?? "schedule fire completion was rejected";
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        await CompleteFireAsync(ledger, claim, ScheduleFireStatus.Failed,
+                            "scheduled run interrupted");
+                        _lastScheduleError[key] = "scheduled run interrupted";
                     }
                     catch (Exception ex)
                     {
-                        await ledger.CompleteScheduleFireAsync(
-                            claim.Key, claim.Token, ScheduleFireStatus.Failed, ex.Message, ct);
+                        await CompleteFireAsync(ledger, claim, ScheduleFireStatus.Failed, ex.Message);
                         _lastScheduleError[key] = ex.Message;
                     }
                 }
@@ -957,18 +1096,22 @@ public sealed class IndustrialElsaComponent : Component
         Broker<IRecordSinkFactory> factories, IRecordSink defaultSink, IArchiveSink archive,
         string? retryDeliveryId = null, string? retryTargetId = null,
         Broker<IIndustrialNodeHandler>? handlers = null,
-        Action<IReadOnlyDictionary<DateOnly, int>>? onSourceDates = null) =>
+        Action<IReadOnlyDictionary<DateOnly, int>>? onSourceDates = null,
+        Action<IReadOnlySet<DateOnly>>? onSkippedDates = null,
+        string? definitionJson = null, string? definitionHash = null) =>
         new(definition.WorkflowId, resourceId, definition, null!, ledger, resources, vault,
             planner, source, reader, stage, factories, defaultSink, archive,
-            retryDeliveryId, retryTargetId, handlers, onSourceDates);
+            retryDeliveryId, retryTargetId, handlers, onSourceDates, onSkippedDates,
+            definitionJson, definitionHash);
 
     private async ValueTask RecoverAllAsync(
         IWorkflowRegistry workflows, ICollectionLedger ledger, IResourceRegistry resources,
         ICredentialVault vault, IHistoricalRangePlanner planner, IFileSource source,
         IRecordReader reader, IStageOutputStore stage, Broker<IRecordSinkFactory> factories,
-        IRecordSink defaultSink, IArchiveSink archive, bool startup = false)
+        IRecordSink defaultSink, IArchiveSink archive, bool startup = false,
+        CancellationToken ct = default)
     {
-        await _recoveryLock.WaitAsync();
+        await _recoveryLock.WaitAsync(ct);
         try
         {
             var expiredLeases = await ledger.RecoverExpiredLeasesAsync(DateTimeOffset.UtcNow);
@@ -980,7 +1123,7 @@ public sealed class IndustrialElsaComponent : Component
                 // bounded attempt policy instead of silently skipping it.
                 await ledger.AbandonScheduleFiresAsync();
             }
-            var instances = await ElsaPersistedExecution.ListRecoverableAsync(ElsaDbPath);
+            var instances = await ElsaPersistedExecution.ListRecoverableAsync(ElsaDbPath, ct);
             var recovered = 0;
             var failures = new List<string>();
             foreach (var instance in instances)
@@ -994,15 +1137,41 @@ public sealed class IndustrialElsaComponent : Component
                         failures.Add($"{instance.InstanceId}: published version not found");
                         continue;
                     }
-                    var executor = CreateExecutor(published.Definition, instance.ResourceId,
+                    // The instance owns its exact bound definition. Resuming
+                    // from the published template would overwrite the run
+                    // snapshot with an unbound artifact on the cached-source
+                    // branch, so a failed hash check is a hard recovery failure.
+                    var snapshotJson = instance.DefinitionJson;
+                    if (!string.IsNullOrWhiteSpace(snapshotJson) &&
+                        !string.IsNullOrWhiteSpace(instance.DefinitionHash) &&
+                        !string.Equals(instance.DefinitionHash,
+                            ElsaPersistedExecution.DefinitionHash(snapshotJson!), StringComparison.Ordinal))
+                    {
+                        failures.Add($"{instance.InstanceId}: definition snapshot hash mismatch");
+                        continue;
+                    }
+
+                    var definition = string.IsNullOrWhiteSpace(snapshotJson)
+                        ? published.Definition
+                        : JsonSerializer.Deserialize<WorkflowDefinition>(snapshotJson!, WebJson)
+                          ?? published.Definition;
+                    var effectiveJson = string.IsNullOrWhiteSpace(snapshotJson)
+                        ? JsonSerializer.Serialize(definition, WebJson)
+                        : snapshotJson!;
+                    var effectiveHash = ElsaPersistedExecution.DefinitionHash(effectiveJson);
+                    var executor = CreateExecutor(definition, instance.ResourceId,
                         ledger, resources, vault, planner, source, reader, stage,
-                        factories, defaultSink, archive, handlers: _nodeHandlers);
+                        factories, defaultSink, archive, handlers: _nodeHandlers,
+                        definitionJson: effectiveJson, definitionHash: effectiveHash);
                     var result = await ElsaPersistedExecution.RunAsync(published, executor, instance.ResourceId,
-                        ElsaDbPath, instance.InstanceId, resume: true);
+                        ElsaDbPath, instance.InstanceId, resume: true, definitionJson: effectiveJson,
+                        definitionHash: effectiveHash, ct: ct);
+                    // Query-facing only: recovery outcome never decides another run.
                     _lastInstanceId = result.InstanceId;
                     _lastDefinitionId = result.DefinitionId;
                     _lastExecution = new ElsaWorkflowExecutor.Result(result.Executed, result.Status);
                     _lastNodeViews = executor.NodeViews;
+                    _lastError = result.Error;
                     recovered++;
                 }
                 catch (Exception ex)
@@ -1076,16 +1245,18 @@ public sealed class IndustrialElsaComponent : Component
         IArchiveSink archive,
         CancellationToken ct)
     {
-        await _bindingScheduleLock.WaitAsync(ct);
+        var counters = new BindingTickCounters();
+        var acquired = false;
         try
         {
+            await _bindingScheduleLock.WaitAsync(ct);
+            acquired = true;
             var now = DateTimeOffset.UtcNow;
             var scheduled = (await bindings.ListAsync(ct))
                 .Where(binding => binding.Enabled && binding.Trigger.Kind == "schedule" &&
                                   CronExpression.TryParse(binding.Trigger.Cron ?? string.Empty, out _))
                 .OrderBy(binding => binding.Id, StringComparer.Ordinal)
                 .ToArray();
-            var counters = new BindingTickCounters();
             if (scheduled.Length > 0)
             {
                 var existingFires = await ledger.ListScheduleFiresAsync(ct);
@@ -1105,12 +1276,19 @@ public sealed class IndustrialElsaComponent : Component
         }
         catch (Exception ex)
         {
+            // A single top-level failure is a diagnostic, never a reason to
+            // kill the timer. Manual ticks go through the same guarded path.
             _lastScheduleError["binding-scheduler"] = ex.Message;
-            throw;
+            _lastBindingTick = new JsonObject
+            {
+                ["at"] = DateTimeOffset.UtcNow.ToString("O"),
+                ["lastError"] = ex.Message,
+            };
+            foreach (var pair in counters.ToJson()) _lastBindingTick[pair.Key] = pair.Value?.DeepClone();
         }
         finally
         {
-            _bindingScheduleLock.Release();
+            if (acquired) _bindingScheduleLock.Release();
         }
     }
 
@@ -1235,21 +1413,17 @@ public sealed class IndustrialElsaComponent : Component
                 counters.Fired();
                 try
                 {
-                    var result = await RunBindingAsync(new JsonObject
+                    var outcome = await RunBindingAsync(new JsonObject
                     {
                         ["bindingId"] = binding.Id,
                         ["lookbackDays"] = 1,
                     }, bindings, profiles, workflows, coordinator, ledger, resources, vault,
-                        planner, source, reader, stage, sinkFactories, sink, archive, ElsaDbPath);
-                    var status = result?.Status;
-                    var succeeded = string.Equals(status, "Completed", StringComparison.Ordinal) ||
-                                    string.Equals(status, "Finished", StringComparison.Ordinal);
-                    var error = succeeded ? null
-                        : result?.Error ?? $"binding run did not complete ({status ?? "no result"})";
-                    await ledger.CompleteScheduleFireAsync(claim.Key, claim.Token,
-                        succeeded ? ScheduleFireStatus.Succeeded : ScheduleFireStatus.Failed,
-                        error, ct);
-                    if (succeeded)
+                        planner, source, reader, stage, sinkFactories, sink, archive, ElsaDbPath, ct);
+                    var succeeded = outcome.Completed && !outcome.DeliveryFailed;
+                    var error = succeeded ? null : outcome.FailureError;
+                    var accepted = await CompleteFireAsync(ledger, claim,
+                        succeeded ? ScheduleFireStatus.Succeeded : ScheduleFireStatus.Failed, error);
+                    if (succeeded && accepted)
                     {
                         counters.Succeeded();
                         _lastScheduleError.TryRemove(key, out _);
@@ -1257,13 +1431,19 @@ public sealed class IndustrialElsaComponent : Component
                     else
                     {
                         counters.Failed();
-                        _lastScheduleError[key] = error ?? "binding run did not complete";
+                        _lastScheduleError[key] = error ?? "binding fire completion was rejected";
                     }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    await CompleteFireAsync(ledger, claim, ScheduleFireStatus.Failed,
+                        "binding run interrupted");
+                    counters.Failed();
+                    _lastScheduleError[key] = "binding run interrupted";
                 }
                 catch (Exception ex)
                 {
-                    await ledger.CompleteScheduleFireAsync(claim.Key, claim.Token,
-                        ScheduleFireStatus.Failed, ex.Message, ct);
+                    await CompleteFireAsync(ledger, claim, ScheduleFireStatus.Failed, ex.Message);
                     counters.Failed();
                     _lastScheduleError[key] = ex.Message;
                 }
@@ -1281,7 +1461,7 @@ public sealed class IndustrialElsaComponent : Component
     /// definition itself is never edited, and no second workflow engine is
     /// involved: the bound snapshot goes through the same RunWorkflowAsync path.
     /// </summary>
-    private async ValueTask<ElsaPersistedExecution.ExecutionResult?> RunBindingAsync(
+    private async ValueTask<RunOutcome> RunBindingAsync(
         JsonNode? payload,
         ICollectionBindingRegistry bindings,
         IFileProfileRegistry profiles,
@@ -1297,13 +1477,14 @@ public sealed class IndustrialElsaComponent : Component
         Broker<IRecordSinkFactory> sinkFactories,
         IRecordSink sink,
         IArchiveSink archive,
-        string elsaDbPath)
+        string elsaDbPath,
+        CancellationToken ct)
     {
         var body = payload as JsonObject
                    ?? throw new InvalidOperationException("JSON payload required");
         var id = body["bindingId"]?.GetValue<string>()
                  ?? throw new InvalidOperationException("bindingId is required");
-        var binding = await bindings.GetAsync(id)
+        var binding = await bindings.GetAsync(id, ct)
                       ?? throw new InvalidOperationException($"binding '{id}' not found");
         if (binding.TargetResourceIds.Count == 0)
             throw new InvalidOperationException($"binding '{id}' has no target resources");
@@ -1312,46 +1493,34 @@ public sealed class IndustrialElsaComponent : Component
             ? parsed
             : 1;
         var published = await workflows.GetPublishedVersionAsync(
-                             binding.WorkflowId, binding.WorkflowVersion)
+                             binding.WorkflowId, binding.WorkflowVersion, ct)
                          ?? throw new InvalidOperationException(
                              $"workflow '{binding.WorkflowId}' version {binding.WorkflowVersion} " +
                              "has no published version");
 
-        var catchUpDays = binding.Parameters is not null &&
-                          binding.Parameters.TryGetValue("catchUpDays", out var configuredDays) &&
-                          int.TryParse(configuredDays?.ToString(), out var parsedDays) && parsedDays > 0
-            ? parsedDays
-            : 7;
+        var catchUpDays = ResolveCatchUpDays(id, binding.Parameters);
         var businessDates = BusinessDatePlanner.Plan(
-            await ledger.ListDatesAsync(), binding.Id,
+            await ledger.ListDatesAsync(ct), binding.Id,
             DateOnly.FromDateTime(DateTime.UtcNow), catchUpDays);
         var dateClaims = new List<(DateOnly Date, string Id, string Token)>();
         var businessRunId = $"binding-run-{binding.Id}-{Guid.NewGuid():N}";
         foreach (var businessDate in businessDates)
         {
+            ct.ThrowIfCancellationRequested();
             var claim = await ledger.ClaimDateAsync(binding.Id, businessDate, businessRunId,
-                TimeSpan.FromMinutes(5));
+                TimeSpan.FromMinutes(5), ct);
             if (claim is not null) dateClaims.Add((businessDate, claim.Id, claim.LeaseToken!));
         }
 
-        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Binding"] = binding.Id,
-            ["BusinessDates"] = string.Join(",", businessDates.Select(date => date.ToString("yyyy-MM-dd"))),
-            ["Machine"] = binding.MachineId,
-            ["Profile"] = binding.FileProfileId,
-            ["FileProfile"] = binding.FileProfileId,
-            ["SourceResource"] = binding.SourceResourceId,
-        };
+        // User parameters first, profile-derived values next, identity values
+        // last: a binding parameter can never shadow a reserved identity key.
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in binding.Parameters ?? new Dictionary<string, object?>())
-            values[pair.Key] = pair.Value?.ToString() ?? string.Empty;
-        for (var index = 0; index < binding.TargetResourceIds.Count; index++)
         {
-            values[index == 0 ? "TargetResource" : $"TargetResource{index + 1}"] =
-                binding.TargetResourceIds[index];
+            if (IsReservedParameter(pair.Key)) continue;
+            values[pair.Key] = pair.Value?.ToString() ?? string.Empty;
         }
-
-        var profile = await profiles.GetAsync(binding.FileProfileId);
+        var profile = await profiles.GetAsync(binding.FileProfileId, ct);
         if (profile is not null)
         {
             values["FileNamePattern"] = profile.FileNamePattern;
@@ -1362,6 +1531,17 @@ public sealed class IndustrialElsaComponent : Component
             values["Mapping"] = string.Join(";", profile.Mapping
                 .Select(pair => $"{pair.Key}={pair.Value}"));
             values["Required"] = string.Join(";", profile.RequiredFields);
+        }
+        values["Binding"] = binding.Id;
+        values["BusinessDates"] = string.Join(",", businessDates.Select(date => date.ToString("yyyy-MM-dd")));
+        values["Machine"] = binding.MachineId;
+        values["Profile"] = binding.FileProfileId;
+        values["FileProfile"] = binding.FileProfileId;
+        values["SourceResource"] = binding.SourceResourceId;
+        for (var index = 0; index < binding.TargetResourceIds.Count; index++)
+        {
+            values[index == 0 ? "TargetResource" : $"TargetResource{index + 1}"] =
+                binding.TargetResourceIds[index];
         }
 
         _lastBindingValues = new JsonObject(values
@@ -1386,30 +1566,124 @@ public sealed class IndustrialElsaComponent : Component
         {
             ["lookbackDays"] = days,
         };
-        var result = await RunWorkflowAsync(new JsonObject
-        {
-            ["workflowId"] = binding.WorkflowId,
-            ["version"] = binding.WorkflowVersion,
-            ["resourceId"] = binding.SourceResourceId,
-        }, workflows, coordinator, ledger, resources, vault, planner, source, reader, stage,
-            sinkFactories, sink, archive, elsaDbPath,
-            overrideDefinition: bound with { Layout = layout });
+        var boundDefinition = bound with { Layout = layout };
 
-        var succeeded = result is not null &&
-                        (string.Equals(result.Status, "Completed", StringComparison.Ordinal) ||
-                         string.Equals(result.Status, "Finished", StringComparison.Ordinal));
-        foreach (var claim in dateClaims)
+        var settled = new HashSet<string>(StringComparer.Ordinal);
+        try
         {
-            var files = _lastSourceDates.TryGetValue(claim.Date, out var count) ? count : 0;
-            var status = !succeeded ? CollectionDateStatus.Failed
-                : files > 0 ? CollectionDateStatus.Succeeded : CollectionDateStatus.NoData;
-            await ledger.CompleteDateAsync(claim.Id, claim.Token, status, files,
-                succeeded ? null : _lastError, CancellationToken.None);
+            var outcome = await RunWorkflowAsync(new JsonObject
+            {
+                ["workflowId"] = binding.WorkflowId,
+                ["version"] = binding.WorkflowVersion,
+                ["resourceId"] = binding.SourceResourceId,
+            }, workflows, coordinator, ledger, resources, vault, planner, source, reader, stage,
+                sinkFactories, sink, archive, elsaDbPath,
+                overrideDefinition: boundDefinition, ct: ct);
+
+            // A run that finished Elsa but failed a delivery is NOT a successful
+            // business date. An unstable-file skip is a re-probe, not NoData.
+            var failed = !outcome.Completed || outcome.DeliveryFailed;
+            var completions = new List<(DateOnly Date, string Id, string Token,
+                string Status, int Files, string? Error)>();
+            foreach (var claim in dateClaims)
+            {
+                ct.ThrowIfCancellationRequested();
+                var files = outcome.SourceDates.GetValueOrDefault(claim.Date);
+                var skipped = outcome.SkippedDates.Contains(claim.Date);
+                string status;
+                string? error;
+                if (failed)
+                {
+                    status = CollectionDateStatus.Failed;
+                    error = outcome.FailureError;
+                }
+                else if (files > 0)
+                {
+                    status = CollectionDateStatus.Succeeded;
+                    error = null;
+                }
+                else if (skipped)
+                {
+                    status = CollectionDateStatus.Failed;
+                    error = $"source files for {claim.Date:yyyy-MM-dd} were unstable and skipped";
+                }
+                else
+                {
+                    status = CollectionDateStatus.NoData;
+                    error = null;
+                }
+                completions.Add((claim.Date, claim.Id, claim.Token, status, files, error));
+                settled.Add(claim.Id);
+            }
+            // Completion uses a non-cancellable token; verification reads the
+            // rows back once per run so a stale token cannot be mistaken for a
+            // successful completion without an N-squared scan.
+            foreach (var completion in completions)
+            {
+                await ledger.CompleteDateAsync(completion.Id, completion.Token,
+                    completion.Status, completion.Files, completion.Error, CancellationToken.None);
+            }
+            if (completions.Count > 0)
+            {
+                var stored = await ledger.ListDatesAsync(CancellationToken.None);
+                foreach (var completion in completions)
+                {
+                    var row = stored.FirstOrDefault(date =>
+                        string.Equals(date.Id, completion.Id, StringComparison.Ordinal));
+                    var accepted = completion.Status == CollectionDateStatus.NoData
+                        ? row is null
+                        : row is not null &&
+                          string.Equals(row.Status, completion.Status, StringComparison.Ordinal) &&
+                          row.LeaseToken is null;
+                    if (!accepted)
+                    {
+                        _lastScheduleError[$"{binding.Id}:{completion.Date:yyyy-MM-dd}"] =
+                            "business-date completion was rejected";
+                    }
+                }
+            }
+            return outcome;
         }
-        return result;
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            foreach (var claim in dateClaims.Where(claim => !settled.Contains(claim.Id)))
+            {
+                await CompleteDateClaimAsync(ledger, claim.Id, claim.Token,
+                    CollectionDateStatus.Interrupted, 0, "binding run interrupted");
+                settled.Add(claim.Id);
+            }
+            throw;
+        }
+        catch (Exception ex)
+        {
+            foreach (var claim in dateClaims.Where(claim => !settled.Contains(claim.Id)))
+            {
+                await CompleteDateClaimAsync(ledger, claim.Id, claim.Token,
+                    CollectionDateStatus.Failed, 0, ex.Message);
+                settled.Add(claim.Id);
+            }
+            throw;
+        }
     }
 
-    private async ValueTask<ElsaPersistedExecution.ExecutionResult?> RunWorkflowAsync(
+    private static int ResolveCatchUpDays(
+        string bindingId, IReadOnlyDictionary<string, object?>? parameters)
+    {
+        var configured = parameters?.FirstOrDefault(pair =>
+            string.Equals(pair.Key, "catchUpDays", StringComparison.OrdinalIgnoreCase));
+        var raw = configured?.Value;
+        if (raw is null) return DefaultCatchUpDays;
+        if (!int.TryParse(raw.ToString(), out var parsed) ||
+            parsed < 0 || parsed > MaxCatchUpDays)
+        {
+            throw new InvalidOperationException(
+                $"binding '{bindingId}' catchUpDays must be an integer between 0 and {MaxCatchUpDays}; " +
+                $"got '{raw}'");
+        }
+        return parsed;
+    }
+
+    private async ValueTask<RunOutcome> RunWorkflowAsync(
         JsonNode? payload,
         IWorkflowRegistry workflows,
         ICollectionCoordinator coordinator,
@@ -1424,7 +1698,8 @@ public sealed class IndustrialElsaComponent : Component
         IRecordSink defaultSink,
         IArchiveSink archive,
         string elsaDbPath,
-        WorkflowDefinition? overrideDefinition = null)
+        WorkflowDefinition? overrideDefinition = null,
+        CancellationToken ct = default)
     {
         var body = payload as JsonObject ?? new JsonObject();
         var id = body["workflowId"]?.GetValue<string>()
@@ -1435,41 +1710,71 @@ public sealed class IndustrialElsaComponent : Component
             ? v
             : (int?)null;
         var published = requestedVersion.HasValue
-            ? await workflows.GetPublishedVersionAsync(id, requestedVersion.Value)
-            : await workflows.GetPublishedAsync(id);
+            ? await workflows.GetPublishedVersionAsync(id, requestedVersion.Value, ct)
+            : await workflows.GetPublishedAsync(id, ct);
         if (published is null)
         {
             var suffix = requestedVersion.HasValue ? $" version {requestedVersion.Value}" : string.Empty;
             throw new InvalidOperationException($"workflow '{id}'{suffix} has no published version");
         }
 
-        if (await resources.GetAsync(resourceId) is null)
+        if (await resources.GetAsync(resourceId, ct) is null)
         {
             throw new InvalidOperationException($"resource '{resourceId}' not found");
         }
 
-        // The RUN input is the persisted published artifact. The draft is never
-        // consulted here: publishing v1 and editing v2 must not change a run.
-        var definition = overrideDefinition ?? published.Definition;
-        IReadOnlyDictionary<DateOnly, int> sourceDates = new Dictionary<DateOnly, int>();
-        var executor = CreateExecutor(definition, resourceId, ledger, resources, vault,
-            planner, source, reader, stage, sinkFactories, defaultSink, archive,
-            handlers: _nodeHandlers, onSourceDates: dates => sourceDates = dates);
         var instanceId = body["instanceId"]?.GetValue<string>();
         var resume = body["resume"] is JsonValue flag && flag.TryGetValue<bool>(out var shouldResume) && shouldResume;
-        _lastError = null;
+        // The RUN input is the persisted published artifact unless a bound
+        // snapshot was supplied. A plain resume must also keep the instance's
+        // original definition, never the template that happens to be current.
+        var definition = overrideDefinition;
+        if (definition is null && resume && !string.IsNullOrWhiteSpace(instanceId))
+        {
+            var existing = await ElsaPersistedExecution.InspectAsync(instanceId!, elsaDbPath, ct);
+            if (!string.IsNullOrWhiteSpace(existing?.DefinitionJson))
+            {
+                definition = JsonSerializer.Deserialize<WorkflowDefinition>(existing!.DefinitionJson!, WebJson);
+            }
+        }
+        definition ??= published.Definition;
+        var definitionJson = JsonSerializer.Serialize(definition, WebJson);
+        var definitionHash = ElsaPersistedExecution.DefinitionHash(definitionJson);
+
+        // Per-run storage: never write these into component fields that another
+        // run could read back after an await.
+        var sourceDates = new ConcurrentDictionary<DateOnly, int>();
+        var skippedDates = new ConcurrentDictionary<DateOnly, byte>();
+        var executor = CreateExecutor(definition, resourceId, ledger, resources, vault,
+            planner, source, reader, stage, sinkFactories, defaultSink, archive,
+            handlers: _nodeHandlers,
+            onSourceDates: dates =>
+            {
+                foreach (var pair in dates) sourceDates[pair.Key] = pair.Value;
+            },
+            onSkippedDates: dates =>
+            {
+                foreach (var date in dates) skippedDates.TryAdd(date, 0);
+            },
+            definitionJson: definitionJson, definitionHash: definitionHash);
+
         var result = await ElsaPersistedExecution.RunAsync(
-            published, executor, resourceId, elsaDbPath, instanceId, resume);
-        _lastInstanceId = result.InstanceId;
-        _lastDefinitionId = result.DefinitionId;
-        _lastSourceDates = sourceDates;
-        _lastSourceFileCount = sourceDates.Values.Sum();
+            published, executor, resourceId, elsaDbPath, instanceId, resume,
+            definitionJson, definitionHash, ct);
         var productStatus = string.Equals(result.Status, "Finished", StringComparison.Ordinal)
             ? "Completed"
             : result.Status;
-        _lastExecution = new ElsaWorkflowExecutor.Result(result.Executed, productStatus);
-        _lastNodeViews = executor.NodeViews;
-        return result with { Status = productStatus };
+        var ledgerRun = executor.RunId is null
+            ? null : await ledger.GetRunAsync(executor.RunId, ct);
+        var outcome = new RunOutcome(
+            result.InstanceId, result.DefinitionId, productStatus, result.Executed,
+            new Dictionary<DateOnly, int>(sourceDates),
+            new HashSet<DateOnly>(skippedDates.Keys), executor.NodeViews,
+            result.Error, executor.RunId, ledgerRun?.Status, ledgerRun?.Error,
+            executor.AnyFailure, result.DefinitionJson ?? definitionJson,
+            result.DefinitionHash ?? definitionHash);
+        RecordLast(outcome);
+        return outcome;
     }
 
     /// <summary>Executes one persisted node through Cordis capabilities. Each
@@ -1492,6 +1797,9 @@ public sealed class IndustrialElsaComponent : Component
         private readonly IArchiveSink _archive;
         private readonly Broker<IIndustrialNodeHandler>? _handlers;
         private readonly Action<IReadOnlyDictionary<DateOnly, int>>? _onSourceDates;
+        private readonly Action<IReadOnlySet<DateOnly>>? _onSkippedDates;
+        private readonly string _definitionJson;
+        private readonly string _definitionHash;
         private readonly Dictionary<string, List<DiscoveredFile>> _files = new(StringComparer.Ordinal);
         private readonly Dictionary<string, CollectionFile> _ledgerFiles = new(StringComparer.Ordinal);
         private readonly List<string> _executed = [];
@@ -1512,10 +1820,15 @@ public sealed class IndustrialElsaComponent : Component
             IRecordSink defaultSink, IArchiveSink archive,
             string? retryDeliveryId = null, string? retryTargetId = null,
             Broker<IIndustrialNodeHandler>? handlers = null,
-            Action<IReadOnlyDictionary<DateOnly, int>>? onSourceDates = null)
+            Action<IReadOnlyDictionary<DateOnly, int>>? onSourceDates = null,
+            Action<IReadOnlySet<DateOnly>>? onSkippedDates = null,
+            string? definitionJson = null, string? definitionHash = null)
         {
             _handlers = handlers;
             _onSourceDates = onSourceDates;
+            _onSkippedDates = onSkippedDates;
+            _definitionJson = definitionJson ?? JsonSerializer.Serialize(definition, WebJson);
+            _definitionHash = definitionHash ?? ElsaPersistedExecution.DefinitionHash(_definitionJson);
             _retryDeliveryId = retryDeliveryId;
             _retryTargetId = retryTargetId;
             _workflowId = workflowId;
@@ -1551,6 +1864,8 @@ public sealed class IndustrialElsaComponent : Component
             .Select(view => new NodeExecutionView(
                 view.NodeId, view.Status, view.Records, view.Files, view.Error, view.Samples))
             .OrderBy(view => view.NodeId, StringComparer.Ordinal).ToArray();
+        public string? RunId => _runId;
+        public bool AnyFailure => Volatile.Read(ref _anyFailure) != 0;
         public bool FatalExit { get; private set; }
 
         private sealed class NodeView(string nodeId)
@@ -1754,7 +2069,19 @@ public sealed class IndustrialElsaComponent : Component
                 // A resumed run must still point at the instance whose stage
                 // outputs it reuses; legacy runs may not carry the link yet.
                 await _ledger.SetRunInstanceAsync(_runId!, _instanceId, ct);
-                await _ledger.SetRunDefinitionAsync(_runId!, JsonSerializer.Serialize(_definition, WebJson), ct);
+                // Never overwrite a run snapshot with a different definition.
+                // Recovery of a bound binding must keep its exact bound JSON.
+                var stored = await _ledger.GetRunDefinitionAsync(_runId!, ct);
+                if (string.IsNullOrWhiteSpace(stored))
+                {
+                    await _ledger.SetRunDefinitionAsync(_runId!, _definitionJson, ct);
+                }
+                else if (!string.Equals(ElsaPersistedExecution.DefinitionHash(stored),
+                             _definitionHash, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"run '{_runId}' snapshot belongs to a different definition; refusing to resume");
+                }
                 var files = new List<DiscoveredFile>();
                 foreach (var refFile in cached.Files)
                 {
@@ -1774,13 +2101,19 @@ public sealed class IndustrialElsaComponent : Component
                 _runId = (await _ledger.StartAsync(_workflowId, ct)).Id;
                 await _ledger.BeginRunAsync(_runId, ct);
                 await _ledger.SetRunInstanceAsync(_runId, _instanceId, ct);
-                await _ledger.SetRunDefinitionAsync(_runId!, JsonSerializer.Serialize(_definition, WebJson), ct);
+                await _ledger.SetRunDefinitionAsync(_runId, _definitionJson, ct);
             }
 
             var resourceId = node.Config.TryGetValue("resourceId", out var configured)
                              && configured is not null && !string.IsNullOrWhiteSpace(configured.ToString())
                 ? configured.ToString()!
                 : _resourceId;
+            // Keep a credentialed SMB session alive for discovery, stability,
+            // parsing and archiving. For local/non-credentialed resources this
+            // is a no-op and does not create a second session mechanism.
+            await using var uncSession = _source is UncFileSource unc
+                ? await unc.LeaseScopeAsync(resourceId, ct)
+                : null;
             var profileJson = new NodeConfigReader(node.Config).GetString("fileProfile", string.Empty);
             var fileProfile = string.IsNullOrWhiteSpace(profileJson)
                 ? null : JsonSerializer.Deserialize<FileProfileDefinition>(profileJson, WebJson);
@@ -1813,9 +2146,16 @@ public sealed class IndustrialElsaComponent : Component
                     DateOnly.FromDateTime(file.SourceDate.UtcDateTime))).ToArray();
             var discoveredFiles = new List<DiscoveredFile>();
             var batchFiles = new List<BatchFileRef>();
+            var skippedDates = new HashSet<DateOnly>();
             foreach (var file in discovered)
             {
-                if (!await _source.IsStableAsync(file, TimeSpan.FromMilliseconds(200), ct)) continue;
+                if (!await _source.IsStableAsync(file, TimeSpan.FromMilliseconds(200), ct))
+                {
+                    // A skipped unstable file is not NoData: the date must be
+                    // re-probed instead of being marked terminally empty.
+                    skippedDates.Add(DateOnly.FromDateTime(file.SourceDate.UtcDateTime));
+                    continue;
+                }
                 var known = await _ledger.GetFileByIdentityAsync(file.ResourceId, file.Identity.Key, ct);
                 var ledgerFile = known ?? await _ledger.DiscoverAsync(_runId!, file, ct);
                 _ledgerFiles[file.Identity.Key] = ledgerFile;
@@ -1829,6 +2169,7 @@ public sealed class IndustrialElsaComponent : Component
             _onSourceDates?.Invoke(discoveredFiles
                 .GroupBy(file => DateOnly.FromDateTime(file.SourceDate.UtcDateTime))
                 .ToDictionary(group => group.Key, group => group.Count()));
+            if (skippedDates.Count > 0) _onSkippedDates?.Invoke(skippedDates);
             await _stage.CommitAsync(_instanceId, node.Id, Fingerprint(node),
                 new FileBatchRef($"batch-{Guid.NewGuid():N}", _instanceId, node.Id,
                     Fingerprint(node), batchFiles, _runId), ct);

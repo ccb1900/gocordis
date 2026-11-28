@@ -441,7 +441,7 @@ test("a user upgrades bindings only to a published template version", async ({ p
   await page.getByRole("button", { name: "升级当前工作流绑定版本" }).click();
   // The command endpoint must surface its own diagnostic, not a flat HTTP 500,
   // and no binding may be moved to an unpublished version.
-  await expect(page.getByText(/v2 is not published/)).toBeVisible();
+  await expect(page.getByRole("alert").getByText(/v2 is not published/)).toBeVisible();
   await expect.poll(async () => (await readBinding())?.workflowVersion).toBe(1);
 
   expect((await saveTemplate(2)).ok()).toBe(true);
@@ -482,7 +482,6 @@ test("a user generates bulk bindings instead of copying workflows", async ({ pag
       provider: "local", config: { root: "/tmp" }, enabled: true,
     } });
   }
-  await expect(page.getByText(/预计生成/)).toBeVisible();
 
   for (const profile of ["Profile A", "Profile B"]) {
     await page.goto("/industrial/file-profiles");
@@ -503,7 +502,8 @@ test("a user generates bulk bindings instead of copying workflows", async ({ pag
   const available = (await (await page.request.get("/api/query/industrial/resources")).json()).data;
   const target = available.find((row: { type: string }) => row.type === "sqlite") ?? available[0];
   await page.getByLabel("目标资源 ID 列表").fill(target.id);
-  await expect(page.getByText(/预计生成 4 条绑定/)).toBeVisible();
+  await page.getByRole("button", { name: "预览绑定" }).click();
+  await expect(page.getByTestId("binding-preview-report")).toContainText("4 组合");
   await page.getByLabel("资源 ID 映射").fill("old-source=resource-bulk-1");
   await page.getByLabel("凭证别名映射").fill("old-cred=machine-credential");
   await page.getByRole("button", { name: "生成绑定" }).click();

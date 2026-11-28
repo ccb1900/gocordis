@@ -64,9 +64,9 @@ public sealed class ImportPreviewTests
             Assert.Equal(1, report["valid"]!.GetValue<int>());
             var errors = report["errors"]!.AsArray();
             Assert.Equal(2, errors.Count);
-            Assert.Contains(errors, row => row!["row"]!.GetValue<int>() == 2 &&
-                row["message"]!.GetValue<string>().Contains("duplicate"));
             Assert.Contains(errors, row => row!["row"]!.GetValue<int>() == 3 &&
+                row["message"]!.GetValue<string>().Contains("duplicate"));
+            Assert.Contains(errors, row => row!["row"]!.GetValue<int>() == 4 &&
                 row["message"]!.GetValue<string>().Contains("triggerKind"));
 
             var request = new JsonObject

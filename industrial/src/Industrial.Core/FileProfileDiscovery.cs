@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using Industrial.Contracts;
@@ -10,8 +11,11 @@ namespace Industrial.Core;
 /// </summary>
 public static class FileProfileDiscovery
 {
+    // Canonical lowercase vocabulary; token matching is case-insensitive so
+    // it agrees with the generated RegexOptions.IgnoreCase patterns.
     private static readonly string[] Tokens =
-        ["yyyyMMdd", "yyyy-MM-dd", "yyyy/MM/dd", "yyyyMM", "yyyy", "YYYY", "yy", "YY", "MM", "dd", "DD"];
+        ["yyyyMMdd", "yyyy-MM-dd", "yyyy/MM/dd", "yyyyMM", "yyyy", "yy", "MM", "dd"];
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(100);
 
     public static IReadOnlyList<DiscoveredFile> Apply(
         FileProfileDefinition? profile, IEnumerable<DiscoveredFile> files, string root)
@@ -63,9 +67,18 @@ public static class FileProfileDiscovery
         var match = DatePatternRegex(pattern)?.Match(text);
         if (match is null || !match.Success) return null;
         var groups = match.Groups;
-        var year = groups["year"].Success ? int.Parse(groups["year"].Value) : 2000;
-        var month = groups["month"].Success ? int.Parse(groups["month"].Value) : 1;
-        var day = groups["day"].Success ? int.Parse(groups["day"].Value) : 1;
+        var year = 2000;
+        if (groups["year"].Success &&
+            int.TryParse(groups["year"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedYear))
+        {
+            // Two-digit operator tokens pivot around 69: 25 means 2025, 99
+            // means 1999. Four-digit tokens stay literal.
+            year = groups["year"].Value.Length != 2
+                ? parsedYear
+                : parsedYear >= 69 ? 1900 + parsedYear : 2000 + parsedYear;
+        }
+        var month = groups["month"].Success ? int.Parse(groups["month"].Value, CultureInfo.InvariantCulture) : 1;
+        var day = groups["day"].Success ? int.Parse(groups["day"].Value, CultureInfo.InvariantCulture) : 1;
         return DateOnly.TryParseExact($"{year:0000}-{month:00}-{day:00}", "yyyy-MM-dd", out var date)
             ? date : null;
     }
@@ -83,7 +96,7 @@ public static class FileProfileDiscovery
                 _ => Regex.Escape(character.ToString()),
             });
         }
-        return new Regex(builder.Append('$').ToString(), RegexOptions.IgnoreCase);
+        return new Regex(builder.Append('$').ToString(), RegexOptions.IgnoreCase, RegexTimeout);
     }
 
     private static Regex? DatePatternRegex(string? pattern)
@@ -93,7 +106,8 @@ public static class FileProfileDiscovery
         for (var index = 0; index < pattern!.Length;)
         {
             var token = Tokens.FirstOrDefault(candidate =>
-                string.CompareOrdinal(pattern, index, candidate, 0, candidate.Length) == 0);
+                string.Compare(pattern, index, candidate, 0, candidate.Length,
+                    StringComparison.OrdinalIgnoreCase) == 0);
             if (token is null)
             {
                 builder.Append(pattern[index] == '*'
@@ -101,20 +115,22 @@ public static class FileProfileDiscovery
                 index++;
                 continue;
             }
-            builder.Append(token switch
+            // Switch on the canonical spelling: an operator may write YYYY,
+            // Yy, DD or dd without changing the generated group semantics.
+            builder.Append(token.ToLowerInvariant() switch
             {
-                "yyyyMMdd" => "(?<year>\\d{4})(?<month>\\d{2})(?<day>\\d{2})",
-                "yyyy-MM-dd" => "(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})",
-                "yyyy/MM/dd" => "(?<year>\\d{4})/(?<month>\\d{2})/(?<day>\\d{2})",
-                "yyyyMM" => "(?<year>\\d{4})(?<month>\\d{2})",
-                "yyyy" or "YYYY" => "(?<year>\\d{4})",
-                "yy" or "YY" => "(?<year>\\d{2})",
-                "MM" => "(?<month>\\d{2})",
-                "dd" or "DD" => "(?<day>\\d{2})",
+                "yyyymmdd" => "(?<year>\\d{4})(?<month>\\d{2})(?<day>\\d{2})",
+                "yyyy-mm-dd" => "(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})",
+                "yyyy/mm/dd" => "(?<year>\\d{4})/(?<month>\\d{2})/(?<day>\\d{2})",
+                "yyyymm" => "(?<year>\\d{4})(?<month>\\d{2})",
+                "yyyy" => "(?<year>\\d{4})",
+                "yy" => "(?<year>\\d{2})",
+                "mm" => "(?<month>\\d{2})",
+                "dd" => "(?<day>\\d{2})",
                 _ => "(?<day>\\d{2})",
             });
             index += token.Length;
         }
-        return new Regex(builder.Append('$').ToString(), RegexOptions.IgnoreCase);
+        return new Regex(builder.Append('$').ToString(), RegexOptions.IgnoreCase, RegexTimeout);
     }
 }

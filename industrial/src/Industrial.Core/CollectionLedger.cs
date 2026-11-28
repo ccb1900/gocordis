@@ -82,42 +82,70 @@ public sealed class CollectionLedger : ICollectionLedger
         var rows = await db.CollectionRunDeliveries.AsNoTracking()
             .Where(row => row.RunId == runId)
             .ToListAsync(ct);
-        if (rows.Count == 0)
-        {
-            // Legacy callers without run-scoped rows: use all deliveries that
-            // reference files discovered by this run.
-            var fileIds = await db.CollectionFiles.AsNoTracking()
-                .Where(file => file.CollectionId == runId)
-                .Select(file => file.Id)
-                .ToListAsync(ct);
-            var deliveries = await db.FileDeliveries.AsNoTracking()
-                .Where(delivery => fileIds.Contains(delivery.CollectionFileId))
-                .ToListAsync(ct);
-            if (deliveries.Count == 0) return await CompleteRunAsync(runId, CollectionStatus.Succeeded, null, ct);
-            var legacySucceeded = deliveries.Count(x => x.Status == CollectionStatus.Succeeded);
-            var legacyFailed = deliveries.Count(x => x.Status == CollectionStatus.Failed);
-            var active = deliveries.Count(x => x.Status == CollectionStatus.InProgress);
-            return await CompleteRunAsync(runId,
-                active > 0 ? CollectionStatus.Interrupted :
-                legacyFailed == 0 ? CollectionStatus.Succeeded :
-                legacySucceeded > 0 ? CollectionStatus.PartialFailure : CollectionStatus.Failed,
-                legacyFailed == 0 ? null : "one or more deliveries failed", ct);
-        }
+        if (rows.Count == 0) return await FinalizeLegacyRunAsync(runId, ct);
 
         var statusCounts = rows.GroupBy(row => row.Status)
             .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
-        var claimed = statusCounts.GetValueOrDefault("Claimed");
-        var considered = statusCounts.GetValueOrDefault("Considered");
-        var interrupted = statusCounts.GetValueOrDefault(CollectionStatus.Interrupted);
-        var failed = statusCounts.GetValueOrDefault(CollectionStatus.Failed);
         var succeeded = statusCounts.GetValueOrDefault(CollectionStatus.Succeeded) +
                         statusCounts.GetValueOrDefault("SkippedSucceeded");
+        var failed = statusCounts.GetValueOrDefault(CollectionStatus.Failed) +
+                     statusCounts.GetValueOrDefault("Contested");
+        var interrupted = statusCounts.GetValueOrDefault(CollectionStatus.Interrupted);
+        // A claim or consideration without a terminal outcome is unfinished
+        // work. It must never be read as success just because it did not fail.
+        var outstanding = statusCounts.GetValueOrDefault("Claimed") +
+                          statusCounts.GetValueOrDefault("Considered") +
+                          statusCounts.GetValueOrDefault(CollectionStatus.Pending) +
+                          statusCounts.GetValueOrDefault(CollectionStatus.InProgress);
 
-        if (claimed > 0 || considered > 0) return ToContract(run);
-        var finalStatus = interrupted > 0 ? CollectionStatus.Interrupted :
-            failed == 0 ? CollectionStatus.Succeeded :
-            succeeded > 0 ? CollectionStatus.PartialFailure : CollectionStatus.Failed;
-        var error = rows.FirstOrDefault(row => row.LastError is not null)?.LastError;
+        var finalStatus = failed > 0
+            ? succeeded > 0 ? CollectionStatus.PartialFailure : CollectionStatus.Failed
+            : interrupted > 0 || outstanding > 0
+                ? succeeded > 0 ? CollectionStatus.PartialFailure : CollectionStatus.Interrupted
+                : succeeded > 0 ? CollectionStatus.Succeeded : CollectionStatus.Failed;
+        var error = rows.FirstOrDefault(row => !string.IsNullOrWhiteSpace(row.LastError))?.LastError
+                    ?? (finalStatus == CollectionStatus.Failed ? "one or more deliveries did not complete" : null);
+        return await CompleteRunAsync(runId, finalStatus, error, ct);
+    }
+
+    /// <summary>Legacy callers have no run-scoped rows. Derive the outcome from
+    /// the deliveries of files this run discovered; Pending and Contested
+    /// deliveries are outstanding work, never a success.</summary>
+    private async ValueTask<CollectionRun> FinalizeLegacyRunAsync(
+        string runId, CancellationToken ct)
+    {
+        await using var db = _db();
+        var fileIds = await db.CollectionFiles.AsNoTracking()
+            .Where(file => file.CollectionId == runId)
+            .Select(file => file.Id)
+            .ToListAsync(ct);
+        var deliveries = fileIds.Count == 0
+            ? new List<FileDeliveryEntity>()
+            : await db.FileDeliveries.AsNoTracking()
+                .Where(delivery => fileIds.Contains(delivery.CollectionFileId))
+                .ToListAsync(ct);
+        if (deliveries.Count == 0)
+        {
+            // No sink was configured for discovered files: there is nothing
+            // that could have delivered them. An empty discovery is success.
+            return fileIds.Count == 0
+                ? await CompleteRunAsync(runId, CollectionStatus.Succeeded, null, ct)
+                : await CompleteRunAsync(runId, CollectionStatus.Failed,
+                    $"{fileIds.Count} discovered file(s) had no delivery", ct);
+        }
+
+        var succeeded = deliveries.Count(x => x.Status == CollectionStatus.Succeeded);
+        var failed = deliveries.Count(x => x.Status is CollectionStatus.Failed or "Contested");
+        var outstanding = deliveries.Count(x =>
+            x.Status is CollectionStatus.Pending or CollectionStatus.InProgress);
+        var interrupted = deliveries.Count(x => x.Status == CollectionStatus.Interrupted);
+        var finalStatus = failed > 0
+            ? succeeded > 0 ? CollectionStatus.PartialFailure : CollectionStatus.Failed
+            : interrupted > 0 || outstanding > 0
+                ? succeeded > 0 ? CollectionStatus.PartialFailure : CollectionStatus.Interrupted
+                : succeeded > 0 ? CollectionStatus.Succeeded : CollectionStatus.Failed;
+        var error = deliveries.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.Error))?.Error
+                    ?? (finalStatus == CollectionStatus.Failed ? "one or more deliveries did not complete" : null);
         return await CompleteRunAsync(runId, finalStatus, error, ct);
     }
 
@@ -576,19 +604,21 @@ public sealed class CollectionLedger : ICollectionLedger
         var token = $"claim-{Guid.NewGuid():N}";
         var now = DateTimeOffset.UtcNow;
         var leaseEnd = now + lease;
+        // Delivery claims have no attempt ceiling: a corrected re-plan must
+        // remain claimable. The token/lease pair is the fencing mechanism, so
+        // removing the count cap does not let a stale writer back in.
         var rows = await Exec(db,
             """
             UPDATE FileDeliveries SET Status = {0}, ClaimToken = {1}, ClaimedAt = {2},
                 LeaseExpiresAt = {3}, LeaseExpiresAtUnixMs = {4}, Attempts = Attempts + 1,
-                Error = NULL, Version = Version + 1, LastAttemptRunId = {12}
+                Error = NULL, Version = Version + 1, LastAttemptRunId = {11}
             WHERE Id = {5} AND Status IN ({6}, {7}, {8}, {9})
               AND (LeaseExpiresAtUnixMs = 0 OR LeaseExpiresAtUnixMs <= {10})
-              AND Attempts < {11}
             """,
             CollectionStatus.InProgress, token, now, leaseEnd, leaseEnd.ToUnixTimeMilliseconds(),
             deliveryId, CollectionStatus.Pending, CollectionStatus.Failed,
             CollectionStatus.Interrupted, CollectionStatus.InProgress,
-            now.ToUnixTimeMilliseconds(), MaxAttempts, runId, ct);
+            now.ToUnixTimeMilliseconds(), runId, ct);
         if (rows != 1) return null;
 
         await AttachRunDeliveryAsync(db, runId, deliveryId, "Claimed", token, ct);
@@ -736,10 +766,11 @@ public sealed class CollectionLedger : ICollectionLedger
         string? targetId = null, CancellationToken ct = default)
     {
         await using var db = _db();
+        // Failures stay retryable across re-plans; an attempt count is
+        // observability, not a lifetime budget for a delivery.
         var rows = await db.FileDeliveries.AsNoTracking()
             .Where(delivery => delivery.Status != CollectionStatus.Succeeded &&
                                delivery.Status != CollectionStatus.InProgress &&
-                               delivery.Attempts < MaxAttempts &&
                                (targetId == null || delivery.TargetId == targetId))
             .OrderBy(delivery => delivery.CollectionFileId)
             .ToListAsync(ct);
@@ -828,9 +859,15 @@ public sealed class CollectionLedger : ICollectionLedger
             now.ToString("O"), id, CollectionDateStatus.Pending, CollectionDateStatus.Failed,
             CollectionDateStatus.Interrupted, CollectionDateStatus.Running,
             now.ToString("O"), ct);
-        return rows == 1
-            ? new CollectionDateState(id, bindingId, date, CollectionDateStatus.Running,
-                1, token, now.Add(lease), runId, 0, null)
+        if (rows != 1) return null;
+        // Read the claimed row back: Attempts (and the lease) are owned by the
+        // database, not by the caller's arithmetic. A competing claim that
+        // replaced our token must not be reported as ours.
+        var claimed = await db.Database.SqlQueryRaw<DateRow>(
+            "SELECT * FROM CollectionDates WHERE Id = {0}", id).SingleOrDefaultAsync(ct);
+        return claimed is not null &&
+               string.Equals(claimed.ClaimToken, token, StringComparison.Ordinal)
+            ? ToDateContract(claimed)
             : null;
     }
 

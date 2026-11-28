@@ -2,7 +2,7 @@
 // binding rows, never 800 workflow definitions.
 
 import { Alert, Button, Input, InputNumber, Select, Space, Table, Typography } from "./facade-antd";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { unwrapData } from "./dto";
 
 interface Context {
@@ -27,7 +27,6 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
   const [machines, setMachines] = useState<any[]>([]);
   const [profiles, setProfiles] = useState<any[]>([]);
   const [workflows, setWorkflows] = useState<any[]>([]);
-  const [resources, setResources] = useState<any[]>([]);
   const [machineIds, setMachineIds] = useState<string[]>([]);
   const [profileIds, setProfileIds] = useState<string[]>([]);
   const [workflowId, setWorkflowId] = useState<string | undefined>();
@@ -42,12 +41,14 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
   const [status, setStatus] = useState<any>(null);
   const [triggerKind, setTriggerKind] = useState("manual");
   const [cron, setCron] = useState("");
+  const [timezone, setTimezone] = useState("");
   const [profileCsv, setProfileCsv] = useState("");
   const [bindingCsv, setBindingCsv] = useState("");
   const [runParameters, setRunParameters] = useState("");
   const [exclusions, setExclusions] = useState("");
   const [bindingPreviewReport, setBindingPreviewReport] = useState<any>(null);
   const [importPreviewReport, setImportPreviewReport] = useState<any>(null);
+  const [importReport, setImportReport] = useState<any>(null);
   const [upgradeVersion, setUpgradeVersion] = useState(1);
   const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -59,45 +60,57 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
       setMachines(rows(await ctx.hubQuery("industrial/machines")));
       setProfiles(rows(await ctx.hubQuery("industrial/file-profiles")));
       setWorkflows(rows(await ctx.hubQuery("industrial/workflows")));
-      setResources(rows(await ctx.hubQuery("industrial/resources")));
       try { setStatus(await ctx.hubQuery("industrial/binding-status")); } catch { /* diagnostics only */ }
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   }, [block?.query, ctx]);
   useEffect(() => { void load(); }, [load]);
 
-  const preview = useMemo(() => {
-    const conflicts: string[] = [];
-    for (const machine of machineIds) for (const profile of profileIds) {
-      const id = `binding:${workflowId ?? ""}:v${version}:${machine}:${profile}`;
-      if (bindings.some((binding) => binding.id === id)) conflicts.push(id);
+  const newRequestId = () => typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID() : `r-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  const validateSchedule = () => {
+    if (triggerKind !== "schedule") return null;
+    const fields = cron.trim().split(/\s+/).filter(Boolean);
+    if (fields.length < 5 || fields.length > 7)
+      return "定时策略需要 5–7 段的有效 cron 表达式";
+    try {
+      if (timezone.trim()) new Intl.DateTimeFormat("en-US", { timeZone: timezone.trim() });
+    } catch {
+      return `无效的时区：${timezone}`;
     }
-    const missing = targetIds.filter((id) => !resources.some((resource) => resource.id === id));
-    const missingSources = machineIds
-      .map((machine) => sourcePattern.replace("{machine}", machine))
-      .filter((id) => !resources.some((resource) => resource.id === id));
-    return { total: machineIds.length * profileIds.length,
-      create: machineIds.length * profileIds.length - conflicts.length,
-      conflicts, missing: [...missing, ...missingSources] };
-  }, [bindings, machineIds, profileIds, resources, sourcePattern, targetIds, version, workflowId]);
+    return null;
+  };
+
+  const bindingPayload = useCallback(() => ({
+    machineIds, fileProfileIds: profileIds, workflowId, workflowVersion: version,
+    sourceResourcePattern: sourcePattern, targetResourceIds: targetIds,
+    triggerKind, cron: cron || null, timezone: timezone || null,
+    parameters: Object.fromEntries(runParameters.split(";").map((pair) => pair.split("="))
+      .filter((parts) => parts.length === 2 && parts[0].trim() && parts[1].trim())
+      .map((parts) => [parts[0].trim(), parts[1].trim()])),
+    exclusions: exclusions.split(/[,\n;]/).map((item: string) => item.trim()).filter(Boolean),
+  }), [cron, exclusions, machineIds, profileIds, runParameters, sourcePattern, targetIds, timezone, triggerKind, version, workflowId]);
+
+  const serverPreview = useCallback(async (payload: Record<string, unknown>) => {
+    // The command returns no HTTP body; its per-request query carries the
+    // report back. A concurrent tab cannot overwrite this caller's result.
+    const requestId = newRequestId();
+    await ctx.hubCommand("industrial/preview-bindings", { ...payload, requestId });
+    const report = await ctx.hubQuery(`industrial/preview-result/${requestId}`) as any;
+    setBindingPreviewReport(report);
+    return report;
+  }, [ctx]);
 
   const create = useCallback(async () => {
     if (!workflowId || machineIds.length === 0 || profileIds.length === 0 || targetIds.length === 0) {
       setError("请选择工作流、机台、文件配置和目标资源"); return;
     }
-    const payload = {
-      machineIds, fileProfileIds: profileIds, workflowId, workflowVersion: version,
-      sourceResourcePattern: sourcePattern, targetResourceIds: targetIds,
-      triggerKind, cron: cron || null,
-      parameters: Object.fromEntries(runParameters.split(";").map((pair) => pair.split("="))
-        .filter((parts) => parts.length === 2 && parts[0].trim() && parts[1].trim())
-        .map((parts) => [parts[0].trim(), parts[1].trim()])),
-      exclusions: exclusions.split(/[,\n;]/).map((item: string) => item.trim()).filter(Boolean),
-    };
+    const scheduleError = validateSchedule();
+    if (scheduleError) { setError(scheduleError); return; }
+    const payload = bindingPayload();
     setBusy(true); setError(null);
     try {
-      await ctx.hubCommand("industrial/preview-bindings", payload);
-      const report = await ctx.hubQuery("industrial/binding-preview") as any;
-      setBindingPreviewReport(report);
+      const report = await serverPreview(payload);
       if ((report?.errors?.length ?? 0) > 0 || (report?.missing?.length ?? 0) > 0 ||
           (report?.conflicts?.length ?? 0) > 0) {
         setError("服务端预览发现问题，请检查冲突、缺失资源或例外规则后再创建");
@@ -107,7 +120,7 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
       await load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
-  }, [ctx, cron, exclusions, load, profileIds, runParameters, sourcePattern, targetIds, triggerKind, version, workflowId, machineIds]);
+  }, [bindingPayload, ctx, load, machineIds, profileIds, serverPreview, targetIds, workflowId]);
 
   const setEnabled = useCallback(async (binding: any, enabled: boolean) => {
     setBusy(true); setError(null);
@@ -162,24 +175,20 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
   }, [ctx, load]);
 
   const previewBindings = useCallback(async () => {
+    const scheduleError = validateSchedule();
+    if (scheduleError) { setError(scheduleError); return; }
     setBusy(true); setError(null);
-    try {
-      await ctx.hubCommand("industrial/preview-bindings", {
-        machineIds, fileProfileIds: profileIds, workflowId, workflowVersion: version,
-        sourceResourcePattern: sourcePattern, targetResourceIds: targetIds,
-        triggerKind, cron: cron || null,
-        exclusions: exclusions.split(/[,\n;]/).map((item: string) => item.trim()).filter(Boolean),
-      });
-      setBindingPreviewReport(await ctx.hubQuery("industrial/binding-preview"));
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    try { await serverPreview(bindingPayload()); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
-  }, [ctx, cron, exclusions, machineIds, profileIds, profileIds, sourcePattern, targetIds, triggerKind, version, workflowId]);
+  }, [bindingPayload, serverPreview]);
 
   const previewImport = useCallback(async () => {
     setBusy(true); setError(null);
     try {
-      await ctx.hubCommand("industrial/preview-import", { csv: bindingCsv });
-      setImportPreviewReport(await ctx.hubQuery("industrial/import-preview"));
+      const requestId = newRequestId();
+      await ctx.hubCommand("industrial/preview-import", { csv: bindingCsv, requestId });
+      setImportPreviewReport(await ctx.hubQuery(`industrial/preview-result/${requestId}`));
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
   }, [ctx, bindingCsv]);
@@ -223,7 +232,7 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
 
   const parseMap = (text: string): Record<string, string> => {
     const result: Record<string, string> = {};
-    for (const pair of text.split(/[\n,]/)) {
+    for (const pair of text.split(/[\n,;]/)) {
       const [from, to] = pair.split("=").map((part) => part?.trim());
       if (from && to) result[from] = to;
     }
@@ -243,12 +252,19 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
   }, []);
 
   const importConfig = useCallback(async () => {
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setImportReport(null);
     try {
       const payload = JSON.parse(packageText);
-      payload.resourceMap = parseMap(resourceMap);
-      payload.credentialMap = parseMap(credentialMap);
-      await ctx.hubCommand("industrial/import-config", payload);
+      // Blank mapping inputs must not erase mappings carried by the package.
+      const resources = parseMap(resourceMap);
+      const credentials = parseMap(credentialMap);
+      if (Object.keys(resources).length > 0)
+        payload.resourceMap = { ...(payload.resourceMap ?? {}), ...resources };
+      if (Object.keys(credentials).length > 0)
+        payload.credentialMap = { ...(payload.credentialMap ?? {}), ...credentials };
+      const requestId = newRequestId();
+      await ctx.hubCommand("industrial/import-config", { ...payload, requestId });
+      setImportReport(await ctx.hubQuery(`industrial/preview-result/${requestId}`));
       await load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
@@ -282,6 +298,8 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
         </select>
         <Input aria-label="绑定 Cron" placeholder="cron（定时策略）" value={cron}
           onChange={(e: any) => setCron(e.target.value)} />
+        <Input aria-label="绑定时区" placeholder="时区（可选，如 Asia/Shanghai）" value={timezone}
+          onChange={(e: any) => setTimezone(e.target.value)} />
         <Input aria-label="来源资源模板" placeholder="来源资源模板，{machine} 占位符" value={sourcePattern}
           onChange={(e: any) => setSourcePattern(e.target.value)} />
         <Input aria-label="运行参数" placeholder="运行参数，如 lookbackDays=7;shift=day" value={runParameters}
@@ -294,9 +312,8 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
         <Button size="small" onClick={() => setProfileIds(profiles.map((item) => item.id))}>全选文件配置</Button>
         <Button size="small" onClick={() => { setMachineIds([]); setProfileIds([]); }}>清空范围</Button>
       </Space>
-      <Alert type="info" showIcon
-        message={`预计生成 ${preview.total} 条绑定；可创建 ${preview.create} 条`}
-        description={`冲突 ${preview.conflicts.length} 条；缺失资源 ${preview.missing.length} 条`} />
+      {/* No client-side preview: conflicts, exclusions and published versions
+          are decided by the server's preview command for this request. */}
       <Space wrap>
         <Button type="primary" loading={busy} onClick={() => void create()}>生成绑定</Button>
         <Button loading={busy} onClick={() => void previewBindings()}>预览绑定</Button>
@@ -361,6 +378,13 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
             onChange={(event: any) => void loadPackageFile(event.target.files?.[0])} />
         </label>
       </Space>
+      {importReport && (
+        <Alert type="warning" showIcon data-testid="config-import-report"
+          message={`配置导入：工作流 ${importReport.workflows ?? 0} · 机台 ${importReport.machines ?? 0} · 资源 ${importReport.resources ?? 0} · 绑定 ${importReport.bindings ?? 0}`}
+          description={importReport.publishRequired
+            ? "导入的工作流保存为草稿，必须在设计器中发布到声明版本后绑定才能运行。"
+            : importReport.message} />
+      )}
       {packageMeta?.dependencies && (
         <Alert type="info" showIcon data-testid="package-dependencies"
           message={`配置包 v${packageMeta.formatVersion ?? 1} · ${packageMeta.dependencies.length} 项依赖`}
@@ -375,8 +399,16 @@ export function BindingConsole({ block, ctx }: { block?: { query?: string }; ctx
         placeholder="导出后可跨环境导入；资源 ID 需自行映射" onChange={(e: any) => setPackageText(e.target.value)} />
       <Input aria-label="绑定筛选" placeholder="按绑定名称/ID筛选" value={filter}
         onChange={(e: any) => setFilter(e.target.value)} />
-      <Table rowKey="id" dataSource={bindings.filter((row) =>
-        !filter || `${row.id} ${row.name}`.includes(filter))} pagination={{ pageSize: 20 }}
+      <Table rowKey="id" dataSource={bindings.filter((row) => {
+        const needle = filter.trim().toLocaleLowerCase();
+        if (!needle) return true;
+        // Search every visible column, case-insensitively.
+        return [row.id, row.name, row.machineId, row.fileProfileId, row.workflowId,
+          row.workflowVersion, row.sourceResourceId,
+          ...(row.targetResourceIds ?? []),
+          ...Object.entries(row.parameters ?? {}).flatMap(([key, value]) => [key, String(value)]),
+          row.enabled ? "恢复" : "暂停"].some((value) => String(value ?? "").toLocaleLowerCase().includes(needle));
+      })} pagination={{ pageSize: 20 }}
         columns={[
           { title: "绑定", dataIndex: "name" },
           { title: "机台", dataIndex: "machineId" },

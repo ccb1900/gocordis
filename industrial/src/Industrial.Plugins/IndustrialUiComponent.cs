@@ -36,6 +36,12 @@ public sealed class IndustrialUiComponent : Component
 
     private readonly IReadOnlyDictionary<string, object?> _config;
     private readonly ConcurrentDictionary<string, ResourceTestResult> _resourceTests = new(StringComparer.Ordinal);
+    // Preview results are per-request: the command stores a report under the
+    // caller's request id and publishes a short-lived query under that id. No
+    // tab can read another tab's preview, and a stale id cannot gate creation.
+    private readonly ConcurrentDictionary<string, JsonObject> _previewResults = new(StringComparer.Ordinal);
+    private readonly ConcurrentQueue<string> _previewOrder = new();
+    private const int MaxPreviewResults = 16;
     private JsonObject? _lastImportPreview;
     private JsonObject? _lastBindingPreview;
 
@@ -435,27 +441,37 @@ public sealed class IndustrialUiComponent : Component
                 }).ToArray())),
             ("industrial/file-samples", () =>
             {
+                // Diagnostic preview only: never read an arbitrary configured
+                // path, and never echo raw file content outside approved roots.
                 var result = new JsonObject();
+                var approved = ApprovedRoots();
+                if (approved.Length == 0) return result;
                 foreach (var resource in resources.ListAsync().GetAwaiter().GetResult())
                 {
+                    if (!resource.Enabled || resource.Type is not ("filesystem.local" or "filesystem.unc")) continue;
                     try
                     {
                         var root = resource.Configuration.TryGetValue("root", out var configured)
                             ? configured?.ToString() : null;
                         if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) continue;
-                        var file = Directory.GetFiles(root, "*.*", SearchOption.TopDirectoryOnly)
+                        var fullRoot = Path.GetFullPath(root);
+                        if (!IsApproved(fullRoot, approved)) continue;
+                        var file = Directory.GetFiles(fullRoot, "*.*", SearchOption.TopDirectoryOnly)
+                            .Where(path => IsApproved(Path.GetFullPath(path), approved))
                             .OrderByDescending(path => File.GetLastWriteTimeUtc(path)).FirstOrDefault();
                         if (file is null) continue;
                         result[resource.Id] = new JsonArray(File.ReadLines(file).Take(4)
-                            .Select(line => (JsonNode?)JsonValue.Create(line)).ToArray());
+                            .Select(line => (JsonNode?)JsonValue.Create(RedactSample(line))).ToArray());
                     }
                     catch (IOException) { /* sample is diagnostics only */ }
                     catch (UnauthorizedAccessException) { }
+                    catch (ArgumentException) { /* malformed path is not a sample */ }
+                    catch (NotSupportedException) { }
                 }
                 return result;
             }),
             ("industrial/export-config", () => (JsonNode)ConfigurationPackage(
-                workflows, nodes, resources, fileProfiles, configBindings)),
+                workflows, nodes, resources, fileProfiles, configBindings, machines, credentials)),
             ("industrial/binding-preview", () => _lastBindingPreview is null
                 ? null : (JsonNode)_lastBindingPreview.DeepClone()),
             ("industrial/import-preview", () => _lastImportPreview is null
@@ -541,21 +557,28 @@ public sealed class IndustrialUiComponent : Component
                 api.RegisterCommand("industrial/delete-machine", payload =>
                     new ValueTask(DeleteMachineAsync(payload, machines, bindings).AsTask()), owner);
                 api.RegisterCommand("industrial/save-resource", payload =>
-                    new ValueTask(SaveResourceAsync(payload, resources).AsTask()), owner);
+                    new ValueTask(SaveResourceAsync(payload, resources, _resourceTests).AsTask()), owner);
                 api.RegisterCommand("industrial/delete-resource", payload =>
-                    new ValueTask(DeleteResourceAsync(payload, resources, workflows, bindings).AsTask()), owner);
+                    new ValueTask(DeleteResourceAsync(payload, resources, workflows, bindings, _resourceTests).AsTask()), owner);
                 api.RegisterCommand("industrial/save-credential", payload =>
-                    new ValueTask(SaveCredentialAsync(payload, credentials).AsTask()), owner);
+                    new ValueTask(SaveCredentialAsync(payload, credentials, resources, _resourceTests).AsTask()), owner);
                 api.RegisterCommand("industrial/rotate-credential", payload =>
-                    new ValueTask(RotateCredentialAsync(payload, credentials).AsTask()), owner);
+                    new ValueTask(RotateCredentialAsync(payload, credentials, resources, _resourceTests).AsTask()), owner);
                 api.RegisterCommand("industrial/delete-credential", payload =>
-                    new ValueTask(DeleteCredentialAsync(payload, credentials, resources, machines).AsTask()), owner);
+                    new ValueTask(DeleteCredentialAsync(payload, credentials, resources, machines, _resourceTests).AsTask()), owner);
                 api.RegisterCommand("industrial/upgrade-binding-version", payload =>
                     new ValueTask(UpgradeBindingVersionAsync(payload, bindings, workflows).AsTask()), owner);
                 api.RegisterCommand("industrial/set-binding-enabled", payload =>
                     new ValueTask(SetBindingEnabledAsync(payload, bindings).AsTask()), owner);
                 api.RegisterCommand("industrial/import-config", payload =>
-                    new ValueTask(ImportConfigAsync(payload, workflows, nodes, fileProfiles, bindings).AsTask()), owner);
+                {
+                    var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+                    var requestId = ReadRequestId(body);
+                    var report = ImportConfigAsync(body, workflows, nodes, fileProfiles, bindings,
+                        machines, credentials, resources, _resourceTests).GetAwaiter().GetResult();
+                    PublishPreview(api, owner, requestId, report);
+                    return ValueTask.CompletedTask;
+                }, owner);
                 api.RegisterCommand("industrial/import-file-profiles", payload =>
                     new ValueTask(ImportFileProfilesAsync(payload, fileProfiles).AsTask()), owner);
                 api.RegisterCommand("industrial/import-bindings", payload =>
@@ -563,11 +586,30 @@ public sealed class IndustrialUiComponent : Component
                 api.RegisterCommand("industrial/import-machines", payload =>
                     new ValueTask(ImportMachinesAsync(payload, machines).AsTask()), owner);
                 api.RegisterCommand("industrial/preview-import", payload =>
-                    new ValueTask(PreviewImportAsync(payload).AsTask()), owner);
+                {
+                    var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+                    var requestId = ReadRequestId(body);
+                    var report = PreviewImportReport(body);
+                    PublishPreview(api, owner, requestId, report);
+                    _lastImportPreview = report;
+                    return ValueTask.CompletedTask;
+                }, owner);
                 api.RegisterCommand("industrial/save-file-profile", payload =>
                     new ValueTask(SaveFileProfileAsync(payload, fileProfiles).AsTask()), owner);
                 api.RegisterCommand("industrial/preview-bindings", payload =>
-                    new ValueTask(PreviewBindingsAsync(payload, bindings).AsTask()), owner);
+                {
+                    var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+                    var requestId = ReadRequestId(body);
+                    var request = ReadBindingRequest(body);
+                    ValidateTrigger(request.TriggerKind, request.Cron, RequestTimezone(body, request), "preview-bindings");
+                    var preview = bindings.PreviewBulkAsync(request.MachineIds, request.FileProfileIds,
+                        request.WorkflowId, request.WorkflowVersion, request.SourceResourcePattern,
+                        request.TargetResourceIds, request.Exclusions).GetAwaiter().GetResult();
+                    var report = BindingPreviewReport(preview);
+                    PublishPreview(api, owner, requestId, report);
+                    _lastBindingPreview = report;
+                    return ValueTask.CompletedTask;
+                }, owner);
                 api.RegisterCommand("industrial/create-bindings", payload =>
                     new ValueTask(CreateBindingsAsync(payload, bindings).AsTask()), owner);
                 return ValueTask.CompletedTask;
@@ -579,6 +621,199 @@ public sealed class IndustrialUiComponent : Component
 
     private static string? Text(JsonObject? body, string key) =>
         body?[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+
+    private static string[] SplitList(string? value) =>
+        (value ?? string.Empty).Split([',', ';', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => part.Trim()).Where(part => part.Length > 0).ToArray();
+
+    private static string ProviderFor(string type) => type switch
+    {
+        "filesystem.local" or "filesystem.unc" => "local",
+        "sqlserver" or "postgresql" or "mysql" or "sqlite" => type,
+        _ => "manual",
+    };
+
+    // Keys that describe one connection shape. A type change must retire the
+    // old shape's keys; an empty input deletes the specific key the user
+    // cleared (instead of silently keeping a stale value).
+    private static string[] TypeConfigKeys(string type) => type switch
+    {
+        "filesystem.local" or "filesystem.unc" => ["root", "path"],
+        "sqlserver" => ["server", "host", "database", "initialCatalog", "initial_catalog", "table"],
+        "postgresql" or "mysql" => ["host", "database", "port"],
+        "sqlite" => ["database", "path", "port"],
+        _ => [],
+    };
+
+    private static Dictionary<string, object?> MergedConfiguration(
+        JsonNode? payload, ResourceDefinition? existing, string type)
+    {
+        var config = existing is null
+            ? new Dictionary<string, object?>(StringComparer.Ordinal)
+            : existing.Configuration.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        Dictionary<string, object?>? incoming = payload switch
+        {
+            JsonObject map => JsonSerializer.Deserialize<Dictionary<string, object?>>(map.ToJsonString()),
+            JsonValue value when value.TryGetValue<string>(out var json) && !string.IsNullOrWhiteSpace(json) =>
+                JsonSerializer.Deserialize<Dictionary<string, object?>>(json),
+            _ => null,
+        };
+        if (incoming is not null)
+        {
+            foreach (var (key, value) in incoming)
+            {
+                if (value is null || value is string text && string.IsNullOrWhiteSpace(text)) config.Remove(key);
+                else config[key] = value;
+            }
+        }
+        if (existing is not null && !string.Equals(existing.Type, type, StringComparison.Ordinal))
+        {
+            var retained = TypeConfigKeys(type).ToHashSet(StringComparer.Ordinal);
+            foreach (var key in TypeConfigKeys(existing.Type))
+                if (!retained.Contains(key)) config.Remove(key);
+        }
+        return config;
+    }
+
+    /// <summary>Pragmatic five-to-seven field cron check. Elsa/Cronos remains
+    /// the execution authority; this guard only rejects values that can never
+    /// parse, so a bad schedule cannot be stored without an error.</summary>
+    private static bool CronIsValid(string? cron)
+    {
+        if (string.IsNullOrWhiteSpace(cron)) return false;
+        var fields = cron.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (fields.Length is < 5 or > 7) return false;
+        var months = new[] { "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC" };
+        var days = new[] { "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
+        int[] limits = fields.Length switch
+        {
+            5 => [59, 23, 31, 12, 7],
+            6 => [59, 59, 23, 31, 12, 7],
+            _ => [59, 59, 23, 31, 12, 7, 9999],
+        };
+        for (var position = 0; position < fields.Length; position++)
+        {
+            var field = fields[position];
+            if (field.Length == 0 || field.Any(ch =>
+                    !(char.IsAsciiLetterOrDigit(ch) || ch is '*' or '?' or ',' or '-' or '/' or '#' or 'L' or 'W')))
+                return false;
+            foreach (var piece in field.Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var term = piece.Split('/').FirstOrDefault() ?? string.Empty;
+                term = term.TrimEnd('L', 'W');
+                if (term.Length == 0 || term is "*" or "?") continue;
+                if (term.Contains('#'))
+                {
+                    var parts = term.Split('#');
+                    var weekdayLimit = fields.Length == 5 ? limits[4] : fields.Length == 6 ? limits[5] : limits[6];
+                    if (parts.Length != 2 || !int.TryParse(parts[0], out var ordinal) ||
+                        !int.TryParse(parts[1], out var weekday) || ordinal < 1 || weekday > weekdayLimit) return false;
+                    continue;
+                }
+                if (months.Contains(term, StringComparer.OrdinalIgnoreCase) ||
+                    days.Contains(term, StringComparer.OrdinalIgnoreCase)) continue;
+                var endpoints = term.Split('-');
+                if (endpoints.Any(endpoint => !int.TryParse(endpoint, out var number) ||
+                                              number < 0 || number > limits[position])) return false;
+                if (term.All(char.IsAsciiDigit)) continue;
+            }
+        }
+        return true;
+    }
+
+    private static void ValidateTrigger(string kind, string? cron, string? timezone, string where)
+    {
+        if (kind is not ("manual" or "schedule" or "event"))
+            throw new InvalidOperationException($"{where}: unknown trigger kind '{kind}'");
+        if (kind == "schedule" && !CronIsValid(cron))
+            throw new InvalidOperationException($"{where}: schedule trigger requires a valid cron expression, got '{cron}'");
+        if (!string.IsNullOrWhiteSpace(timezone) &&
+            !TimeZoneInfo.TryFindSystemTimeZoneById(timezone, out _))
+            throw new InvalidOperationException($"{where}: unknown timezone '{timezone}'");
+    }
+
+    // The UI documents Python-style named groups; .NET uses (?<name>...).
+    // Normalize at the boundary so the stored rule is executable as-is.
+    private static string NormalizeRegex(string pattern) =>
+        pattern.Replace("(?P<", "(?<", StringComparison.Ordinal);
+
+    private static void ValidateMetadataPattern(string pattern, string where)
+    {
+        if (string.IsNullOrWhiteSpace(pattern)) return;
+        try { _ = new Regex(NormalizeRegex(pattern)); }
+        catch (ArgumentException ex)
+        {
+            throw new InvalidOperationException($"{where}: invalid metadata regex '{pattern}': {ex.Message}");
+        }
+    }
+
+    private string[] ApprovedRoots()
+    {
+        var candidates = new List<string>();
+        foreach (var key in new[] { "sampleDataRoots", "dataRoots", "dataRoot", "sourceRoot", "root" })
+            if (_config.TryGetValue(key, out var configured) && configured is not null)
+                candidates.AddRange(SplitList(configured.ToString()));
+        // Packaged hosts load declarations from the app manifest, so the
+        // component config may be empty even when the host exported these
+        // roots as environment variables.
+        foreach (var key in new[]
+                 {
+                     "GOCORDIS_INDUSTRIAL_DATA_ROOTS", "GOCORDIS_INDUSTRIAL_SOURCE_ROOT",
+                     "GOCORDIS_INDUSTRIAL_ROOT",
+                 })
+        {
+            var value = Environment.GetEnvironmentVariable(key);
+            if (!string.IsNullOrWhiteSpace(value)) candidates.AddRange(SplitList(value));
+        }
+        return candidates.Select(path =>
+        {
+            try { return Path.GetFullPath(path); }
+            catch { return null; }
+        }).Where(path => path is not null).Select(path => path!)
+            .Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    private static bool IsApproved(string fullPath, string[] approved)
+    {
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return approved.Any(root => fullPath.Equals(root, comparison) ||
+            fullPath.StartsWith(root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, comparison));
+    }
+
+    private static string RedactSample(string line)
+    {
+        const int limit = 240;
+        var redacted = Regex.Replace(line,
+            @"(?i)(password|passwd|secret|token|api[_-]?key|connectionstring)\s*[""']?\s*[=:]\s*[""']?[^,;\s""'}]+",
+            "$1=***");
+        return redacted.Length <= limit ? redacted : redacted[..limit] + "…（已截断）";
+    }
+
+    private static string PreviewQueryName(string requestId) => $"industrial/preview-result/{requestId}";
+
+    private static string ReadRequestId(JsonObject body)
+    {
+        var id = Text(body, "requestId");
+        if (string.IsNullOrWhiteSpace(id)) return Guid.NewGuid().ToString("N");
+        if (id.Length > 80 || id.Any(ch => !(char.IsAsciiLetterOrDigit(ch) || ch is '-' or '_')))
+            throw new InvalidOperationException("invalid preview requestId");
+        return id;
+    }
+
+    private void PublishPreview(ApiGateway api, ContributionOwner owner, string requestId, JsonObject report)
+    {
+        var name = PreviewQueryName(requestId);
+        if (!_previewResults.ContainsKey(requestId))
+            api.RegisterQuery(name, () => _previewResults.TryGetValue(requestId, out var stored)
+                ? (JsonNode?)stored.DeepClone() : null, owner);
+        _previewResults[requestId] = report;
+        _previewOrder.Enqueue(requestId);
+        while (_previewResults.Count > MaxPreviewResults && _previewOrder.TryDequeue(out var oldest))
+        {
+            _previewResults.TryRemove(oldest, out _);
+            api.UnregisterQuery(owner, PreviewQueryName(oldest));
+        }
+    }
 
     /// <summary>One import surface for CSV text and .xlsx workbooks. The browser
     /// sends an Excel file as base64; both formats become the same header + rows
@@ -644,17 +879,26 @@ public sealed class IndustrialUiComponent : Component
     /// <summary>A portable template/config package: explicit format version,
     /// node/resource/credential dependencies, and template parameter names. It
     /// never carries credential secrets or database connection strings.</summary>
+    private static readonly string[] SafeResourceConfigKeys =
+        ["root", "path", "server", "host", "database", "port", "table", "directoryPattern", "fileNamePattern"];
+
     private static JsonObject ConfigurationPackage(
         IWorkflowRegistry workflows, INodeCatalog nodes, IResourceRegistry resources,
-        IFileProfileRegistry profiles, ICollectionBindingRegistry bindings)
+        IFileProfileRegistry profiles, ICollectionBindingRegistry bindings,
+        IMachineRegistry machines, ICredentialVault credentials)
     {
         var definitions = workflows.ListAsync().GetAwaiter().GetResult();
         var descriptors = nodes.ListAsync().GetAwaiter().GetResult();
         var resourceRows = resources.ListAsync().GetAwaiter().GetResult();
         var profileRows = profiles.ListAsync().GetAwaiter().GetResult();
         var bindingRows = bindings.ListAsync().GetAwaiter().GetResult();
+        var machineRows = machines.ListAsync().GetAwaiter().GetResult();
+        var credentialRows = credentials.ListAsync().GetAwaiter().GetResult();
         var nodeIds = new SortedSet<string>(StringComparer.Ordinal);
         var resourceIds = new SortedSet<string>(StringComparer.Ordinal);
+        var profileIds = new SortedSet<string>(StringComparer.Ordinal);
+        var machineIds = new SortedSet<string>(StringComparer.Ordinal);
+        var workflowIds = new SortedSet<string>(StringComparer.Ordinal);
         var credentialIds = new SortedSet<string>(StringComparer.Ordinal);
         var parameters = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -672,6 +916,7 @@ public sealed class IndustrialUiComponent : Component
 
         foreach (var definition in definitions)
         {
+            workflowIds.Add(definition.WorkflowId);
             foreach (var node in definition.Nodes)
             {
                 nodeIds.Add(node.Type);
@@ -687,11 +932,20 @@ public sealed class IndustrialUiComponent : Component
         {
             Resource(binding.SourceResourceId);
             foreach (var target in binding.TargetResourceIds) Resource(target);
+            if (!string.IsNullOrWhiteSpace(binding.FileProfileId)) profileIds.Add(binding.FileProfileId);
+            if (!string.IsNullOrWhiteSpace(binding.MachineId)) machineIds.Add(binding.MachineId);
+            if (!string.IsNullOrWhiteSpace(binding.WorkflowId)) workflowIds.Add(binding.WorkflowId);
             Scan(binding.FileProfileId);
         }
         foreach (var resource in resourceRows)
-            if (!string.IsNullOrWhiteSpace(resource.CredentialId))
-                credentialIds.Add(resource.CredentialId);
+        {
+            Resource(resource.Id);
+            if (!string.IsNullOrWhiteSpace(resource.CredentialId)) credentialIds.Add(resource.CredentialId);
+            if (!string.IsNullOrWhiteSpace(resource.MachineId)) machineIds.Add(resource.MachineId);
+        }
+        foreach (var machine in machineRows)
+            if (!string.IsNullOrWhiteSpace(machine.CredentialId)) credentialIds.Add(machine.CredentialId);
+        foreach (var credential in credentialRows) credentialIds.Add(credential.Id);
 
         var dependencies = new JsonArray();
         foreach (var id in nodeIds)
@@ -712,8 +966,23 @@ public sealed class IndustrialUiComponent : Component
         foreach (var id in profileRows.Select(profile => profile.Id).Distinct(StringComparer.Ordinal))
             dependencies.Add((JsonNode)new JsonObject
             {
-                ["kind"] = "fileProfile", ["id"] = id, ["required"] = false,
+                ["kind"] = "fileProfile", ["id"] = id, ["required"] = profileIds.Contains(id),
             });
+        foreach (var id in machineRows.Select(machine => machine.Id).Distinct(StringComparer.Ordinal))
+            dependencies.Add((JsonNode)new JsonObject
+            {
+                ["kind"] = "machine", ["id"] = id, ["required"] = machineIds.Contains(id),
+            });
+        foreach (var id in workflowIds)
+        {
+            var declared = definitions.FirstOrDefault(item =>
+                string.Equals(item.WorkflowId, id, StringComparison.Ordinal));
+            dependencies.Add((JsonNode)new JsonObject
+            {
+                ["kind"] = "workflow", ["id"] = id,
+                ["version"] = declared?.Version.ToString() ?? string.Empty, ["required"] = true,
+            });
+        }
         foreach (var id in credentialIds)
             dependencies.Add((JsonNode)new JsonObject
             {
@@ -733,6 +1002,26 @@ public sealed class IndustrialUiComponent : Component
                 .Select(item => (JsonNode?)JsonSerializer.SerializeToNode(item, WireJson)).ToArray()),
             ["fileProfiles"] = new JsonArray(profileRows
                 .Select(item => (JsonNode?)JsonSerializer.SerializeToNode(item, WireJson)).ToArray()),
+            ["machines"] = new JsonArray(machineRows
+                .Select(item => (JsonNode?)JsonSerializer.SerializeToNode(item, WireJson)).ToArray()),
+            ["resources"] = new JsonArray(resourceRows.Select(item => (JsonNode)new JsonObject
+            {
+                ["id"] = item.Id, ["name"] = item.Name, ["type"] = item.Type,
+                ["provider"] = item.Provider, ["enabled"] = item.Enabled,
+                ["version"] = item.Version, ["machineId"] = item.MachineId is null
+                    ? null : JsonValue.Create(item.MachineId),
+                ["credentialId"] = item.CredentialId is null
+                    ? null : JsonValue.Create(item.CredentialId),
+                // Allow-listed connection fields only: no secrets, no connection strings.
+                ["config"] = JsonSerializer.SerializeToNode(item.Configuration
+                    .Where(pair => SafeResourceConfigKeys.Contains(pair.Key))
+                    .ToDictionary(pair => pair.Key, pair => pair.Value), WireJson),
+            }).ToArray()),
+            ["credentials"] = new JsonArray(credentialRows.Select(item => (JsonNode)new JsonObject
+            {
+                ["id"] = item.Id, ["name"] = item.Name, ["kind"] = item.Kind,
+                ["version"] = item.Version,
+            }).ToArray()),
             ["bindings"] = new JsonArray(bindingRows
                 .Select(item => (JsonNode?)JsonSerializer.SerializeToNode(item, WireJson)).ToArray()),
         };
@@ -769,33 +1058,36 @@ public sealed class IndustrialUiComponent : Component
         await machines.RemoveAsync(id);
     }
 
-    private static async ValueTask SaveResourceAsync(JsonNode? payload, IResourceRegistry resources)
+    private static async ValueTask SaveResourceAsync(
+        JsonNode? payload, IResourceRegistry resources,
+        ConcurrentDictionary<string, ResourceTestResult> results)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var id = Text(body, "id") ?? throw new InvalidOperationException("resource id is required");
         var existing = await resources.GetAsync(id);
-        var configuration = body["config"] switch
-        {
-            JsonObject config => JsonSerializer.Deserialize<Dictionary<string, object?>>(config.ToJsonString()) ?? [],
-            JsonValue value when value.TryGetValue<string>(out var json) && !string.IsNullOrWhiteSpace(json) =>
-                JsonSerializer.Deserialize<Dictionary<string, object?>>(json) ?? [],
-            // An edit that only changes name/credential/enabled must not erase
-            // the stored connection configuration.
-            null => existing?.Configuration.ToDictionary(pair => pair.Key, pair => pair.Value,
-                        StringComparer.Ordinal) ?? new Dictionary<string, object?>(),
-            _ => new Dictionary<string, object?>(),
-        };
-        var credentialId = body["credentialId"] is null
-            ? existing?.CredentialId
-            : Text(body, "credentialId");
+        var type = Text(body, "type") ?? existing?.Type ?? "unknown";
+        // An edit that only changes name/credential/enabled must not erase the
+        // stored connection configuration; a supplied config deletes cleared
+        // keys and retires keys belonging to the previous resource type.
+        var configuration = MergedConfiguration(body["config"], existing, type);
+        // ContainsKey distinguishes "field not submitted" from "explicitly
+        // cleared with null": only the latter unbinds the credential.
+        var credentialId = body.ContainsKey("credentialId")
+            ? (body["credentialId"] is null ? null : Text(body, "credentialId"))
+            : existing?.CredentialId;
         var enabled = body["enabled"] is JsonValue flag && flag.TryGetValue<bool>(out var isEnabled)
             ? isEnabled
             : existing?.Enabled ?? true;
+        var provider = Text(body, "provider");
+        if (string.IsNullOrWhiteSpace(provider) ||
+            !string.Equals(provider, existing?.Provider, StringComparison.Ordinal) &&
+            !string.Equals(type, existing?.Type, StringComparison.Ordinal))
+            provider = ProviderFor(type);
         await resources.RegisterAsync(new ResourceDefinition(
             id,
-            Text(body, "type") ?? existing?.Type ?? "unknown",
+            type,
             Text(body, "name") ?? id,
-            Text(body, "provider") ?? existing?.Provider ?? "manual",
+            provider ?? "manual",
             configuration,
             credentialId,
             existing?.Version ?? 0,
@@ -805,11 +1097,14 @@ public sealed class IndustrialUiComponent : Component
             body.ContainsKey("machineId")
                 ? (body["machineId"] is null ? null : Text(body, "machineId"))
                 : existing?.MachineId));
+        // A saved resource is a new connection: any prior test result is stale.
+        results.TryRemove(id, out _);
     }
 
     private static async ValueTask DeleteResourceAsync(
         JsonNode? payload, IResourceRegistry resources,
-        IWorkflowRegistry workflows, ICollectionBindingRegistry bindings)
+        IWorkflowRegistry workflows, ICollectionBindingRegistry bindings,
+        ConcurrentDictionary<string, ResourceTestResult> results)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var id = Text(body, "id") ?? throw new InvalidOperationException("resource id is required");
@@ -835,24 +1130,45 @@ public sealed class IndustrialUiComponent : Component
                 $"resource '{id}' is still referenced by {string.Join(", ", references.Distinct().Take(5))}; " +
                 "remove those references before deleting it");
         await resources.RemoveAsync(id);
+        results.TryRemove(id, out _);
     }
 
-    private static async ValueTask SaveCredentialAsync(JsonNode? payload, ICredentialVault credentials)
+    private static async ValueTask SaveCredentialAsync(
+        JsonNode? payload, ICredentialVault credentials,
+        IResourceRegistry resources, ConcurrentDictionary<string, ResourceTestResult> results)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var id = Text(body, "id") ?? throw new InvalidOperationException("credential id is required");
         var kind = Text(body, "kind") ?? CredentialKinds.UsernamePassword;
         if (!CredentialKinds.All.Contains(kind, StringComparer.Ordinal))
             throw new InvalidOperationException($"unsupported credential kind '{kind}'");
-        await credentials.PutAsync(id, Text(body, "name") ?? id,
-            kind, Text(body, "secret") ?? string.Empty);
+        var secret = Text(body, "secret");
+        if (string.IsNullOrWhiteSpace(secret))
+            throw new InvalidOperationException("credential secret must not be empty");
+        await credentials.PutAsync(id, Text(body, "name") ?? id, kind, secret);
+        InvalidateCredentialTests(id, resources, results);
     }
 
-    private static async ValueTask RotateCredentialAsync(JsonNode? payload, ICredentialVault credentials)
+    private static async ValueTask RotateCredentialAsync(
+        JsonNode? payload, ICredentialVault credentials,
+        IResourceRegistry resources, ConcurrentDictionary<string, ResourceTestResult> results)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var id = Text(body, "id") ?? throw new InvalidOperationException("credential id is required");
-        await credentials.RotateAsync(id, Text(body, "secret") ?? string.Empty);
+        var secret = Text(body, "secret");
+        if (string.IsNullOrWhiteSpace(secret))
+            throw new InvalidOperationException("credential secret must not be empty");
+        await credentials.RotateAsync(id, secret);
+        InvalidateCredentialTests(id, resources, results);
+    }
+
+    private static void InvalidateCredentialTests(
+        string credentialId, IResourceRegistry resources,
+        ConcurrentDictionary<string, ResourceTestResult> results)
+    {
+        foreach (var resource in resources.ListAsync().GetAwaiter().GetResult())
+            if (string.Equals(resource.CredentialId, credentialId, StringComparison.Ordinal))
+                results.TryRemove(resource.Id, out _);
     }
 
     private static Dictionary<string, string> ReadMap(JsonObject? body)
@@ -900,7 +1216,8 @@ public sealed class IndustrialUiComponent : Component
         await bindings.RegisterAsync(binding with { Enabled = enabled });
     }
 
-    private static void ValidatePackageDependencies(JsonObject body, INodeCatalog nodes, int formatVersion)
+    private static void ValidatePackageDependencies(
+        JsonObject body, int formatVersion, IReadOnlyDictionary<string, HashSet<string>> available)
     {
         if (body["dependencies"] is not JsonArray dependencies)
         {
@@ -908,9 +1225,7 @@ public sealed class IndustrialUiComponent : Component
                 throw new InvalidOperationException("formatVersion 2 requires a dependency manifest");
             return;
         }
-        var available = nodes.ListAsync().GetAwaiter().GetResult()
-            .Select(descriptor => descriptor.NodeTypeId)
-            .ToHashSet(StringComparer.Ordinal);
+        var missing = new List<string>();
         foreach (var entry in dependencies)
         {
             if (entry is not JsonObject dependency)
@@ -923,17 +1238,22 @@ public sealed class IndustrialUiComponent : Component
                 dependency["secretIncluded"] is JsonValue secret && secret.TryGetValue<bool>(out var included) &&
                 included)
                 throw new InvalidOperationException("configuration packages must not include credential secrets");
-            if (kind == "node" && available.Count > 0 &&
-                dependency["required"] is JsonValue required && required.TryGetValue<bool>(out var mandatory) &&
-                mandatory && !available.Contains(id))
-                throw new InvalidOperationException(
-                    $"package requires node type '{id}'; install its provider plugin before import");
+            // An empty catalog is not proof that a required node is installed.
+            if (dependency["required"] is JsonValue required && required.TryGetValue<bool>(out var mandatory) &&
+                mandatory && (!available.TryGetValue(kind, out var ids) || !ids.Contains(id)))
+                missing.Add($"{kind}:{id}");
         }
+        if (missing.Count > 0)
+            throw new InvalidOperationException(
+                "configuration package has unsatisfied dependencies: " + string.Join(", ", missing.Distinct()) +
+                "; install the provider, define/import the dependency, or supply an ID mapping before import");
     }
 
-    private static async ValueTask ImportConfigAsync(
+    private static async ValueTask<JsonObject> ImportConfigAsync(
         JsonNode? payload, IWorkflowRegistry workflows, INodeCatalog nodes,
-        IFileProfileRegistry profiles, ICollectionBindingRegistry bindings)
+        IFileProfileRegistry profiles, ICollectionBindingRegistry bindings,
+        IMachineRegistry machines, ICredentialVault credentials, IResourceRegistry resources,
+        ConcurrentDictionary<string, ResourceTestResult> results)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var format = Text(body, "format");
@@ -945,15 +1265,91 @@ public sealed class IndustrialUiComponent : Component
             : 1;
         if (formatVersion is < 1 or > 2)
             throw new InvalidOperationException($"unsupported configuration package formatVersion {formatVersion}");
-        ValidatePackageDependencies(body, nodes, formatVersion);
         var resourceMap = ReadMap(body["resourceMap"] as JsonObject);
         var credentialMap = ReadMap(body["credentialMap"] as JsonObject);
-        string Map(string? value)
+        // Kind-aware mapping: a credential alias never rewrites a resource id.
+        string MapResource(string? value)
         {
             if (string.IsNullOrWhiteSpace(value)) return string.Empty;
-            if (credentialMap.TryGetValue(value, out var credential)) return credential;
-            return resourceMap.TryGetValue(value, out var resource) ? resource : value;
+            return resourceMap.TryGetValue(value, out var mapped) ? mapped : value;
         }
+        string MapCredential(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+            return credentialMap.TryGetValue(value, out var mapped) ? mapped : value;
+        }
+
+        HashSet<string> Ids(string key, Func<JsonObject, string?> pick, Func<string?, string> map)
+        {
+            var set = new HashSet<string>(StringComparer.Ordinal);
+            if (body[key] is JsonArray array)
+                foreach (var row in array)
+                    if (row is JsonObject item)
+                    {
+                        var id = map(pick(item));
+                        if (id.Length > 0) set.Add(id);
+                    }
+            return set;
+        }
+        var available = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal)
+        {
+            ["node"] = nodes.ListAsync().GetAwaiter().GetResult()
+                .Select(descriptor => descriptor.NodeTypeId).ToHashSet(StringComparer.Ordinal),
+            ["machine"] = Ids("machines", row => Text(row, "id"), value => value ?? string.Empty).Union(
+                machines.ListAsync().GetAwaiter().GetResult().Select(item => item.Id), StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal),
+            ["resource"] = Ids("resources", row => Text(row, "id"), MapResource).Union(
+                resources.ListAsync().GetAwaiter().GetResult().Select(item => item.Id), StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal),
+            ["fileProfile"] = Ids("fileProfiles", row => Text(row, "id"), value => value ?? string.Empty).Union(
+                profiles.ListAsync().GetAwaiter().GetResult().Select(item => item.Id), StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal),
+            ["credential"] = Ids("credentials", row => Text(row, "id"), MapCredential).Union(
+                credentials.ListAsync().GetAwaiter().GetResult().Select(item => item.Id), StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal),
+            ["workflow"] = Ids("workflows", row => Text(row, "workflowId"), value => value ?? string.Empty).Union(
+                workflows.ListAsync().GetAwaiter().GetResult().Select(item => item.WorkflowId), StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal),
+        };
+        ValidatePackageDependencies(body, formatVersion, available);
+
+        // Validate every binding reference before the first write: a package
+        // that cannot build its bindings must not leave half-imported rows.
+        var bindingProblems = new List<string>();
+        if (body["bindings"] is JsonArray bindingRows)
+        {
+            foreach (var row in bindingRows)
+            {
+                var binding = JsonSerializer.Deserialize<CollectionBindingDefinition>(
+                    row?.ToJsonString() ?? "{}", WireJson);
+                if (binding is null) continue;
+                void Reference(string kind, string? value)
+                {
+                    if (string.IsNullOrWhiteSpace(value)) return;
+                    if (!available[kind].Contains(value))
+                        bindingProblems.Add($"binding '{binding.Id}' references unknown {kind} '{value}'");
+                }
+                Reference("machine", binding.MachineId);
+                Reference("fileProfile", binding.FileProfileId);
+                Reference("workflow", binding.WorkflowId);
+                Reference("resource", MapResource(binding.SourceResourceId));
+                foreach (var target in binding.TargetResourceIds) Reference("resource", MapResource(target));
+                ValidateTrigger(binding.Trigger.Kind, binding.Trigger.Cron,
+                    binding.Trigger.Config.TryGetValue("timezone", out var zone) ? zone?.ToString() : null,
+                    $"binding '{binding.Id}'");
+            }
+        }
+        if (body["workflows"] is JsonArray definitions)
+        {
+            foreach (var row in definitions)
+            {
+                var definition = JsonSerializer.Deserialize<WorkflowDefinition>(row?.ToJsonString() ?? "{}", WireJson);
+                if (definition is null) continue;
+                ValidateTrigger(definition.Trigger.Kind, definition.Trigger.Cron,
+                    definition.Trigger.Config.TryGetValue("timezone", out var zone) ? zone?.ToString() : null,
+                    $"workflow '{definition.WorkflowId}'");
+            }
+        }
+        if (bindingProblems.Count > 0)
+            throw new InvalidOperationException(
+                "configuration package has invalid binding references: " + string.Join("; ", bindingProblems.Take(8)));
+
+        var importedWorkflows = 0;
         if (body["workflows"] is JsonArray workflowRows)
         {
             foreach (var row in workflowRows)
@@ -967,37 +1363,106 @@ public sealed class IndustrialUiComponent : Component
                     {
                         Config = node.Config.ToDictionary(pair => pair.Key, pair =>
                             pair.Key is "resourceId" or "targetResourceId" && pair.Value is string text
-                                ? Map(text) : pair.Value, StringComparer.Ordinal),
+                                ? MapResource(text) : pair.Value, StringComparer.Ordinal),
                     }).ToArray(),
-                    ResourceReferences = definition.ResourceReferences.Select(Map)
+                    ResourceReferences = definition.ResourceReferences.Select(MapResource)
                         .Where(value => value.Length > 0).ToArray(),
                 };
                 await workflows.SaveDraftAsync(definition);
+                importedWorkflows++;
             }
         }
+        var importedMachines = 0;
+        if (body["machines"] is JsonArray machineRows)
+        {
+            foreach (var row in machineRows)
+            {
+                var machine = JsonSerializer.Deserialize<MachineDefinition>(row?.ToJsonString() ?? "{}", WireJson);
+                if (machine is null || await machines.GetAsync(machine.Id) is not null) continue;
+                await machines.RegisterAsync(machine with { CredentialId = MapCredential(machine.CredentialId) });
+                importedMachines++;
+            }
+        }
+        var importedResources = 0;
+        if (body["resources"] is JsonArray resourceRows)
+        {
+            foreach (var row in resourceRows)
+            {
+                var resource = JsonSerializer.Deserialize<ResourceDefinition>(row?.ToJsonString() ?? "{}", WireJson);
+                if (resource is null || await resources.GetAsync(resource.Id) is not null) continue;
+                await resources.RegisterAsync(resource with
+                {
+                    CredentialId = MapCredential(resource.CredentialId),
+                    Configuration = resource.Configuration.Where(pair =>
+                        SafeResourceConfigKeys.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value),
+                });
+                importedResources++;
+                results.TryRemove(resource.Id, out _);
+            }
+        }
+        var importedProfiles = 0;
         if (body["fileProfiles"] is JsonArray profileRows)
         {
             foreach (var row in profileRows)
             {
                 var profile = JsonSerializer.Deserialize<FileProfileDefinition>(
                     row?.ToJsonString() ?? "{}", WireJson);
-                if (profile is not null) await profiles.RegisterAsync(profile);
+                if (profile is not null)
+                {
+                    foreach (var rule in profile.MetadataRules ?? [])
+                        ValidateMetadataPattern(rule.Pattern, $"file profile '{profile.Id}' metadata rule '{rule.Key}'");
+                    await profiles.RegisterAsync(profile);
+                    importedProfiles++;
+                }
             }
         }
-        if (body["bindings"] is JsonArray bindingRows)
+        var importedBindings = 0;
+        if (body["bindings"] is JsonArray importBindingRows)
         {
-            foreach (var row in bindingRows)
+            foreach (var row in importBindingRows)
             {
                 var binding = JsonSerializer.Deserialize<CollectionBindingDefinition>(
                     row?.ToJsonString() ?? "{}", WireJson);
                 if (binding is null) continue;
                 await bindings.RegisterAsync(binding with
                 {
-                    SourceResourceId = Map(binding.SourceResourceId),
-                    TargetResourceIds = binding.TargetResourceIds.Select(Map).ToArray(),
+                    SourceResourceId = MapResource(binding.SourceResourceId),
+                    TargetResourceIds = binding.TargetResourceIds.Select(MapResource).ToArray(),
                 });
+                importedBindings++;
             }
         }
+        // Drafts are honest: execution remains unavailable until the declared
+        // version is published. This report is returned to the caller and
+        // surfaced by the console after import.
+        return new JsonObject
+        {
+            ["workflows"] = importedWorkflows, ["machines"] = importedMachines,
+            ["resources"] = importedResources, ["fileProfiles"] = importedProfiles,
+            ["bindings"] = importedBindings, ["publishRequired"] = importedWorkflows > 0,
+            ["message"] = "Imported workflows are drafts; publish each declared version before bindings can run.",
+        };
+    }
+
+    /// <summary>The UI edits metadata one rule per line; older CSV exports use
+    /// semicolons. Commas stay legal inside a regex, so they never split rules.
+    /// </summary>
+    private static MetadataRule[] ParseMetadataRules(string text, string where)
+    {
+        var entries = text.Contains('\n')
+            ? text.Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries)
+            : text.Split(';', StringSplitOptions.RemoveEmptyEntries);
+        var rules = new List<MetadataRule>();
+        for (var index = 0; index < entries.Length; index++)
+        {
+            var parts = entries[index].Split('|');
+            if (parts.Length < 3) continue;
+            var pattern = NormalizeRegex(parts[1].Trim());
+            ValidateMetadataPattern(pattern, $"{where} metadata rule #{index + 1}");
+            rules.Add(new MetadataRule(parts[0].Trim(), pattern, parts[2].Trim(),
+                parts.Length < 4 || parts[3].Trim() != "false"));
+        }
+        return rules.ToArray();
     }
 
     private static async ValueTask ImportFileProfilesAsync(
@@ -1010,13 +1475,15 @@ public sealed class IndustrialUiComponent : Component
         var nameIndex = Array.IndexOf(header, "name");
         if (idIndex < 0 || nameIndex < 0)
             throw new InvalidOperationException("file profile import requires id and name columns");
-        foreach (var cells in rows)
+        for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
         {
+            var cells = rows[rowIndex];
             var id = Cell(header, cells, "id");
             if (id.Length == 0) continue;
+            var where = $"row {rowIndex + 2}";
             string Field(string name, string fallback) => Cell(header, cells, name, fallback);
             var mapping = new Dictionary<string, object?>();
-            foreach (var pair in Field("mapping", string.Empty).Split(';'))
+            foreach (var pair in SplitList(Field("mapping", string.Empty)))
             {
                 var parts = pair.Split('=').Select(x => x.Trim()).ToArray();
                 if (parts.Length == 2 && parts[0].Length > 0 && parts[1].Length > 0) mapping[parts[0]] = parts[1];
@@ -1027,24 +1494,20 @@ public sealed class IndustrialUiComponent : Component
                 Field("delimiter", ","),
                 bool.TryParse(Field("hasHeader", "true"), out var hasHeader) ? hasHeader : true,
                 Field("encoding", "utf-8"), mapping,
-                Field("required", string.Empty).Split(';').Where(x => x.Trim().Length > 0)
-                    .Select(x => x.Trim()).ToArray(),
+                SplitList(Field("required", string.Empty)),
                 true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
                 Field("directoryPattern", string.Empty), Field("datePattern", string.Empty),
                 bool.TryParse(Field("flat", "false"), out var flat) && flat,
-                Field("metadataRules", string.Empty).Split(';')
-                    .Select(rule => rule.Split('|')).Where(parts => parts.Length >= 3)
-                    .Select(parts => new MetadataRule(parts[0], parts[1], parts[2],
-                        parts.Length < 4 || parts[3] != "false")).ToArray()));
+                ParseMetadataRules(Field("metadataRules", string.Empty), where)));
         }
     }
 
-    /// <summary>Row-level import report. Nothing is written; the browser can
-    /// show conflicts and actionable error rows before committing a workbook.
+    /// <summary>Row-level binding import report. Nothing is written; the same
+    /// validator runs again inside the import command so an advisory preview
+    /// can never authorize an invalid workbook. Row 1 is the header.
     /// </summary>
-    private ValueTask PreviewImportAsync(JsonNode? payload)
+    private static JsonObject PreviewImportReport(JsonObject body)
     {
-        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var (header, rows) = Tabular(body);
         var errors = new JsonArray();
         var accepted = new HashSet<string>(StringComparer.Ordinal);
@@ -1065,22 +1528,27 @@ public sealed class IndustrialUiComponent : Component
                 var problems = new List<string>();
                 if (id.Length == 0) problems.Add("id is required");
                 else if (!accepted.Add(id)) problems.Add($"duplicate id '{id}'");
+                if (Cell(header, cells, "machineId").Length == 0) problems.Add("machineId is required");
+                if (Cell(header, cells, "workflowId").Length == 0) problems.Add("workflowId is required");
                 var trigger = Cell(header, cells, "triggerKind", "manual");
+                var cron = Cell(header, cells, "cron");
+                var timezone = Cell(header, cells, "timezone");
                 if (trigger is not ("manual" or "schedule" or "event"))
                     problems.Add($"unknown triggerKind '{trigger}'");
-                var cron = Cell(header, cells, "cron");
-                if (trigger == "schedule" && cron.Length == 0)
-                    problems.Add("schedule trigger requires cron");
+                if (trigger == "schedule" && !CronIsValid(cron))
+                    problems.Add(trigger == "schedule" && cron.Length == 0
+                        ? "schedule trigger requires cron" : $"invalid cron '{cron}'");
+                if (!string.IsNullOrWhiteSpace(timezone) &&
+                    !TimeZoneInfo.TryFindSystemTimeZoneById(timezone, out _))
+                    problems.Add($"unknown timezone '{timezone}'");
                 var versionText = Cell(header, cells, "workflowVersion", "1");
                 if (!int.TryParse(versionText, out var version) || version < 1)
                     problems.Add($"invalid workflowVersion '{versionText}'");
-                if (Cell(header, cells, "machineId").Length == 0)
-                    problems.Add("machineId is required");
                 if (problems.Count > 0)
                 {
                     errors.Add((JsonNode)new JsonObject
                     {
-                        ["row"] = index + 1,
+                        ["row"] = index + 2,
                         ["code"] = "INVALID_ROW",
                         ["message"] = string.Join("; ", problems),
                     });
@@ -1088,19 +1556,29 @@ public sealed class IndustrialUiComponent : Component
                 else valid++;
             }
         }
-        _lastImportPreview = new JsonObject
+        return new JsonObject
         {
             ["total"] = rows.Count,
             ["valid"] = valid,
             ["errors"] = errors,
         };
-        return ValueTask.CompletedTask;
     }
 
     private static async ValueTask ImportBindingsAsync(
         JsonNode? payload, ICollectionBindingRegistry bindings)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var report = PreviewImportReport(body);
+        var errors = report["errors"]?.AsArray() ?? [];
+        if (errors.Count > 0)
+        {
+            var badRows = errors.Select(error => error?["row"]?.GetValue<int>() ?? 0)
+                .Where(row => row > 0).Take(5).ToArray();
+            throw new InvalidOperationException(
+                $"binding import rejected: {string.Join(", ", badRows.Length > 0
+                    ? badRows.Select(row => $"row {row}") : new[] { "missing header" })}; " +
+                "fix the preview errors before importing");
+        }
         var (header, rows) = Tabular(body);
         if (rows.Count == 0) return;
         foreach (var cells in rows)
@@ -1109,12 +1587,14 @@ public sealed class IndustrialUiComponent : Component
             if (id.Length == 0) continue;
             var kind = Cell(header, cells, "triggerKind", "manual");
             var cron = Cell(header, cells, "cron");
+            var timezone = Cell(header, cells, "timezone");
             var parameters = new Dictionary<string, object?>(StringComparer.Ordinal);
             foreach (var pair in Cell(header, cells, "parameters").Split(';'))
             {
                 var parts = pair.Split('=').Select(part => part.Trim()).ToArray();
                 if (parts.Length == 2 && parts[0].Length > 0) parameters[parts[0]] = parts[1];
             }
+            if (!string.IsNullOrWhiteSpace(timezone)) parameters["timezone"] = timezone;
             await bindings.RegisterAsync(new CollectionBindingDefinition(
                 id, Cell(header, cells, "name", id), Cell(header, cells, "machineId"),
                 Cell(header, cells, "workflowId"),
@@ -1122,8 +1602,9 @@ public sealed class IndustrialUiComponent : Component
                 Cell(header, cells, "fileProfileId"), Cell(header, cells, "sourceResourceId"),
                 Cell(header, cells, "targetResourceIds").Split(';').Where(x => x.Trim().Length > 0)
                     .Select(x => x.Trim()).ToArray(),
-                new TriggerDefinition(kind, cron.Length > 0 ? cron : null, null,
-                    new Dictionary<string, object?>()),
+                new TriggerDefinition(kind, string.IsNullOrWhiteSpace(cron) ? null : cron, null,
+                    timezone.Length == 0 ? new Dictionary<string, object?>()
+                        : new Dictionary<string, object?> { ["timezone"] = timezone }),
                 true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, parameters));
         }
     }
@@ -1181,12 +1662,16 @@ public sealed class IndustrialUiComponent : Component
                 ? metadata.Select(node => node?.AsObject())
                     .Where(node => node is not null)
                     .Select(node => new MetadataRule(
-                        Text(node, "from") ?? "filename", Text(node, "pattern") ?? string.Empty,
+                        Text(node, "from") ?? "filename", NormalizeRegex(Text(node, "pattern") ?? string.Empty),
                         Text(node, "key") ?? string.Empty,
                         node!["required"] is JsonValue requiredFlag &&
                         requiredFlag.TryGetValue<bool>(out var isRequired) ? isRequired : true))
                     .Where(rule => rule.Pattern.Length > 0 && rule.Key.Length > 0).ToArray()
                 : existing?.MetadataRules ?? []);
+        var rules = profile.MetadataRules ?? [];
+        for (var index = 0; index < rules.Count; index++)
+            ValidateMetadataPattern(rules[index].Pattern,
+                $"file profile '{id}' metadata rule #{index + 1}");
         await registry.RegisterAsync(profile);
     }
 
@@ -1223,27 +1708,27 @@ public sealed class IndustrialUiComponent : Component
         IReadOnlyDictionary<string, object?> Parameters,
         IReadOnlyList<string> Exclusions);
 
-    private async ValueTask PreviewBindingsAsync(JsonNode? payload, ICollectionBindingRegistry bindings)
+    private static string? RequestTimezone(JsonObject body, BindingRequest request)
     {
-        var request = ReadBindingRequest(payload as JsonObject
-            ?? throw new InvalidOperationException("JSON payload required"));
-        var preview = await bindings.PreviewBulkAsync(request.MachineIds, request.FileProfileIds,
-            request.WorkflowId, request.WorkflowVersion, request.SourceResourcePattern,
-            request.TargetResourceIds, request.Exclusions);
-        _lastBindingPreview = new JsonObject
-        {
-            ["total"] = preview.Total,
-            ["create"] = preview.Created,
-            ["conflicts"] = new JsonArray(preview.Conflicts.Select(id => (JsonNode?)id).ToArray()),
-            ["missing"] = new JsonArray(preview.MissingResources.Select(id => (JsonNode?)id).ToArray()),
-            ["errors"] = new JsonArray(preview.Errors.Select(message => (JsonNode?)message).ToArray()),
-        };
+        var direct = Text(body, "timezone");
+        if (!string.IsNullOrWhiteSpace(direct)) return direct;
+        return request.Parameters.TryGetValue("timezone", out var value) ? value?.ToString() : null;
     }
+
+    private static JsonObject BindingPreviewReport(BindingPreview preview) => new()
+    {
+        ["total"] = preview.Total,
+        ["create"] = preview.Created,
+        ["conflicts"] = new JsonArray(preview.Conflicts.Select(id => (JsonNode?)id).ToArray()),
+        ["missing"] = new JsonArray(preview.MissingResources.Select(id => (JsonNode?)id).ToArray()),
+        ["errors"] = new JsonArray(preview.Errors.Select(message => (JsonNode?)message).ToArray()),
+    };
 
     private static async ValueTask CreateBindingsAsync(JsonNode? payload, ICollectionBindingRegistry bindings)
     {
-        var request = ReadBindingRequest(payload as JsonObject
-            ?? throw new InvalidOperationException("JSON payload required"));
+        var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
+        var request = ReadBindingRequest(body);
+        ValidateTrigger(request.TriggerKind, request.Cron, RequestTimezone(body, request), "create-bindings");
         await bindings.CreateBulkAsync(request.MachineIds, request.FileProfileIds,
             request.WorkflowId, request.WorkflowVersion, request.SourceResourcePattern,
             request.TargetResourceIds, request.TriggerKind, request.Cron, request.Parameters,
@@ -1252,7 +1737,8 @@ public sealed class IndustrialUiComponent : Component
 
     private static async ValueTask DeleteCredentialAsync(
         JsonNode? payload, ICredentialVault credentials,
-        IResourceRegistry resources, IMachineRegistry machines)
+        IResourceRegistry resources, IMachineRegistry machines,
+        ConcurrentDictionary<string, ResourceTestResult> results)
     {
         var body = payload as JsonObject ?? throw new InvalidOperationException("JSON payload required");
         var id = Text(body, "id") ?? throw new InvalidOperationException("credential id is required");
@@ -1262,6 +1748,7 @@ public sealed class IndustrialUiComponent : Component
             throw new InvalidOperationException(
                 $"credential '{id}' is still referenced by resources or machines");
         await credentials.RemoveAsync(id);
+        InvalidateCredentialTests(id, resources, results);
     }
 
     private static string[] CredentialFields(string kind) => kind switch

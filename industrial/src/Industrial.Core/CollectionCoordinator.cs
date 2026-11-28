@@ -88,7 +88,10 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
             foreach (var file in files)
             {
                 ct.ThrowIfCancellationRequested();
-                if (!await _source.IsStableAsync(file, TimeSpan.FromMilliseconds(200), ct))
+                if (!await _source.IsStableAsync(file, TimeSpan.FromMilliseconds(200), ct) ||
+                    // A source may expose a weaker probe (UNC only checks File.Exists),
+                    // so always enforce a real size + mtime double-stat here.
+                    !await FileStability.IsStableAsync(file.FullPath, TimeSpan.Zero, ct))
                 {
                     continue;
                 }
@@ -129,6 +132,14 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
                         await _ledger.CompleteDeliveryAsync(delivery.Id, claim.ClaimToken, result.Records, ct);
                         fileSucceeded = true;
                     }
+                    catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
+                    {
+                        // Cancellation is not a normal sink failure: release the
+                        // claim with a token the ledger will still accept, then
+                        // let the run-level handler cancel the run.
+                        await _ledger.FailDeliveryAsync(delivery.Id, claim.ClaimToken, ex.Message, CancellationToken.None);
+                        throw;
+                    }
                     catch (Exception ex)
                     {
                         fileFailed = true;
@@ -159,6 +170,12 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
                                 ct);
                             await _ledger.CompleteDeliveryAsync(delivery.Id, archiveClaim.ClaimToken, 1, ct);
                             fileSucceeded = true;
+                        }
+                        catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
+                        {
+                            await _ledger.FailDeliveryAsync(
+                                delivery.Id, archiveClaim.ClaimToken, ex.Message, CancellationToken.None);
+                            throw;
                         }
                         catch (Exception ex)
                         {
@@ -268,6 +285,11 @@ public sealed class CollectionCoordinator : ICollectionCoordinator
                     }
 
                     retried++;
+                }
+                catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
+                {
+                    await _ledger.FailDeliveryAsync(delivery.Id, claim.ClaimToken, ex.Message, CancellationToken.None);
+                    throw;
                 }
                 catch (Exception ex)
                 {

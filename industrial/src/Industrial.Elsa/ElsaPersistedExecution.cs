@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Elsa.Workflows;
 using Elsa.Workflows.Management;
@@ -15,18 +18,30 @@ namespace Industrial.Elsa;
 /// the editable source of truth; the workflow state is derived execution data.</summary>
 public static class ElsaPersistedExecution
 {
+    private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
+
     public static string DefinitionId(PublishedWorkflow published) =>
         $"{published.WorkflowId}:v{published.Version}";
+
+    /// <summary>Hash of the exact definition snapshot that produced the run.
+    /// A bound definition is a different artifact from its published template;
+    /// recovery and retry must never silently substitute one for the other.
+    /// </summary>
+    public static string DefinitionHash(string definitionJson) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(definitionJson)));
 
     public sealed record ExecutionResult(
         string InstanceId,
         string DefinitionId,
         string Status,
         IReadOnlyList<string> Executed,
-        string? Error);
+        string? Error,
+        string? DefinitionJson = null,
+        string? DefinitionHash = null);
 
     public sealed record RecoverableInstance(
-        string InstanceId, string WorkflowId, int Version, string ResourceId);
+        string InstanceId, string WorkflowId, int Version, string ResourceId,
+        string? DefinitionJson = null, string? DefinitionHash = null);
 
     public static ValueTask<IReadOnlyList<RecoverableInstance>> ListRecoverableAsync(
         string databasePath, CancellationToken ct = default) =>
@@ -53,11 +68,15 @@ public static class ElsaPersistedExecution
             if (!state.Properties.TryGetValue("industrial.workflowId", out var workflowId)) continue;
             if (!state.Properties.TryGetValue("industrial.version", out var version)) continue;
             if (!state.Properties.TryGetValue("industrial.resourceId", out var resourceId)) continue;
+            state.Properties.TryGetValue("industrial.definitionJson", out var definitionJson);
+            state.Properties.TryGetValue("industrial.definitionHash", out var definitionHash);
             result.Add(new RecoverableInstance(
                 instanceId?.ToString() ?? state.Id,
                 workflowId?.ToString() ?? string.Empty,
                 Convert.ToInt32(version),
-                resourceId?.ToString() ?? string.Empty));
+                resourceId?.ToString() ?? string.Empty,
+                definitionJson?.ToString(),
+                definitionHash?.ToString()));
         }
         return result;
     }
@@ -69,8 +88,16 @@ public static class ElsaPersistedExecution
         string databasePath,
         string? instanceId = null,
         bool resume = false,
+        string? definitionJson = null,
+        string? definitionHash = null,
         CancellationToken ct = default)
     {
+        if (definitionJson is not null && definitionHash is not null &&
+            !string.Equals(definitionHash, DefinitionHash(definitionJson), StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("definition snapshot hash does not match its JSON");
+        }
+
         instanceId ??= $"industrial-{Guid.NewGuid():N}";
         var definitionId = DefinitionId(published);
         var envelope = JsonNode.Parse(published.ElsaDefinitionJson) as JsonObject
@@ -109,6 +136,8 @@ public static class ElsaPersistedExecution
             DefinitionVersion = published.Version,
             Name = $"{published.WorkflowId}:{instanceId}",
         };
+        string effectiveJson = definitionJson ?? string.Empty;
+        string effectiveHash = definitionHash ?? string.Empty;
         if (resume)
         {
             foreach (var property in existing!.WorkflowState.Properties
@@ -116,11 +145,41 @@ public static class ElsaPersistedExecution
             {
                 state.Properties[property.Key] = property.Value;
             }
+            // Recovery/retry replay the original artifact: an unsupplied
+            // definition must keep the instance's own snapshot, not the
+            // currently published template.
+            if (state.Properties.TryGetValue("industrial.definitionJson", out var storedJson) &&
+                storedJson is not null)
+            {
+                var storedText = storedJson.ToString() ?? string.Empty;
+                if (!string.IsNullOrEmpty(effectiveJson) &&
+                    !string.Equals(storedText, effectiveJson, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"instance '{instanceId}' was created with a different definition snapshot; " +
+                        "refusing to resume with another definition");
+                }
+                effectiveJson = string.IsNullOrEmpty(effectiveJson) ? storedText : effectiveJson;
+            }
+            if (string.IsNullOrEmpty(effectiveHash) &&
+                state.Properties.TryGetValue("industrial.definitionHash", out var storedHash))
+            {
+                effectiveHash = storedHash?.ToString() ?? string.Empty;
+            }
+        }
+        if (string.IsNullOrEmpty(effectiveJson))
+            effectiveJson = JsonSerializer.Serialize(published.Definition, WebJson);
+        if (string.IsNullOrEmpty(effectiveHash) ||
+            !string.Equals(effectiveHash, DefinitionHash(effectiveJson), StringComparison.Ordinal))
+        {
+            effectiveHash = DefinitionHash(effectiveJson);
         }
         state.Properties["industrial.instanceId"] = instanceId;
         state.Properties["industrial.workflowId"] = published.WorkflowId;
         state.Properties["industrial.version"] = published.Version;
         state.Properties["industrial.resourceId"] = resourceId;
+        state.Properties["industrial.definitionJson"] = effectiveJson;
+        state.Properties["industrial.definitionHash"] = effectiveHash;
 
         var options = new RunWorkflowOptions
         {
@@ -139,7 +198,9 @@ public static class ElsaPersistedExecution
             // which deliveries were actually completed.
             result.WorkflowState.Status = WorkflowStatus.Running;
             result.WorkflowState.IsExecuting = false;
-            await instances.SaveAsync(result.WorkflowState, ct);
+            // A hard-exit marker must persist even if the caller is being
+            // cancelled; otherwise the instance would look silently finished.
+            await instances.SaveAsync(result.WorkflowState, CancellationToken.None);
         }
         var incidents = result.WorkflowState.Incidents;
         return new ExecutionResult(
@@ -147,7 +208,9 @@ public static class ElsaPersistedExecution
             definitionId,
             result.WorkflowState.Status.ToString(),
             executor.Executed,
-            incidents.Count == 0 ? null : string.Join("; ", incidents.Select(incident => incident.Message)));
+            incidents.Count == 0 ? null : string.Join("; ", incidents.Select(incident => incident.Message)),
+            effectiveJson,
+            effectiveHash);
     }
 
     public static async ValueTask<ExecutionResult?> InspectAsync(
@@ -157,8 +220,11 @@ public static class ElsaPersistedExecution
         var instances = provider.GetRequiredService<IWorkflowInstanceManager>();
         var instance = await instances.FindByIdAsync(instanceId, ct);
         var state = instance?.WorkflowState;
-        return state is null
-            ? null
-            : new ExecutionResult(state.Id, state.DefinitionId, state.Status.ToString(), [], null);
+        if (state is null) return null;
+        state.Properties.TryGetValue("industrial.definitionJson", out var definitionJson);
+        state.Properties.TryGetValue("industrial.definitionHash", out var definitionHash);
+        return new ExecutionResult(
+            state.Id, state.DefinitionId, state.Status.ToString(), [], null,
+            definitionJson?.ToString(), definitionHash?.ToString());
     }
 }

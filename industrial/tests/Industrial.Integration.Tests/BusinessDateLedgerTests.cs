@@ -76,7 +76,7 @@ public sealed class BusinessDateLedgerTests
                 ["csv"] = "id,name,machineId,workflowId,workflowVersion,fileProfileId," +
                           "sourceResourceId,targetResourceIds,triggerKind,cron,parameters\n" +
                           "date-binding,Date binding,date-machine,date-template,1,profile,source-1," +
-                          "target,catchup,0 2 * * *,catchUpDays=3\n",
+                          "target,schedule,0 2 * * *,catchUpDays=3\n",
             }));
             Assert.True(await api.ExecuteAsync("industrial/run-binding", new JsonObject
             {

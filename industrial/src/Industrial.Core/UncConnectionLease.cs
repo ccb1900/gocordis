@@ -270,9 +270,36 @@ public sealed class UncFileSource : IFileSource
 
     public static void ReleaseAll() => UncConnectionLease.ReleaseAll();
 
+    /// <summary>Hold the credentialed SMB session for the whole source stage.
+    /// DiscoverAsync still acquires its own reference-counted lease; this outer
+    /// scope keeps the session alive while stability checks, parsing and
+    /// archiving touch the same share.</summary>
+    public async ValueTask<IAsyncDisposable> LeaseScopeAsync(
+        string resourceId, CancellationToken ct = default)
+    {
+        var resource = await _resources.GetAsync(resourceId, ct)
+                       ?? throw new InvalidOperationException($"resource '{resourceId}' not found");
+        var root = resource.Configuration.TryGetValue("root", out var value) ? value?.ToString() : null;
+        if (string.IsNullOrWhiteSpace(root) || !root.StartsWith(@"\\", StringComparison.Ordinal))
+            return NoopLease.Instance;
+        var secret = resource.CredentialId is null
+            ? null
+            : await _vault!.RevealAsync(resource.CredentialId, ct);
+        var (user, password, domain) = ParseCredential(secret);
+        if (string.IsNullOrWhiteSpace(user)) return NoopLease.Instance;
+        var connectionRoot = Directory.Exists(root) ? root! : ShareRoot(root!);
+        return UncConnectionLease.Acquire(connectionRoot, user, password!, domain);
+    }
+
     public ValueTask<bool> IsStableAsync(
         DiscoveredFile file, TimeSpan quietPeriod, CancellationToken ct = default) =>
-        ValueTask.FromResult(File.Exists(file.FullPath));
+        FileStability.IsStableAsync(file.FullPath, quietPeriod, ct);
+
+    private sealed class NoopLease : IAsyncDisposable
+    {
+        public static readonly NoopLease Instance = new();
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 
     public static (string? User, string? Password, string? Domain) ParseCredential(string? secret)
     {

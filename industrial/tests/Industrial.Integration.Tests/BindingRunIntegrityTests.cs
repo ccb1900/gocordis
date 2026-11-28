@@ -291,7 +291,9 @@ public sealed class BindingRunIntegrityTests
         Assert.False(string.IsNullOrWhiteSpace(collected.SnapshotPath));
         Assert.True(File.Exists(collected.SnapshotPath!));
         Assert.True(await api.ExecuteAsync("industrial/maintain-snapshots", new JsonObject()));
-        var report = Assert.IsType<JsonObject>(api.Query("industrial/snapshot-status"));
+        var status = Assert.IsType<JsonObject>(api.Query("industrial/snapshot-status"));
+        Assert.Null(status["error"]);
+        var report = Assert.IsType<JsonObject>(status["report"]);
         Assert.True(report["deleted"]!.GetValue<int>() >= 1);
         Assert.False(File.Exists(collected.SnapshotPath!));
     }

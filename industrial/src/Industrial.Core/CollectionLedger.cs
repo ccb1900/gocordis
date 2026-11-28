@@ -153,6 +153,68 @@ public sealed class CollectionLedger : ICollectionLedger
         string runId, string reason, CancellationToken ct = default) =>
         await CompleteRunAsync(runId, CollectionStatus.Cancelled, reason, ct);
 
+    public async ValueTask<bool> TryClaimMaintenanceAsync(
+        string name, string token, TimeSpan lease, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var now = DateTimeOffset.UtcNow;
+        var expires = now.Add(lease);
+        await Exec(db,
+            """
+            INSERT OR IGNORE INTO MaintenanceLocks (Name, Token, ExpiresAt, UpdatedAt)
+            VALUES ({0}, {1}, {2}, {3});
+            """,
+            name, token, expires.ToString("O"), now.ToString("O"), ct);
+        return await Exec(db,
+            """
+            UPDATE MaintenanceLocks SET Token = {0}, ExpiresAt = {1}, UpdatedAt = {2}
+             WHERE Name = {3} AND (Token = {4} OR ExpiresAt < {5});
+            """,
+            token, expires.ToString("O"), now.ToString("O"), name, token,
+            now.ToString("O"), ct) == 1;
+    }
+
+    public async ValueTask<bool> RenewMaintenanceAsync(
+        string name, string token, TimeSpan lease, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var now = DateTimeOffset.UtcNow;
+        return await Exec(db,
+            "UPDATE MaintenanceLocks SET ExpiresAt = {0}, UpdatedAt = {1} WHERE Name = {2} AND Token = {3};",
+            now.Add(lease).ToString("O"), now.ToString("O"), name, token, ct) == 1;
+    }
+
+    public async ValueTask<bool> ReleaseMaintenanceAsync(
+        string name, string token, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        return await Exec(db,
+            "DELETE FROM MaintenanceLocks WHERE Name = {0} AND Token = {1};",
+            name, token, ct) == 1;
+    }
+
+    public async ValueTask<bool> IsMaintenanceActiveAsync(
+        string name, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var rows = await db.Database.SqlQueryRaw<CountRow>(
+            "SELECT COUNT(*) AS Value FROM MaintenanceLocks WHERE Name = {0} AND ExpiresAt >= {1};",
+            name, DateTimeOffset.UtcNow.ToString("O")).ToListAsync(ct);
+        return rows.FirstOrDefault()?.Value > 0;
+    }
+
+    public async ValueTask WaitForMaintenanceClearAsync(
+        string name, TimeSpan timeout, CancellationToken ct = default)
+    {
+        var deadline = DateTimeOffset.UtcNow.Add(timeout);
+        while (await IsMaintenanceActiveAsync(name, ct))
+        {
+            if (DateTimeOffset.UtcNow >= deadline)
+                throw new TimeoutException($"maintenance lock '{name}' is still active");
+            await Task.Delay(50, ct);
+        }
+    }
+
     public ValueTask<int> RecoverExpiredLeasesAsync(
         DateTimeOffset now, CancellationToken ct = default)
     {
@@ -916,6 +978,8 @@ public sealed class CollectionLedger : ICollectionLedger
         string.IsNullOrWhiteSpace(row.LeaseExpiresAt)
             ? null : DateTimeOffset.Parse(row.LeaseExpiresAt, CultureInfo.InvariantCulture),
         row.LastRunId, row.Files, row.Error);
+
+    private sealed class CountRow { public int Value { get; set; } }
 
     private sealed class DateRow
     {

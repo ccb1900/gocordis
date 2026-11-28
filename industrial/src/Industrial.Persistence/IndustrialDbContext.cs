@@ -395,6 +395,13 @@ public static class IndustrialStore
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN Rejected INTEGER NOT NULL DEFAULT 0;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN Warnings INTEGER NOT NULL DEFAULT 0;");
         Execute(context, "ALTER TABLE FileDeliveries ADD COLUMN StatisticsJson TEXT NULL;");
+        Execute(context, """
+            CREATE TABLE IF NOT EXISTS MaintenanceLocks (
+                Name TEXT NOT NULL PRIMARY KEY,
+                Token TEXT NOT NULL,
+                ExpiresAt TEXT NOT NULL,
+                UpdatedAt TEXT NOT NULL);
+            """);
         Execute(context, "ALTER TABLE CollectionFiles ADD COLUMN SnapshotPath TEXT NULL;");
         Execute(context, "ALTER TABLE CollectionRuns ADD COLUMN InstanceId TEXT NULL;");
         Execute(context, "ALTER TABLE CollectionRuns ADD COLUMN DefinitionJson TEXT NULL;");

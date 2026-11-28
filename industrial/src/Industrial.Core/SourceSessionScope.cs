@@ -10,11 +10,12 @@ public static class SourceSessionScope
 {
     public static async ValueTask<IAsyncDisposable> AcquireAsync(
         IFileSource source, WorkflowDefinition definition, string defaultResourceId,
-        CancellationToken ct = default)
+        INodeCatalog? catalog = null, CancellationToken ct = default)
     {
         var resourceIds = new HashSet<string>(StringComparer.Ordinal) { defaultResourceId };
-        foreach (var node in definition.Nodes.Where(node => IndustrialNodeKinds.IsSource(node.Type)))
+        foreach (var node in definition.Nodes)
         {
+            if (!await IsSourceNode(node, catalog, ct)) continue;
             if (node.Config.TryGetValue("resourceId", out var configured) &&
                 configured is not null && !string.IsNullOrWhiteSpace(configured.ToString()))
                 resourceIds.Add(configured.ToString()!);
@@ -38,6 +39,18 @@ public static class SourceSessionScope
             throw;
         }
         return new SessionLeases(leases);
+    }
+
+    private static async ValueTask<bool> IsSourceNode(
+        WorkflowNode node, INodeCatalog? catalog, CancellationToken ct)
+    {
+        if (catalog is not null)
+        {
+            var descriptor = await catalog.GetAsync(node.Type, ct);
+            if (descriptor is not null && !string.IsNullOrWhiteSpace(descriptor.Role))
+                return string.Equals(descriptor.Role, "source", StringComparison.OrdinalIgnoreCase);
+        }
+        return IndustrialNodeKinds.IsSource(node.Type);
     }
 
     private sealed class SessionLeases(IReadOnlyList<IAsyncDisposable> leases) : IAsyncDisposable

@@ -76,6 +76,7 @@ public interface IIndustrialNodeExecutor
 public sealed class IndustrialElsaComponent : Component
 {
     private Broker<IIndustrialNodeHandler>? _nodeHandlers;
+    private INodeCatalog? _nodeCatalog;
     private ICollectionBindingRegistry? _bindings;
     private static readonly System.Text.Json.JsonSerializerOptions WebJson =
         new(System.Text.Json.JsonSerializerDefaults.Web);
@@ -192,6 +193,7 @@ public sealed class IndustrialElsaComponent : Component
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
     {
         var nodes = context.Require(IndustrialKeys.NodeCatalog);
+        _nodeCatalog = nodes;
         var validator = context.Require(IndustrialKeys.WorkflowValidator);
         var workflows = context.Require(IndustrialKeys.WorkflowRegistry);
         var api = context.Require(ApiGateway.Key);
@@ -693,7 +695,7 @@ public sealed class IndustrialElsaComponent : Component
         // Keep every source resource's credentialed session for the entire
         // replay, not only discovery.
         await using var sourceSessions = await SourceSessionScope.AcquireAsync(
-            source, retryDefinition, resourceId, ct);
+            source, retryDefinition, resourceId, _nodeCatalog, ct);
         var result = await ElsaPersistedExecution.RunAsync(published, executor, resourceId, ElsaDbPath,
             instance.InstanceId, resume: true, definitionJson: effectiveJson,
             definitionHash: effectiveHash, ct: ct);
@@ -1175,7 +1177,7 @@ public sealed class IndustrialElsaComponent : Component
                         definitionJson: effectiveJson, definitionHash: effectiveHash,
                         snapshotRoot: SnapshotRoot);
                     await using var sourceSessions = await SourceSessionScope.AcquireAsync(
-                        source, definition, instance.ResourceId, ct);
+                        source, definition, instance.ResourceId, _nodeCatalog, ct);
                     var result = await ElsaPersistedExecution.RunAsync(published, executor, instance.ResourceId,
                         ElsaDbPath, instance.InstanceId, resume: true, definitionJson: effectiveJson,
                         definitionHash: effectiveHash, ct: ct);
@@ -1716,6 +1718,10 @@ public sealed class IndustrialElsaComponent : Component
         WorkflowDefinition? overrideDefinition = null,
         CancellationToken ct = default)
     {
+        // A snapshot cleanup holds this ledger lock while it deletes files.
+        // Starting/resuming a run waits for it so a starting consumer can
+        // never lose the snapshot it is about to reuse.
+        await ledger.WaitForMaintenanceClearAsync("snapshot-cleanup", TimeSpan.FromSeconds(30), ct);
         var body = payload as JsonObject ?? new JsonObject();
         var id = body["workflowId"]?.GetValue<string>()
                  ?? Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_WORKFLOW") ?? "daily-collection";
@@ -1777,7 +1783,7 @@ public sealed class IndustrialElsaComponent : Component
         // Every source node's resource gets its own credentialed session, and
         // all leases live until the whole workflow has finished.
         await using var sourceSessions = await SourceSessionScope.AcquireAsync(
-            source, definition, resourceId, ct);
+            source, definition, resourceId, _nodeCatalog, ct);
         var result = await ElsaPersistedExecution.RunAsync(
             published, executor, resourceId, elsaDbPath, instanceId, resume,
             definitionJson, definitionHash, ct);

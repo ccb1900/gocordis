@@ -8,34 +8,65 @@ public sealed record SnapshotCleanupReport(
     int Candidates,
     int Deleted,
     long DeletedBytes,
+    int Orphans,
+    long OrphanBytes,
     IReadOnlyList<string> Retained,
     IReadOnlyList<string> Failures,
+    IReadOnlyList<string> OrphanFailures,
     bool ActiveRunsBlocked,
+    bool MaintenanceBlocked,
     DateTimeOffset At);
 
-/// <summary>Snapshot cleanup is ledger-driven: a snapshot is only removed
-/// when every CollectionFile row that references it is fully delivered and
-/// no run is still active. Any deletion error is recorded but never changes
-/// business state.</summary>
+/// <summary>Snapshot cleanup is ledger-driven and coordinated with workflow
+/// execution through the ledger's maintenance lock. A snapshot is only
+/// removed when every CollectionFile row that references it is fully
+/// delivered and no run is active; unreferenced crash orphans are reclaimed
+/// only after a safety retention window. Deletion errors are recorded but
+/// never change business state.</summary>
 public static class SnapshotMaintenance
 {
+    public const string LockName = "snapshot-cleanup";
+    public static readonly TimeSpan OrphanRetention = TimeSpan.FromHours(1);
+    private static readonly TimeSpan LockLease = TimeSpan.FromMinutes(10);
+
     public static async ValueTask<SnapshotCleanupReport> RunAsync(
-        ICollectionLedger ledger, string snapshotRoot, CancellationToken ct = default)
+        ICollectionLedger ledger, string snapshotRoot, CancellationToken ct = default,
+        TimeSpan? orphanRetention = null)
     {
         var at = DateTimeOffset.UtcNow;
         var root = Path.GetFullPath(snapshotRoot);
+        var token = $"cleanup-{Guid.NewGuid():N}";
+        if (!await ledger.TryClaimMaintenanceAsync(LockName, token, LockLease, ct))
+            return new SnapshotCleanupReport(0, 0, 0, 0, 0, 0, 0, [], [], [],
+                false, true, at);
+        try
+        {
+            return await CleanAsync(ledger, root, at,
+                orphanRetention ?? OrphanRetention, ct);
+        }
+        finally
+        {
+            await ledger.ReleaseMaintenanceAsync(LockName, token, CancellationToken.None);
+        }
+    }
+
+    private static async ValueTask<SnapshotCleanupReport> CleanAsync(
+        ICollectionLedger ledger, string root, DateTimeOffset at,
+        TimeSpan retention, CancellationToken ct)
+    {
         var existing = Directory.Exists(root)
             ? Directory.GetFiles(root, "*", SearchOption.AllDirectories).ToArray()
             : [];
-        var totalBytes = existing.Sum(path =>
-        {
-            try { return new FileInfo(path).Length; }
-            catch (IOException) { return 0L; }
-        });
+        var totalBytes = existing.Sum(SafeLength);
+        var referencedPaths = (await ledger.ListAllFilesAsync(ct))
+            .Where(file => !string.IsNullOrWhiteSpace(file.SnapshotPath))
+            .Select(file => Path.GetFullPath(file.SnapshotPath!))
+            .ToHashSet(StringComparer.Ordinal);
+
         var runs = await ledger.ListRunsAsync(ct);
         if (runs.Any(run => !CollectionStatus.IsTerminal(run.Status)))
-            return new SnapshotCleanupReport(existing.Length, totalBytes, 0, 0, 0,
-                [], [], true, at);
+            return new SnapshotCleanupReport(existing.Length, totalBytes, 0, 0, 0, 0, 0,
+                [], [], [], true, false, at);
 
         var files = await ledger.ListAllFilesAsync(ct);
         var deliveries = await ledger.ListAllDeliveriesAsync(ct);
@@ -46,6 +77,7 @@ public static class SnapshotMaintenance
 
         var retained = new List<string>();
         var failures = new List<string>();
+        var orphanFailures = new List<string>();
         var deleted = 0;
         var deletedBytes = 0L;
         var candidates = 0;
@@ -67,22 +99,46 @@ public static class SnapshotMaintenance
                 continue;
             }
             candidates++;
-            try
-            {
-                var bytes = new FileInfo(path).Length;
-                File.Delete(path);
-                deleted++;
-                deletedBytes += bytes;
-                PruneEmptyDirectories(Path.GetDirectoryName(path), root);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                failures.Add($"{path}: {ex.Message}");
-            }
+            Delete(path, root, failures, ref deleted, ref deletedBytes);
+        }
+
+        var orphanCount = 0;
+        var orphanBytes = 0L;
+        foreach (var path in existing)
+        {
+            if (referencedPaths.Contains(path)) continue;
+            if (at - File.GetLastWriteTimeUtc(path) < retention) continue;
+            if (!IsUnderRoot(path, root)) continue;
+            Delete(path, root, orphanFailures, ref orphanCount, ref orphanBytes);
         }
 
         return new SnapshotCleanupReport(existing.Length, totalBytes, candidates,
-            deleted, deletedBytes, retained, failures, false, at);
+            deleted, deletedBytes, orphanCount, orphanBytes, retained, failures,
+            orphanFailures, false, false, at);
+    }
+
+    private static void Delete(
+        string path, string root, ICollection<string> failures, ref int count, ref long bytes)
+    {
+        try
+        {
+            var size = SafeLength(path);
+            File.Delete(path);
+            count++;
+            bytes += size;
+            PruneEmptyDirectories(Path.GetDirectoryName(path), root);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            failures.Add($"{path}: {ex.Message}");
+        }
+    }
+
+    private static long SafeLength(string path)
+    {
+        try { return new FileInfo(path).Length; }
+        catch (IOException) { return 0L; }
+        catch (UnauthorizedAccessException) { return 0L; }
     }
 
     private static bool IsUnderRoot(string fullPath, string root)

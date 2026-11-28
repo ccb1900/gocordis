@@ -1,5 +1,6 @@
 using Industrial.Contracts;
 using Industrial.Core;
+using Industrial.Persistence;
 
 namespace Industrial.Unit.Tests;
 
@@ -100,6 +101,47 @@ public sealed class ImmutableDataConsistencyTests
         Assert.DoesNotContain("unc-b", source.Disposed);
         Assert.Contains("unc-a", source.Disposed);
         Assert.Contains("default-resource", source.Disposed);
+    }
+
+    [Fact]
+    public async Task MaintenanceLockIsExclusiveAndBlocksConcurrentCleanup()
+    {
+        using var temp = new TempRoot();
+        var ledgerPath = Path.Combine(temp.Root, "ledger.db");
+        var ledger = new CollectionLedger(() => IndustrialStore.Create(ledgerPath));
+        Assert.True(await ledger.TryClaimMaintenanceAsync(
+            SnapshotMaintenance.LockName, "holder", TimeSpan.FromMinutes(1)));
+        Assert.False(await ledger.TryClaimMaintenanceAsync(
+            SnapshotMaintenance.LockName, "other", TimeSpan.FromMinutes(1)));
+
+        var blocked = await SnapshotMaintenance.RunAsync(
+            ledger, Path.Combine(temp.Root, "snapshots"));
+        Assert.True(blocked.MaintenanceBlocked);
+        Assert.Equal(0, blocked.Deleted);
+
+        Assert.True(await ledger.ReleaseMaintenanceAsync(
+            SnapshotMaintenance.LockName, "holder"));
+        Assert.False(await ledger.IsMaintenanceActiveAsync(SnapshotMaintenance.LockName));
+    }
+
+    [Fact]
+    public async Task OrphanSnapshotIsReclaimedAfterTheRetentionWindow()
+    {
+        using var temp = new TempRoot();
+        var ledgerPath = Path.Combine(temp.Root, "ledger.db");
+        var ledger = new CollectionLedger(() => IndustrialStore.Create(ledgerPath));
+        var snapshots = Path.Combine(temp.Root, "snapshots");
+        Directory.CreateDirectory(snapshots);
+        var orphan = Path.Combine(snapshots, "orphan.csv");
+        await File.WriteAllTextAsync(orphan, "orphan\n");
+        File.SetLastWriteTimeUtc(orphan, DateTime.UtcNow.AddHours(-2));
+
+        var report = await SnapshotMaintenance.RunAsync(
+            ledger, snapshots, default, TimeSpan.FromHours(1));
+
+        Assert.True(report.Orphans >= 1);
+        Assert.False(File.Exists(orphan));
+        Assert.Empty(report.OrphanFailures);
     }
 
     private sealed class RecordingFileSource : IFileSource

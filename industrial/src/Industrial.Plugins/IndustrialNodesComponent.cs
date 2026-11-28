@@ -38,10 +38,10 @@ public sealed class IndustrialNodesComponent : Component
             [], [new NodePort("control", PortType.Control, false)]);
         yield return Node("industrial.filesystem.local", "Local Files", "Filesystem", "source", "Folder", types[1],
             WithControl(), [new NodePort("files", PortType.FileBatch, true)],
-            ResourceSchema("resourceId", "Source resource", "filesystem.local"));
+            ResourceSchema("resourceId", "Source resource", "filesystem.local"), "source");
         yield return Node("industrial.filesystem.unc", "UNC Share", "Filesystem", "source", "Cloud", types[1],
             WithControl(), [new NodePort("files", PortType.FileBatch, true)],
-            ResourceSchema("resourceId", "Source resource", "filesystem.unc"));
+            ResourceSchema("resourceId", "Source resource", "filesystem.unc"), "source");
         yield return Node("industrial.reader.csv", "CSV Reader", "Parsing", "reader", "FileText", types[2],
             WithControl(new NodePort("input", PortType.FileBatch, true)), [new NodePort("records", PortType.RecordSet, true)],
             new Dictionary<string, object?>
@@ -116,16 +116,16 @@ public sealed class IndustrialNodesComponent : Component
             });
         yield return Node("industrial.sink.sqlserver", "SQL Server", "Delivery", "sink", "Database", types[6],
             WithControl(new NodePort("records", PortType.RecordSet, true)), [new NodePort("result", PortType.DeliveryResult, true)],
-            TargetSchema("sqlserver"));
+            TargetSchema("sqlserver"), "sink");
         yield return Node("industrial.sink.sqlite", "SQLite", "Delivery", "sink", "Database", types[7],
             WithControl(new NodePort("records", PortType.RecordSet, true)), [new NodePort("result", PortType.DeliveryResult, true)],
-            ResourceSchema("targetResourceId", "Target resource"));
+            ResourceSchema("targetResourceId", "Target resource"), "sink");
         yield return Node("industrial.sink.postgresql", "PostgreSQL", "Delivery", "sink", "Database", types[9],
             WithControl(new NodePort("records", PortType.RecordSet, true)), [new NodePort("result", PortType.DeliveryResult, true)],
-            TargetSchema("postgresql"));
+            TargetSchema("postgresql"), "sink");
         yield return Node("industrial.sink.mysql", "MySQL", "Delivery", "sink", "Database", types[10],
             WithControl(new NodePort("records", PortType.RecordSet, true)), [new NodePort("result", PortType.DeliveryResult, true)],
-            TargetSchema("mysql"));
+            TargetSchema("mysql"), "sink");
         yield return Node("industrial.sink.archive", "Archive", "Delivery", "sink", "Archive", types[8],
             WithControl(new NodePort("files", PortType.FileBatch, false)), [new NodePort("result", PortType.DeliveryResult, false)],
             new Dictionary<string, object?>
@@ -180,7 +180,7 @@ public sealed class IndustrialNodesComponent : Component
     private static NodeDescriptor Node(
         string id, string name, string category, string group, string icon, string activityType,
         IReadOnlyList<NodePort> inputs, IReadOnlyList<NodePort> outputs,
-        IReadOnlyDictionary<string, object?>? schema = null)
+        IReadOnlyDictionary<string, object?>? schema = null, string role = "")
     {
         schema ??= new Dictionary<string, object?>
         {
@@ -189,6 +189,6 @@ public sealed class IndustrialNodesComponent : Component
         };
         return new NodeDescriptor(
             id, name, $"{name} node", $"{group}.{category}", icon, "1.0.0",
-            inputs, outputs, schema, activityType, []);
+            inputs, outputs, schema, activityType, [], role);
     }
 }

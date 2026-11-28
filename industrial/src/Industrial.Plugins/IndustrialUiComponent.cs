@@ -8,6 +8,7 @@ using CsvHelper.Configuration;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Gocordis.Core;
+using Gocordis.Extensions;
 using Gocordis.Plugins;
 using ExcelDataReader;
 using Industrial.Contracts;
@@ -45,6 +46,7 @@ public sealed class IndustrialUiComponent : Component
     private JsonObject? _lastImportPreview;
     private JsonObject? _lastBindingPreview;
     private SnapshotCleanupReport? _lastSnapshotReport;
+    private string? _snapshotMaintenanceError;
 
     public IndustrialUiComponent() : this(FromEnvironment()) { }
 
@@ -99,6 +101,7 @@ public sealed class IndustrialUiComponent : Component
         IndustrialKeys.RecordReader,
         IndustrialKeys.RecordSink,
         IndustrialKeys.ArchiveSink,
+        TimerKeys.Service,
     ];
 
     public override async ValueTask<Cleanup?> ApplyAsync(Context context)
@@ -121,6 +124,25 @@ public sealed class IndustrialUiComponent : Component
         var sink = context.Require(IndustrialKeys.RecordSink);
         var archive = context.Require(IndustrialKeys.ArchiveSink);
         var owner = ContributionOwner.ForContext(context, "industrial.ui", "industrial-ui");
+        var timers = context.Require(TimerKeys.Service);
+        var maintenanceMinutes = int.TryParse(
+            Setting("snapshotMaintenanceIntervalMinutes", "60"), out var parsedMinutes)
+            ? Math.Clamp(parsedMinutes, 1, 1440)
+            : 60;
+        timers.IntervalOwned(context, TimeSpan.FromMinutes(maintenanceMinutes), async () =>
+        {
+            try
+            {
+                _lastSnapshotReport = await SnapshotMaintenance.RunAsync(
+                    ledger, SnapshotRoot, context.CancellationToken);
+                _snapshotMaintenanceError = null;
+            }
+            catch (Exception ex)
+            {
+                // Maintenance is best-effort and retryable on the next tick.
+                _snapshotMaintenanceError = ex.Message;
+            }
+        });
 
         var pages = new[]
         {
@@ -495,8 +517,13 @@ public sealed class IndustrialUiComponent : Component
                 ? null : (JsonNode)_lastBindingPreview.DeepClone()),
             ("industrial/import-preview", () => _lastImportPreview is null
                 ? null : (JsonNode)_lastImportPreview.DeepClone()),
-            ("industrial/snapshot-status", () => _lastSnapshotReport is null
-                ? null : (JsonNode)JsonSerializer.SerializeToNode(_lastSnapshotReport, WireJson)!),
+            ("industrial/snapshot-status", () => new JsonObject
+            {
+                ["report"] = _lastSnapshotReport is null
+                    ? null : JsonSerializer.SerializeToNode(_lastSnapshotReport, WireJson),
+                ["error"] = _snapshotMaintenanceError is null
+                    ? null : JsonValue.Create(_snapshotMaintenanceError),
+            }),
             ("industrial/file-profiles", () => new JsonArray(fileProfiles.ListAsync()
                 .GetAwaiter().GetResult()
                 .Select(profile => (JsonNode?)JsonSerializer.SerializeToNode(profile, WireJson)).ToArray())),

@@ -268,7 +268,8 @@ public sealed record NodeDescriptor(
     IReadOnlyList<NodePort> Outputs,
     IReadOnlyDictionary<string, object?> ConfigurationSchema,
     string ActivityType,
-    IReadOnlyList<string> Dependencies);
+    IReadOnlyList<string> Dependencies,
+    string Role = "");
 
 public sealed record WorkflowNode(
     string Id,
@@ -681,6 +682,18 @@ public interface ICollectionLedger
     /// <summary>Bind a run to the Elsa instance that produced it. Idempotent:
     /// rebinding a different instance is rejected so a run can never be
     /// silently repointed at another execution's stage data.</summary>
+    /// <summary>Ledger-owned coordination used by snapshot maintenance and
+    /// workflow execution so cleanup cannot race a starting/replayed run.</summary>
+    ValueTask<bool> TryClaimMaintenanceAsync(
+        string name, string token, TimeSpan lease, CancellationToken ct = default);
+    ValueTask<bool> RenewMaintenanceAsync(
+        string name, string token, TimeSpan lease, CancellationToken ct = default);
+    ValueTask<bool> ReleaseMaintenanceAsync(
+        string name, string token, CancellationToken ct = default);
+    ValueTask<bool> IsMaintenanceActiveAsync(string name, CancellationToken ct = default);
+    ValueTask WaitForMaintenanceClearAsync(
+        string name, TimeSpan timeout, CancellationToken ct = default);
+
     ValueTask<bool> SetRunInstanceAsync(string runId, string instanceId, CancellationToken ct = default);
     ValueTask<string?> GetRunInstanceAsync(string runId, CancellationToken ct = default);
     /// <summary>The exact definition snapshot used by the run, including

@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-11-28T09:00:59.568208+00:00",
+  "generatedAt": "2026-11-28T10:10:04.551808+00:00",
   "source": "tools/release/test-report.sh",
-  "commit": "fe7208bd80dcfb99d854c4a864de4fe5ff36516c",
+  "commit": "52dbab059d362703ecb3bb4032152e0aa2ed5bee",
   "statusVocabulary": [
     "passed",
     "skipped",
@@ -69,7 +69,7 @@
       "exitCode": 0,
       "executionStatus": "passed",
       "countStatus": "parsed",
-      "passed": 208,
+      "passed": 211,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
@@ -156,7 +156,7 @@
     }
   ],
   "totals": {
-    "passed": 1085,
+    "passed": 1088,
     "skipped": 7,
     "failedSuites": [],
     "unparsedSuites": [],
@@ -168,16 +168,16 @@
     "runner": "windows-latest",
     "workflow": "windows-unc",
     "job": "unc-integration",
-    "runId": 46127341394,
-    "jobId": 140924752108,
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/46127341394",
-    "startedAt": "2026-11-28T08:46:09Z",
-    "completedAt": "2026-11-28T08:47:43Z",
+    "runId": 46132519613,
+    "jobId": 140940590540,
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46132519613",
+    "startedAt": "2026-11-28T09:52:49Z",
+    "completedAt": "2026-11-28T09:54:14Z",
     "test": "Industrial.Database.Tests.WindowsUncIntegrationTests.UncSourceDiscoversFilesThroughARealSessionLease",
     "command": "pwsh ./industrial/e2e-windows-unc.ps1",
     "share": "ephemeral real SMB share provisioned on the Windows runner by industrial/e2e-windows-unc.ps1",
     "note": "Real Windows SMB client/server through UncConnectionLease; no mock or fake native seam was used.",
-    "headSha": "fe7208bd80dcfb99d854c4a864de4fe5ff36516c",
+    "headSha": "52dbab059d362703ecb3bb4032152e0aa2ed5bee",
     "conclusion": "success",
     "bound": true
   },
@@ -186,15 +186,15 @@
     "runner": "ubuntu-latest",
     "workflow": "database-evidence",
     "job": "sqlserver",
-    "runId": 46127341193,
-    "jobId": 140924751531,
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/46127341193",
-    "startedAt": "2026-11-28T08:46:09Z",
-    "completedAt": "2026-11-28T08:47:06Z",
+    "runId": 46132519612,
+    "jobId": 140940590888,
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46132519612",
+    "startedAt": "2026-11-28T09:52:49Z",
+    "completedAt": "2026-11-28T09:53:40Z",
     "test": "Industrial.Database.Tests.SqlServerSinkTests.SqlServerSinkIsIdempotentAgainstARealServer",
     "command": "GOCORDIS_SQLSERVER_CONNECTION=<real SQL Server 2019 service> dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --filter FullyQualifiedName~SqlServerSink",
     "note": "Real SQL Server 2019 service container; write count and replay idempotency through SqlServerRecordSink and Microsoft.Data.SqlClient.",
-    "headSha": "fe7208bd80dcfb99d854c4a864de4fe5ff36516c",
+    "headSha": "52dbab059d362703ecb3bb4032152e0aa2ed5bee",
     "conclusion": "success",
     "bound": true
   },
@@ -203,15 +203,15 @@
     "runner": "ubuntu-latest",
     "workflow": "database-evidence",
     "job": "mysql",
-    "runId": 46127341193,
-    "jobId": 140924751750,
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/46127341193",
-    "startedAt": "2026-11-28T08:46:09Z",
-    "completedAt": "2026-11-28T08:47:11Z",
+    "runId": 46132519612,
+    "jobId": 140940590742,
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46132519612",
+    "startedAt": "2026-11-28T09:52:49Z",
+    "completedAt": "2026-11-28T09:54:03Z",
     "test": "Industrial.Database.Tests.MySqlSinkTests.MySqlSinkIsIdempotentAgainstARealServer",
     "command": "GOCORDIS_MYSQL_CONNECTION=<real MySQL 8 service> dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --filter FullyQualifiedName~MySqlSink",
     "note": "MySQL 8.0 service container; writes and re-plays through MySqlRecordSink and verifies rows with MySqlConnector. No SQLite substitution.",
-    "headSha": "fe7208bd80dcfb99d854c4a864de4fe5ff36516c",
+    "headSha": "52dbab059d362703ecb3bb4032152e0aa2ed5bee",
     "conclusion": "success",
     "bound": true
   },
@@ -220,15 +220,15 @@
     "runner": "windows-latest",
     "workflow": "windows-unc-browser",
     "job": "unc-browser",
-    "runId": 46127341231,
-    "jobId": 140924751464,
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/46127341231",
-    "startedAt": "2026-11-28T08:46:10Z",
-    "completedAt": "2026-11-28T08:49:55Z",
+    "runId": 46132519528,
+    "jobId": 140940590403,
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46132519528",
+    "startedAt": "2026-11-28T09:52:49Z",
+    "completedAt": "2026-11-28T09:57:18Z",
     "test": "blank environment: UI creates UNC machine, credential and resource, reads a file and rotates the credential; no pre-existing SMB mapping",
     "command": "pwsh ./industrial/e2e-unc-browser.ps1",
     "note": "Real SMB share with two local accounts, blank packaged host, real Chromium. UI creates machine/credential/UNC resource, tests connection, reads a real file, proves rotation reaches the SMB session (wrong password fails, correct second identity succeeds) and proves a referenced resource cannot be deleted.",
-    "headSha": "fe7208bd80dcfb99d854c4a864de4fe5ff36516c",
+    "headSha": "52dbab059d362703ecb3bb4032152e0aa2ed5bee",
     "conclusion": "success",
     "bound": true
   },
@@ -286,8 +286,8 @@
     {
       "requirement": "Windows runner browser E2E: blank environment, UI-created UNC machine/credential/resource, real file read, rotation uses new credential, referenced resource deletion refused",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46127341231",
-      "evidence": "artifacts/windows-unc-browser-result.json; https://github.com/ccb1900/gocordis/actions/runs/46127341231; industrial/e2e-unc-browser.ps1; industrial/web/e2e/unc-browser-e2e.spec.ts; ResourceReferenceGuardTests"
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46132519528",
+      "evidence": "artifacts/windows-unc-browser-result.json; https://github.com/ccb1900/gocordis/actions/runs/46132519528; industrial/e2e-unc-browser.ps1; industrial/web/e2e/unc-browser-e2e.spec.ts; ResourceReferenceGuardTests"
     },
     {
       "requirement": "80 machines x 10 file profiles generate 800 bindings, not 800 workflows, with pause/backfill/diagnostics in the browser",
@@ -327,7 +327,7 @@
     {
       "requirement": "business-date ledger: bounded catch-up, known-failure/hole retry, no-data re-probe and succeeded-date finality",
       "status": "passed",
-      "evidence": "industrial-dotnet.log; BusinessDateLedgerTests.BusinessTimezoneBoundaryUsesLocalYesterdayAndValidatesOverrides=passed; BusinessDateLedgerTests.AutomaticBindingRunNeverCollectsTheOpenBusinessDate=passed; BusinessDateLedgerTests.ManualHistoryRangeRunsInResumableChunksAcrossLongOutages=passed"
+      "evidence": "industrial-dotnet.log; BusinessDateLedgerTests.BusinessTimezoneBoundaryUsesLocalYesterdayAndValidatesOverrides=passed; BusinessDateLedgerTests.AutomaticBindingRunNeverCollectsTheOpenBusinessDate=passed; BusinessDateLedgerTests.ManualHistoryRangeRunsInResumableChunksAcrossLongOutages=passed; BusinessDateLedgerTests.LongHistoryRangeResumesAcrossRestartWithoutDuplicateDeliveries=passed"
     },
     {
       "requirement": "file-level idempotency and failure ledger: per-file/per-target claims, failure classification and retry rollup",
@@ -347,7 +347,7 @@
     {
       "requirement": "long downtime recovery is bounded and never recollects terminal dates; exact retry reuses the persisted bound definition",
       "status": "passed",
-      "evidence": "industrial-dotnet.log; BusinessDateLedgerTests.BusinessTimezoneBoundaryUsesLocalYesterdayAndValidatesOverrides=passed; BusinessDateLedgerTests.AutomaticBindingRunNeverCollectsTheOpenBusinessDate=passed; BusinessDateLedgerTests.ManualHistoryRangeRunsInResumableChunksAcrossLongOutages=passed"
+      "evidence": "industrial-dotnet.log; BusinessDateLedgerTests.BusinessTimezoneBoundaryUsesLocalYesterdayAndValidatesOverrides=passed; BusinessDateLedgerTests.AutomaticBindingRunNeverCollectsTheOpenBusinessDate=passed; BusinessDateLedgerTests.ManualHistoryRangeRunsInResumableChunksAcrossLongOutages=passed; BusinessDateLedgerTests.LongHistoryRangeResumesAcrossRestartWithoutDuplicateDeliveries=passed"
     },
     {
       "requirement": "collection audit: per-run outcome isolation, bound snapshot recovery, business-date failure re-probe and scheduler error survival",
@@ -387,7 +387,7 @@
     {
       "requirement": "partial source-session acquisition failure releases already-held leases; source nodes are identified by node contract",
       "status": "passed",
-      "evidence": "industrial-dotnet.log; ImmutableDataConsistencyTests.MaintenanceLockIsExclusiveAndBlocksConcurrentCleanup=passed; ImmutableDataConsistencyTests.ActiveExecutionBlocksCleanupAndIsReleasedWithTheLease=passed; ImmutableDataConsistencyTests.ActiveCleanupBlocksExecutionUntilReleased=passed; ImmutableDataConsistencyTests.CleanupLeaseLostWhenAnExecutionLeaseAppears=passed"
+      "evidence": "industrial-dotnet.log; UncLeaseTests.TwoConsumersShareOneSessionUntilBothRelease=passed; UncLeaseTests.CredentialConflictIsReportedExplicitly=passed; UncLeaseTests.ConcurrentAcquireCannotReuseASessionWhoseCancelIsInFlight=passed; ImmutableDataConsistencyTests.SourceSessionScopeLeasesEverySourceResource=passed; ImmutableDataConsistencyTests.FailedLaterLeaseReleasesAlreadyAcquiredSessions=passed"
     },
     {
       "requirement": "snapshot hash is computed as a stream and snapshots are cleaned only from ledger-proven fully delivered files with no active runs",
@@ -400,9 +400,9 @@
       "evidence": "industrial-dotnet.log; ImmutableDataConsistencyTests.MaintenanceLockIsExclusiveAndBlocksConcurrentCleanup=passed; ImmutableDataConsistencyTests.ActiveExecutionBlocksCleanupAndIsReleasedWithTheLease=passed; ImmutableDataConsistencyTests.ActiveCleanupBlocksExecutionUntilReleased=passed; ImmutableDataConsistencyTests.CleanupLeaseLostWhenAnExecutionLeaseAppears=passed"
     },
     {
-      "requirement": "one execution/cleanup protocol covers normal runs, recovery, retry, snapshot cleanup and stage cleanup; lost cleanup leases stop deletion",
+      "requirement": "one execution/cleanup protocol covers normal runs, recovery, retry, snapshot cleanup and stage cleanup; execution leases heartbeat and lost leases abort execution; lost cleanup leases stop deletion",
       "status": "passed",
-      "evidence": "industrial-dotnet.log; ImmutableDataConsistencyTests.ActiveExecutionBlocksCleanupAndIsReleasedWithTheLease; ImmutableDataConsistencyTests.ActiveCleanupBlocksExecutionUntilReleased; ImmutableDataConsistencyTests.CleanupLeaseLostWhenAnExecutionLeaseAppears; ElsaAdapter RunWorkflowAsync/RecoverAllAsync/RetryDeliveryAsync"
+      "evidence": "industrial-dotnet.log; ImmutableDataConsistencyTests.ActiveExecutionBlocksCleanupAndIsReleasedWithTheLease; ImmutableDataConsistencyTests.ActiveCleanupBlocksExecutionUntilReleased; ImmutableDataConsistencyTests.CleanupLeaseLostWhenAnExecutionLeaseAppears; ImmutableDataConsistencyTests.ExecutionHeartbeatRenewsAndCompletesSlowWork; ImmutableDataConsistencyTests.ExecutionHeartbeatLossCancelsSlowWorkAndSurfacesFailure; ElsaAdapter RunWorkflowAsync/RecoverAllAsync/RetryDeliveryAsync"
     },
     {
       "requirement": "manual history backfill longer than one year is segmented and resumable without widening automatic catch-up",
@@ -522,24 +522,24 @@
     {
       "requirement": "SQL Server real-server integration",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46127341193",
-      "evidence": "artifacts/sqlserver-result.json; https://github.com/ccb1900/gocordis/actions/runs/46127341193",
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46132519612",
+      "evidence": "artifacts/sqlserver-result.json; https://github.com/ccb1900/gocordis/actions/runs/46132519612",
       "runner": "ubuntu-latest",
       "script": ".github/workflows/database-evidence.yml"
     },
     {
       "requirement": "MySQL real-server integration",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46127341193",
-      "evidence": "artifacts/mysql-result.json; https://github.com/ccb1900/gocordis/actions/runs/46127341193",
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46132519612",
+      "evidence": "artifacts/mysql-result.json; https://github.com/ccb1900/gocordis/actions/runs/46132519612",
       "runner": "ubuntu-latest",
       "script": ".github/workflows/database-evidence.yml"
     },
     {
       "requirement": "Windows UNC/SMB integration",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46127341394",
-      "evidence": "artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/46127341394",
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46132519613",
+      "evidence": "artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/46132519613",
       "runner": "windows-latest",
       "script": "industrial/e2e-windows-unc.ps1"
     },
@@ -556,17 +556,22 @@
     {
       "requirement": "concurrent claims, lease renewal and staged-file identity guard",
       "status": "passed",
-      "evidence": "industrial-dotnet.log; DeliveryHeartbeatTests.HeartbeatRenewsOnIntervalAndCompletesSlowOperation=passed; DeliveryHeartbeatTests.FailedRenewalCancelsTheOperationAndSurfacesTheLoss=passed; DeliveryHeartbeatTests.SlowSinkDeliveryKeepsItsLeaseValidAndCompletes=passed; DeliveryHeartbeatTests.FailedRenewalAbortsTheSlowSinkAndLeavesTheClaimFenced=passed; DeliveryLeaseTests.LeaseRenewalExtendsOnlyTheCurrentClaim=passed; DeliveryLeaseTests.ConcurrentClaimsProduceExactlyOneValidToken=passed"
+      "evidence": "industrial-dotnet.log; DeliveryHeartbeatTests.HeartbeatRenewsOnIntervalAndCompletesSlowOperation=passed; DeliveryHeartbeatTests.FailedRenewalCancelsTheOperationAndSurfacesTheLoss=passed; DeliveryHeartbeatTests.SlowSinkDeliveryKeepsItsLeaseValidAndCompletes=passed; DeliveryHeartbeatTests.FailedRenewalAbortsTheSlowSinkAndLeavesTheClaimFenced=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatRenewsAndCompletesSlowWork=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatLossCancelsSlowWorkAndSurfacesFailure=passed; DeliveryLeaseTests.LeaseRenewalExtendsOnlyTheCurrentClaim=passed; DeliveryLeaseTests.ConcurrentClaimsProduceExactlyOneValidToken=passed"
     },
     {
       "requirement": "ledger claim/lease/retry state machine",
       "status": "passed",
-      "evidence": "industrial-dotnet.log; DeliveryHeartbeatTests.HeartbeatRenewsOnIntervalAndCompletesSlowOperation=passed; DeliveryHeartbeatTests.FailedRenewalCancelsTheOperationAndSurfacesTheLoss=passed; DeliveryHeartbeatTests.SlowSinkDeliveryKeepsItsLeaseValidAndCompletes=passed; DeliveryHeartbeatTests.FailedRenewalAbortsTheSlowSinkAndLeavesTheClaimFenced=passed; DeliveryLeaseTests.LeaseRenewalExtendsOnlyTheCurrentClaim=passed; DeliveryLeaseTests.ConcurrentClaimsProduceExactlyOneValidToken=passed"
+      "evidence": "industrial-dotnet.log; DeliveryHeartbeatTests.HeartbeatRenewsOnIntervalAndCompletesSlowOperation=passed; DeliveryHeartbeatTests.FailedRenewalCancelsTheOperationAndSurfacesTheLoss=passed; DeliveryHeartbeatTests.SlowSinkDeliveryKeepsItsLeaseValidAndCompletes=passed; DeliveryHeartbeatTests.FailedRenewalAbortsTheSlowSinkAndLeavesTheClaimFenced=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatRenewsAndCompletesSlowWork=passed; ImmutableDataConsistencyTests.ExecutionHeartbeatLossCancelsSlowWorkAndSurfacesFailure=passed; DeliveryLeaseTests.LeaseRenewalExtendsOnlyTheCurrentClaim=passed; DeliveryLeaseTests.ConcurrentClaimsProduceExactlyOneValidToken=passed"
     },
     {
       "requirement": "stage output resume and EF migrations",
       "status": "passed",
-      "evidence": "industrial-dotnet.log; StageOutputStoreTests.RoundTripReturnsExactlyTheCommittedRecordsWithAnIntegritySidecar=passed; StageOutputStoreTests.TruncatedCommittedSpoolThrowsDuringEnumerationInsteadOfReturningFewerRecords=passed; StageOutputStoreTests.CorruptedJsonLineThrowsWithItsLineNumber=passed; StageOutputStoreTests.TerminalInstanceStageIsCleanedAfterRetention=passed; StageOutputStoreTests.NonTerminalInstanceStageIsRetained=passed; StageOutputStoreTests.MissingOrCorruptSpoolDoesNotBreakCleanup=passed"
+      "evidence": "industrial-dotnet.log; StageOutputStoreTests.RoundTripReturnsExactlyTheCommittedRecordsWithAnIntegritySidecar=passed; StageOutputStoreTests.TruncatedCommittedSpoolThrowsDuringEnumerationInsteadOfReturningFewerRecords=passed; StageOutputStoreTests.CorruptedJsonLineThrowsWithItsLineNumber=passed; StageOutputStoreTests.TerminalInstanceStageIsCleanedAfterRetention=passed; StageOutputStoreTests.NonTerminalInstanceStageIsRetained=passed; StageOutputStoreTests.MissingOrCorruptSpoolDoesNotBreakCleanup=passed; StageOutputStoreTests.OrphanSpoolsAndPartialsAreReclaimedAfterSafetyWindow=passed"
+    },
+    {
+      "requirement": "stage cleanup cannot bypass the unified cleanup lease; preflight and delivery share one immutable file handle; crash orphans are reclaimed",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; StageOutputStore.CleanupAsync requires MaintenanceLease; StageOutputStore.ReadAsync validate+deliver on one FileStream; StageOutputStoreTests.OrphanSpoolsAndPartialsAreReclaimedAfterSafetyWindow"
     },
     {
       "requirement": "disconnect and large-file recovery",
@@ -586,7 +591,7 @@
     {
       "requirement": "stage data lifecycle: terminal-instance stages are reclaimed after retention, non-terminal stages stay, and corrupt/missing spools do not break maintenance",
       "status": "passed",
-      "evidence": "industrial-dotnet.log; StageOutputStoreTests.RoundTripReturnsExactlyTheCommittedRecordsWithAnIntegritySidecar=passed; StageOutputStoreTests.TruncatedCommittedSpoolThrowsDuringEnumerationInsteadOfReturningFewerRecords=passed; StageOutputStoreTests.CorruptedJsonLineThrowsWithItsLineNumber=passed; StageOutputStoreTests.TerminalInstanceStageIsCleanedAfterRetention=passed; StageOutputStoreTests.NonTerminalInstanceStageIsRetained=passed; StageOutputStoreTests.MissingOrCorruptSpoolDoesNotBreakCleanup=passed"
+      "evidence": "industrial-dotnet.log; StageOutputStoreTests.RoundTripReturnsExactlyTheCommittedRecordsWithAnIntegritySidecar=passed; StageOutputStoreTests.TruncatedCommittedSpoolThrowsDuringEnumerationInsteadOfReturningFewerRecords=passed; StageOutputStoreTests.CorruptedJsonLineThrowsWithItsLineNumber=passed; StageOutputStoreTests.TerminalInstanceStageIsCleanedAfterRetention=passed; StageOutputStoreTests.NonTerminalInstanceStageIsRetained=passed; StageOutputStoreTests.MissingOrCorruptSpoolDoesNotBreakCleanup=passed; StageOutputStoreTests.OrphanSpoolsAndPartialsAreReclaimedAfterSafetyWindow=passed"
     }
   ]
 }

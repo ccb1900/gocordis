@@ -12,8 +12,9 @@ public static class MaintenanceNames
     public const string ExecutionPrefix = "execution:";
 }
 
-/// <summary>A claimed cleanup lease. Callers must check <see cref="EnsureValidAsync"/>
-/// during long operations and stop deleting immediately when it reports lost.</summary>
+/// <summary>A claimed execution or cleanup lease. Execution callers should own a
+/// <see cref="MaintenanceHeartbeat"/> for the entire operation; cleanup callers
+/// must check <see cref="EnsureValidAsync"/> on every deletion boundary.</summary>
 public sealed class MaintenanceLease : IAsyncDisposable
 {
     private readonly ICollectionLedger _ledger;
@@ -69,6 +70,13 @@ public sealed class MaintenanceLease : IAsyncDisposable
     }
 
     public ValueTask DisposeAsync() => ReleaseAsync();
+
+    /// <summary>Start background renewal immediately after the lease is claimed.
+    /// The returned token must be used for every subsequent execution step so
+    /// lease loss cancels preparation as well as the main run.</summary>
+    public MaintenanceHeartbeat StartHeartbeat(
+        string owner, CancellationToken callerCt, TimeSpan? interval = null) =>
+        new(this, owner, interval, callerCt);
 }
 
 /// <summary>Execution and cleanup claims are serialized through a short-lived
@@ -117,9 +125,9 @@ public static class MaintenanceCoordination
         }
     }
 
-    /// <summary>Runs a workflow/recovery operation while its execution lease
-    /// is renewed by a background heartbeat. A failed renewal cancels the
-    /// operation and surfaces the loss; the caller still releases the lease.</summary>
+    /// <summary>Runs a workflow/recovery operation under an explicit heartbeat
+    /// scope. Prefer <see cref="BeginExecutionAsync"/> + <see cref="MaintenanceLease.StartHeartbeat"/>
+    /// so preparation is covered too; this overload remains for narrow critical sections.</summary>
     public static async ValueTask<T> RunWithHeartbeatAsync<T>(
         MaintenanceLease lease,
         string owner,
@@ -128,54 +136,11 @@ public static class MaintenanceCoordination
         TimeSpan? heartbeatInterval = null)
     {
         ArgumentNullException.ThrowIfNull(lease);
-        ArgumentNullException.ThrowIfNull(operation);
-        var interval = heartbeatInterval ?? CheckInterval;
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var heartbeatFailure = new TaskCompletionSource<Exception?>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        async Task HeartbeatAsync()
-        {
-            try
-            {
-                while (true)
-                {
-                    await Task.Delay(interval, linked.Token);
-                    if (!await lease.RenewAsync(linked.Token))
-                        throw new InvalidOperationException(
-                            $"execution lease for '{owner}' was lost; operation aborted");
-                }
-            }
-            catch (OperationCanceledException) when (linked.IsCancellationRequested)
-            {
-                // Normal completion or caller cancellation.
-            }
-            catch (Exception ex)
-            {
-                heartbeatFailure.TrySetResult(ex);
-                await linked.CancelAsync();
-            }
-        }
-
-        var heartbeat = HeartbeatAsync();
-        Exception? operationError = null;
-        T result = default!;
-        try
-        {
-            result = await operation(linked.Token);
-        }
-        catch (Exception ex)
-        {
-            operationError = ex;
-        }
-
-        if (!linked.IsCancellationRequested) await linked.CancelAsync();
-        heartbeatFailure.TrySetResult(null);
-        await heartbeat;
-        var failure = await heartbeatFailure.Task;
-        if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
-        if (operationError is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(operationError).Throw();
-        return result;
+        if (lease.Lost)
+            throw new InvalidOperationException(
+                $"execution lease for '{owner}' was already lost; operation not started");
+        await using var heartbeat = lease.StartHeartbeat(owner, ct, heartbeatInterval);
+        return await operation(heartbeat.Token);
     }
 
     public static async ValueTask<MaintenanceLease?> BeginCleanupAsync(
@@ -208,5 +173,63 @@ public static class MaintenanceCoordination
             // retries on its next tick instead of queueing behind it.
             return null;
         }
+    }
+}
+
+/// <summary>Background renewal owned for the full execution lifetime. Its token
+/// is canceled when the caller finishes or the lease is lost; disposal awaits
+/// the loop and surfaces lease loss after the operation has stopped.</summary>
+public sealed class MaintenanceHeartbeat : IAsyncDisposable
+{
+    private readonly MaintenanceLease _lease;
+    private readonly CancellationTokenSource _linked;
+    private readonly Task _loop;
+    private readonly TaskCompletionSource<Exception?> _failure =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly string _owner;
+
+    internal MaintenanceHeartbeat(
+        MaintenanceLease lease, string owner, TimeSpan? interval, CancellationToken callerCt)
+    {
+        _lease = lease;
+        _owner = owner;
+        _linked = CancellationTokenSource.CreateLinkedTokenSource(callerCt);
+        _loop = LoopAsync(interval ?? MaintenanceCoordination.CheckInterval);
+    }
+
+    public CancellationToken Token => _linked.Token;
+    public bool Lost => _lease.Lost;
+
+    private async Task LoopAsync(TimeSpan interval)
+    {
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(interval, _linked.Token);
+                if (!await _lease.RenewAsync(_linked.Token))
+                    throw new InvalidOperationException(
+                        $"execution lease for '{_owner}' was lost; operation aborted");
+            }
+        }
+        catch (OperationCanceledException) when (_linked.IsCancellationRequested)
+        {
+            // Normal completion or caller cancellation.
+        }
+        catch (Exception ex)
+        {
+            _failure.TrySetResult(ex);
+            await _linked.CancelAsync();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (!_linked.IsCancellationRequested) await _linked.CancelAsync();
+        _failure.TrySetResult(null);
+        await _loop;
+        var failure = await _failure.Task;
+        if (failure is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
 }

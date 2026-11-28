@@ -1,6 +1,8 @@
+using System.Globalization;
 using Industrial.Contracts;
 using Industrial.Core;
 using Industrial.Persistence;
+using Microsoft.EntityFrameworkCore;
 
 namespace Industrial.Unit.Tests;
 
@@ -253,6 +255,66 @@ public sealed class ImmutableDataConsistencyTests
         Assert.Contains("execution lease", failure.Message, StringComparison.Ordinal);
         await canceled.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(lease.Lost);
+    }
+
+    [Fact]
+    public async Task ExecutionHeartbeatActuallyExtendsLedgerLease()
+    {
+        using var temp = new TempRoot();
+        var ledgerPath = Path.Combine(temp.Root, "ledger.db");
+        var ledger = new CollectionLedger(() => IndustrialStore.Create(ledgerPath));
+        await using var lease = await MaintenanceCoordination.BeginExecutionAsync(
+            ledger, "renewing-workflow");
+        var initialExpiry = await LeaseExpiryAsync(ledgerPath, lease.Name);
+
+        await MaintenanceCoordination.RunWithHeartbeatAsync(
+            lease, "renewing-workflow",
+            async operationCt =>
+            {
+                await Task.Delay(120, operationCt);
+                return true;
+            },
+            heartbeatInterval: TimeSpan.FromMilliseconds(30));
+
+        var renewedExpiry = await LeaseExpiryAsync(ledgerPath, lease.Name);
+        Assert.True(renewedExpiry > initialExpiry.AddMilliseconds(100),
+            $"lease did not renew: initial={initialExpiry:O}, renewed={renewedExpiry:O}");
+    }
+
+    [Fact]
+    public async Task HeartbeatWillNotStartAlreadyLostExecutionLease()
+    {
+        using var temp = new TempRoot();
+        var ledger = new CollectionLedger(() => IndustrialStore.Create(
+            Path.Combine(temp.Root, "ledger.db")));
+        await using var lease = await MaintenanceCoordination.BeginExecutionAsync(
+            ledger, "lost-workflow");
+        await lease.ReleaseAsync();
+        Assert.False(await lease.RenewAsync());
+
+        var started = false;
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await MaintenanceCoordination.RunWithHeartbeatAsync(
+                lease, "lost-workflow",
+                _ =>
+                {
+                    started = true;
+                    return ValueTask.FromResult(true);
+                }));
+        Assert.False(started);
+    }
+
+    private static async Task<DateTimeOffset> LeaseExpiryAsync(string path, string name)
+    {
+        await using var db = IndustrialStore.Create(path);
+        var rows = await db.Database.SqlQueryRaw<LeaseRow>(
+            "SELECT ExpiresAt AS ExpiresAt FROM MaintenanceLocks WHERE Name = {0};", name).ToListAsync();
+        return DateTimeOffset.Parse(Assert.Single(rows).ExpiresAt, CultureInfo.InvariantCulture);
+    }
+
+    private sealed class LeaseRow
+    {
+        public string ExpiresAt { get; set; } = string.Empty;
     }
 
     private sealed class RecordingFileSource : IFileSource

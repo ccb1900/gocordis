@@ -120,6 +120,8 @@ STORY_TESTS = {
         "DeliveryHeartbeatTests.SlowSinkDeliveryKeepsItsLeaseValidAndCompletes",
         "DeliveryHeartbeatTests.FailedRenewalAbortsTheSlowSinkAndLeavesTheClaimFenced",
         "ImmutableDataConsistencyTests.ExecutionHeartbeatRenewsAndCompletesSlowWork",
+        "ImmutableDataConsistencyTests.ExecutionHeartbeatActuallyExtendsLedgerLease",
+        "ImmutableDataConsistencyTests.HeartbeatWillNotStartAlreadyLostExecutionLease",
         "ImmutableDataConsistencyTests.ExecutionHeartbeatLossCancelsSlowWorkAndSurfacesFailure",
         "DeliveryLeaseTests.LeaseRenewalExtendsOnlyTheCurrentClaim",
         "DeliveryLeaseTests.ConcurrentClaimsProduceExactlyOneValidToken",

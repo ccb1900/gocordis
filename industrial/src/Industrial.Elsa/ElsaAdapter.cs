@@ -287,7 +287,7 @@ public sealed class IndustrialElsaComponent : Component
                 {
                     await RecoverAllAsync(workflows, ledger, resources, vault, planner,
                         source, reader, stage, sinkFactories, sink, archive, startup: true,
-                        ct: context.CancellationToken);
+                        callerCt: context.CancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -352,7 +352,7 @@ public sealed class IndustrialElsaComponent : Component
                         await RunWorkflowAsync(
                             payload, workflows, coordinator, ledger, resources, vault, planner,
                             source, reader, stage, sinkFactories, sink, archive, ElsaDbPath,
-                            ct: context.CancellationToken);
+                            callerCt: context.CancellationToken);
                     }
                     catch (Exception ex)
                     {
@@ -377,7 +377,7 @@ public sealed class IndustrialElsaComponent : Component
                 api.RegisterCommand("industrial/recover-instances", async _ =>
                     await RecoverAllAsync(workflows, ledger, resources, vault, planner,
                         source, reader, stage, sinkFactories, sink, archive,
-                        ct: context.CancellationToken), owner);
+                        callerCt: context.CancellationToken), owner);
                 // Deterministic scheduler tick for diagnostics and integration
                 // tests. Uses the same single path as the timer, never a second
                 // scheduler implementation.
@@ -478,7 +478,7 @@ public sealed class IndustrialElsaComponent : Component
                             ["resourceId"] = resourceId,
                         }, workflows, coordinator, ledger, resources, vault, planner, source, reader,
                             stage, sinkFactories, sink, archive, ElsaDbPath,
-                            ct: context.CancellationToken);
+                            callerCt: context.CancellationToken);
                     }
                 }, owner);
                 api.RegisterCommand("industrial/retry-failed", async payload =>
@@ -597,10 +597,14 @@ public sealed class IndustrialElsaComponent : Component
         IResourceRegistry resources, ICredentialVault vault, IHistoricalRangePlanner planner,
         IFileSource source, IRecordReader reader, IStageOutputStore stage,
         Broker<IRecordSinkFactory> factories, IRecordSink defaultSink, IArchiveSink archive,
-        CancellationToken ct)
+        CancellationToken callerCt)
     {
+        var executionOwner = $"retry:{deliveryId ?? targetId ?? Guid.NewGuid().ToString("N")}";
         await using var executionLease = await MaintenanceCoordination.BeginExecutionAsync(
-            ledger, $"retry:{deliveryId ?? targetId ?? Guid.NewGuid().ToString("N")}", ct);
+            ledger, executionOwner, callerCt);
+        await using var executionHeartbeat = executionLease.StartHeartbeat(
+            executionOwner, callerCt, _leaseHeartbeat);
+        var ct = executionHeartbeat.Token;
         FileDelivery delivery;
         if (!string.IsNullOrWhiteSpace(deliveryId))
         {
@@ -711,12 +715,9 @@ public sealed class IndustrialElsaComponent : Component
         // replay, not only discovery.
         await using var sourceSessions = await SourceSessionScope.AcquireAsync(
             source, retryDefinition, resourceId, _nodeCatalog, ct);
-        var result = await MaintenanceCoordination.RunWithHeartbeatAsync(
-            executionLease, $"retry:{delivery.Id}",
-            runCt => ElsaPersistedExecution.RunAsync(published, executor, resourceId, ElsaDbPath,
-                instance.InstanceId, resume: true, definitionJson: effectiveJson,
-                definitionHash: effectiveHash, ct: runCt),
-            ct, _leaseHeartbeat);
+        var result = await ElsaPersistedExecution.RunAsync(published, executor, resourceId, ElsaDbPath,
+            instance.InstanceId, resume: true, definitionJson: effectiveJson,
+            definitionHash: effectiveHash, ct: ct);
         // Query fields only; no subsequent decision reads them.
         _lastInstanceId = result.InstanceId;
         _lastDefinitionId = result.DefinitionId;
@@ -962,7 +963,7 @@ public sealed class IndustrialElsaComponent : Component
                                              ?? Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_RESOURCE")
                                              ?? "source-1",
                         }, workflows, coordinator, ledger, resources, vault, planner, source, reader,
-                            stage, factories, sink, archive, ElsaDbPath, ct: ct);
+                            stage, factories, sink, archive, ElsaDbPath, callerCt: ct);
                         var succeeded = outcome.Completed && !outcome.DeliveryFailed;
                         var error = succeeded ? null : outcome.FailureError;
                         var accepted = await CompleteFireAsync(ledger, claim,
@@ -1139,13 +1140,16 @@ public sealed class IndustrialElsaComponent : Component
         ICredentialVault vault, IHistoricalRangePlanner planner, IFileSource source,
         IRecordReader reader, IStageOutputStore stage, Broker<IRecordSinkFactory> factories,
         IRecordSink defaultSink, IArchiveSink archive, bool startup = false,
-        CancellationToken ct = default)
+        CancellationToken callerCt = default)
     {
-        await _recoveryLock.WaitAsync(ct);
+        await _recoveryLock.WaitAsync(callerCt);
         try
         {
             await using var executionLease = await MaintenanceCoordination.BeginExecutionAsync(
-                ledger, "recovery", ct);
+                ledger, "recovery", callerCt);
+            await using var executionHeartbeat = executionLease.StartHeartbeat(
+                "recovery", callerCt, _leaseHeartbeat);
+            var ct = executionHeartbeat.Token;
             var expiredLeases = await ledger.RecoverExpiredLeasesAsync(DateTimeOffset.UtcNow);
             if (startup)
             {
@@ -1198,12 +1202,9 @@ public sealed class IndustrialElsaComponent : Component
                         snapshotRoot: SnapshotRoot, leaseHeartbeat: _leaseHeartbeat);
                     await using var sourceSessions = await SourceSessionScope.AcquireAsync(
                         source, definition, instance.ResourceId, _nodeCatalog, ct);
-                    var result = await MaintenanceCoordination.RunWithHeartbeatAsync(
-                        executionLease, $"recovery:{instance.InstanceId}",
-                        runCt => ElsaPersistedExecution.RunAsync(published, executor, instance.ResourceId,
-                            ElsaDbPath, instance.InstanceId, resume: true, definitionJson: effectiveJson,
-                            definitionHash: effectiveHash, ct: runCt),
-                        ct, _leaseHeartbeat);
+                    var result = await ElsaPersistedExecution.RunAsync(published, executor, instance.ResourceId,
+                        ElsaDbPath, instance.InstanceId, resume: true, definitionJson: effectiveJson,
+                        definitionHash: effectiveHash, ct: ct);
                     // Query-facing only: recovery outcome never decides another run.
                     _lastInstanceId = result.InstanceId;
                     _lastDefinitionId = result.DefinitionId;
@@ -1214,6 +1215,15 @@ public sealed class IndustrialElsaComponent : Component
                 }
                 catch (Exception ex)
                 {
+                    // A lost execution lease is infrastructure loss, not an
+                    // isolated recovery failure: stop the loop rather than
+                    // starting another instance without ownership.
+                    if (executionHeartbeat.Lost)
+                    {
+                        failures.Add(
+                            $"{instance.InstanceId}: recovery lease was lost; remaining recoveries stopped");
+                        break;
+                    }
                     failures.Add($"{instance.InstanceId}: {ex.Message}");
                 }
             }
@@ -1696,7 +1706,7 @@ public sealed class IndustrialElsaComponent : Component
                 ["resourceId"] = binding.SourceResourceId,
             }, workflows, coordinator, ledger, resources, vault, planner, source, reader, stage,
                 sinkFactories, sink, archive, elsaDbPath,
-                overrideDefinition: boundDefinition, ct: ct);
+                overrideDefinition: boundDefinition, callerCt: ct);
 
             // A run that finished Elsa but failed a delivery is NOT a successful
             // business date. An unstable-file skip is a re-probe, not NoData.
@@ -1863,15 +1873,18 @@ public sealed class IndustrialElsaComponent : Component
         IArchiveSink archive,
         string elsaDbPath,
         WorkflowDefinition? overrideDefinition = null,
-        CancellationToken ct = default)
+        CancellationToken callerCt = default)
     {
         var body = payload as JsonObject ?? new JsonObject();
-        // Register an execution lease atomically with the cleanup check. A
-        // cleanup that starts later observes this lease and refuses to delete;
-        // an active cleanup makes the run wait before it can register.
+        // Register an execution lease atomically with the cleanup check, then
+        // start its heartbeat before any loading, source-session or Elsa work.
+        // The heartbeat token becomes `ct` for the entire method lifetime.
         var executionOwner = body["instanceId"]?.GetValue<string>() ?? $"new-{Guid.NewGuid():N}";
         await using var executionLease = await MaintenanceCoordination.BeginExecutionAsync(
-            ledger, executionOwner, ct);
+            ledger, executionOwner, callerCt);
+        await using var executionHeartbeat = executionLease.StartHeartbeat(
+            executionOwner, callerCt, _leaseHeartbeat);
+        var ct = executionHeartbeat.Token;
         var id = body["workflowId"]?.GetValue<string>()
                  ?? Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_WORKFLOW") ?? "daily-collection";
         var resourceId = body["resourceId"]?.GetValue<string>()
@@ -1933,12 +1946,9 @@ public sealed class IndustrialElsaComponent : Component
         // all leases live until the whole workflow has finished.
         await using var sourceSessions = await SourceSessionScope.AcquireAsync(
             source, definition, resourceId, _nodeCatalog, ct);
-        var result = await MaintenanceCoordination.RunWithHeartbeatAsync(
-            executionLease, executionOwner,
-            runCt => ElsaPersistedExecution.RunAsync(
-                published, executor, resourceId, elsaDbPath, instanceId, resume,
-                definitionJson, definitionHash, runCt),
-            ct, _leaseHeartbeat);
+        var result = await ElsaPersistedExecution.RunAsync(
+            published, executor, resourceId, elsaDbPath, instanceId, resume,
+            definitionJson, definitionHash, ct);
         var productStatus = string.Equals(result.Status, "Finished", StringComparison.Ordinal)
             ? "Completed"
             : result.Status;

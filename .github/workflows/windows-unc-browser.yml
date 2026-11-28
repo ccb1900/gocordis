@@ -1,6 +1,6 @@
 name: windows-unc-browser
 
-# Packaged bundle rebind: re-run on packaging fixes because packaged UI is part of this story.
+# Execution lease lifecycle rebind: re-run browser acceptance on heartbeat ownership changes.
 # Packaged bundle rebind: browser-level acceptance for the Windows UNC UI story. The run id and tested
 # head sha are recorded in artifacts/windows-unc-browser-result.json.
 

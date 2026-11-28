@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-11-28T04:06:08.797268+00:00",
+  "generatedAt": "2026-11-28T06:02:01.923181+00:00",
   "source": "tools/release/test-report.sh",
-  "commit": "043169b8203badd30ab973aa68037a2814441541",
+  "commit": "e2d2c9400e097a7ebbe7e0a00ee2ee4b3c22ffea",
   "statusVocabulary": [
     "passed",
     "skipped",
@@ -69,7 +69,7 @@
       "exitCode": 0,
       "executionStatus": "passed",
       "countStatus": "parsed",
-      "passed": 179,
+      "passed": 181,
       "skipped": 0,
       "log": "industrial-dotnet.log"
     },
@@ -156,7 +156,7 @@
     }
   ],
   "totals": {
-    "passed": 1056,
+    "passed": 1058,
     "skipped": 7,
     "failedSuites": [],
     "unparsedSuites": [],
@@ -168,16 +168,16 @@
     "runner": "windows-latest",
     "workflow": "windows-unc",
     "job": "unc-integration",
-    "runId": 46104800253,
-    "jobId": 140855028070,
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/46104800253",
-    "startedAt": "2026-11-28T03:51:10Z",
-    "completedAt": "2026-11-28T03:52:50Z",
+    "runId": 46110985943,
+    "jobId": 140874239550,
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46110985943",
+    "startedAt": "2026-11-28T05:11:52Z",
+    "completedAt": "2026-11-28T05:13:25Z",
     "test": "Industrial.Database.Tests.WindowsUncIntegrationTests.UncSourceDiscoversFilesThroughARealSessionLease",
     "command": "pwsh ./industrial/e2e-windows-unc.ps1",
     "share": "ephemeral real SMB share provisioned on the Windows runner by industrial/e2e-windows-unc.ps1",
     "note": "Real Windows SMB client/server through UncConnectionLease; no mock or fake native seam was used.",
-    "headSha": "043169b8203badd30ab973aa68037a2814441541",
+    "headSha": "e2d2c9400e097a7ebbe7e0a00ee2ee4b3c22ffea",
     "conclusion": "success",
     "bound": true
   },
@@ -186,15 +186,15 @@
     "runner": "ubuntu-latest",
     "workflow": "database-evidence",
     "job": "sqlserver",
-    "runId": 46104800265,
-    "jobId": 140855028387,
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/46104800265",
-    "startedAt": "2026-11-28T03:51:10Z",
-    "completedAt": "2026-11-28T03:52:08Z",
+    "runId": 46110985811,
+    "jobId": 140874239431,
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46110985811",
+    "startedAt": "2026-11-28T05:11:52Z",
+    "completedAt": "2026-11-28T05:12:38Z",
     "test": "Industrial.Database.Tests.SqlServerSinkTests.SqlServerSinkIsIdempotentAgainstARealServer",
     "command": "GOCORDIS_SQLSERVER_CONNECTION=<real SQL Server 2019 service> dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --filter FullyQualifiedName~SqlServerSink",
     "note": "Real SQL Server 2019 service container; write count and replay idempotency through SqlServerRecordSink and Microsoft.Data.SqlClient.",
-    "headSha": "043169b8203badd30ab973aa68037a2814441541",
+    "headSha": "e2d2c9400e097a7ebbe7e0a00ee2ee4b3c22ffea",
     "conclusion": "success",
     "bound": true
   },
@@ -203,15 +203,15 @@
     "runner": "ubuntu-latest",
     "workflow": "database-evidence",
     "job": "mysql",
-    "runId": 46104800265,
-    "jobId": 140855028221,
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/46104800265",
-    "startedAt": "2026-11-28T03:51:10Z",
-    "completedAt": "2026-11-28T03:52:36Z",
+    "runId": 46110985811,
+    "jobId": 140874239188,
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46110985811",
+    "startedAt": "2026-11-28T05:11:52Z",
+    "completedAt": "2026-11-28T05:13:03Z",
     "test": "Industrial.Database.Tests.MySqlSinkTests.MySqlSinkIsIdempotentAgainstARealServer",
     "command": "GOCORDIS_MYSQL_CONNECTION=<real MySQL 8 service> dotnet test industrial/tests/Industrial.Database.Tests/Industrial.Database.Tests.csproj --filter FullyQualifiedName~MySqlSink",
     "note": "MySQL 8.0 service container; writes and re-plays through MySqlRecordSink and verifies rows with MySqlConnector. No SQLite substitution.",
-    "headSha": "043169b8203badd30ab973aa68037a2814441541",
+    "headSha": "e2d2c9400e097a7ebbe7e0a00ee2ee4b3c22ffea",
     "conclusion": "success",
     "bound": true
   },
@@ -220,15 +220,15 @@
     "runner": "windows-latest",
     "workflow": "windows-unc-browser",
     "job": "unc-browser",
-    "runId": 46104800249,
-    "jobId": 140855028242,
-    "url": "https://github.com/ccb1900/gocordis/actions/runs/46104800249",
-    "startedAt": "2026-11-28T03:51:10Z",
-    "completedAt": "2026-11-28T03:54:45Z",
+    "runId": 46110985868,
+    "jobId": 140874239358,
+    "url": "https://github.com/ccb1900/gocordis/actions/runs/46110985868",
+    "startedAt": "2026-11-28T05:11:52Z",
+    "completedAt": "2026-11-28T05:16:23Z",
     "test": "blank environment: UI creates UNC machine, credential and resource, reads a file and rotates the credential; no pre-existing SMB mapping",
     "command": "pwsh ./industrial/e2e-unc-browser.ps1",
     "note": "Real SMB share with two local accounts, blank packaged host, real Chromium. UI creates machine/credential/UNC resource, tests connection, reads a real file, proves rotation reaches the SMB session (wrong password fails, correct second identity succeeds) and proves a referenced resource cannot be deleted.",
-    "headSha": "043169b8203badd30ab973aa68037a2814441541",
+    "headSha": "e2d2c9400e097a7ebbe7e0a00ee2ee4b3c22ffea",
     "conclusion": "success",
     "bound": true
   },
@@ -286,8 +286,8 @@
     {
       "requirement": "Windows runner browser E2E: blank environment, UI-created UNC machine/credential/resource, real file read, rotation uses new credential, referenced resource deletion refused",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46104800249",
-      "evidence": "artifacts/windows-unc-browser-result.json; https://github.com/ccb1900/gocordis/actions/runs/46104800249; industrial/e2e-unc-browser.ps1; industrial/web/e2e/unc-browser-e2e.spec.ts; ResourceReferenceGuardTests"
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46110985868",
+      "evidence": "artifacts/windows-unc-browser-result.json; https://github.com/ccb1900/gocordis/actions/runs/46110985868; industrial/e2e-unc-browser.ps1; industrial/web/e2e/unc-browser-e2e.spec.ts; ResourceReferenceGuardTests"
     },
     {
       "requirement": "80 machines x 10 file profiles generate 800 bindings, not 800 workflows, with pause/backfill/diagnostics in the browser",
@@ -395,6 +395,21 @@
       "evidence": "industrial-dotnet.log; ImmutableFileSnapshot SHA256.HashDataAsync; SnapshotMaintenance; industrial/maintain-snapshots; industrial/snapshot-status; BindingRunIntegrityTests.LateFileInDatedDirectoryIsDiscoveredThroughTheRealSourcePath"
     },
     {
+      "requirement": "snapshot cleanup is coordinated with workflow start/recovery through the ledger maintenance lock; concurrent cleanup cannot delete a snapshot a new run will use",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; CollectionLedger.TryClaimMaintenanceAsync/ReleaseMaintenanceAsync; ElsaAdapter.WaitForMaintenanceClearAsync; ImmutableDataConsistencyTests.MaintenanceLockIsExclusiveAndBlocksConcurrentCleanup"
+    },
+    {
+      "requirement": "crash-orphaned snapshots are reclaimed after a safe retention window and maintenance runs automatically on the existing timer",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; SnapshotMaintenance orphan scan; ImmutableDataConsistencyTests.OrphanSnapshotIsReclaimedAfterTheRetentionWindow; IndustrialUiComponent TimerKeys.Service IntervalOwned"
+    },
+    {
+      "requirement": "source nodes are identified by declared node-role contract rather than node type strings",
+      "status": "passed",
+      "evidence": "industrial-dotnet.log; NodeDescriptor.Role; IndustrialNodesComponent source/sink roles; SourceSessionScope.IsSourceNode"
+    },
+    {
       "requirement": "Credential secret inputs are password controls and never render typed secrets",
       "status": "passed",
       "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts; CredentialConsole Input.Password"
@@ -497,24 +512,24 @@
     {
       "requirement": "SQL Server real-server integration",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46104800265",
-      "evidence": "artifacts/sqlserver-result.json; https://github.com/ccb1900/gocordis/actions/runs/46104800265",
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46110985811",
+      "evidence": "artifacts/sqlserver-result.json; https://github.com/ccb1900/gocordis/actions/runs/46110985811",
       "runner": "ubuntu-latest",
       "script": ".github/workflows/database-evidence.yml"
     },
     {
       "requirement": "MySQL real-server integration",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46104800265",
-      "evidence": "artifacts/mysql-result.json; https://github.com/ccb1900/gocordis/actions/runs/46104800265",
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46110985811",
+      "evidence": "artifacts/mysql-result.json; https://github.com/ccb1900/gocordis/actions/runs/46110985811",
       "runner": "ubuntu-latest",
       "script": ".github/workflows/database-evidence.yml"
     },
     {
       "requirement": "Windows UNC/SMB integration",
       "status": "passed",
-      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46104800253",
-      "evidence": "artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/46104800253",
+      "passingResult": "https://github.com/ccb1900/gocordis/actions/runs/46110985943",
+      "evidence": "artifacts/windows-unc-result.json; https://github.com/ccb1900/gocordis/actions/runs/46110985943",
       "runner": "windows-latest",
       "script": "industrial/e2e-windows-unc.ps1"
     },

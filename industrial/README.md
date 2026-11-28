@@ -28,3 +28,5 @@ run command through the owning Fiber's effect stack.
 - `src/Industrial.Host` — ASP.NET Core host composing the existing Cordis Runtime/Registry/WebUiServer.
 
 See `docs/architecture/current-state.md` and `docs/architecture/gap-analysis.md`.
+
+Execution/maintenance leases are renewed for the entire workflow, recovery and retry lifetime.

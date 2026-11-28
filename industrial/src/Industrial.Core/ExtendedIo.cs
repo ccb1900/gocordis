@@ -248,8 +248,13 @@ public sealed class RoutingFileSource : IFileSource, IAsyncDisposable
         }
     }
 
+    public ValueTask<IReadOnlyList<DiscoveredFile>> DiscoverAsync(
+        string resourceId, SourceDateRange range, CancellationToken ct = default) =>
+        DiscoverAsync(resourceId, range, null, null, ct);
+
     public async ValueTask<IReadOnlyList<DiscoveredFile>> DiscoverAsync(
-        string resourceId, SourceDateRange range, CancellationToken ct = default)
+        string resourceId, SourceDateRange range, FileProfileDefinition? profile,
+        IReadOnlySet<DateOnly>? businessDates, CancellationToken ct = default)
     {
         var resource = await _resources.GetAsync(resourceId, ct)
                        ?? throw new InvalidOperationException($"resource '{resourceId}' not found");
@@ -261,15 +266,34 @@ public sealed class RoutingFileSource : IFileSource, IAsyncDisposable
                 throw new PlatformNotSupportedException("UNC sources require a Windows host");
             }
 
-            return await _unc.DiscoverAsync(resourceId, range, ct);
+            return await _unc.DiscoverAsync(resourceId, range, profile, businessDates, ct);
         }
 
-        return await _local.DiscoverAsync(resourceId, range, ct);
+        return await _local.DiscoverAsync(resourceId, range, profile, businessDates, ct);
     }
 
-    public ValueTask<bool> IsStableAsync(
-        DiscoveredFile file, TimeSpan quietPeriod, CancellationToken ct = default) =>
-        _local.IsStableAsync(file, quietPeriod, ct);
+    /// <summary>One session scope for the whole workflow execution, regardless
+    /// of whether the injected source is local or UNC.</summary>
+    public async ValueTask<IAsyncDisposable?> LeaseScopeAsync(
+        string resourceId, CancellationToken ct = default)
+    {
+        var resource = await _resources.GetAsync(resourceId, ct)
+                       ?? throw new InvalidOperationException($"resource '{resourceId}' not found");
+        var root = resource.Configuration.TryGetValue("root", out var value) ? value?.ToString() : null;
+        if (string.IsNullOrWhiteSpace(root) || !root.StartsWith(@"\\", StringComparison.Ordinal))
+            return null;
+        if (_unc is null)
+            throw new PlatformNotSupportedException("UNC sources require a Windows host");
+        return await _unc.LeaseScopeAsync(resourceId, ct);
+    }
+
+    public async ValueTask<bool> IsStableAsync(
+        DiscoveredFile file, TimeSpan quietPeriod, CancellationToken ct = default)
+    {
+        if (_unc is not null && file.FullPath.StartsWith(@"\\", StringComparison.Ordinal))
+            return await _unc.IsStableAsync(file, quietPeriod, ct);
+        return await _local.IsStableAsync(file, quietPeriod, ct);
+    }
 
     public ValueTask DisposeAsync()
     {

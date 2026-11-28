@@ -32,6 +32,22 @@ public sealed class FileDiscoveryStabilityTests
     }
 
     [Fact]
+    public async Task ActualDiscoveryRejectsAFileChangedDuringTheQuietPeriod()
+    {
+        using var temp = new TempRoot();
+        var path = Path.Combine(temp.Root, "20260101.csv");
+        await File.WriteAllTextAsync(path, "a,b\n");
+        var source = new LocalFileSource(new StubResources(temp.Root));
+
+        var discovery = source.DiscoverAsync("source-1", Range).AsTask();
+        await Task.Delay(50);
+        await File.WriteAllTextAsync(path, "a,b\nx,y\n");
+        var found = await discovery;
+
+        Assert.Empty(found);
+    }
+
+    [Fact]
     public async Task StabilityHelperUsesRealSizeAndMtimeObservations()
     {
         using var temp = new TempRoot();

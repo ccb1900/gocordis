@@ -21,24 +21,50 @@ public static class FileProfileDiscovery
         FileProfileDefinition? profile, IEnumerable<DiscoveredFile> files, string root)
     {
         if (profile is null) return files.ToArray();
-        var rootPath = File.Exists(root)
-            ? Path.GetDirectoryName(Path.GetFullPath(root)) ?? Path.GetFullPath(root)
-            : Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
+        var rootPath = NormalizeRoot(root);
+        return files.Where(file => MatchesPath(profile, file.FullPath, rootPath))
+            .Select(file => WithBusinessDate(file, profile, rootPath)).ToArray();
+    }
+
+    public static string NormalizeRoot(string root) => File.Exists(root)
+        ? Path.GetDirectoryName(Path.GetFullPath(root)) ?? Path.GetFullPath(root)
+        : Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
+
+    /// <summary>Name/directory layout gate shared by discovery and preview.</summary>
+    public static bool MatchesPath(FileProfileDefinition profile, string fullPath, string root)
+    {
+        var rootPath = NormalizeRoot(root);
+        var relative = Path.GetRelativePath(rootPath, Path.GetFullPath(fullPath)).Replace('\\', '/');
+        var directory = Path.GetDirectoryName(relative)?.Replace('\\', '/') ?? string.Empty;
+        var name = Path.GetFileName(relative);
+        if (profile.Flat && !string.IsNullOrEmpty(directory)) return false;
         var namePattern = Glob(profile.FileNamePattern);
         var directoryPattern = DatePatternRegex(profile.DirectoryPattern);
         var datePattern = DatePatternRegex(profile.DatePattern);
-        return files.Where(file =>
+        if (namePattern is not null && !namePattern.IsMatch(name)) return false;
+        if (directoryPattern is not null && !directoryPattern.IsMatch(directory)) return false;
+        if (datePattern is not null && !datePattern.IsMatch(name)) return false;
+        return true;
+    }
+
+    /// <summary>The date encoded in the path wins over mtime. This is the
+    /// single authority used by source discovery, before any range filter.</summary>
+    public static DateOnly? BusinessDateFor(
+        string fullPath, string root, FileProfileDefinition? profile)
+    {
+        var rootPath = NormalizeRoot(root);
+        var relative = Path.GetRelativePath(rootPath, Path.GetFullPath(fullPath)).Replace('\\', '/');
+        var directory = Path.GetDirectoryName(relative)?.Replace('\\', '/') ?? string.Empty;
+        var name = Path.GetFileName(relative);
+        if (profile is not null)
         {
-            var full = Path.GetFullPath(file.FullPath);
-            var relative = Path.GetRelativePath(rootPath, full).Replace('\\', '/');
-            var directory = Path.GetDirectoryName(relative)?.Replace('\\', '/') ?? string.Empty;
-            var name = Path.GetFileName(relative);
-            if (profile.Flat && !string.IsNullOrEmpty(directory)) return false;
-            if (namePattern is not null && !namePattern.IsMatch(name)) return false;
-            if (directoryPattern is not null && !directoryPattern.IsMatch(directory)) return false;
-            if (datePattern is not null && !datePattern.IsMatch(name)) return false;
-            return true;
-        }).Select(file => WithBusinessDate(file, profile, rootPath)).ToArray();
+            var date = ParseBusinessDate(name, profile.DatePattern)
+                       ?? ParseBusinessDate(directory, profile.DirectoryPattern);
+            if (date.HasValue) return date;
+        }
+        return FileIdentityFactory.ParseSourceDate(name) is { } parsed
+            ? DateOnly.FromDateTime(parsed.UtcDateTime)
+            : null;
     }
 
     /// <summary>The date encoded in a path is stronger evidence than mtime:
@@ -49,12 +75,7 @@ public static class FileProfileDiscovery
     {
         if (string.IsNullOrWhiteSpace(profile.DirectoryPattern) &&
             string.IsNullOrWhiteSpace(profile.DatePattern)) return file;
-        var relative = Path.GetRelativePath(rootPath, Path.GetFullPath(file.FullPath))
-            .Replace('\\', '/');
-        var directory = Path.GetDirectoryName(relative)?.Replace('\\', '/') ?? string.Empty;
-        var name = Path.GetFileName(relative);
-        var date = ParseBusinessDate(name, profile.DatePattern)
-                   ?? ParseBusinessDate(directory, profile.DirectoryPattern);
+        var date = BusinessDateFor(file.FullPath, rootPath, profile);
         return date is null ? file : file with
         {
             SourceDate = date.Value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc),

@@ -66,6 +66,30 @@ public static class FileStability
         var after = new FileInfo(path);
         return beforeLength == after.Length && beforeWriteUtc == after.LastWriteTimeUtc;
     }
+
+    /// <summary>One discovery identity rule for local and UNC sources:
+    /// observe → quiet period → re-observe → hash → re-observe. Any change
+    /// invalidates the candidate, so a partially written file never receives
+    /// a stable identity.</summary>
+    public static async ValueTask<FileIdentity?> CreateStableIdentityAsync(
+        string path, string root, string resourceId, TimeSpan quietPeriod,
+        Action<string>? afterQuietPeriod = null, CancellationToken ct = default)
+    {
+        if (!await IsStableAsync(path, quietPeriod, ct)) return null;
+        afterQuietPeriod?.Invoke(path);
+        FileIdentity identity;
+        try
+        {
+            identity = FileIdentityFactory.Create(path, root, resourceId);
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+        var after = new FileInfo(path);
+        return after.Exists && after.Length == identity.Length &&
+               after.LastWriteTimeUtc == identity.LastWriteUtc
+            ? identity
+            : null;
+    }
 }
 
 /// <summary>Stable technical file identity. Mapping rules and business date
@@ -111,95 +135,39 @@ public sealed class LocalFileSource : IFileSource
     private readonly IResourceRegistry _resources;
     private readonly Func<IReadOnlyList<string>>? _extensions;
     private readonly Action<string>? _afterStabilityCheck;
+    private readonly TimeSpan _quietPeriod;
 
     public LocalFileSource(
         IResourceRegistry resources,
         Func<IReadOnlyList<string>>? extensions = null,
-        Action<string>? afterStabilityCheck = null)
+        Action<string>? afterStabilityCheck = null,
+        TimeSpan? quietPeriod = null)
     {
         _resources = resources;
         _extensions = extensions;
         // Optional seam for tests that simulate a write landing between the
-        // pre-hash stat gate and the hash; production callers leave it null.
+        // quiet-period gate and the hash; production callers leave it null.
         _afterStabilityCheck = afterStabilityCheck;
+        _quietPeriod = quietPeriod ?? ProfileFileDiscovery.DefaultQuietPeriod;
     }
 
+    public ValueTask<IReadOnlyList<DiscoveredFile>> DiscoverAsync(
+        string resourceId, SourceDateRange range, CancellationToken ct = default) =>
+        DiscoverAsync(resourceId, range, null, null, ct);
+
     public async ValueTask<IReadOnlyList<DiscoveredFile>> DiscoverAsync(
-        string resourceId, SourceDateRange range, CancellationToken ct = default)
+        string resourceId, SourceDateRange range, FileProfileDefinition? profile,
+        IReadOnlySet<DateOnly>? businessDates, CancellationToken ct = default)
     {
         var resource = await _resources.GetAsync(resourceId, ct)
                        ?? throw new InvalidOperationException($"resource '{resourceId}' not found");
         var root = resource.Configuration.TryGetValue("root", out var value)
             ? value?.ToString()
             : null;
-        if (string.IsNullOrWhiteSpace(root)) return [];
-        // Flat mode: the resource root is the file itself (Go's single-file
-        // source), not a directory that happens to contain one file.
-        if (File.Exists(root))
-        {
-            var flatDate = CheapSourceDate(root);
-            if (flatDate < range.FromInclusive || flatDate >= range.ToExclusive)
-            {
-                return [];
-            }
-
-            var parent = Path.GetDirectoryName(Path.GetFullPath(root)) ?? root;
-            var identity = await StableIdentityAsync(root, parent, resource.Id, ct);
-            return identity is null
-                ? []
-                : [new DiscoveredFile(identity, root, flatDate, resource.Id)];
-        }
-        if (!Directory.Exists(root)) return [];
-
-        var result = new List<DiscoveredFile>();
-        foreach (var path in DiscoveredFilePatterns.Enumerate(root, _extensions, ct))
-        {
-            // Prefilter by date/name with one cheap stat before paying for a
-            // hash. Business date never enters the technical identity key.
-            var sourceDate = CheapSourceDate(path);
-            if (sourceDate < range.FromInclusive || sourceDate >= range.ToExclusive)
-            {
-                continue;
-            }
-
-            var identity = await StableIdentityAsync(path, root, resource.Id, ct);
-            if (identity is null) continue;
-            result.Add(new DiscoveredFile(identity, path, sourceDate, resource.Id));
-        }
-
-        return result.OrderBy(file => file.SourceDate)
-            .ThenBy(file => file.FullPath, StringComparer.Ordinal)
-            .ToArray();
+        return await ProfileFileDiscovery.FindAsync(
+            root ?? string.Empty, resource.Id, _extensions, range, profile,
+            businessDates, _quietPeriod, _afterStabilityCheck, ct);
     }
-
-    private async ValueTask<FileIdentity?> StableIdentityAsync(
-        string path, string root, string resourceId, CancellationToken ct)
-    {
-        // Stability comes before hashing: a file that is still being written
-        // must not receive a content hash it will not keep.
-        if (!await FileStability.IsStableAsync(path, TimeSpan.Zero, ct)) return null;
-        _afterStabilityCheck?.Invoke(path);
-        FileIdentity identity;
-        try
-        {
-            identity = FileIdentityFactory.Create(path, root, resourceId);
-        }
-        catch (IOException)
-        {
-            return null;
-        }
-        // A write that landed between the stat gate and the hash invalidates
-        // the candidate; let the next discovery see the settled file.
-        var after = new FileInfo(path);
-        return after.Exists && after.Length == identity.Length &&
-               after.LastWriteTimeUtc == identity.LastWriteUtc
-            ? identity
-            : null;
-    }
-
-    private static DateTimeOffset CheapSourceDate(string path) =>
-        FileIdentityFactory.ParseSourceDate(Path.GetFileName(path))
-        ?? new DateTimeOffset(new FileInfo(path).LastWriteTimeUtc);
 
     public ValueTask<bool> IsStableAsync(
         DiscoveredFile file, TimeSpan quietPeriod, CancellationToken ct = default) =>

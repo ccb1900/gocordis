@@ -196,19 +196,27 @@ public sealed class UncFileSource : IFileSource
     private readonly IResourceRegistry _resources;
     private readonly ICredentialVault? _vault;
     private readonly Func<IReadOnlyList<string>>? _extensions;
+    private readonly TimeSpan _quietPeriod;
 
     public UncFileSource(
         IResourceRegistry resources,
         ICredentialVault? vault = null,
-        Func<IReadOnlyList<string>>? extensions = null)
+        Func<IReadOnlyList<string>>? extensions = null,
+        TimeSpan? quietPeriod = null)
     {
         _resources = resources;
         _vault = vault;
         _extensions = extensions;
+        _quietPeriod = quietPeriod ?? ProfileFileDiscovery.DefaultQuietPeriod;
     }
 
+    public ValueTask<IReadOnlyList<DiscoveredFile>> DiscoverAsync(
+        string resourceId, SourceDateRange range, CancellationToken ct = default) =>
+        DiscoverAsync(resourceId, range, null, null, ct);
+
     public async ValueTask<IReadOnlyList<DiscoveredFile>> DiscoverAsync(
-        string resourceId, SourceDateRange range, CancellationToken ct = default)
+        string resourceId, SourceDateRange range, FileProfileDefinition? profile,
+        IReadOnlySet<DateOnly>? businessDates, CancellationToken ct = default)
     {
         var resource = await _resources.GetAsync(resourceId, ct)
                        ?? throw new InvalidOperationException($"resource '{resourceId}' not found");
@@ -233,28 +241,9 @@ public sealed class UncFileSource : IFileSource
 
         try
         {
-            if (File.Exists(root))
-            {
-                var parent = Path.GetDirectoryName(root!) ?? root!;
-                var identity = FileIdentityFactory.Create(root!, parent, resource.Id);
-                var flatDate = FileIdentityFactory.ParseSourceDate(Path.GetFileName(root))
-                               ?? identity.LastWriteUtc;
-                return flatDate < range.FromInclusive || flatDate >= range.ToExclusive
-                    ? []
-                    : [new DiscoveredFile(identity, root!, flatDate, resource.Id)];
-            }
-
-            var result = new List<DiscoveredFile>();
-            var files = DiscoveredFilePatterns.Enumerate(root!, _extensions);
-            foreach (var path in files)
-            {
-                ct.ThrowIfCancellationRequested();
-                var identity = FileIdentityFactory.Create(path, root!, resource.Id);
-                var sourceDate = FileIdentityFactory.ParseSourceDate(Path.GetFileName(path)) ?? identity.LastWriteUtc;
-                if (sourceDate < range.FromInclusive || sourceDate >= range.ToExclusive) continue;
-                result.Add(new DiscoveredFile(identity, path, sourceDate, resource.Id));
-            }
-            return result.OrderBy(file => file.SourceDate).ToArray();
+            return await ProfileFileDiscovery.FindAsync(
+                root!, resource.Id, _extensions, range, profile, businessDates,
+                _quietPeriod, null, ct);
         }
         finally
         {
@@ -274,7 +263,7 @@ public sealed class UncFileSource : IFileSource
     /// DiscoverAsync still acquires its own reference-counted lease; this outer
     /// scope keeps the session alive while stability checks, parsing and
     /// archiving touch the same share.</summary>
-    public async ValueTask<IAsyncDisposable> LeaseScopeAsync(
+    public async ValueTask<IAsyncDisposable?> LeaseScopeAsync(
         string resourceId, CancellationToken ct = default)
     {
         var resource = await _resources.GetAsync(resourceId, ct)

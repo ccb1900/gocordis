@@ -31,6 +31,11 @@ function New-Fixture {
     }
     New-SmbShare -Name $shareName -Path $sharePath `
         -FullAccess $userA,$userB | Out-Null
+    # No drive/session mapping may exist before the browser flow: the
+    # product must establish the SMB session from the configured credential.
+    $preexisting = Get-SmbMapping -ErrorAction SilentlyContinue |
+        Where-Object { $_.RemotePath -eq "\\localhost\$shareName" }
+    if ($preexisting) { throw "pre-existing SMB mapping would invalidate the credential-session story" }
 }
 
 try {

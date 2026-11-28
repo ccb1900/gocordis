@@ -687,6 +687,9 @@ public sealed class IndustrialElsaComponent : Component
             planner, source, reader, stage, factories, defaultSink, archive,
             delivery.Id, delivery.TargetId, _nodeHandlers,
             definitionJson: effectiveJson, definitionHash: effectiveHash);
+        // Keep the credentialed source session for the entire replay, not
+        // only discovery: reading, mapping, sinks and archive may all touch it.
+        await using var sourceSession = await source.LeaseScopeAsync(resourceId, ct);
         var result = await ElsaPersistedExecution.RunAsync(published, executor, resourceId, ElsaDbPath,
             instance.InstanceId, resume: true, definitionJson: effectiveJson,
             definitionHash: effectiveHash, ct: ct);
@@ -709,6 +712,8 @@ public sealed class IndustrialElsaComponent : Component
             IEnumerable<string> list => list,
             JsonElement element when element.ValueKind == JsonValueKind.Array =>
                 element.EnumerateArray().Select(item => item.GetString()),
+            JsonArray array => array.Select(item => item?.GetValue<string>()),
+            IEnumerable<object?> list => list.Select(item => item?.ToString()),
             _ => [],
         };
         foreach (var value in values)
@@ -1163,6 +1168,7 @@ public sealed class IndustrialElsaComponent : Component
                         ledger, resources, vault, planner, source, reader, stage,
                         factories, defaultSink, archive, handlers: _nodeHandlers,
                         definitionJson: effectiveJson, definitionHash: effectiveHash);
+                    await using var sourceSession = await source.LeaseScopeAsync(instance.ResourceId, ct);
                     var result = await ElsaPersistedExecution.RunAsync(published, executor, instance.ResourceId,
                         ElsaDbPath, instance.InstanceId, resume: true, definitionJson: effectiveJson,
                         definitionHash: effectiveHash, ct: ct);
@@ -1549,9 +1555,14 @@ public sealed class IndustrialElsaComponent : Component
         var bound = WorkflowBinding.ApplyFileProfile(
             WorkflowBinding.BindParameters(published.Definition, values), profile);
         var dateValues = businessDates.Select(date => (object?)date.ToString("yyyy-MM-dd")).ToArray();
+        // A source node is identified by the published graph (no incoming
+        // edge), not by a substring of its provider type: local/UNC sources
+        // are registered as "industrial.filesystem.*".
+        var edgeTargets = bound.Edges.Select(edge => edge.Target)
+            .ToHashSet(StringComparer.Ordinal);
         bound = bound with
         {
-            Nodes = bound.Nodes.Select(node => node.Type.Contains("source", StringComparison.OrdinalIgnoreCase)
+            Nodes = bound.Nodes.Select(node => !edgeTargets.Contains(node.Id)
                 ? node with
                 {
                     Config = new Dictionary<string, object?>(node.Config, StringComparer.Ordinal)
@@ -1758,6 +1769,9 @@ public sealed class IndustrialElsaComponent : Component
             },
             definitionJson: definitionJson, definitionHash: definitionHash);
 
+        // The credentialed SMB session belongs to the whole run: source,
+        // reader, mapping, sinks and archive can all read the same share.
+        await using var sourceSession = await source.LeaseScopeAsync(resourceId, ct);
         var result = await ElsaPersistedExecution.RunAsync(
             published, executor, resourceId, elsaDbPath, instanceId, resume,
             definitionJson, definitionHash, ct);
@@ -2108,12 +2122,6 @@ public sealed class IndustrialElsaComponent : Component
                              && configured is not null && !string.IsNullOrWhiteSpace(configured.ToString())
                 ? configured.ToString()!
                 : _resourceId;
-            // Keep a credentialed SMB session alive for discovery, stability,
-            // parsing and archiving. For local/non-credentialed resources this
-            // is a no-op and does not create a second session mechanism.
-            await using var uncSession = _source is UncFileSource unc
-                ? await unc.LeaseScopeAsync(resourceId, ct)
-                : null;
             var profileJson = new NodeConfigReader(node.Config).GetString("fileProfile", string.Empty);
             var fileProfile = string.IsNullOrWhiteSpace(profileJson)
                 ? null : JsonSerializer.Deserialize<FileProfileDefinition>(profileJson, WebJson);
@@ -2129,7 +2137,12 @@ public sealed class IndustrialElsaComponent : Component
                     new DateTimeOffset(plannedDates.Min().ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)),
                     new DateTimeOffset(plannedDates.Max().AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)))
                 : _planner.Plan(DateTimeOffset.UtcNow, Lookback());
-            var discovered = await _source.DiscoverAsync(resourceId, range, ct);
+            // Profile date rules are applied inside discovery, before the
+            // range filter, so a late directory/file with an old mtime is not
+            // lost before FileProfileDiscovery can read its business date.
+            var discovered = await _source.DiscoverAsync(
+                resourceId, range, fileProfile,
+                plannedDates.Count > 0 ? plannedDates : null, ct);
             discovered = FileProfileDiscovery.Apply(fileProfile, discovered, discoveryRoot);
             var fileNamePattern = new NodeConfigReader(node.Config).GetString("fileNamePattern", string.Empty);
             if (!string.IsNullOrWhiteSpace(fileNamePattern))

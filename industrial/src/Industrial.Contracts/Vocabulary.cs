@@ -535,6 +535,21 @@ public interface IFileSource
 {
     ValueTask<IReadOnlyList<DiscoveredFile>> DiscoverAsync(
         string resourceId, SourceDateRange range, CancellationToken ct = default);
+
+    /// <summary>Profile-aware discovery. Date-directory/filename rules and
+    /// planned business dates are applied before the range filter so a late
+    /// file cannot be discarded because of an old mtime.</summary>
+    ValueTask<IReadOnlyList<DiscoveredFile>> DiscoverAsync(
+        string resourceId, SourceDateRange range, FileProfileDefinition? profile,
+        IReadOnlySet<DateOnly>? businessDates, CancellationToken ct = default) =>
+        DiscoverAsync(resourceId, range, ct);
+
+    /// <summary>Holds any credentialed source session (SMB) for the whole
+    /// workflow execution. Sources without a session return null.</summary>
+    ValueTask<IAsyncDisposable?> LeaseScopeAsync(
+        string resourceId, CancellationToken ct = default) =>
+        ValueTask.FromResult<IAsyncDisposable?>(null);
+
     ValueTask<bool> IsStableAsync(DiscoveredFile file, TimeSpan quietPeriod, CancellationToken ct = default);
 }
 

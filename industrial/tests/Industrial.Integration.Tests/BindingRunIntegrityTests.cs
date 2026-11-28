@@ -207,6 +207,47 @@ public sealed class BindingRunIntegrityTests
         Assert.True(await api.ExecuteAsync("industrial/binding-scheduler-tick", null));
     }
 
+    [Fact]
+    public async Task LateFileInDatedDirectoryIsDiscoveredThroughTheRealSourcePath()
+    {
+        using var temp = new TempDir();
+        var sourceRoot = Path.Combine(temp.Root, "source");
+        var businessDate = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-2);
+        var datedDirectory = Path.Combine(sourceRoot, businessDate.ToString("yyyy-MM-dd"));
+        Directory.CreateDirectory(datedDirectory);
+        var file = Path.Combine(datedDirectory, "readings.csv");
+        await File.WriteAllTextAsync(file, "record_id,reading\n1,42\n");
+        File.SetLastWriteTimeUtc(file, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+
+        await using var runtime = CreateRuntime(temp.Root, sourceRoot, out var api, out var ledger,
+            id => SuccessSink(id));
+        await SaveAndPublishAsync(api, SinkTemplate("late-file-template"));
+        await RegisterTargetAsync(api, "target-1");
+        Assert.True(await api.ExecuteAsync("industrial/save-file-profile", new JsonObject
+        {
+            ["id"] = "p-dated", ["name"] = "Dated directory", ["fileNamePattern"] = "*.csv",
+            ["format"] = "csv", ["delimiter"] = ",", ["hasHeader"] = true,
+            ["encoding"] = "utf-8", ["mapping"] = new JsonObject { ["value"] = "reading" },
+            ["required"] = new JsonArray("value"), ["directoryPattern"] = "YYYY-MM-DD",
+            ["datePattern"] = string.Empty, ["flat"] = false, ["metadataRules"] = new JsonArray(),
+        }));
+        Assert.True(await ImportBindingAsync(api,
+            "id,name,machineId,workflowId,workflowVersion,fileProfileId,sourceResourceId," +
+            "targetResourceIds,triggerKind,cron,parameters\n" +
+            "b-late,Late,machine-1,late-file-template,1,p-dated,source-1,target-1,manual,," +
+            "catchUpDays=7;shift=late\n"));
+
+        Assert.True(await api.ExecuteAsync("industrial/run-binding",
+            new JsonObject { ["bindingId"] = "b-late", ["lookbackDays"] = 1 }));
+
+        var collected = Assert.Single(await ledger.ListAllFilesAsync());
+        Assert.Equal(businessDate, DateOnly.FromDateTime(collected.SourceDate.UtcDateTime));
+        var date = Assert.Single(await ledger.ListDatesAsync(),
+            row => row.BusinessDate == businessDate);
+        Assert.Equal(CollectionDateStatus.Succeeded, date.Status);
+        Assert.Equal(1, date.Files);
+    }
+
     private static WorkflowDefinition SourceOnlyTemplate(string id) => new(
         id, "Source template", 1,
         [new WorkflowNode("src", "industrial.filesystem.local", new Dictionary<string, object?>

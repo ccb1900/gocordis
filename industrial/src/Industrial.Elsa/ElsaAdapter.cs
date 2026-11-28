@@ -2609,13 +2609,26 @@ public sealed class IndustrialElsaComponent : Component
             View(node.Id).Samples = sinkSample.Values;
             foreach (var sourceKey in datasets.Keys)
             {
-                if (!_ledgerFiles.TryGetValue(sourceKey, out var ledgerFile)) continue;
+                if (!_ledgerFiles.TryGetValue(sourceKey, out var ledgerFile))
+                {
+                    // A partition with no ledger file cannot be a completed node.
+                    stageComplete = false;
+                    continue;
+                }
                 var key = $"{sourceKey}->{sink.TargetId}";
                 var delivery = await _ledger.StartDeliveryAsync(
                     ledgerFile.Id, sink.TargetId, key, "record", _runId, ct);
-                if (_retryDeliveryId is not null && delivery.Id != _retryDeliveryId) continue;
+                if (_retryDeliveryId is not null && delivery.Id != _retryDeliveryId)
+                {
+                    if (delivery.Status != "Succeeded") stageComplete = false;
+                    continue;
+                }
                 if (_retryTargetId is not null &&
-                    !string.Equals(sink.TargetId, _retryTargetId, StringComparison.Ordinal)) continue;
+                    !string.Equals(sink.TargetId, _retryTargetId, StringComparison.Ordinal))
+                {
+                    if (delivery.Status != "Succeeded") stageComplete = false;
+                    continue;
+                }
                 if (delivery.Status == "Succeeded") continue;
                 var claim = await _ledger.TryClaimDeliveryAsync(
                     _runId!, delivery.Id, TimeSpan.FromMinutes(5), ct);
@@ -2679,13 +2692,25 @@ public sealed class IndustrialElsaComponent : Component
                 .Select(file => file.Identity.Key).ToArray();
             foreach (var file in archiveFiles)
             {
-                if (!_ledgerFiles.TryGetValue(file.Identity.Key, out var ledgerFile)) continue;
+                if (!_ledgerFiles.TryGetValue(file.Identity.Key, out var ledgerFile))
+                {
+                    stageComplete = false;
+                    continue;
+                }
                 var key = $"{file.Identity.Key}->{_archive.TargetId}";
                 var delivery = await _ledger.StartDeliveryAsync(
                     ledgerFile.Id, _archive.TargetId, key, "archive", _runId, ct);
-                if (_retryDeliveryId is not null && delivery.Id != _retryDeliveryId) continue;
+                if (_retryDeliveryId is not null && delivery.Id != _retryDeliveryId)
+                {
+                    if (delivery.Status != "Succeeded") stageComplete = false;
+                    continue;
+                }
                 if (_retryTargetId is not null &&
-                    !string.Equals(_archive.TargetId, _retryTargetId, StringComparison.Ordinal)) continue;
+                    !string.Equals(_archive.TargetId, _retryTargetId, StringComparison.Ordinal))
+                {
+                    if (delivery.Status != "Succeeded") stageComplete = false;
+                    continue;
+                }
                 if (delivery.Status == "Succeeded") continue;
                 var claim = await _ledger.TryClaimDeliveryAsync(
                     _runId!, delivery.Id, TimeSpan.FromMinutes(5), ct);

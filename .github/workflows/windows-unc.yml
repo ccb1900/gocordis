@@ -15,7 +15,9 @@ on:
     branches: [dotnet]
     paths:
       - 'industrial/**'
+      - 'tools/release/test-report.sh'
       - '.github/workflows/windows-unc.yml'
+      - '.github/workflows/windows-unc-browser.yml'
 
 permissions:
   contents: read

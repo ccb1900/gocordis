@@ -13,6 +13,8 @@ on:
       - 'industrial/**'
       - 'tools/release/test-report.sh'
       - '.github/workflows/database-evidence.yml'
+      - '.github/workflows/windows-unc.yml'
+      - '.github/workflows/windows-unc-browser.yml'
 
 permissions:
   contents: read

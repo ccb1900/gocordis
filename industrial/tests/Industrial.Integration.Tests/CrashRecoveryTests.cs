@@ -149,7 +149,7 @@ public sealed class CrashRecoveryTests
             };
             await resources.RegisterAsync(existing with
             {
-                Version = existing.Version + 1,
+                Version = existing.Version,
                 Configuration = new Dictionary<string, object?>
                 {
                     ["host"] = valid.Server,

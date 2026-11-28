@@ -218,6 +218,11 @@ public sealed class LedgerCorrectnessTests
             string resourceId, SourceDateRange range, CancellationToken ct = default) =>
             throw new IOException("discovery failed");
 
+        public ValueTask<IReadOnlyList<DiscoveredFile>> DiscoverAsync(
+            string resourceId, SourceDateRange range, FileProfileDefinition? profile,
+            IReadOnlySet<DateOnly>? businessDates, CancellationToken ct = default) =>
+            throw new IOException("discovery failed");
+
         public ValueTask<bool> IsStableAsync(
             DiscoveredFile file, TimeSpan quietPeriod, CancellationToken ct = default) =>
             ValueTask.FromResult(true);

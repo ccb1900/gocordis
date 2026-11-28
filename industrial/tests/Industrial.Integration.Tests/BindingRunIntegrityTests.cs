@@ -208,6 +208,47 @@ public sealed class BindingRunIntegrityTests
     }
 
     [Fact]
+    public async Task RetryAfterOriginalFileDeletedUsesTheImmutableSnapshot()
+    {
+        using var temp = new TempDir();
+        var sourceRoot = PrepareSource(temp.Root);
+        var original = Directory.GetFiles(sourceRoot, "*.csv").Single();
+        var failTarget = true;
+        Func<string, IRecordSink> sinkFactory = id => new DelegateSink(id,
+            async (_, records, key, ct) =>
+            {
+                if (failTarget) throw new IOException("target is down");
+                return await DrainAsync(id, records, key, ct);
+            });
+
+        await using var runtime = CreateRuntime(temp.Root, sourceRoot, out var api, out var ledger,
+            sinkFactory);
+        await SaveAndPublishAsync(api, SinkTemplate("snapshot-retry-template"));
+        await RegisterTargetAsync(api, "target-1");
+        Assert.True(await ImportBindingAsync(api,
+            "id,name,machineId,workflowId,workflowVersion,fileProfileId,sourceResourceId," +
+            "targetResourceIds,triggerKind,cron,parameters\n" +
+            "b-snapshot,Snapshot,machine-1,snapshot-retry-template,1,p-basic,source-1," +
+            "target-1,manual,,shift=day\n"));
+        await api.ExecuteAsync("industrial/run-binding",
+            new JsonObject { ["bindingId"] = "b-snapshot", ["lookbackDays"] = 1 });
+
+        var failed = Assert.Single(await ledger.ListAllDeliveriesAsync(),
+            delivery => delivery.Status == CollectionStatus.Failed);
+        File.Delete(original);
+        failTarget = false;
+
+        Assert.True(await api.ExecuteAsync("industrial/retry-failed", new JsonObject
+        {
+            ["deliveryId"] = failed.Id, ["targetId"] = failed.TargetId,
+        }));
+        var retried = Assert.Single(await ledger.ListAllDeliveriesAsync(),
+            delivery => delivery.Id == failed.Id);
+        Assert.Equal(CollectionStatus.Succeeded, retried.Status);
+        Assert.True(retried.Records > 0);
+    }
+
+    [Fact]
     public async Task LateFileInDatedDirectoryIsDiscoveredThroughTheRealSourcePath()
     {
         using var temp = new TempDir();

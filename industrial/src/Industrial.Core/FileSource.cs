@@ -117,6 +117,22 @@ public static class FileIdentityFactory
             resourceId);
     }
 
+    /// <summary>Identity for an immutable snapshot. The supplied relative
+    /// path and key come from discovery; the hash/length/mtime come from the
+    /// exact bytes that downstream readers will consume.</summary>
+    public static FileIdentity CreateFromSnapshot(
+        string snapshotPath, string relativePath, string identityKey,
+        string resourceId, string contentHash, DateTimeOffset? sourceDate = null)
+    {
+        using var stream = File.OpenRead(snapshotPath);
+        var hash = Convert.ToHexString(SHA256.HashData(stream));
+        if (!string.Equals(hash, contentHash, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("immutable snapshot hash does not match its identity");
+        var info = new FileInfo(snapshotPath);
+        return new FileIdentity(identityKey, relativePath, info.Length,
+            new DateTimeOffset(info.LastWriteTimeUtc), hash, resourceId);
+    }
+
     public static DateTimeOffset? ParseSourceDate(string fileName)
     {
         var stem = Path.GetFileNameWithoutExtension(fileName);

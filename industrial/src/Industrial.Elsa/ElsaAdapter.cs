@@ -173,6 +173,8 @@ public sealed class IndustrialElsaComponent : Component
 
     private string ElsaDbPath => Path.Combine(Root, "industrial-elsa.db");
 
+    private string SnapshotRoot => Path.Combine(Root, "industrial-snapshots");
+
     public override string Name => "industrial-elsa";
     public override IReadOnlyList<ICapabilityKey> Inject() =>
         [IndustrialKeys.NodeCatalog, IndustrialKeys.WorkflowValidator,
@@ -686,10 +688,12 @@ public sealed class IndustrialElsaComponent : Component
         var executor = CreateExecutor(retryDefinition, resourceId, ledger, resources, vault,
             planner, source, reader, stage, factories, defaultSink, archive,
             delivery.Id, delivery.TargetId, _nodeHandlers,
-            definitionJson: effectiveJson, definitionHash: effectiveHash);
-        // Keep the credentialed source session for the entire replay, not
-        // only discovery: reading, mapping, sinks and archive may all touch it.
-        await using var sourceSession = await source.LeaseScopeAsync(resourceId, ct);
+            definitionJson: effectiveJson, definitionHash: effectiveHash,
+            snapshotRoot: SnapshotRoot);
+        // Keep every source resource's credentialed session for the entire
+        // replay, not only discovery.
+        await using var sourceSessions = await SourceSessionScope.AcquireAsync(
+            source, retryDefinition, resourceId, ct);
         var result = await ElsaPersistedExecution.RunAsync(published, executor, resourceId, ElsaDbPath,
             instance.InstanceId, resume: true, definitionJson: effectiveJson,
             definitionHash: effectiveHash, ct: ct);
@@ -1103,11 +1107,12 @@ public sealed class IndustrialElsaComponent : Component
         Broker<IIndustrialNodeHandler>? handlers = null,
         Action<IReadOnlyDictionary<DateOnly, int>>? onSourceDates = null,
         Action<IReadOnlySet<DateOnly>>? onSkippedDates = null,
-        string? definitionJson = null, string? definitionHash = null) =>
+        string? definitionJson = null, string? definitionHash = null,
+        string? snapshotRoot = null) =>
         new(definition.WorkflowId, resourceId, definition, null!, ledger, resources, vault,
             planner, source, reader, stage, factories, defaultSink, archive,
             retryDeliveryId, retryTargetId, handlers, onSourceDates, onSkippedDates,
-            definitionJson, definitionHash);
+            definitionJson, definitionHash, snapshotRoot);
 
     private async ValueTask RecoverAllAsync(
         IWorkflowRegistry workflows, ICollectionLedger ledger, IResourceRegistry resources,
@@ -1167,8 +1172,10 @@ public sealed class IndustrialElsaComponent : Component
                     var executor = CreateExecutor(definition, instance.ResourceId,
                         ledger, resources, vault, planner, source, reader, stage,
                         factories, defaultSink, archive, handlers: _nodeHandlers,
-                        definitionJson: effectiveJson, definitionHash: effectiveHash);
-                    await using var sourceSession = await source.LeaseScopeAsync(instance.ResourceId, ct);
+                        definitionJson: effectiveJson, definitionHash: effectiveHash,
+                        snapshotRoot: SnapshotRoot);
+                    await using var sourceSessions = await SourceSessionScope.AcquireAsync(
+                        source, definition, instance.ResourceId, ct);
                     var result = await ElsaPersistedExecution.RunAsync(published, executor, instance.ResourceId,
                         ElsaDbPath, instance.InstanceId, resume: true, definitionJson: effectiveJson,
                         definitionHash: effectiveHash, ct: ct);
@@ -1767,11 +1774,13 @@ public sealed class IndustrialElsaComponent : Component
             {
                 foreach (var date in dates) skippedDates.TryAdd(date, 0);
             },
-            definitionJson: definitionJson, definitionHash: definitionHash);
+            definitionJson: definitionJson, definitionHash: definitionHash,
+            snapshotRoot: SnapshotRoot);
 
-        // The credentialed SMB session belongs to the whole run: source,
-        // reader, mapping, sinks and archive can all read the same share.
-        await using var sourceSession = await source.LeaseScopeAsync(resourceId, ct);
+        // Every source node's resource gets its own credentialed session, and
+        // all leases live until the whole workflow has finished.
+        await using var sourceSessions = await SourceSessionScope.AcquireAsync(
+            source, definition, resourceId, ct);
         var result = await ElsaPersistedExecution.RunAsync(
             published, executor, resourceId, elsaDbPath, instanceId, resume,
             definitionJson, definitionHash, ct);
@@ -1814,6 +1823,7 @@ public sealed class IndustrialElsaComponent : Component
         private readonly Action<IReadOnlySet<DateOnly>>? _onSkippedDates;
         private readonly string _definitionJson;
         private readonly string _definitionHash;
+        private readonly string _snapshotRoot;
         private readonly Dictionary<string, List<DiscoveredFile>> _files = new(StringComparer.Ordinal);
         private readonly Dictionary<string, CollectionFile> _ledgerFiles = new(StringComparer.Ordinal);
         private readonly List<string> _executed = [];
@@ -1836,13 +1846,16 @@ public sealed class IndustrialElsaComponent : Component
             Broker<IIndustrialNodeHandler>? handlers = null,
             Action<IReadOnlyDictionary<DateOnly, int>>? onSourceDates = null,
             Action<IReadOnlySet<DateOnly>>? onSkippedDates = null,
-            string? definitionJson = null, string? definitionHash = null)
+            string? definitionJson = null, string? definitionHash = null,
+            string? snapshotRoot = null)
         {
             _handlers = handlers;
             _onSourceDates = onSourceDates;
             _onSkippedDates = onSkippedDates;
             _definitionJson = definitionJson ?? JsonSerializer.Serialize(definition, WebJson);
             _definitionHash = definitionHash ?? ElsaPersistedExecution.DefinitionHash(_definitionJson);
+            _snapshotRoot = snapshotRoot
+                             ?? Path.Combine(Path.GetTempPath(), "gocordis-industrial", "industrial-snapshots");
             _retryDeliveryId = retryDeliveryId;
             _retryTargetId = retryTargetId;
             _workflowId = workflowId;
@@ -2060,14 +2073,27 @@ public sealed class IndustrialElsaComponent : Component
             var resource = await _resources.GetAsync(file.ResourceId, ct)
                            ?? throw new InvalidOperationException($"resource '{file.ResourceId}' is no longer registered");
             var root = resource.Configuration.TryGetValue("root", out var value) ? value?.ToString() : null;
-            if (string.IsNullOrWhiteSpace(root)) throw new InvalidOperationException("resource has no root");
-            var fullPath = Path.Combine(root!, file.RelativePath);
+            if (string.IsNullOrWhiteSpace(root) && string.IsNullOrWhiteSpace(file.SnapshotPath))
+                throw new InvalidOperationException("resource has no root");
+            var fullPath = string.IsNullOrWhiteSpace(file.SnapshotPath)
+                ? Path.Combine(root!, file.RelativePath)
+                : file.SnapshotPath!;
             if (!File.Exists(fullPath))
             {
                 throw new InvalidOperationException(
                     $"staged source file '{file.IdentityKey}' no longer exists at '{fullPath}'");
             }
-            var identity = FileIdentityFactory.Create(fullPath, root!, resource.Id, file.SourceDate);
+            FileIdentity identity;
+            if (string.IsNullOrWhiteSpace(file.SnapshotPath))
+            {
+                identity = FileIdentityFactory.Create(fullPath, root!, resource.Id, file.SourceDate);
+            }
+            else
+            {
+                identity = FileIdentityFactory.CreateFromSnapshot(
+                    fullPath, file.RelativePath, file.IdentityKey,
+                    resource.Id, file.ContentHash, file.SourceDate);
+            }
             StagedFileIdentity.Verify(file, identity);
             return new DiscoveredFile(identity, fullPath, file.SourceDate, resource.Id);
         }
@@ -2162,20 +2188,31 @@ public sealed class IndustrialElsaComponent : Component
             var skippedDates = new HashSet<DateOnly>();
             foreach (var file in discovered)
             {
-                if (!await _source.IsStableAsync(file, TimeSpan.FromMilliseconds(200), ct))
+                // Freeze the exact bytes before they enter the ledger. A
+                // producer that changed the file after discovery is treated
+                // as "not ready" and re-probed, not recorded with a stale hash.
+                var snapshot = await ImmutableFileSnapshot.CreateAsync(
+                    file.FullPath, file.Identity, _snapshotRoot, ct);
+                if (snapshot is null)
                 {
-                    // A skipped unstable file is not NoData: the date must be
-                    // re-probed instead of being marked terminally empty.
                     skippedDates.Add(DateOnly.FromDateTime(file.SourceDate.UtcDateTime));
                     continue;
                 }
-                var known = await _ledger.GetFileByIdentityAsync(file.ResourceId, file.Identity.Key, ct);
-                var ledgerFile = known ?? await _ledger.DiscoverAsync(_runId!, file, ct);
-                _ledgerFiles[file.Identity.Key] = ledgerFile;
-                discoveredFiles.Add(file);
-                batchFiles.Add(new BatchFileRef(ledgerFile.Id, file.ResourceId, file.Identity.Key,
-                    file.Identity.RelativePath, file.Identity.ContentHash, file.SourceDate,
-                    file.Identity.Length, file.Identity.LastWriteUtc));
+                var snapshotFile = file with
+                {
+                    FullPath = snapshot.FullPath,
+                    Identity = snapshot.Identity,
+                };
+                var known = await _ledger.GetFileByIdentityAsync(
+                    snapshotFile.ResourceId, snapshotFile.Identity.Key, ct);
+                var ledgerFile = known ?? await _ledger.DiscoverAsync(_runId!, snapshotFile, ct);
+                _ledgerFiles[snapshotFile.Identity.Key] = ledgerFile;
+                discoveredFiles.Add(snapshotFile);
+                batchFiles.Add(new BatchFileRef(ledgerFile.Id, snapshotFile.ResourceId,
+                    snapshotFile.Identity.Key, snapshotFile.Identity.RelativePath,
+                    snapshotFile.Identity.ContentHash, snapshotFile.SourceDate,
+                    snapshotFile.Identity.Length, snapshotFile.Identity.LastWriteUtc,
+                    snapshot.FullPath));
             }
             _files[node.Id] = discoveredFiles;
             View(node.Id).Files = discoveredFiles.Count;

@@ -415,7 +415,8 @@ public sealed record RecordEnvelope(
 public sealed record BatchFileRef(
     string CollectionFileId, string ResourceId, string IdentityKey,
     string RelativePath, string ContentHash, DateTimeOffset SourceDate,
-    long Length = 0, DateTimeOffset? LastWriteUtc = null);
+    long Length = 0, DateTimeOffset? LastWriteUtc = null,
+    string? SnapshotPath = null);
 
 public sealed record FileBatchRef(
     string Id, string InstanceId, string NodeId, string Fingerprint,
@@ -541,8 +542,7 @@ public interface IFileSource
     /// file cannot be discarded because of an old mtime.</summary>
     ValueTask<IReadOnlyList<DiscoveredFile>> DiscoverAsync(
         string resourceId, SourceDateRange range, FileProfileDefinition? profile,
-        IReadOnlySet<DateOnly>? businessDates, CancellationToken ct = default) =>
-        DiscoverAsync(resourceId, range, ct);
+        IReadOnlySet<DateOnly>? businessDates, CancellationToken ct = default);
 
     /// <summary>Holds any credentialed source session (SMB) for the whole
     /// workflow execution. Sources without a session return null.</summary>

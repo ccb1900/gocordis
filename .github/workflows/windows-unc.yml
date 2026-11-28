@@ -1,6 +1,6 @@
 name: windows-unc
 
-# Packaged bundle rebind: re-run after portable payload path fixes so the evidence head_sha follows the code.
+# Execution lease lifecycle rebind: re-run after portable payload path fixes so the evidence head_sha follows the code.
 # Browser-level UNC acceptance has its own workflow and evidence row.
 # Packaged bundle rebind: re-running this file re-binds the evidence to the newly tested head sha.
 # Product fixes must carry their own UNC evidence row.

@@ -12,7 +12,7 @@ Objective: harden the industrial execution/reliability chain, then close P1 test
 | Two-target mid-write crash → restart → only incomplete delivery retried | `CrashRecoveryTests.cs`, `ElsaPersistedExecution.RunAsync`, startup recovery effect | Pass |
 | Staged file identity revalidated before reuse | `StagedFileIdentity.cs`, `RecoveryTests.cs` | Pass |
 | Node execution diagnostics in designer | `NodeExecutionView`, `industrial/execution`, `dto.ts`, `CordisDesigner.tsx` | Pass |
-| Cross-run delivery semantics and TargetId retry | `CollectionRunDeliveryEntity`, `CollectionCoordinator.RetryFailedAsync` | Pass |
+| Cross-run delivery semantics and TargetId retry | `CollectionRunDeliveryEntity`, `ElsaAdapter.RetryDeliveryAsync`, `industrial/retry-failed` | Pass |
 | Resource-scoped file identity and retry relocation | `FileIdentityFactory`, `LocateAsync` | Pass |
 | Persisted stage data plane (FileBatchRef/DatasetRef/TransformResultRef) | `StageOutputStore.cs`, `StageOutputStoreTests.cs` | Pass |
 | Sink/archive stage cache only after successful delivery | `PublishedNodeExecutor.ExecuteSinkAsync/ExecuteArchiveAsync` | Pass |

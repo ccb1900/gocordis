@@ -1,226 +1,283 @@
+using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using Gocordis.Builtin.WebConsole;
+using Gocordis.Core;
+using Gocordis.Extensions;
+using Gocordis.Plugins;
+using Gocordis.Platform;
 using Industrial.Contracts;
 using Industrial.Core;
+using Industrial.Elsa;
+using Industrial.Host;
 using Industrial.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 namespace Industrial.Tests;
 
-/// <summary>Real vertical slice: local source → CSV → mapping → validation →
-/// idempotent SQLite sink → archive, with file-level and target-level ledger.
-/// No Cordis Core is modified; only the new industrial projects are used.</summary>
+/// <summary>Real vertical slice on the shipped Elsa path: local source → CSV →
+/// mapping → validation → idempotent SQLite sink → archive, with file-level and
+/// target-level ledger. Every run goes through a published workflow definition
+/// and an <c>industrial/run-workflow</c> command.</summary>
 public sealed class CollectionPipelineTests
 {
     [Fact]
     public async Task CollectionEmitsOpenTelemetryActivity()
     {
-        using var fixture = new Fixture();
-        await fixture.RegisterResourceAsync();
+        using var temp = new TempDir();
+        await WriteSourceAsync(temp.SourceRoot, "sample.csv", "record_id,reading\n1,42\n");
         var seen = new List<string>();
-        using var listener = new System.Diagnostics.ActivityListener
+        using var listener = new ActivityListener
         {
             ShouldListenTo = source => source.Name == "Gocordis.Industrial.Collection",
-            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) =>
-                System.Diagnostics.ActivitySamplingResult.AllDataAndRecorded,
-            SampleUsingParentId = (ref System.Diagnostics.ActivityCreationOptions<string> _) =>
-                System.Diagnostics.ActivitySamplingResult.AllDataAndRecorded,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) =>
+                ActivitySamplingResult.AllDataAndRecorded,
+            SampleUsingParentId = (ref ActivityCreationOptions<string> _) =>
+                ActivitySamplingResult.AllDataAndRecorded,
             ActivityStarted = activity => seen.Add(activity.OperationName),
         };
-        System.Diagnostics.ActivitySource.AddActivityListener(listener);
-        Assert.True(IndustrialTelemetry.Source.HasListeners(), "telemetry listener was not registered");
-        var coordinator = new CollectionCoordinator(fixture.Resources, fixture.Source, fixture.Ledger);
-        await coordinator.RunAsync(
-            "telemetry", "source-1", new SourceDateRange(DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow),
-            new CsvRecordReader(), [new SqliteRecordSink(fixture.NewTargetDb)], null);
+        ActivitySource.AddActivityListener(listener);
+
+        var factories = new FactorySet(temp.TargetDb);
+        await Compose(temp.Root, factories, async (_, _, _, _, _, api) =>
+        {
+            Assert.True(await PublishAsync(api, Definition("telemetry")));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = "telemetry", ["resourceId"] = "source-1",
+            }));
+        });
+
         Assert.Contains("collection.run", seen);
     }
 
     [Fact]
     public async Task FullCollectionIsIdempotentAndLedgerTracksEachTarget()
     {
-        using var fixture = new Fixture();
-        await fixture.RegisterResourceAsync();
-        var reader = new CsvRecordReader();
-        var mapping = new MappingTransform(new Dictionary<string, object?>
+        using var temp = new TempDir();
+        await WriteSourceAsync(temp.SourceRoot, "sample.csv", "record_id,reading\n1,42\n2,43\n");
+        var factories = new FactorySet(temp.TargetDb);
+        var definition = Definition(
+            "workflow-1", mappingField: "reading", validate: true, archive: true);
+
+        await Compose(temp.Root, factories, async (_, _, _, _, _, api) =>
         {
-            ["mapping"] = JsonSerializer.SerializeToElement(new Dictionary<string, string>
+            Assert.True(await PublishAsync(api, definition));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
             {
-                ["value"] = "reading",
-            }),
+                ["workflowId"] = definition.WorkflowId, ["resourceId"] = "source-1",
+            }));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = definition.WorkflowId, ["resourceId"] = "source-1",
+            }));
         });
-        var validation = new ValidationTransform(new Dictionary<string, object?>
-        {
-            ["required"] = JsonSerializer.SerializeToElement(new[] { "value" }),
-        });
-        RecordEnvelope Pipeline(RecordEnvelope record)
-        {
-            var mapped = mapping.Apply(record);
-            Assert.True(validation.TryApply(mapped, out var valid, out _));
-            return valid!;
-        }
 
-        var coordinator = new CollectionCoordinator(fixture.Resources, fixture.Source, fixture.Ledger);
-        IAsyncEnumerable<RecordEnvelope> Transformed(DiscoveredFile file, CancellationToken ct) =>
-            Transform(reader.ReadAsync(file, ct), Pipeline);
-
-        var sink = new SqliteRecordSink(fixture.NewTargetDb);
-        var archive = new FileArchiveSink(fixture.ArchiveRoot);
-
-        var firstRun = await coordinator.RunAsync(
-            "workflow-1", "source-1", new SourceDateRange(DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow),
-            new DelegateReader(Transformed), [sink], archive);
-        var secondRun = await coordinator.RunAsync(
-            "workflow-1", "source-1", new SourceDateRange(DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow),
-            new DelegateReader(Transformed), [sink], archive);
-
-        var targetRows = await CountTargetRows(fixture);
-        Assert.Equal(2, targetRows);
-        Assert.NotEqual(firstRun, secondRun);
-        var files = await fixture.Ledger.ListFilesAsync(firstRun);
+        Assert.Equal(2, await CountTargetRowsAsync(temp.TargetDb));
+        await using var ledger = IndustrialStore.Create(temp.LedgerDb);
+        var runs = ledger.CollectionRuns.AsNoTracking().ToList();
+        Assert.Equal(2, runs.Count);
+        Assert.NotEqual(runs[0].Id, runs[1].Id);
+        var files = ledger.CollectionFiles.AsNoTracking().ToList();
         Assert.Single(files);
-        Assert.Equal("Succeeded", files[0].Status);
-        using var ledger = fixture.NewDb();
+        Assert.Equal(CollectionStatus.Succeeded, files[0].Status);
         var deliveries = ledger.FileDeliveries.AsNoTracking().ToList();
         Assert.Equal(2, deliveries.Count);
-        Assert.All(deliveries, delivery => Assert.Equal("Succeeded", delivery.Status));
-        var archived = Directory.GetFiles(Path.Combine(fixture.ArchiveRoot, "20260101"), "*.csv");
-        Assert.Single(archived);
+        Assert.All(deliveries, delivery =>
+            Assert.Equal(CollectionStatus.Succeeded, delivery.Status));
+        Assert.Empty(factories.FailedSinkErrors);
+        Assert.Single(Directory.GetFiles(temp.ArchiveRoot, "*.csv", SearchOption.AllDirectories));
     }
 
     [Fact]
     public async Task ArchiveFailureIsRetriedWithoutRepeatingDatabaseDelivery()
     {
-        using var fixture = new Fixture();
-        await fixture.RegisterResourceAsync();
-        var sink = new SqliteRecordSink(fixture.NewTargetDb);
-        var brokenArchive = new ThrowingArchive();
-        var coordinator = new CollectionCoordinator(fixture.Resources, fixture.Source, fixture.Ledger);
-        var reader = new CsvRecordReader();
+        using var temp = new TempDir();
+        await WriteSourceAsync(temp.SourceRoot, "sample.csv", "record_id,reading\n1,42\n2,43\n");
+        // A file where the archive directory must be makes real archiving fail
+        // while leaving the database target healthy.
+        BlockArchive(temp);
+        var factories = new FactorySet(temp.TargetDb);
+        var definition = Definition("workflow-1", archive: true);
+        string archiveDeliveryId = string.Empty;
 
-        await coordinator.RunAsync(
-            "workflow-1", "source-1", new SourceDateRange(DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow),
-            reader, [sink], brokenArchive);
+        await Compose(temp.Root, factories, async (_, _, _, ledger, _, api) =>
+        {
+            Assert.True(await PublishAsync(api, definition));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = definition.WorkflowId, ["resourceId"] = "source-1",
+            }));
+            var deliveries = await ledger.ListAllDeliveriesAsync();
+            var dbDelivery = deliveries.Single(delivery => delivery.TargetId == "target-a");
+            var archiveDelivery = deliveries.Single(delivery => delivery.TargetId == "archive");
+            Assert.Equal(CollectionStatus.Succeeded, dbDelivery.Status);
+            Assert.Equal(CollectionStatus.Failed, archiveDelivery.Status);
+            Assert.Equal(1, dbDelivery.Attempts);
+            archiveDeliveryId = archiveDelivery.Id;
+        });
 
-        using var ledger = fixture.NewDb();
-        var dbDelivery = Assert.Single(ledger.FileDeliveries.AsNoTracking()
-            .Where(row => row.TargetId == "sqlite"));
-        var archiveDelivery = Assert.Single(ledger.FileDeliveries.AsNoTracking()
-            .Where(row => row.TargetId == "archive"));
-        Assert.Equal("Succeeded", dbDelivery.Status);
-        Assert.Equal("Failed", archiveDelivery.Status);
-        Assert.Equal(1, dbDelivery.Attempts);
+        Assert.Equal(2, await CountTargetRowsAsync(temp.TargetDb));
+        File.Delete(temp.ArchiveRoot);
+        Directory.CreateDirectory(temp.ArchiveRoot);
 
-        // A retry of ONLY the archive target is enough; the database row must
-        // not be written again.
-        var file = Assert.Single(ledger.CollectionFiles.AsNoTracking().ToList());
-        var retry = await fixture.Ledger.StartDeliveryAsync(
-            file.Id, "archive", $"{file.IdentityKey}->archive");
-        Assert.Equal(archiveDelivery.Id, retry.Id);
-        await fixture.Ledger.CompleteDeliveryAsync(retry.Id, 1);
-        Assert.Equal(2, await CountTargetRows(fixture));
+        await Compose(temp.Root, factories, async (_, _, _, ledger, _, api) =>
+        {
+            // A retry of ONLY the archive target is enough; the database row
+            // must not be written again.
+            Assert.True(await api.ExecuteAsync("industrial/retry-failed", new JsonObject
+            {
+                ["deliveryId"] = archiveDeliveryId,
+            }));
+            var after = await ledger.ListAllDeliveriesAsync();
+            Assert.Equal(CollectionStatus.Succeeded,
+                after.Single(delivery => delivery.TargetId == "target-a").Status);
+            Assert.Equal(CollectionStatus.Succeeded,
+                after.Single(delivery => delivery.TargetId == "archive").Status);
+        });
+
+        Assert.Equal(2, await CountTargetRowsAsync(temp.TargetDb));
+        Assert.Single(Directory.GetFiles(temp.ArchiveRoot, "*.csv", SearchOption.AllDirectories));
     }
 
     [Fact]
     public async Task RetryRunnerOnlyRetriesFailedTargets()
     {
-        using var fixture = new Fixture();
-        await fixture.RegisterResourceAsync();
-        var sink = new SqliteRecordSink(fixture.NewTargetDb);
-        var coordinator = new CollectionCoordinator(fixture.Resources, fixture.Source, fixture.Ledger);
-        await coordinator.RunAsync(
-            "workflow-1", "source-1", new SourceDateRange(DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow),
-            new CsvRecordReader(), [sink], new ThrowingArchive());
+        using var temp = new TempDir();
+        await WriteSourceAsync(temp.SourceRoot, "sample.csv", "record_id,reading\n1,42\n2,43\n");
+        BlockArchive(temp);
+        var factories = new FactorySet(temp.TargetDb);
+        var definition = Definition("workflow-1", archive: true);
 
-        var goodArchive = new FileArchiveSink(fixture.ArchiveRoot);
-        var retried = await coordinator.RetryFailedAsync([sink], goodArchive);
-        Assert.Equal(1, retried);
-        using var ledger = fixture.NewDb();
-        Assert.All(ledger.FileDeliveries.AsNoTracking().ToList(), row =>
-            Assert.Equal("Succeeded", row.Status));
-        Assert.Equal(2, await CountTargetRows(fixture));
+        await Compose(temp.Root, factories, async (_, _, _, _, _, api) =>
+        {
+            Assert.True(await PublishAsync(api, definition));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = definition.WorkflowId, ["resourceId"] = "source-1",
+            }));
+        });
+        Assert.Equal(2, await CountTargetRowsAsync(temp.TargetDb));
+
+        File.Delete(temp.ArchiveRoot);
+        Directory.CreateDirectory(temp.ArchiveRoot);
+        await Compose(temp.Root, factories, async (_, _, _, ledger, _, api) =>
+        {
+            Assert.True(await api.ExecuteAsync("industrial/retry-failed", new JsonObject
+            {
+                ["targetId"] = "archive",
+            }));
+            var deliveries = await ledger.ListAllDeliveriesAsync();
+            Assert.All(deliveries, delivery =>
+                Assert.Equal(CollectionStatus.Succeeded, delivery.Status));
+            Assert.Equal(1, deliveries.Single(delivery => delivery.TargetId == "target-a").Attempts);
+        });
+
+        Assert.Equal(2, await CountTargetRowsAsync(temp.TargetDb));
     }
 
     [Fact]
     public async Task DatabaseDisconnectIsRecordedAndRetriedWithoutDuplicateWrites()
     {
-        using var fixture = new Fixture();
-        await fixture.RegisterResourceAsync();
-        var offlineSink = new DelegateSink("database", (_, _, _, _) =>
-            throw new IOException("database offline"));
-        var coordinator = new CollectionCoordinator(
-            fixture.Resources, fixture.Source, fixture.Ledger, new CsvRecordReader());
-        await coordinator.RunAsync(
-            "workflow-1", "source-1", new SourceDateRange(DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow),
-            new CsvRecordReader(), [offlineSink], null);
+        using var temp = new TempDir();
+        await WriteSourceAsync(temp.SourceRoot, "sample.csv", "record_id,reading\n1,42\n2,43\n");
+        var factories = new FactorySet(temp.TargetDb) { FailSink = true };
+        var definition = Definition("workflow-1");
+        string failedDeliveryId = string.Empty;
 
-        using (var ledger = fixture.NewDb())
+        await Compose(temp.Root, factories, async (_, _, _, ledger, _, api) =>
         {
-            var failed = Assert.Single(ledger.FileDeliveries.AsNoTracking().ToList());
-            Assert.Equal("Failed", failed.Status);
-            // BoundedRetry exhausts its 3 in-process attempts; the ledger
-            // records one bounded failure episode that can be resumed later.
+            Assert.True(await PublishAsync(api, definition));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = definition.WorkflowId, ["resourceId"] = "source-1",
+            }));
+            var failed = Assert.Single(await ledger.ListAllDeliveriesAsync());
+            Assert.Equal(CollectionStatus.Failed, failed.Status);
             Assert.Equal(1, failed.Attempts);
-            Assert.Contains("database offline", failed.Error);
-            Assert.Equal(0, await CountTargetRows(fixture));
-        }
+            Assert.Contains("database offline", failed.Error, StringComparison.Ordinal);
+            failedDeliveryId = failed.Id;
+        });
+        Assert.Equal(0, await CountTargetRowsAsync(temp.TargetDb));
 
-        var restored = new SqliteRecordSink(fixture.NewTargetDb, "database");
-        Assert.Equal(1, await coordinator.RetryFailedAsync([restored], null));
-        using var after = fixture.NewDb();
-        Assert.All(after.FileDeliveries.AsNoTracking().ToList(), row =>
-            Assert.Equal("Succeeded", row.Status));
-        Assert.Equal(2, await CountTargetRows(fixture));
+        factories.FailSink = false;
+        await Compose(temp.Root, factories, async (_, _, _, ledger, _, api) =>
+        {
+            Assert.True(await api.ExecuteAsync("industrial/retry-failed", new JsonObject
+            {
+                ["deliveryId"] = failedDeliveryId,
+            }));
+            Assert.Equal(CollectionStatus.Succeeded,
+                Assert.Single(await ledger.ListAllDeliveriesAsync()).Status);
+        });
+        Assert.Equal(2, await CountTargetRowsAsync(temp.TargetDb));
     }
 
     [Fact]
-    public async Task RestartedCoordinatorResumesFailedDeliveryFromLedger()
+    public async Task RestartedRuntimeResumesFailedDeliveryFromLedger()
     {
-        using var fixture = new Fixture();
-        await fixture.RegisterResourceAsync();
-        var offlineSink = new DelegateSink("database", (_, _, _, _) =>
-            throw new IOException("process died"));
-        var first = new CollectionCoordinator(
-            fixture.Resources, fixture.Source, fixture.Ledger, new CsvRecordReader());
-        await first.RunAsync(
-            "workflow-1", "source-1", new SourceDateRange(DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow),
-            new CsvRecordReader(), [offlineSink], null);
+        using var temp = new TempDir();
+        await WriteSourceAsync(temp.SourceRoot, "sample.csv", "record_id,reading\n1,42\n2,43\n");
+        var failing = new FactorySet(temp.TargetDb) { FailSink = true };
+        var definition = Definition("workflow-1");
+        string failedDeliveryId = string.Empty;
 
-        // A new process has no in-memory state; the ledger is the resume source.
-        var restartedLedger = new CollectionLedger(fixture.NewDb);
-        var restarted = new CollectionCoordinator(
-            fixture.Resources, fixture.Source, restartedLedger, new CsvRecordReader());
-        var restored = new SqliteRecordSink(fixture.NewTargetDb, "database");
-        Assert.Equal(1, await restarted.RetryFailedAsync([restored], null));
-        Assert.Equal(2, await CountTargetRows(fixture));
+        await Compose(temp.Root, failing, async (_, _, _, ledger, _, api) =>
+        {
+            Assert.True(await PublishAsync(api, definition));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = definition.WorkflowId, ["resourceId"] = "source-1",
+            }));
+            failedDeliveryId = Assert.Single(await ledger.ListAllDeliveriesAsync()).Id;
+        });
+
+        // A new process has no in-memory state; the ledger + persisted Elsa
+        // instance are the resume source.
+        var restored = new FactorySet(temp.TargetDb);
+        await Compose(temp.Root, restored, async (_, _, _, ledger, _, api) =>
+        {
+            Assert.True(await api.ExecuteAsync("industrial/retry-failed", new JsonObject
+            {
+                ["deliveryId"] = failedDeliveryId,
+            }));
+            Assert.Equal(CollectionStatus.Succeeded,
+                Assert.Single(await ledger.ListAllDeliveriesAsync()).Status);
+        });
+        Assert.Equal(2, await CountTargetRowsAsync(temp.TargetDb));
     }
 
     [Fact]
     public async Task OfflineScanBackfillsMissedFilesWithoutDuplicatingBusinessData()
     {
-        using var fixture = new Fixture();
-        await fixture.RegisterResourceAsync();
-        var late = Path.Combine(fixture.SourceRoot, "late.csv");
-        File.WriteAllText(late, "record_id,reading\nlate-1,99\n");
+        using var temp = new TempDir();
+        await WriteSourceAsync(temp.SourceRoot, "late.csv", "record_id,reading\nlate-1,99\n");
+        var late = Path.Combine(temp.SourceRoot, "late.csv");
         File.SetLastWriteTimeUtc(late, DateTimeOffset.UtcNow.AddDays(-3).UtcDateTime);
 
         var planner = new HistoricalRangePlanner();
         var onlineRange = planner.Plan(DateTimeOffset.UtcNow, TimeSpan.FromDays(1));
         var backfillRange = planner.Plan(DateTimeOffset.UtcNow, TimeSpan.FromDays(7));
-        Assert.DoesNotContain(await fixture.Source.DiscoverAsync("source-1", onlineRange),
-            file => file.Identity.RelativePath == "late.csv");
-        Assert.Contains(await fixture.Source.DiscoverAsync("source-1", backfillRange),
+        Assert.DoesNotContain(await new LocalFileSource(await SourceRegistryAsync(temp)).DiscoverAsync(
+                "source-1", onlineRange),
             file => file.Identity.RelativePath == "late.csv");
 
-        var coordinator = new CollectionCoordinator(
-            fixture.Resources, fixture.Source, fixture.Ledger, new CsvRecordReader());
-        var sink = new SqliteRecordSink(fixture.NewTargetDb);
-        await coordinator.RunAsync("offline", "source-1", backfillRange,
-            new CsvRecordReader(), [sink], null);
-        await coordinator.RunAsync("offline", "source-1", backfillRange,
-            new CsvRecordReader(), [sink], null);
+        var factories = new FactorySet(temp.TargetDb);
+        var definition = Definition("offline", lookbackDays: 7);
+        await Compose(temp.Root, factories, async (_, _, _, _, _, api) =>
+        {
+            Assert.True(await PublishAsync(api, definition));
+            foreach (var _ in Enumerable.Range(0, 2))
+            {
+                Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+                {
+                    ["workflowId"] = definition.WorkflowId, ["resourceId"] = "source-1",
+                }));
+            }
+        });
 
-        Assert.Equal(1, await CountTargetRows(fixture));
-        using var ledger = fixture.NewDb();
+        Assert.Equal(1, await CountTargetRowsAsync(temp.TargetDb));
+        await using var ledger = IndustrialStore.Create(temp.LedgerDb);
         Assert.Single(ledger.CollectionFiles.AsNoTracking().ToList(),
             file => file.IdentityKey.Contains("late.csv"));
         Assert.Single(ledger.FileDeliveries.AsNoTracking().ToList(),
@@ -230,17 +287,21 @@ public sealed class CollectionPipelineTests
     [Fact]
     public async Task RecordTimeFromCsvReachesTheTarget()
     {
-        using var fixture = new Fixture();
-        await fixture.RegisterResourceAsync();
-        File.WriteAllText(Path.Combine(fixture.SourceRoot, "20260102.csv"),
+        using var temp = new TempDir();
+        await WriteSourceAsync(temp.SourceRoot, "record-time.csv",
             "record_id,reading,record_time\n3,44,2026-01-02T03:04:05+00:00\n");
-        var sink = new SqliteRecordSink(fixture.NewTargetDb);
-        var coordinator = new CollectionCoordinator(fixture.Resources, fixture.Source, fixture.Ledger);
-        await coordinator.RunAsync(
-            "workflow-2", "source-1", new SourceDateRange(DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow),
-            new CsvRecordReader(), [sink], null);
+        var factories = new FactorySet(temp.TargetDb);
+        var definition = Definition("workflow-2");
+        await Compose(temp.Root, factories, async (_, _, _, _, _, api) =>
+        {
+            Assert.True(await PublishAsync(api, definition));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = definition.WorkflowId, ["resourceId"] = "source-1",
+            }));
+        });
 
-        await using var target = fixture.NewTargetDb();
+        await using var target = IndustrialStore.CreateTarget(temp.TargetDb);
         var row = Assert.Single(target.Records.AsNoTracking()
             .Where(record => record.RecordId.Contains("|3")).ToList());
         Assert.Equal(new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero), row.RecordTime);
@@ -249,22 +310,23 @@ public sealed class CollectionPipelineTests
     [Fact]
     public async Task HistoricalBackfillUsesLedgerNotLastSuccessDate()
     {
-        using var fixture = new Fixture();
-        await fixture.RegisterResourceAsync();
+        using var temp = new TempDir();
+        await WriteSourceAsync(temp.SourceRoot, "sample.csv", "record_id,reading\n1,42\n");
         var planner = new HistoricalRangePlanner();
         var now = DateTimeOffset.UtcNow;
         var range = planner.Plan(now, TimeSpan.FromDays(400));
         Assert.Equal(now.AddDays(-400), range.FromInclusive);
         Assert.Equal(now, range.ToExclusive);
 
-        var files = await fixture.Source.DiscoverAsync("source-1", range);
+        var files = await new LocalFileSource(await SourceRegistryAsync(temp))
+            .DiscoverAsync("source-1", range);
         Assert.Single(files);
         var identity = files[0].Identity;
-        var same = FileIdentityFactory.Create(files[0].FullPath, fixture.SourceRoot, "source-1");
+        var same = FileIdentityFactory.Create(files[0].FullPath, temp.SourceRoot, "source-1");
         Assert.Equal(identity.Key, same.Key);
 
         var otherMapping = FileIdentityFactory.Create(
-            files[0].FullPath, fixture.SourceRoot, "source-1", DateTimeOffset.UtcNow);
+            files[0].FullPath, temp.SourceRoot, "source-1", DateTimeOffset.UtcNow);
         Assert.Equal(identity.Key, otherMapping.Key);
     }
 
@@ -275,11 +337,11 @@ public sealed class CollectionPipelineTests
         try
         {
             Environment.SetEnvironmentVariable("GOCORDIS_INDUSTRIAL_KEY", null);
-            using var fixture = new Fixture();
+            using var temp = new TempDir();
             var secretKeyMissing = false;
             try
             {
-                _ = new CredentialVault(fixture.NewDb);
+                _ = new CredentialVault(() => IndustrialStore.Create(temp.LedgerDb));
             }
             catch (InvalidOperationException)
             {
@@ -297,113 +359,245 @@ public sealed class CollectionPipelineTests
     [Fact]
     public async Task CredentialVaultNeverExposesSecretsThroughViews()
     {
-        using var fixture = new Fixture();
-        var view = await fixture.Vault.PutAsync("cred-1", "share", "username-password", "s3cret");
-        Assert.Equal("s3cret", await fixture.Vault.RevealAsync("cred-1"));
+        using var temp = new TempDir();
+        var vault = new CredentialVault(() => IndustrialStore.Create(temp.LedgerDb),
+            allowDevelopmentKey: true);
+        var view = await vault.PutAsync("cred-1", "share", "username-password", "s3cret");
+        Assert.Equal("s3cret", await vault.RevealAsync("cred-1"));
         Assert.DoesNotContain("s3cret", view.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("s3cret", JsonSerializer.Serialize(view), StringComparison.Ordinal);
-        var rotated = await fixture.Vault.RotateAsync("cred-1", "new-secret");
+        var rotated = await vault.RotateAsync("cred-1", "new-secret");
         Assert.Equal(2, rotated.Version);
-        Assert.Equal("new-secret", await fixture.Vault.RevealAsync("cred-1"));
+        Assert.Equal("new-secret", await vault.RevealAsync("cred-1"));
     }
 
-    private static async Task<int> CountTargetRows(Fixture fixture)
+    private static void BlockArchive(TempDir temp)
     {
-        await using var db = fixture.NewTargetDb();
+        if (Directory.Exists(temp.ArchiveRoot)) Directory.Delete(temp.ArchiveRoot);
+        else if (File.Exists(temp.ArchiveRoot)) File.Delete(temp.ArchiveRoot);
+        File.WriteAllText(temp.ArchiveRoot, "not a directory");
+    }
+
+    private static async Task WriteSourceAsync(string root, string name, string contents)
+    {
+        var path = Path.Combine(root, name);
+        await File.WriteAllTextAsync(path, contents);
+        File.SetLastWriteTimeUtc(path, DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
+    }
+
+    private static WorkflowDefinition Definition(
+        string workflowId,
+        string? mappingField = null,
+        bool validate = false,
+        bool archive = false,
+        int lookbackDays = 1)
+    {
+        var nodes = new List<WorkflowNode>
+        {
+            new("src", "industrial.filesystem.local",
+                new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
+            new("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
+        };
+        var edges = new List<WorkflowEdge> { new("src", "files", "read", "input") };
+        var output = "read";
+        var port = "records";
+        var x = 200;
+        if (mappingField is not null)
+        {
+            nodes.Add(new WorkflowNode("map", "industrial.transform.mapping",
+                new Dictionary<string, object?>
+                {
+                    ["mapping"] = JsonSerializer.SerializeToElement(
+                        new Dictionary<string, string> { ["value"] = mappingField }),
+                }, x, 0));
+            edges.Add(new WorkflowEdge(output, port, "map", "input"));
+            output = "map";
+            port = "output";
+            x += 100;
+        }
+
+        if (validate)
+        {
+            nodes.Add(new WorkflowNode("validate", "industrial.transform.validate",
+                new Dictionary<string, object?>
+                {
+                    ["required"] = JsonSerializer.SerializeToElement(new[] { "value" }),
+                }, x, 0));
+            edges.Add(new WorkflowEdge(output, port, "validate", "input"));
+            output = "validate";
+            port = "output";
+            x += 100;
+        }
+
+        nodes.Add(new WorkflowNode("store", "industrial.sink.sqlite",
+            new Dictionary<string, object?> { ["targetResourceId"] = "target-a" }, x, 0));
+        edges.Add(new WorkflowEdge(output, port, "store", "records"));
+        if (archive)
+        {
+            nodes.Add(new WorkflowNode("archive", "industrial.sink.archive",
+                new Dictionary<string, object?>(), x, 200));
+            edges.Add(new WorkflowEdge("src", "files", "archive", "files"));
+        }
+
+        return new WorkflowDefinition(
+            workflowId, workflowId, 1, nodes, edges,
+            new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            ["source-1"], new Dictionary<string, object?> { ["lookbackDays"] = lookbackDays });
+    }
+
+    private static async Task<bool> PublishAsync(ApiGateway api, WorkflowDefinition definition) =>
+        await api.ExecuteAsync("industrial/save-workflow",
+            JsonSerializer.SerializeToNode(definition)) &&
+        await api.ExecuteAsync("industrial/publish-workflow",
+            new JsonObject { ["workflowId"] = definition.WorkflowId });
+
+    private static async Task<int> CountTargetRowsAsync(string targetDb)
+    {
+        await using var db = IndustrialStore.CreateTarget(targetDb);
         return await db.Records.AsNoTracking().CountAsync();
     }
 
-    private static async IAsyncEnumerable<RecordEnvelope> Transform(
-        IAsyncEnumerable<RecordEnvelope> source,
-        Func<RecordEnvelope, RecordEnvelope> map)
+    private static async Task Compose(
+        string root,
+        FactorySet factories,
+        Func<INodeCatalog, IWorkflowRegistry, IResourceRegistry, ICollectionLedger,
+            ICredentialVault, ApiGateway, Task> act)
     {
-        await foreach (var record in source)
+        await using var runtime = new Gocordis.Core.Runtime();
+        var console = new ConsoleHost(runtime);
+        await using var registry = new PluginRegistry(runtime);
+        console.AttachRegistry(registry);
+        registry.ExternalCapabilities.Add(UiContributionRegistry.Key);
+        registry.ExternalCapabilities.Add(ApiGateway.Key);
+        registry.ExternalCapabilities.Add(TimerKeys.Service);
+        await runtime.LoadAsync(new ConsoleCapabilitiesComponent(console));
+        await runtime.LoadAsync(new TimerExtensionComponent());
+
+        IndustrialComponents.RegisterFactories(registry, new Dictionary<string, object?>
         {
-            yield return map(record);
+            ["allowDevelopmentKey"] = "true",
+            ["root"] = root,
+            ["seedResource"] = "true",
+            ["sourceRoot"] = Path.Combine(root, "source"),
+            ["resourceId"] = "source-1",
+        });
+        registry.RegisterComponentFactory("test.sinks", _ => new SinkFactoriesComponent(factories));
+        var types = IndustrialComponents.Types
+            .Where(type => type is not ("industrial.ui" or "industrial.reader.json"))
+            .ToList();
+        types.Insert(types.IndexOf("industrial.elsa"), "test.sinks");
+        await registry.ApplyAsync(types.Select(type => IndustrialComponents.Declaration(type)).ToArray());
+
+        var targets = runtime.RequireCapability(IndustrialKeys.ResourceRegistry);
+        var registered = DateTimeOffset.UtcNow;
+        foreach (var id in new[] { "target-a", "target-b" })
+        {
+            if (await targets.GetAsync(id) is null)
+            {
+                await targets.RegisterAsync(new ResourceDefinition(
+                    id, id, id, "fixture", new Dictionary<string, object?>(), null,
+                    0, true, registered, registered));
+            }
         }
+
+        await act(
+            runtime.RequireCapability(IndustrialKeys.NodeCatalog),
+            runtime.RequireCapability(IndustrialKeys.WorkflowRegistry),
+            runtime.RequireCapability(IndustrialKeys.ResourceRegistry),
+            runtime.RequireCapability(IndustrialKeys.CollectionLedger),
+            runtime.RequireCapability(IndustrialKeys.CredentialVault),
+            console.Api);
     }
 
-    private sealed class DelegateReader : IRecordReader
+    private sealed class FactorySet(string targetDb)
     {
-        private readonly Func<DiscoveredFile, CancellationToken, IAsyncEnumerable<RecordEnvelope>> _read;
-        public DelegateReader(Func<DiscoveredFile, CancellationToken, IAsyncEnumerable<RecordEnvelope>> read) => _read = read;
-        public IAsyncEnumerable<RecordEnvelope> ReadAsync(
-            DiscoveredFile file, CancellationToken ct = default) => _read(file, ct);
+        public bool FailSink { get; set; }
+        public List<string> FailedSinkErrors { get; } = [];
+
+        public IReadOnlyList<IRecordSinkFactory> Factories =>
+        [
+            new TargetFactory("target-a", () => FailSink
+                ? new OfflineSink("target-a", FailedSinkErrors)
+                : new SqliteRecordSink(() => IndustrialStore.CreateTarget(targetDb), "target-a")),
+        ];
     }
 
-    private sealed class DelegateSink : IRecordSink
+    private sealed class TargetFactory(string resourceType, Func<IRecordSink> create) : IRecordSinkFactory
     {
-        private readonly Func<string, IAsyncEnumerable<RecordEnvelope>, string, CancellationToken,
-            ValueTask<DeliveryResultRef>> _write;
+        public string ResourceType => resourceType;
 
-        public DelegateSink(string targetId, Func<string, IAsyncEnumerable<RecordEnvelope>, string,
-            CancellationToken, ValueTask<DeliveryResultRef>> write)
-        {
-            TargetId = targetId;
-            _write = write;
-        }
+        public ValueTask<IRecordSink> CreateAsync(
+            ResourceDefinition resource, ICredentialVault vault,
+            IReadOnlyDictionary<string, object?>? nodeConfig = null,
+            CancellationToken ct = default) => ValueTask.FromResult(create());
+    }
 
-        public string TargetId { get; }
+    private sealed class OfflineSink(string targetId, List<string> errors) : IRecordSink
+    {
+        public string TargetId => targetId;
 
         public ValueTask<DeliveryResultRef> WriteAsync(
             string collectionFileId, IAsyncEnumerable<RecordEnvelope> records,
-            string idempotencyKey, CancellationToken ct = default) =>
-            _write(collectionFileId, records, idempotencyKey, ct);
-    }
-
-    private sealed class ThrowingArchive : IArchiveSink
-    {
-        public string TargetId => "archive";
-        public ValueTask ArchiveAsync(DiscoveredFile file, string idempotencyKey, CancellationToken ct = default) =>
-            throw new IOException("archive target unavailable");
-    }
-
-    private sealed class Fixture : IDisposable
-    {
-        public Fixture()
+            string idempotencyKey, CancellationToken ct = default)
         {
-            Root = Path.Combine(Path.GetTempPath(), "industrial-" + Guid.NewGuid().ToString("N"));
+            errors.Add("database offline");
+            throw new IOException("database offline");
+        }
+    }
+
+    private sealed class SinkFactoriesComponent(FactorySet factories) : Component
+    {
+        public override string Name => "test.sink-factories";
+
+        public override IReadOnlyList<ICapabilityKey> Inject() => [IndustrialKeys.RecordSinkFactories];
+
+        public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            var broker = context.Require(IndustrialKeys.RecordSinkFactories);
+            var handles = factories.Factories.Select(factory => broker.Register(factory)).ToArray();
+            await context.EffectAsync(
+                () => ValueTask.CompletedTask,
+                () =>
+                {
+                    foreach (var handle in handles.Reverse()) handle.Dispose();
+                    return ValueTask.CompletedTask;
+                });
+            return null;
+        }
+    }
+
+    private static async Task<IResourceRegistry> SourceRegistryAsync(TempDir temp)
+    {
+        var resources = new ResourceRegistry(() => IndustrialStore.Create(temp.LedgerDb));
+        await resources.RegisterAsync(new ResourceDefinition(
+            "source-1", "filesystem.local", "source-1", "local",
+            new Dictionary<string, object?> { ["root"] = temp.SourceRoot },
+            null, 0, true, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch));
+        return resources;
+    }
+
+    private sealed class TempDir : IDisposable
+    {
+        public TempDir()
+        {
+            Root = Path.Combine(Path.GetTempPath(), "industrial-pipeline-" + Guid.NewGuid().ToString("N"));
             SourceRoot = Path.Combine(Root, "source");
             ArchiveRoot = Path.Combine(Root, "archive");
             Directory.CreateDirectory(SourceRoot);
             Directory.CreateDirectory(ArchiveRoot);
-            var sample = Path.Combine(SourceRoot, "20260101.csv");
-            File.WriteAllText(sample, "record_id,reading\n1,42\n2,43\n");
-            File.SetLastWriteTimeUtc(sample, DateTimeOffset.UtcNow.AddDays(-2).UtcDateTime);
-            LedgerPath = Path.Combine(Root, "ledger.db");
-            TargetPath = Path.Combine(Root, "target.db");
-            using (var bootstrap = IndustrialStore.Create(LedgerPath)) { }
-            using (var bootstrap = IndustrialStore.CreateTarget(TargetPath)) { }
-            Resources = new ResourceRegistry(NewDb);
-            Vault = new CredentialVault(NewDb, allowDevelopmentKey: true);
-            Ledger = new CollectionLedger(NewDb);
-            Source = new LocalFileSource(Resources);
+            LedgerDb = Path.Combine(Root, "industrial-ledger.db");
+            TargetDb = Path.Combine(Root, "industrial-target.db");
         }
 
         public string Root { get; }
         public string SourceRoot { get; }
         public string ArchiveRoot { get; }
-        public string LedgerPath { get; }
-        public string TargetPath { get; }
-        public IndustrialDbContext NewDb() => IndustrialStore.Create(LedgerPath);
-        public IndustrialTargetDbContext NewTargetDb() => IndustrialStore.CreateTarget(TargetPath);
-        public IResourceRegistry Resources { get; }
-        public ICredentialVault Vault { get; }
-        public ICollectionLedger Ledger { get; }
-        public LocalFileSource Source { get; }
-
-        public async Task RegisterResourceAsync() =>
-            await Resources.RegisterAsync(new ResourceDefinition(
-                "source-1", "filesystem.local", "Production share", "local",
-                new Dictionary<string, object?> { ["root"] = SourceRoot },
-                null, 0, true, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch));
+        public string LedgerDb { get; }
+        public string TargetDb { get; }
 
         public void Dispose()
         {
-            if (Directory.Exists(Root))
-            {
-                Directory.Delete(Root, recursive: true);
-            }
+            if (Directory.Exists(Root)) Directory.Delete(Root, recursive: true);
         }
     }
 }

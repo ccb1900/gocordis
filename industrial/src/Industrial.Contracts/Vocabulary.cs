@@ -17,7 +17,6 @@ public static class IndustrialKeys
     public static readonly Key<INodeCatalog> NodeCatalog = new("industrial.workflow.node-catalog");
     public static readonly Key<IWorkflowValidator> WorkflowValidator = new("industrial.workflow.validator");
     public static readonly Key<ICollectionLedger> CollectionLedger = new("industrial.collection.ledger");
-    public static readonly Key<ICollectionCoordinator> CollectionCoordinator = new("industrial.collection.coordinator");
     public static readonly Key<IHistoricalRangePlanner> HistoricalRangePlanner = new("industrial.collection.range-planner");
     public static readonly Key<IRecordSink> RecordSink = new("industrial.delivery.record-sink");
     public static readonly Key<IArchiveSink> ArchiveSink = new("industrial.delivery.archive-sink");
@@ -740,30 +739,4 @@ public interface ICollectionLedger
 public interface IHistoricalRangePlanner
 {
     SourceDateRange Plan(DateTimeOffset now, TimeSpan exclusiveLookback);
-}
-
-/// <summary>One application-level coordinator; it uses ledger state rather than
-/// an in-memory "last success date" so downtime can be backfilled.</summary>
-public interface ICollectionCoordinator
-{
-    ValueTask<string> RunAsync(
-        string workflowId,
-        string resourceId,
-        SourceDateRange range,
-        IRecordReader reader,
-        IReadOnlyList<IRecordSink> sinks,
-        IArchiveSink? archive,
-        CancellationToken ct = default);
-
-    /// <summary>Retries ledger rows left failed by a previous process. Only the
-    /// failed target is retried; already-succeeded deliveries are untouched.</summary>
-    ValueTask<int> RetryFailedAsync(
-        IReadOnlyList<IRecordSink> sinks,
-        IArchiveSink? archive,
-        CancellationToken ct = default);
-    ValueTask<int> RetryFailedAsync(
-        string? targetId,
-        IReadOnlyList<IRecordSink> sinks,
-        IArchiveSink? archive,
-        CancellationToken ct = default);
 }

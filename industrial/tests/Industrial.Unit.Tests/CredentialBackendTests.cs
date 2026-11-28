@@ -1,6 +1,9 @@
+using System.Text.Json;
 using Industrial.Contracts;
 using Industrial.Core;
 using Industrial.Persistence;
+using MySqlConnector;
+using Npgsql;
 
 namespace Industrial.Unit.Tests;
 
@@ -29,15 +32,18 @@ public sealed class CredentialBackendTests
     {
         var dbPath = TempDb();
         var vault = new CredentialVault(() => IndustrialStore.Create(dbPath), allowDevelopmentKey: true);
+        const string password = "pg;se=cret 'with spaces'";
         await vault.PutAsync("pg", "PG", CredentialKinds.UsernamePassword,
-            "{\"username\":\"reader\",\"password\":\"pg-secret\"}");
+            JsonSerializer.Serialize(new { username = "reader", password }));
         var resource = new ResourceDefinition("pg-target", "postgresql", "PG", "fixture",
             new Dictionary<string, object?> { ["host"] = "pg.local", ["database"] = "industrial" },
             "pg", 0, true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
-        var connection = await PostgreSqlSinkFactory.BuildConnectionStringAsync(resource, vault);
-        Assert.Contains("Host=pg.local", connection, StringComparison.Ordinal);
-        Assert.Contains("Username=reader", connection, StringComparison.Ordinal);
-        Assert.Contains("Password=pg-secret", connection, StringComparison.Ordinal);
+        var parsed = new NpgsqlConnectionStringBuilder(
+            await PostgreSqlSinkFactory.BuildConnectionStringAsync(resource, vault));
+        Assert.Equal("pg.local", parsed.Host);
+        Assert.Equal("reader", parsed.Username);
+        Assert.Equal(password, parsed.Password);
+        Assert.Equal(5432, parsed.Port);
     }
 
     [Fact]
@@ -45,15 +51,18 @@ public sealed class CredentialBackendTests
     {
         var dbPath = TempDb();
         var vault = new CredentialVault(() => IndustrialStore.Create(dbPath), allowDevelopmentKey: true);
+        const string password = "my;sql=pa ss'word";
         await vault.PutAsync("mysql", "MySQL", CredentialKinds.UsernamePassword,
-            "{\"username\":\"writer\",\"password\":\"mysql-secret\"}");
+            JsonSerializer.Serialize(new { username = "writer", password }));
         var resource = new ResourceDefinition("mysql-target", "mysql", "MySQL", "fixture",
             new Dictionary<string, object?> { ["host"] = "mysql.local", ["database"] = "industrial" },
             "mysql", 0, true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
-        var connection = await MySqlSinkFactory.BuildConnectionStringAsync(resource, vault);
-        Assert.Contains("Server=mysql.local", connection, StringComparison.Ordinal);
-        Assert.Contains("Uid=writer", connection, StringComparison.Ordinal);
-        Assert.Contains("Pwd=mysql-secret", connection, StringComparison.Ordinal);
+        var parsed = new MySqlConnectionStringBuilder(
+            await MySqlSinkFactory.BuildConnectionStringAsync(resource, vault));
+        Assert.Equal("mysql.local", parsed.Server);
+        Assert.Equal("writer", parsed.UserID);
+        Assert.Equal(password, parsed.Password);
+        Assert.Equal(3306u, parsed.Port);
     }
 
     [Fact]

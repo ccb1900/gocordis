@@ -188,7 +188,7 @@ public sealed class IndustrialCollectionComponent : IndustrialCapabilityComponen
         [IndustrialKeys.ResourceRegistry, IndustrialKeys.CredentialVault,
          IndustrialKeys.CollectionLedger];
     public override IReadOnlyList<ICapabilityKey> Provide() =>
-        [IndustrialKeys.CollectionCoordinator, IndustrialKeys.FileSource,
+        [IndustrialKeys.FileSource,
          IndustrialKeys.RecordReader, IndustrialKeys.RecordReaderBroker,
          IndustrialKeys.RecordSinkFactories, IndustrialKeys.NodeExecutionHandlers,
          IndustrialKeys.FileProfiles, IndustrialKeys.CollectionBindings,
@@ -256,8 +256,6 @@ public sealed class IndustrialCollectionComponent : IndustrialCapabilityComponen
         context.Provide(IndustrialKeys.ArchiveSink, archive);
         context.Provide(IndustrialKeys.FileProfiles, new FileProfileRegistry(LedgerDb));
         context.Provide(IndustrialKeys.CollectionBindings, new CollectionBindingRegistry(LedgerDb));
-        context.Provide(IndustrialKeys.CollectionCoordinator,
-            new CollectionCoordinator(resources, source, ledger, reader));
         return null;
     }
 }

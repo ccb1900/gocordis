@@ -677,8 +677,8 @@ public sealed class IndustrialUiComponent : Component
             {
                 // Collection execution lives ONLY in the Elsa command path
                 // (industrial/run-workflow, industrial/run-binding). This
-                // component contributes configuration/UI; it must never call
-                // CollectionCoordinator directly.
+                // component contributes configuration/UI; it must never start
+                // or retry a collection directly.
                 // Delivery retry is owned by the Elsa plugin: it must resume the
                 // original published workflow instead of bypassing transforms.
                 api.RegisterCommand("industrial/test-resource", payload =>

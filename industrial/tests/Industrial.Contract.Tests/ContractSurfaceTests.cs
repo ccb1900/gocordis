@@ -13,7 +13,7 @@ public sealed class ContractSurfaceTests
             IndustrialKeys.ResourceRegistry, IndustrialKeys.CredentialVault,
             IndustrialKeys.WorkflowRegistry, IndustrialKeys.NodeCatalog,
             IndustrialKeys.WorkflowValidator, IndustrialKeys.CollectionLedger,
-            IndustrialKeys.CollectionCoordinator, IndustrialKeys.HistoricalRangePlanner,
+            IndustrialKeys.HistoricalRangePlanner, IndustrialKeys.RecordSinkFactories,
             IndustrialKeys.RecordSink, IndustrialKeys.ArchiveSink,
             IndustrialKeys.FileSource, IndustrialKeys.RecordReader,
             IndustrialKeys.ElsaActivityCatalog,

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
@@ -184,7 +185,7 @@ public sealed class IndustrialElsaComponent : Component
     public override IReadOnlyList<ICapabilityKey> Inject() =>
         [IndustrialKeys.NodeCatalog, IndustrialKeys.WorkflowValidator,
          IndustrialKeys.WorkflowRegistry, ApiGateway.Key,
-         IndustrialKeys.CollectionCoordinator, IndustrialKeys.CollectionLedger,
+         IndustrialKeys.CollectionLedger,
          IndustrialKeys.ResourceRegistry, IndustrialKeys.CredentialVault,
          IndustrialKeys.HistoricalRangePlanner, IndustrialKeys.FileSource,
          IndustrialKeys.RecordReader, IndustrialKeys.RecordSinkFactories,
@@ -201,7 +202,6 @@ public sealed class IndustrialElsaComponent : Component
         var validator = context.Require(IndustrialKeys.WorkflowValidator);
         var workflows = context.Require(IndustrialKeys.WorkflowRegistry);
         var api = context.Require(ApiGateway.Key);
-        var coordinator = context.Require(IndustrialKeys.CollectionCoordinator);
         var ledger = context.Require(IndustrialKeys.CollectionLedger);
         var resources = context.Require(IndustrialKeys.ResourceRegistry);
         var vault = context.Require(IndustrialKeys.CredentialVault);
@@ -302,10 +302,10 @@ public sealed class IndustrialElsaComponent : Component
             () => ValueTask.CompletedTask);
         timers.IntervalOwned(context, schedulerInterval, async () =>
         {
-            await RunDueSchedulesAsync(workflows, coordinator, ledger, resources, vault,
+            await RunDueSchedulesAsync(workflows, ledger, resources, vault,
                 planner, source, reader, stage, sinkFactories, sink, archive,
                 context.CancellationToken);
-            await RunDueBindingSchedulesAsync(bindings, profiles, workflows, coordinator,
+            await RunDueBindingSchedulesAsync(bindings, profiles, workflows,
                 ledger, resources, vault, planner, source, reader, stage, sinkFactories,
                 sink, archive, context.CancellationToken);
         });
@@ -350,7 +350,7 @@ public sealed class IndustrialElsaComponent : Component
                     try
                     {
                         await RunWorkflowAsync(
-                            payload, workflows, coordinator, ledger, resources, vault, planner,
+                            payload, workflows, ledger, resources, vault, planner,
                             source, reader, stage, sinkFactories, sink, archive, ElsaDbPath,
                             callerCt: context.CancellationToken);
                     }
@@ -365,7 +365,7 @@ public sealed class IndustrialElsaComponent : Component
                     try
                     {
                         await RunBindingAsync(payload, bindings, profiles, workflows,
-                            coordinator, ledger, resources, vault, planner, source, reader, stage,
+                            ledger, resources, vault, planner, source, reader, stage,
                             sinkFactories, sink, archive, ElsaDbPath, context.CancellationToken);
                     }
                     catch (Exception ex)
@@ -383,13 +383,13 @@ public sealed class IndustrialElsaComponent : Component
                 // scheduler implementation.
                 api.RegisterCommand("industrial/scheduler-tick", async _ =>
                 {
-                    await RunDueSchedulesAsync(workflows, coordinator, ledger, resources, vault,
+                    await RunDueSchedulesAsync(workflows, ledger, resources, vault,
                         planner, source, reader, stage, sinkFactories, sink, archive,
                         context.CancellationToken);
                 }, owner);
                 api.RegisterCommand("industrial/binding-scheduler-tick", async _ =>
                 {
-                    await RunDueBindingSchedulesAsync(bindings, profiles, workflows, coordinator,
+                    await RunDueBindingSchedulesAsync(bindings, profiles, workflows,
                         ledger, resources, vault, planner, source, reader, stage,
                         sinkFactories, sink, archive, context.CancellationToken);
                 }, owner);
@@ -476,7 +476,7 @@ public sealed class IndustrialElsaComponent : Component
                             ["workflowId"] = match.WorkflowId,
                             ["version"] = match.Version,
                             ["resourceId"] = resourceId,
-                        }, workflows, coordinator, ledger, resources, vault, planner, source, reader,
+                        }, workflows, ledger, resources, vault, planner, source, reader,
                             stage, sinkFactories, sink, archive, ElsaDbPath,
                             callerCt: context.CancellationToken);
                     }
@@ -853,7 +853,7 @@ public sealed class IndustrialElsaComponent : Component
     }
 
     private async ValueTask RunDueSchedulesAsync(
-        IWorkflowRegistry workflows, ICollectionCoordinator coordinator,
+        IWorkflowRegistry workflows,
         ICollectionLedger ledger, IResourceRegistry resources, ICredentialVault vault,
         IHistoricalRangePlanner planner, IFileSource source, IRecordReader reader,
         IStageOutputStore stage, Broker<IRecordSinkFactory> factories,
@@ -962,7 +962,7 @@ public sealed class IndustrialElsaComponent : Component
                             ["resourceId"] = TriggerResource(item.Definition)
                                              ?? Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_RESOURCE")
                                              ?? "source-1",
-                        }, workflows, coordinator, ledger, resources, vault, planner, source, reader,
+                        }, workflows, ledger, resources, vault, planner, source, reader,
                             stage, factories, sink, archive, ElsaDbPath, callerCt: ct);
                         var succeeded = outcome.Completed && !outcome.DeliveryFailed;
                         var error = succeeded ? null : outcome.FailureError;
@@ -1130,7 +1130,7 @@ public sealed class IndustrialElsaComponent : Component
         Action<IReadOnlySet<DateOnly>>? onSkippedDates = null,
         string? definitionJson = null, string? definitionHash = null,
         string? snapshotRoot = null, TimeSpan? leaseHeartbeat = null) =>
-        new(definition.WorkflowId, resourceId, definition, null!, ledger, resources, vault,
+        new(definition.WorkflowId, resourceId, definition, ledger, resources, vault,
             planner, source, reader, stage, factories, defaultSink, archive,
             retryDeliveryId, retryTargetId, handlers, onSourceDates, onSkippedDates,
             definitionJson, definitionHash, snapshotRoot, leaseHeartbeat);
@@ -1280,7 +1280,6 @@ public sealed class IndustrialElsaComponent : Component
         ICollectionBindingRegistry bindings,
         IFileProfileRegistry profiles,
         IWorkflowRegistry workflows,
-        ICollectionCoordinator coordinator,
         ICollectionLedger ledger,
         IResourceRegistry resources,
         ICredentialVault vault,
@@ -1311,7 +1310,7 @@ public sealed class IndustrialElsaComponent : Component
                 using var gate = new SemaphoreSlim(_bindingConcurrency, _bindingConcurrency);
                 await Task.WhenAll(scheduled.Select(binding =>
                     ProcessBindingScheduleSafeAsync(binding, existingFires, now, gate, bindings,
-                        profiles, workflows, coordinator, ledger, resources, vault, planner,
+                        profiles, workflows, ledger, resources, vault, planner,
                         source, reader, stage, sinkFactories, sink, archive, counters, ct)
                     .AsTask()));
             }
@@ -1348,7 +1347,6 @@ public sealed class IndustrialElsaComponent : Component
         ICollectionBindingRegistry bindings,
         IFileProfileRegistry profiles,
         IWorkflowRegistry workflows,
-        ICollectionCoordinator coordinator,
         ICollectionLedger ledger,
         IResourceRegistry resources,
         ICredentialVault vault,
@@ -1365,7 +1363,7 @@ public sealed class IndustrialElsaComponent : Component
         try
         {
             await ProcessBindingScheduleAsync(binding, existingFires, now, gate, bindings, profiles,
-                workflows, coordinator, ledger, resources, vault, planner, source, reader, stage,
+                workflows, ledger, resources, vault, planner, source, reader, stage,
                 sinkFactories, sink, archive, counters, ct);
         }
         catch (Exception ex)
@@ -1383,7 +1381,6 @@ public sealed class IndustrialElsaComponent : Component
         ICollectionBindingRegistry bindings,
         IFileProfileRegistry profiles,
         IWorkflowRegistry workflows,
-        ICollectionCoordinator coordinator,
         ICollectionLedger ledger,
         IResourceRegistry resources,
         ICredentialVault vault,
@@ -1465,7 +1462,7 @@ public sealed class IndustrialElsaComponent : Component
                     {
                         ["bindingId"] = binding.Id,
                         ["lookbackDays"] = 1,
-                    }, bindings, profiles, workflows, coordinator, ledger, resources, vault,
+                    }, bindings, profiles, workflows, ledger, resources, vault,
                         planner, source, reader, stage, sinkFactories, sink, archive, ElsaDbPath,
                         ct, automatic: true);
                     var succeeded = outcome.Completed && !outcome.DeliveryFailed;
@@ -1515,7 +1512,6 @@ public sealed class IndustrialElsaComponent : Component
         ICollectionBindingRegistry bindings,
         IFileProfileRegistry profiles,
         IWorkflowRegistry workflows,
-        ICollectionCoordinator coordinator,
         ICollectionLedger ledger,
         IResourceRegistry resources,
         ICredentialVault vault,
@@ -1576,7 +1572,7 @@ public sealed class IndustrialElsaComponent : Component
                 };
                 if (body["lookbackDays"] is not null) chunk["lookbackDays"] = body["lookbackDays"]!.DeepClone();
                 lastOutcome = await RunBindingAsync(chunk, bindings, profiles, workflows,
-                    coordinator, ledger, resources, vault, planner, source, reader, stage,
+                    ledger, resources, vault, planner, source, reader, stage,
                     sinkFactories, sink, archive, elsaDbPath, ct);
                 if (!lastOutcome.Completed || lastOutcome.DeliveryFailed) return lastOutcome;
             }
@@ -1704,7 +1700,7 @@ public sealed class IndustrialElsaComponent : Component
                 ["workflowId"] = binding.WorkflowId,
                 ["version"] = binding.WorkflowVersion,
                 ["resourceId"] = binding.SourceResourceId,
-            }, workflows, coordinator, ledger, resources, vault, planner, source, reader, stage,
+            }, workflows, ledger, resources, vault, planner, source, reader, stage,
                 sinkFactories, sink, archive, elsaDbPath,
                 overrideDefinition: boundDefinition, callerCt: ct);
 
@@ -1860,7 +1856,6 @@ public sealed class IndustrialElsaComponent : Component
     private async ValueTask<RunOutcome> RunWorkflowAsync(
         JsonNode? payload,
         IWorkflowRegistry workflows,
-        ICollectionCoordinator coordinator,
         ICollectionLedger ledger,
         IResourceRegistry resources,
         ICredentialVault vault,
@@ -1876,6 +1871,7 @@ public sealed class IndustrialElsaComponent : Component
         CancellationToken callerCt = default)
     {
         var body = payload as JsonObject ?? new JsonObject();
+        using var activity = IndustrialTelemetry.Source.StartActivity("collection.run");
         // Register an execution lease atomically with the cleanup check, then
         // start its heartbeat before any loading, source-session or Elsa work.
         // The heartbeat token becomes `ct` for the entire method lifetime.
@@ -2011,7 +2007,7 @@ public sealed class IndustrialElsaComponent : Component
 
         public PublishedNodeExecutor(
             string workflowId, string resourceId, WorkflowDefinition definition,
-            ICollectionCoordinator coordinator, ICollectionLedger ledger,
+            ICollectionLedger ledger,
             IResourceRegistry resources, ICredentialVault vault,
             IHistoricalRangePlanner planner, IFileSource source, IRecordReader reader,
             IStageOutputStore stage, Broker<IRecordSinkFactory> factories,

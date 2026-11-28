@@ -100,16 +100,24 @@ public sealed class PostgreSqlSinkFactory : IRecordSinkFactory
         var (user, password) = await ResourceConnection.CredentialsAsync(resource, vault, ct);
         var host = ResourceConnection.Require(resource, "host", "server");
         var database = ResourceConnection.Require(resource, "database");
-        var port = ResourceConnection.Value(resource, "port") ?? "5432";
-        return $"Host={host};Port={port};Database={database};Username={user};Password={password}";
+        var builder = new Npgsql.NpgsqlConnectionStringBuilder
+        {
+            Host = host, Database = database, Username = user, Password = password,
+        };
+        if (ResourceConnection.Value(resource, "port") is { } configuredPort)
+            builder.Port = int.Parse(configuredPort);
+        return builder.ConnectionString;
     }
 
     public async ValueTask<IRecordSink> CreateAsync(
         ResourceDefinition resource, ICredentialVault vault,
-        IReadOnlyDictionary<string, object?>? nodeConfig = null, CancellationToken ct = default) =>
-        new PostgreSqlRecordSink(
+        IReadOnlyDictionary<string, object?>? nodeConfig = null, CancellationToken ct = default)
+    {
+        var table = ResourceConnection.Value(resource, "table") ?? "industrial_records";
+        return new PostgreSqlRecordSink(
             await BuildConnectionStringAsync(resource, vault, ct), resource.Id,
-            SinkWriteOptions.From(nodeConfig));
+            SinkWriteOptions.From(nodeConfig), table);
+    }
 }
 
 public sealed class MySqlSinkFactory : IRecordSinkFactory
@@ -122,8 +130,13 @@ public sealed class MySqlSinkFactory : IRecordSinkFactory
         var (user, password) = await ResourceConnection.CredentialsAsync(resource, vault, ct);
         var host = ResourceConnection.Require(resource, "host", "server");
         var database = ResourceConnection.Require(resource, "database");
-        var port = ResourceConnection.Value(resource, "port") ?? "3306";
-        return $"Server={host};Port={port};Database={database};Uid={user};Pwd={password}";
+        var builder = new MySqlConnector.MySqlConnectionStringBuilder
+        {
+            Server = host, Database = database, UserID = user, Password = password,
+        };
+        if (ResourceConnection.Value(resource, "port") is { } configuredPort)
+            builder.Port = uint.Parse(configuredPort);
+        return builder.ConnectionString;
     }
 
     public async ValueTask<IRecordSink> CreateAsync(

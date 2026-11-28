@@ -234,7 +234,16 @@ public sealed class MaintenanceHeartbeat : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (!_linked.IsCancellationRequested) await _linked.CancelAsync();
-        await _loop;
+        try
+        {
+            await _loop;
+        }
+        finally
+        {
+            // The loop is the last internal user of the token; dispose only
+            // after it has stopped, including on its failure path.
+            _linked.Dispose();
+        }
         _failure.TrySetResult(null);
         var failure = await _failure.Task;
         if (failure is not null)

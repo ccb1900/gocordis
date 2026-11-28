@@ -49,6 +49,42 @@ public sealed class PostgreSqlSinkTests
         }
     }
 
+    [Fact]
+    public async Task PostgreSqlSinkHonorsConfiguredTable()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("GOCORDIS_PG_CONNECTION")
+                               ?? throw new InvalidOperationException(
+                                   "GOCORDIS_PG_CONNECTION is required for real database integration");
+        var table = $"industrial_records_{Guid.NewGuid():N}";
+        var root = Path.Combine(Path.GetTempPath(), "industrial-pg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "recent.csv");
+            await File.WriteAllTextAsync(path, "record_id,reading\npg-table-1,42\npg-table-2,43\n");
+            var identity = FileIdentityFactory.Create(path, root, "pg-source");
+            var file = new DiscoveredFile(identity, path, DateTimeOffset.UtcNow, "pg-source");
+            var reader = new CsvRecordReader();
+            var records = new List<RecordEnvelope>();
+            await foreach (var record in reader.ReadAsync(file)) records.Add(record);
+
+            var sink = new PostgreSqlRecordSink(connectionString, "postgresql",
+                SinkWriteOptions.From(new Dictionary<string, object?> { ["keyScope"] = "global" }),
+                table);
+            Assert.Equal(2, (await sink.WriteAsync("file-1", Stream(records), "key-1")).Records);
+
+            await using var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"SELECT count(*) FROM \"{table}\"";
+            Assert.Equal(2, Convert.ToInt32(await command.ExecuteScalarAsync()));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static async IAsyncEnumerable<RecordEnvelope> Stream(IEnumerable<RecordEnvelope> records)
     {
         foreach (var record in records)

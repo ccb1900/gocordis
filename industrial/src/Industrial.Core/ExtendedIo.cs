@@ -59,12 +59,14 @@ public sealed class ExcelRecordReader : IRecordReader
 public sealed class PostgreSqlRecordSink : IRecordSink
 {
     private readonly string _connectionString;
+    private readonly string _table;
     private readonly SinkWriteOptions _options;
 
     public PostgreSqlRecordSink(string connectionString, string? targetId = null,
-        SinkWriteOptions? options = null)
+        SinkWriteOptions? options = null, string? table = null)
     {
         _connectionString = connectionString;
+        _table = SqlIdentifier.QuotePostgreSqlTable(table ?? "industrial_records");
         TargetId = targetId ?? "postgresql";
         _options = options ?? SinkWriteOptions.From(null);
     }
@@ -82,8 +84,8 @@ public sealed class PostgreSqlRecordSink : IRecordSink
             : null;
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = """
-            CREATE TABLE IF NOT EXISTS industrial_records (
+        command.CommandText = $"""
+            CREATE TABLE IF NOT EXISTS {_table} (
                 record_id text PRIMARY KEY, source_identity text NOT NULL,
                 record_time timestamptz NOT NULL, payload jsonb NOT NULL);
             """;
@@ -98,24 +100,24 @@ public sealed class PostgreSqlRecordSink : IRecordSink
             {
                 command.Parameters.Clear();
                 command.Parameters.AddWithValue("@source", record.Source.Key);
-                command.CommandText = "DELETE FROM industrial_records WHERE source_identity = @source;";
+                command.CommandText = $"DELETE FROM {_table} WHERE source_identity = @source;";
                 await command.ExecuteNonQueryAsync(ct);
             }
             command.CommandText = _options.WriteMode switch
             {
-                "upsert" => """
-                    INSERT INTO industrial_records(record_id, source_identity, record_time, payload)
+                "upsert" => $"""
+                    INSERT INTO {_table}(record_id, source_identity, record_time, payload)
                     VALUES (@id, @source, @time, CAST(@payload AS jsonb))
                     ON CONFLICT (record_id) DO UPDATE SET
                         source_identity = EXCLUDED.source_identity,
                         record_time = EXCLUDED.record_time, payload = EXCLUDED.payload;
                     """,
-                "replace" => """
-                    INSERT INTO industrial_records(record_id, source_identity, record_time, payload)
+                "replace" => $"""
+                    INSERT INTO {_table}(record_id, source_identity, record_time, payload)
                     VALUES (@id, @source, @time, CAST(@payload AS jsonb));
                     """,
-                _ => """
-                    INSERT INTO industrial_records(record_id, source_identity, record_time, payload)
+                _ => $"""
+                    INSERT INTO {_table}(record_id, source_identity, record_time, payload)
                     VALUES (@id, @source, @time, CAST(@payload AS jsonb))
                     ON CONFLICT (record_id) DO NOTHING;
                     """,

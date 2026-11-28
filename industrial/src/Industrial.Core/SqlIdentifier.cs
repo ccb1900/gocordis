@@ -9,6 +9,8 @@ public static class SqlIdentifier
 
     public static string QuoteMySqlTable(string? value) => $"`{Validate(value)}`";
 
+    public static string QuotePostgreSqlTable(string? value) => $"\"{Validate(value)}\"";
+
     private static string Validate(string? value)
     {
         if (string.IsNullOrWhiteSpace(value) ||

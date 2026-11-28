@@ -367,6 +367,25 @@ public sealed class ImmutableDataConsistencyTests
         await lease.DisposeAsync();
     }
 
+    [Fact]
+    public async Task HeartbeatDisposeReleasesItsCancellationTokenSource()
+    {
+        using var temp = new TempRoot();
+        var ledger = new CollectionLedger(() => IndustrialStore.Create(
+            Path.Combine(temp.Root, "ledger.db")));
+        await using var lease = await MaintenanceCoordination.BeginExecutionAsync(
+            ledger, "disposed-heartbeat-workflow");
+        var heartbeat = lease.StartHeartbeat(
+            "disposed-heartbeat-workflow", CancellationToken.None,
+            TimeSpan.FromMilliseconds(30));
+
+        await heartbeat.DisposeAsync();
+
+        Assert.Throws<ObjectDisposedException>(() => heartbeat.Token);
+        Assert.False(lease.Lost);
+        await lease.DisposeAsync();
+    }
+
     private static async Task<DateTimeOffset> LeaseExpiryAsync(string path, string name)
     {
         await using var db = IndustrialStore.Create(path);

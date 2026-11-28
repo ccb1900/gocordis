@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
   sqlserver:
@@ -113,6 +114,28 @@ jobs:
             dotnet test industrial/tests/Industrial.Integration.Tests/Industrial.Integration.Tests.csproj \
               --nologo -m:1 --filter FullyQualifiedName~MultiTargetPartialFailureRetriesOnlyTheFailedRealDatabase \
               2>&1 | tee /tmp/multi-target-recovery.log
+      - name: Publish multi-target diagnostics
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const tail = fs.existsSync('/tmp/multi-target-recovery.log')
+              ? fs.readFileSync('/tmp/multi-target-recovery.log', 'utf8').slice(-12000)
+              : 'no multi-target log was produced';
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: `multi-target-recovery-diagnostics-${context.sha.substring(0, 7)}`,
+              head_sha: context.sha,
+              status: 'completed',
+              conclusion: 'neutral',
+              output: {
+                title: 'Multi-target partial-failure E2E tail',
+                summary: 'Tail of the real SQL Server + MySQL + Archive recovery run',
+                text: tail,
+              },
+            });
   mysql:
     name: MySQL real-server integration
     runs-on: ubuntu-latest

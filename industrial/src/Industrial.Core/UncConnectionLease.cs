@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -20,13 +21,24 @@ public interface INativeNetworkConnection
 /// from a caller-supplied cache key, so acquire/remove always use the same key.</summary>
 public sealed class UncConnectionLease : IAsyncDisposable
 {
+    /// <summary>Active = usable/reacquirable; Releasing = native Cancel is in
+    /// flight and the session MUST NOT be replaced; Released = final state,
+    /// removed from the cache under the same lock that flips the state.</summary>
+    private enum SessionState { Active, Releasing, Released }
+
+    /// <summary>Upper bound for a concurrent Acquire that observes a session in
+    /// Releasing. Native Cancel is synchronous and short; a bound keeps a stuck
+    /// native call from blocking a workflow forever. No Task.Delay: bounded
+    /// SpinWait/Yield polling of the state under Gate is sufficient.</summary>
+    private static readonly TimeSpan ReacquireTimeout = TimeSpan.FromSeconds(5);
+
     private static readonly Dictionary<string, UncConnectionLease> Sessions = new(StringComparer.Ordinal);
     private static readonly object Gate = new();
     private readonly string _key;
     private readonly string _remote;
     private readonly INativeNetworkConnection _native;
     private int _references;
-    private bool _disposed;
+    private SessionState _state = SessionState.Active;
 
     private UncConnectionLease(string key, string remote,
         string account, string password, INativeNetworkConnection native)
@@ -50,7 +62,10 @@ public sealed class UncConnectionLease : IAsyncDisposable
 
     /// <summary>Acquire a shared session for the UNC share root. Equivalent
     /// spellings of the same share and account share one native connection;
-    /// a different credential gets its own session (or fails at WNet with 1219).</summary>
+    /// a different credential gets its own session (or fails at WNet with 1219).
+    /// While the last owner is releasing a session, Acquire waits (bounded) for
+    /// that Cancel to finish instead of creating a session it would immediately
+    /// disconnect.</summary>
     public static UncConnectionLease Acquire(string uncPath, string userName, string password,
         string? domain = null, INativeNetworkConnection? native = null)
     {
@@ -69,19 +84,49 @@ public sealed class UncConnectionLease : IAsyncDisposable
         var identity = $"{remote}|{account.ToUpperInvariant()}|{password}";
         var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
 
-        lock (Gate)
+        var started = Stopwatch.GetTimestamp();
+        var spin = new SpinWait();
+        while (true)
         {
-            if (Sessions.TryGetValue(key, out var existing))
+            var waitForCancel = false;
+            lock (Gate)
             {
-                existing._references++;
-                return existing;
+                if (Sessions.TryGetValue(key, out var existing))
+                {
+                    switch (existing._state)
+                    {
+                        case SessionState.Active:
+                            existing._references++;
+                            return existing;
+                        case SessionState.Releasing:
+                            // The lease intentionally stays in the dictionary
+                            // until Cancel completes; a new Add right now would
+                            // be disconnected by the previous owner's Cancel.
+                            waitForCancel = true;
+                            break;
+                        default:
+                            // Defensive: a released lease must never be reused.
+                            Sessions.Remove(key);
+                            break;
+                    }
+                }
+
+                if (!waitForCancel)
+                {
+                    var created = new UncConnectionLease(
+                        key, remote, account, password, native ?? new WindowsNetworkConnection());
+                    created._references = 1;
+                    Sessions[key] = created;
+                    return created;
+                }
             }
 
-            var created = new UncConnectionLease(
-                key, remote, account, password, native ?? new WindowsNetworkConnection());
-            created._references = 1;
-            Sessions[key] = created;
-            return created;
+            if (Stopwatch.GetElapsedTime(started) >= ReacquireTimeout)
+            {
+                throw new InvalidOperationException(
+                    $"UNC session for {remote} is still being released; timed out waiting to reacquire");
+            }
+            spin.SpinOnce();
         }
     }
 
@@ -89,35 +134,68 @@ public sealed class UncConnectionLease : IAsyncDisposable
     {
         lock (Gate)
         {
+            // A second dispose (or ReleaseAll already releasing this session)
+            // must never issue a second native Cancel.
+            if (_state != SessionState.Active) return ValueTask.CompletedTask;
             if (_references > 1)
             {
                 _references--;
                 return ValueTask.CompletedTask;
             }
-            if (_disposed) return ValueTask.CompletedTask;
-            _disposed = true;
             _references = 0;
-            if (Sessions.TryGetValue(_key, out var current) && ReferenceEquals(current, this))
-            {
-                Sessions.Remove(_key);
-            }
+            _state = SessionState.Releasing;
+            // Do not remove from Sessions yet: Acquire must see Releasing while
+            // the native Cancel is in flight.
         }
 
-        _native.Cancel(_remote);
+        try
+        {
+            _native.Cancel(_remote);
+        }
+        finally
+        {
+            lock (Gate)
+            {
+                if (Sessions.TryGetValue(_key, out var current) && ReferenceEquals(current, this))
+                    Sessions.Remove(_key);
+                _state = SessionState.Released;
+            }
+        }
         return ValueTask.CompletedTask;
     }
 
     public static void ReleaseAll()
     {
+        List<UncConnectionLease> releasing;
         lock (Gate)
         {
+            releasing = [];
             foreach (var lease in Sessions.Values)
             {
+                // A lease already being released by its owner will be finalized
+                // (and removed) by that owner; skip it here to avoid a second Cancel.
+                if (lease._state != SessionState.Active) continue;
                 lease._references = 0;
-                lease._disposed = true;
+                lease._state = SessionState.Releasing;
+                releasing.Add(lease);
+            }
+        }
+
+        foreach (var lease in releasing)
+        {
+            try
+            {
                 lease._native.Cancel(lease._remote);
             }
-            Sessions.Clear();
+            finally
+            {
+                lock (Gate)
+                {
+                    if (Sessions.TryGetValue(lease._key, out var current) && ReferenceEquals(current, lease))
+                        Sessions.Remove(lease._key);
+                    lease._state = SessionState.Released;
+                }
+            }
         }
     }
 

@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -7,14 +8,50 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Industrial.Core;
 
+/// <summary>Outcome of one ledger-driven stage cleanup pass. Failures are
+/// evidence, never a maintenance crash; retained entries explain why a row was
+/// kept so an operator can tell "still needed" from "deleted".</summary>
+public sealed record StageCleanupReport(
+    int StageRows,
+    long StageBytes,
+    int Candidates,
+    int RowsDeleted,
+    int FilesDeleted,
+    long DeletedBytes,
+    IReadOnlyList<string> Retained,
+    IReadOnlyList<string> Failures,
+    bool MaintenanceBlocked,
+    DateTimeOffset At);
+
 /// <summary>Cordis-owned data plane. Elsa keeps control flow; this store keeps
 /// stage outputs as small refs plus an NDJSON spool so a resumed Activity never
 /// needs to re-read or re-transform a completed stage.</summary>
 public sealed class StageOutputStore : IStageOutputStore
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly byte[] LineFeed = [(byte)'\n'];
+    /// <summary>Default age before a stage of a terminal instance is eligible.
+    /// The window covers a retry/recovery that may still reuse committed stages.</summary>
+    public static readonly TimeSpan DefaultRetention = TimeSpan.FromDays(7);
+    /// <summary>Separate lock from snapshot cleanup: both use the one ledger,
+    /// neither may delete data the other is still inspecting.</summary>
+    public const string CleanupLockName = "stage-cleanup";
     private readonly Func<IndustrialStageDbContext> _db;
     private readonly string _root;
+
+    /// <summary>Integrity manifest written atomically after the spool has been
+    /// fully written and renamed. It is a sidecar of the spool rather than a
+    /// field on DatasetRef so the existing contract record stays compatible:
+    /// old refs (no sidecar) are still readable with count-only verification.</summary>
+    private sealed class DatasetIntegrity
+    {
+        // Explicit public ctor: System.Text.Json requires an accessible
+        // parameterless constructor even when the containing type is private.
+        public DatasetIntegrity() { }
+
+        public string Digest { get; set; } = string.Empty;
+        public int RecordCount { get; set; }
+    }
 
     public StageOutputStore(Func<IndustrialStageDbContext> db, string root)
     {
@@ -90,25 +127,54 @@ public sealed class StageOutputStore : IStageOutputStore
         Directory.CreateDirectory(directory);
         var finalPath = Path.Combine(directory, name + ".jsonl");
         var partialPath = finalPath + ".partial";
+        var sidecarPath = IntegrityPath(finalPath);
+        var sidecarPartialPath = sidecarPath + ".partial";
         var count = 0;
         try
         {
-            await using (var stream = new FileStream(partialPath, FileMode.Create, FileAccess.Write,
-                             FileShare.None, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
             {
-                await using var writer = new StreamWriter(stream, new UTF8Encoding(false));
-                await foreach (var record in records.WithCancellation(ct))
+                await using (var stream = new FileStream(partialPath, FileMode.Create, FileAccess.Write,
+                                 FileShare.None, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
                 {
-                    await writer.WriteLineAsync(JsonSerializer.Serialize(record, Json));
-                    count++;
+                    await foreach (var record in records.WithCancellation(ct))
+                    {
+                        // Hash the exact bytes written, including the LF separator,
+                        // so a truncated tail cannot produce a valid-looking digest.
+                        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(record, Json));
+                        hash.AppendData(bytes);
+                        hash.AppendData(LineFeed);
+                        await stream.WriteAsync(bytes, ct);
+                        await stream.WriteAsync(LineFeed, ct);
+                        count++;
+                    }
+                    await stream.FlushAsync(ct);
                 }
-                await writer.FlushAsync(ct);
+
+                // Commit the spool first; the digest is only published once the
+                // renamed file is complete.
+                File.Move(partialPath, finalPath, overwrite: true);
+
+                var integrity = new DatasetIntegrity
+                {
+                    Digest = Convert.ToHexString(hash.GetHashAndReset()),
+                    RecordCount = count,
+                };
+                await using (var sidecarStream = new FileStream(sidecarPartialPath, FileMode.Create,
+                                 FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous))
+                {
+                    await JsonSerializer.SerializeAsync(sidecarStream, integrity, Json, ct);
+                    await sidecarStream.FlushAsync(ct);
+                }
+                File.Move(sidecarPartialPath, sidecarPath, overwrite: true);
             }
-            File.Move(partialPath, finalPath, overwrite: true);
         }
         finally
         {
-            if (File.Exists(partialPath)) File.Delete(partialPath);
+            // Both partials are transient; a failure before rename must not
+            // leave a file that a retry could mistake for a committed spool.
+            DeleteIfExists(partialPath);
+            DeleteIfExists(sidecarPartialPath);
         }
 
         var dataset = new DatasetRef(
@@ -116,24 +182,87 @@ public sealed class StageOutputStore : IStageOutputStore
         return await CommitAsync(instanceId, nodeId, fingerprint, dataset, ct);
     }
 
+    /// <summary>Streams the spool, hashing every byte as it is consumed, and
+    /// verifies record count plus committed SHA-256 at EOF before the
+    /// enumeration completes. A truncated or edited spool therefore fails the
+    /// stage instead of letting the sink report partial data as success.
+    /// Legacy refs without a sidecar still work but get count-only checking:
+    /// an in-place edit that preserves the line count cannot be detected.</summary>
     public async IAsyncEnumerable<RecordEnvelope> ReadAsync(
-        DatasetRef dataset, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        DatasetRef dataset, [EnumeratorCancellation] CancellationToken ct = default)
     {
-        if (!File.Exists(dataset.SpoolPath))
+        var path = dataset.SpoolPath;
+        if (!File.Exists(path))
         {
-            throw new FileNotFoundException($"stage spool for {dataset.NodeId} is missing", dataset.SpoolPath);
+            throw new FileNotFoundException($"stage spool for {dataset.NodeId} is missing", path);
         }
-        await using var stream = new FileStream(dataset.SpoolPath, FileMode.Open, FileAccess.Read,
-            FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        using var reader = new StreamReader(stream);
-        while (true)
+
+        var sidecarPath = IntegrityPath(path);
+        DatasetIntegrity? integrity = null;
+        if (File.Exists(sidecarPath))
         {
-            ct.ThrowIfCancellationRequested();
-            var line = await reader.ReadLineAsync(ct);
-            if (line is null) break;
+            await using var sidecarStream = new FileStream(sidecarPath, FileMode.Open, FileAccess.Read,
+                FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            integrity = await JsonSerializer.DeserializeAsync<DatasetIntegrity>(sidecarStream, Json, ct)
+                        ?? throw new InvalidDataException($"stage spool integrity manifest is empty: {sidecarPath}");
+            if (string.IsNullOrWhiteSpace(integrity.Digest))
+            {
+                throw new InvalidDataException($"stage spool integrity manifest has no digest: {sidecarPath}");
+            }
+        }
+
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+        var count = 0;
+        var lineNumber = 0;
+        await foreach (var line in ReadLinesAsync(stream, hash, ct))
+        {
+            lineNumber++;
             if (string.IsNullOrWhiteSpace(line)) continue;
-            var record = JsonSerializer.Deserialize<RecordEnvelope>(line, Json);
-            if (record is not null) yield return record;
+            RecordEnvelope? record;
+            try
+            {
+                record = JsonSerializer.Deserialize<RecordEnvelope>(line, Json);
+            }
+            catch (JsonException ex)
+            {
+                // Never skip a malformed line: that is how a stage silently
+                // delivers fewer records than it committed.
+                throw new InvalidDataException(
+                    $"stage spool '{path}' line {lineNumber} is not valid JSON", ex);
+            }
+            if (record is null)
+            {
+                throw new InvalidDataException(
+                    $"stage spool '{path}' line {lineNumber} is not a RecordEnvelope");
+            }
+            count++;
+            yield return record;
+        }
+
+        // EOF reached: every byte, including the last separator, has been hashed.
+        var digest = Convert.ToHexString(hash.GetHashAndReset());
+        if (integrity is not null)
+        {
+            if (!string.Equals(digest, integrity.Digest, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    $"stage spool '{path}' failed its SHA-256 check: " +
+                    $"expected {integrity.Digest}, got {digest}");
+            }
+            if (count != integrity.RecordCount)
+            {
+                throw new InvalidDataException(
+                    $"stage spool '{path}' record count {count} != committed {integrity.RecordCount}");
+            }
+        }
+        else if (count != dataset.RecordCount)
+        {
+            throw new InvalidDataException(
+                $"stage spool '{path}' record count {count} != committed {dataset.RecordCount} " +
+                "(legacy ref: count-only verification, no digest available)");
         }
     }
 
@@ -147,6 +276,227 @@ public sealed class StageOutputStore : IStageOutputStore
             .Select(row => new StageOutputView(
                 row.InstanceId, row.NodeId, row.Kind, row.Fingerprint, row.Id))
             .ToListAsync(ct);
+    }
+
+    /// <summary>Convenience overload for callers that already have the ledger's
+    /// terminal instance ids. A non-terminal id must never be passed: a retry
+    /// needs the committed stage to avoid re-reading/re-transforming input.</summary>
+    public ValueTask<StageCleanupReport> CleanupAsync(
+        IReadOnlySet<string> terminalInstanceIds, TimeSpan retention, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(terminalInstanceIds);
+        return CleanupAsync(id => terminalInstanceIds.Contains(id), retention, ct);
+    }
+
+    /// <summary>Ledger-driven stage lifecycle. The caller supplies the terminal
+    /// instance predicate (this store has no ledger dependency) and the retention
+    /// window. A row is removable only when its instance is terminal AND the
+    /// commit is older than the window. Spool files are removed before their DB
+    /// row; a file failure keeps the row so the next pass can retry. Missing
+    /// spools are already-cleaned state and never fail the pass.</summary>
+    public async ValueTask<StageCleanupReport> CleanupAsync(
+        Func<string, bool> isTerminal, TimeSpan retention, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(isTerminal);
+        if (retention < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(retention));
+
+        var at = DateTimeOffset.UtcNow;
+        var cutoff = at - retention;
+        var stageRoot = Path.GetFullPath(Path.Combine(_root, "stages"));
+        await using var db = _db();
+        var rows = await db.StageOutputs.AsNoTracking().ToListAsync(ct);
+        var stageBytes = rows.Sum(row => SpoolBytes(row, stageRoot));
+
+        var retained = new List<string>();
+        var failures = new List<string>();
+        var candidates = 0;
+        var rowsDeleted = 0;
+        var filesDeleted = 0;
+        var deletedBytes = 0L;
+
+        foreach (var row in rows)
+        {
+            var label = $"{row.InstanceId}/{row.NodeId}";
+            if (row.CommittedAt > cutoff)
+            {
+                retained.Add($"{label}: commit is inside the retention window");
+                continue;
+            }
+            if (!isTerminal(row.InstanceId))
+            {
+                retained.Add($"{label}: instance is not terminal");
+                continue;
+            }
+
+            var hasSpool = string.Equals(row.Kind, nameof(DatasetRef), StringComparison.Ordinal);
+            DatasetRef? dataset = null;
+            if (hasSpool)
+            {
+                try
+                {
+                    dataset = JsonSerializer.Deserialize<DatasetRef>(row.PayloadJson, Json);
+                }
+                catch (JsonException ex)
+                {
+                    failures.Add($"{label}: stage ref is not valid JSON: {ex.Message}");
+                    continue;
+                }
+                if (dataset is null || !TryStagePath(row, dataset, stageRoot, out var spool))
+                {
+                    failures.Add($"{label}: stage ref does not point inside its own stage directory");
+                    continue;
+                }
+                candidates++;
+                if (!DeleteSpool(spool, failures, ref filesDeleted, ref deletedBytes)) continue;
+            }
+            else
+            {
+                candidates++;
+            }
+
+            try
+            {
+                // Separate context per row: a failed DELETE must not leave a
+                // tracked deleted entity that poisons the remaining rows.
+                await using var deleteDb = _db();
+                deleteDb.StageOutputs.Remove(new StageOutputEntity { Id = row.Id });
+                await deleteDb.SaveChangesAsync(ct);
+                rowsDeleted++;
+            }
+            catch (Exception ex) when (ex is DbUpdateException or IOException)
+            {
+                failures.Add($"{label}: stage row could not be deleted: {ex.Message}");
+            }
+        }
+
+        return new StageCleanupReport(rows.Count, stageBytes, candidates, rowsDeleted,
+            filesDeleted, deletedBytes, retained, failures, false, at);
+    }
+
+    private static string IntegrityPath(string spoolPath) => spoolPath + ".integrity.json";
+
+    private static long SpoolBytes(StageOutputEntity row, string stageRoot)
+    {
+        if (!string.Equals(row.Kind, nameof(DatasetRef), StringComparison.Ordinal)) return 0L;
+        DatasetRef? dataset;
+        try { dataset = JsonSerializer.Deserialize<DatasetRef>(row.PayloadJson, Json); }
+        catch (JsonException) { return 0L; }
+        return dataset is not null && TryStagePath(row, dataset, stageRoot, out var path)
+            ? SafeLength(path) + SafeLength(IntegrityPath(path))
+            : 0L;
+    }
+
+    private static bool TryStagePath(
+        StageOutputEntity row, DatasetRef dataset, string stageRoot, out string path)
+    {
+        path = string.Empty;
+        if (!string.Equals(dataset.InstanceId, row.InstanceId, StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(dataset.SpoolPath) ||
+            !string.Equals(Path.GetExtension(dataset.SpoolPath), ".jsonl",
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+        {
+            return false;
+        }
+        var fullPath = Path.GetFullPath(dataset.SpoolPath);
+        var expectedRoot = Path.Combine(stageRoot, Sanitize(row.InstanceId));
+        if (!IsUnderRoot(fullPath, expectedRoot)) return false;
+        path = fullPath;
+        return true;
+    }
+
+    private static bool DeleteSpool(
+        string path, ICollection<string> failures, ref int filesDeleted, ref long deletedBytes)
+    {
+        try
+        {
+            var sidecar = IntegrityPath(path);
+            foreach (var candidate in new[] { path, sidecar, path + ".partial", sidecar + ".partial" })
+            {
+                if (!File.Exists(candidate)) continue;
+                deletedBytes += SafeLength(candidate);
+                File.Delete(candidate);
+                filesDeleted++;
+            }
+            PruneEmptyDirectory(Path.GetDirectoryName(path), Path.GetDirectoryName(Path.GetDirectoryName(path)));
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            failures.Add($"{path}: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static long SafeLength(string path)
+    {
+        try { return File.Exists(path) ? new FileInfo(path).Length : 0L; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return 0L; }
+    }
+
+    private static bool IsUnderRoot(string path, string root)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return path.StartsWith(
+            root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, comparison);
+    }
+
+    private static void PruneEmptyDirectory(string? directory, string? stageRoot)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(stageRoot)) return;
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var stage = Path.GetFullPath(stageRoot);
+        while (true)
+        {
+            var full = Path.GetFullPath(directory);
+            if (string.Equals(full, stage, comparison) || !IsUnderRoot(full, stage)) return;
+            if (!Directory.Exists(full)) return;
+            if (Directory.EnumerateFileSystemEntries(full).Any()) return;
+            Directory.Delete(full);
+            directory = Path.GetDirectoryName(full);
+            if (directory is null) return;
+        }
+    }
+
+    private static void DeleteIfExists(string path)
+    {
+        if (File.Exists(path)) File.Delete(path);
+    }
+
+    /// <summary>Line reader over raw bytes so the hash covers the exact file
+    /// content (no StreamReader buffering can skip bytes). Memory stays bounded
+    /// by a single line; the dataset is never loaded in full.</summary>
+    private static async IAsyncEnumerable<string> ReadLinesAsync(
+        Stream stream, IncrementalHash hash, [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var buffer = new byte[64 * 1024];
+        var line = new List<byte>();
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var read = await stream.ReadAsync(buffer, ct);
+            if (read == 0)
+            {
+                if (line.Count > 0) yield return Encoding.UTF8.GetString(line.ToArray());
+                yield break;
+            }
+
+            hash.AppendData(buffer.AsSpan(0, read));
+            for (var i = 0; i < read; i++)
+            {
+                var value = buffer[i];
+                if (value == (byte)'\n')
+                {
+                    yield return Encoding.UTF8.GetString(line.ToArray());
+                    line.Clear();
+                }
+                else
+                {
+                    line.Add(value);
+                }
+            }
+        }
     }
 
     private static string Sanitize(string value)

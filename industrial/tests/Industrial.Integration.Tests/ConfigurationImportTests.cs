@@ -86,7 +86,8 @@ public sealed class ConfigurationImportTests
         var root = Path.Combine(Path.GetTempPath(), $"industrial-binding-run-{Guid.NewGuid():N}");
         var sourceRoot = Path.Combine(root, "source");
         Directory.CreateDirectory(sourceRoot);
-        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "records.csv"),
+        var completedDate = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1);
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, $"{completedDate:yyyyMMdd}.csv"),
             "record_id,reading\n1,42\n");
         try
         {

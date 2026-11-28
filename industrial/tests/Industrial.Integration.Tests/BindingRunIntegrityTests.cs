@@ -47,6 +47,49 @@ public sealed class BindingRunIntegrityTests
     }
 
     [Fact]
+    public async Task RunCollectionCommandIsRemovedAndOnlyElsaRunsACollection()
+    {
+        using var temp = new TempDir();
+        var sourceRoot = PrepareSource(temp.Root);
+        var recent = Path.Combine(sourceRoot, "recent.csv");
+        await File.WriteAllTextAsync(recent, "record_id,reading\n1,42\n");
+        File.SetLastWriteTimeUtc(recent, DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
+        await using var runtime = CreateRuntime(temp.Root, sourceRoot, out var api, out var ledger);
+        // A direct Elsa run uses the published definition as-is (no binding
+        // substitution), so its source resource id must be literal.
+        await SaveAndPublishAsync(api, SourceOnlyTemplate("elsa-entry-template") with
+        {
+            Nodes = [new WorkflowNode("src", "industrial.filesystem.local",
+                new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0)],
+        });
+
+        Assert.DoesNotContain("industrial/run-collection", api.Commands);
+        var ui = runtime.RequireCapability(UiContributionRegistry.Key);
+        Assert.All(ui.Pages(), page => Assert.All(page.Actions ?? [], action =>
+            Assert.NotEqual("industrial/run-collection", action.Command)));
+        Assert.Contains(ui.Pages().SelectMany(page => page.Actions ?? []),
+            action => action.Command == "industrial/run-workflow");
+        Assert.False(await api.ExecuteAsync("industrial/run-collection", new JsonObject
+        {
+            ["workflowId"] = "elsa-entry-template", ["resourceId"] = "source-1",
+        }));
+        Assert.Empty(await ledger.ListRunsAsync());
+
+        Assert.Contains("industrial/run-workflow", api.Commands);
+        Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+        {
+            ["workflowId"] = "elsa-entry-template", ["resourceId"] = "source-1",
+        }));
+        var run = Assert.Single(await ledger.ListRunsAsync());
+        // A source-only definition has no delivery node, so the new
+        // finalization rules must report the discovered file instead of
+        // silently calling the run successful.
+        Assert.Equal(CollectionStatus.Failed, run.Status);
+        Assert.Contains("no delivery", run.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.NotEmpty(await ledger.ListAllFilesAsync());
+    }
+
+    [Fact]
     public async Task CatchUpDaysZeroDoesNotSynthesizeDatesAndOutOfRangeIsRejected()
     {
         using var temp = new TempDir();
@@ -97,11 +140,11 @@ public sealed class BindingRunIntegrityTests
             new JsonObject { ["bindingId"] = "b-bad", ["lookbackDays"] = 1 }).AsTask();
         foreach (var ok in await Task.WhenAll(good, bad)) Assert.True(ok);
 
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var yesterday = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1);
         var dates = await ledger.ListDatesAsync();
         Assert.Equal(CollectionDateStatus.Succeeded,
-            Assert.Single(dates, date => date.BindingId == "b-good" && date.BusinessDate == today).Status);
-        var failed = Assert.Single(dates, date => date.BindingId == "b-bad" && date.BusinessDate == today);
+            Assert.Single(dates, date => date.BindingId == "b-good" && date.BusinessDate == yesterday).Status);
+        var failed = Assert.Single(dates, date => date.BindingId == "b-bad" && date.BusinessDate == yesterday);
         Assert.Equal(CollectionDateStatus.Failed, failed.Status);
         Assert.NotNull(failed.Error);
         Assert.Contains("delivery refused", failed.Error!, StringComparison.Ordinal);
@@ -125,9 +168,9 @@ public sealed class BindingRunIntegrityTests
         // must still be Failed, not Succeeded with files > 0.
         Assert.True(await api.ExecuteAsync("industrial/run-binding",
             new JsonObject { ["bindingId"] = "b-date", ["lookbackDays"] = 1 }));
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var yesterday = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1);
         var date = Assert.Single(await ledger.ListDatesAsync());
-        Assert.Equal(today, date.BusinessDate);
+        Assert.Equal(yesterday, date.BusinessDate);
         Assert.Equal(CollectionDateStatus.Failed, date.Status);
         Assert.NotNull(date.Error);
         Assert.Contains("sink is down", date.Error!, StringComparison.Ordinal);
@@ -253,6 +296,7 @@ public sealed class BindingRunIntegrityTests
     {
         using var temp = new TempDir();
         var sourceRoot = Path.Combine(temp.Root, "source");
+        Directory.CreateDirectory(sourceRoot);
         var businessDate = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-2);
         var datedDirectory = Path.Combine(sourceRoot, businessDate.ToString("yyyy-MM-dd"));
         Directory.CreateDirectory(datedDirectory);
@@ -329,7 +373,10 @@ public sealed class BindingRunIntegrityTests
     {
         var sourceRoot = Path.Combine(root, "source");
         Directory.CreateDirectory(sourceRoot);
-        var file = Path.Combine(sourceRoot, $"{DateTimeOffset.UtcNow:yyyyMMdd}.csv");
+        // A completed business date, never UTC "today": the source node's
+        // planned-date filter rejects files whose production window is open.
+        var yesterday = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1);
+        var file = Path.Combine(sourceRoot, $"{yesterday:yyyyMMdd}.csv");
         File.WriteAllText(file, "record_id,reading\n1,42\n2,43\n");
         File.SetLastWriteTimeUtc(file, DateTimeOffset.UtcNow.AddHours(-1).UtcDateTime);
         return sourceRoot;

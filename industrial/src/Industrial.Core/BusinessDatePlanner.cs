@@ -1,3 +1,4 @@
+using System.Globalization;
 using Industrial.Contracts;
 
 namespace Industrial.Core;
@@ -5,11 +6,81 @@ namespace Industrial.Core;
 /// <summary>Industrial business-date recovery planning. This is deliberately
 /// separate from cron-fire catch-up: a fired schedule is not proof that a
 /// business date was collected. Known incomplete dates are always retried;
-/// terminal dates are never silently re-collected; gaps between the last
-/// terminal date and today are synthesized within an explicit bound.
+/// terminal dates are never silently re-collected; gaps up to the last
+/// completed business date are synthesized within an explicit bound.
 /// </summary>
 public static class BusinessDatePlanner
 {
+    /// <summary>Normal catch-up window used by unattended (automatic) runs.</summary>
+    public const int DefaultCatchUpDays = 30;
+
+    /// <summary>Unattended runs never widen the normal window.</summary>
+    public const int MaxAutomaticCatchUpDays = 30;
+
+    /// <summary>Hard ceiling for an explicit manual history backfill.</summary>
+    public const int MaxExplicitHistoryDays = 366;
+
+    /// <summary>Resolves the business timezone of a binding. Missing configuration
+    /// falls back to UTC; an explicitly configured but unknown id is rejected so
+    /// a typo cannot silently move the business-date boundary.</summary>
+    public static TimeZoneInfo ResolveBusinessZone(
+        IReadOnlyDictionary<string, object?>? triggerConfig,
+        IReadOnlyDictionary<string, object?>? parameters = null)
+    {
+        object? configured = null;
+        if (triggerConfig?.TryGetValue("timezone", out var triggerZone) == true)
+        {
+            configured = triggerZone;
+        }
+
+        if ((configured is null || string.IsNullOrWhiteSpace(configured.ToString())) &&
+            parameters?.TryGetValue("timezone", out var parameterZone) == true)
+        {
+            configured = parameterZone;
+        }
+
+        var id = configured?.ToString();
+        if (string.IsNullOrWhiteSpace(id)) return TimeZoneInfo.Utc;
+        if (!TimeZoneInfo.TryFindSystemTimeZoneById(id!, out var zone))
+            throw new InvalidOperationException($"unknown business timezone '{id}'");
+        return zone;
+    }
+
+    /// <summary>The last business date whose production window is closed. A
+    /// binding never targets its local "today": production is still writing it.
+    /// The default policy is yesterday in the binding's own business timezone.
+    /// </summary>
+    public static DateOnly LastCompletedBusinessDate(
+        TimeZoneInfo zone, DateTimeOffset? now = null)
+    {
+        var local = TimeZoneInfo.ConvertTime(now ?? DateTimeOffset.UtcNow, zone);
+        return DateOnly.FromDateTime(local.DateTime).AddDays(-1);
+    }
+
+    /// <summary>Parses the manual-only businessDate/date override. Returns false
+    /// for absent values and rejects non-empty values that are not a calendar
+    /// date, so a malformed override cannot be mistaken for "no override".</summary>
+    public static bool TryParseOverride(object? raw, out DateOnly date)
+    {
+        date = default;
+        var text = raw switch
+        {
+            null => null,
+            string value => value,
+            System.Text.Json.Nodes.JsonValue value
+                when value.TryGetValue<string>(out var jsonText) => jsonText,
+            _ => raw.ToString(),
+        };
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        if (!DateOnly.TryParseExact(text!.Trim(), "yyyy-MM-dd",
+                CultureInfo.InvariantCulture, DateTimeStyles.None, out date))
+        {
+            throw new InvalidOperationException(
+                $"businessDate must use yyyy-MM-dd; got '{text}'");
+        }
+        return true;
+    }
+
     public static IReadOnlyList<DateOnly> Plan(
         IReadOnlyList<CollectionDateState> dates,
         string bindingId,

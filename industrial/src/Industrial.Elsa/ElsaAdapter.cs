@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 using System.Security.Cryptography;
 using System.Text;
@@ -100,16 +101,18 @@ public sealed class IndustrialElsaComponent : Component
     private JsonObject? _lastBindingTick;
     private JsonObject? _lastBindingValues;
     private int _bindingConcurrency = 8;
-
-    private const int DefaultCatchUpDays = 7;
-    private const int MaxCatchUpDays = 366;
+    // A long sink/archive delivery is kept alive by a time-based heartbeat,
+    // not by a record count. Bounded and injectable so a slow delivery can be
+    // exercised without waiting a full minute.
+    private TimeSpan _leaseHeartbeat = TimeSpan.FromSeconds(60);
 
     /// <summary>Identity/derived values owned by the binding or its profile.
     /// Run parameters must never shadow them, case-insensitively.</summary>
     private static readonly HashSet<string> ReservedParameters = new(StringComparer.OrdinalIgnoreCase)
     {
         "Binding", "Machine", "Profile", "FileProfile", "SourceResource",
-        "BusinessDates", "FileNamePattern", "Format", "Delimiter", "HasHeader",
+        "BusinessDate", "BusinessTimeZone", "BusinessDates", "FileNamePattern",
+        "Format", "Delimiter", "HasHeader",
         "Encoding", "Mapping", "Required",
     };
 
@@ -221,6 +224,15 @@ public sealed class IndustrialElsaComponent : Component
                 ? envLimit
                 : 8;
         _bindingConcurrency = Math.Clamp(configuredConcurrency, 1, 64);
+        var heartbeatSeconds = _config.TryGetValue("leaseHeartbeatSeconds", out var configuredHeartbeat)
+                               && int.TryParse(configuredHeartbeat?.ToString(), out var parsedHeartbeat)
+            ? parsedHeartbeat
+            : int.TryParse(
+                Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_LEASE_HEARTBEAT_SECONDS"),
+                out var envHeartbeat)
+                ? envHeartbeat
+                : 60;
+        _leaseHeartbeat = TimeSpan.FromSeconds(Math.Clamp(heartbeatSeconds, 1, 3600));
         var schedulerSeconds = _config.TryGetValue("schedulerIntervalSeconds", out var configuredInterval)
                                && int.TryParse(configuredInterval?.ToString(), out var parsedInterval)
             ? parsedInterval
@@ -691,7 +703,7 @@ public sealed class IndustrialElsaComponent : Component
             planner, source, reader, stage, factories, defaultSink, archive,
             delivery.Id, delivery.TargetId, _nodeHandlers,
             definitionJson: effectiveJson, definitionHash: effectiveHash,
-            snapshotRoot: SnapshotRoot);
+            snapshotRoot: SnapshotRoot, leaseHeartbeat: _leaseHeartbeat);
         // Keep every source resource's credentialed session for the entire
         // replay, not only discovery.
         await using var sourceSessions = await SourceSessionScope.AcquireAsync(
@@ -1110,11 +1122,11 @@ public sealed class IndustrialElsaComponent : Component
         Action<IReadOnlyDictionary<DateOnly, int>>? onSourceDates = null,
         Action<IReadOnlySet<DateOnly>>? onSkippedDates = null,
         string? definitionJson = null, string? definitionHash = null,
-        string? snapshotRoot = null) =>
+        string? snapshotRoot = null, TimeSpan? leaseHeartbeat = null) =>
         new(definition.WorkflowId, resourceId, definition, null!, ledger, resources, vault,
             planner, source, reader, stage, factories, defaultSink, archive,
             retryDeliveryId, retryTargetId, handlers, onSourceDates, onSkippedDates,
-            definitionJson, definitionHash, snapshotRoot);
+            definitionJson, definitionHash, snapshotRoot, leaseHeartbeat);
 
     private async ValueTask RecoverAllAsync(
         IWorkflowRegistry workflows, ICollectionLedger ledger, IResourceRegistry resources,
@@ -1175,7 +1187,7 @@ public sealed class IndustrialElsaComponent : Component
                         ledger, resources, vault, planner, source, reader, stage,
                         factories, defaultSink, archive, handlers: _nodeHandlers,
                         definitionJson: effectiveJson, definitionHash: effectiveHash,
-                        snapshotRoot: SnapshotRoot);
+                        snapshotRoot: SnapshotRoot, leaseHeartbeat: _leaseHeartbeat);
                     await using var sourceSessions = await SourceSessionScope.AcquireAsync(
                         source, definition, instance.ResourceId, _nodeCatalog, ct);
                     var result = await ElsaPersistedExecution.RunAsync(published, executor, instance.ResourceId,
@@ -1433,7 +1445,8 @@ public sealed class IndustrialElsaComponent : Component
                         ["bindingId"] = binding.Id,
                         ["lookbackDays"] = 1,
                     }, bindings, profiles, workflows, coordinator, ledger, resources, vault,
-                        planner, source, reader, stage, sinkFactories, sink, archive, ElsaDbPath, ct);
+                        planner, source, reader, stage, sinkFactories, sink, archive, ElsaDbPath,
+                        ct, automatic: true);
                     var succeeded = outcome.Completed && !outcome.DeliveryFailed;
                     var error = succeeded ? null : outcome.FailureError;
                     var accepted = await CompleteFireAsync(ledger, claim,
@@ -1493,7 +1506,8 @@ public sealed class IndustrialElsaComponent : Component
         IRecordSink sink,
         IArchiveSink archive,
         string elsaDbPath,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool automatic = false)
     {
         var body = payload as JsonObject
                    ?? throw new InvalidOperationException("JSON payload required");
@@ -1513,10 +1527,54 @@ public sealed class IndustrialElsaComponent : Component
                              $"workflow '{binding.WorkflowId}' version {binding.WorkflowVersion} " +
                              "has no published version");
 
-        var catchUpDays = ResolveCatchUpDays(id, binding.Parameters);
+        // A binding run never targets UTC "today". The trigger's business
+        // timezone decides which date's production window has closed; absent
+        // configuration falls back to UTC and an invalid zone is rejected.
+        var zone = BusinessDatePlanner.ResolveBusinessZone(
+            binding.Trigger.Config, binding.Parameters);
+        var lastCompleted = BusinessDatePlanner.LastCompletedBusinessDate(zone);
+        object? parameterOverride = null;
+        if (binding.Parameters is not null)
+        {
+            foreach (var pair in binding.Parameters)
+            {
+                if (string.Equals(pair.Key, "businessDate", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(pair.Key, "date", StringComparison.OrdinalIgnoreCase))
+                {
+                    parameterOverride = pair.Value;
+                    break;
+                }
+            }
+        }
+        var rawOverride = body["businessDate"] ?? body["date"] ?? parameterOverride;
+        if (rawOverride is not null && automatic)
+            throw new InvalidOperationException(
+                $"binding '{id}' cannot use an explicit businessDate/date on an automatic run; " +
+                "explicit dates are for manual history backfill only");
+        var hasOverride = BusinessDatePlanner.TryParseOverride(rawOverride, out var explicitDate);
+        if (hasOverride && explicitDate > lastCompleted)
+            throw new InvalidOperationException(
+                $"binding '{id}' businessDate {explicitDate:yyyy-MM-dd} is not a completed " +
+                $"business date in {zone.Id}; latest completed date is {lastCompleted:yyyy-MM-dd}");
+        string? datePolicy = null;
+        if (binding.Parameters is not null &&
+            binding.Parameters.FirstOrDefault(pair =>
+                string.Equals(pair.Key, "datePolicy", StringComparison.OrdinalIgnoreCase)).Value
+                is { } policyValue)
+        {
+            datePolicy = policyValue?.ToString();
+        }
+        var widePolicy = datePolicy is not null &&
+            (string.Equals(datePolicy, "explicit", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(datePolicy, "history", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(datePolicy, "manual", StringComparison.OrdinalIgnoreCase));
+        // Automatic runs keep the normal catch-up window. Only a manual
+        // override (or an explicit history policy on a manual run) may widen it.
+        var explicitHistory = hasOverride || (!automatic && widePolicy);
+        var target = hasOverride ? explicitDate : lastCompleted;
+        var catchUpDays = ResolveCatchUpDays(id, binding.Parameters, explicitHistory);
         var businessDates = BusinessDatePlanner.Plan(
-            await ledger.ListDatesAsync(ct), binding.Id,
-            DateOnly.FromDateTime(DateTime.UtcNow), catchUpDays);
+            await ledger.ListDatesAsync(ct), binding.Id, target, catchUpDays);
         var dateClaims = new List<(DateOnly Date, string Id, string Token)>();
         var businessRunId = $"binding-run-{binding.Id}-{Guid.NewGuid():N}";
         foreach (var businessDate in businessDates)
@@ -1548,6 +1606,8 @@ public sealed class IndustrialElsaComponent : Component
             values["Required"] = string.Join(";", profile.RequiredFields);
         }
         values["Binding"] = binding.Id;
+        values["BusinessDate"] = target.ToString("yyyy-MM-dd");
+        values["BusinessTimeZone"] = zone.Id;
         values["BusinessDates"] = string.Join(",", businessDates.Select(date => date.ToString("yyyy-MM-dd")));
         values["Machine"] = binding.MachineId;
         values["Profile"] = binding.FileProfileId;
@@ -1574,6 +1634,7 @@ public sealed class IndustrialElsaComponent : Component
                     Config = new Dictionary<string, object?>(node.Config, StringComparer.Ordinal)
                     {
                         ["businessDates"] = dateValues,
+                        ["bindingRun"] = true,
                         ["fileProfile"] = profile is null ? null : JsonSerializer.Serialize(profile, WebJson),
                     },
                 }
@@ -1683,19 +1744,28 @@ public sealed class IndustrialElsaComponent : Component
         }
     }
 
+    /// <summary>Unattended runs use the normal (30-day) catch-up window and may
+    /// not widen it. A manual history backfill may request up to 366 days; an
+    /// explicit date alone backfills just that date unless catchUpDays is set.
+    /// </summary>
     private static int ResolveCatchUpDays(
-        string bindingId, IReadOnlyDictionary<string, object?>? parameters)
+        string bindingId, IReadOnlyDictionary<string, object?>? parameters,
+        bool explicitHistory)
     {
         var configured = parameters?.FirstOrDefault(pair =>
             string.Equals(pair.Key, "catchUpDays", StringComparison.OrdinalIgnoreCase));
         var raw = configured?.Value;
-        if (raw is null) return DefaultCatchUpDays;
-        if (!int.TryParse(raw.ToString(), out var parsed) ||
-            parsed < 0 || parsed > MaxCatchUpDays)
+        if (raw is null)
+            return explicitHistory ? 1 : BusinessDatePlanner.DefaultCatchUpDays;
+        var maximum = explicitHistory
+            ? BusinessDatePlanner.MaxExplicitHistoryDays
+            : BusinessDatePlanner.MaxAutomaticCatchUpDays;
+        if (!int.TryParse(raw.ToString(), out var parsed) || parsed < 0 || parsed > maximum)
         {
             throw new InvalidOperationException(
-                $"binding '{bindingId}' catchUpDays must be an integer between 0 and {MaxCatchUpDays}; " +
-                $"got '{raw}'");
+                $"binding '{bindingId}' catchUpDays must be an integer between 0 and {maximum} " +
+                $"for {(explicitHistory ? "explicit history" : "automatic")} runs " +
+                $"(hard maximum {BusinessDatePlanner.MaxExplicitHistoryDays}); got '{raw}'");
         }
         return parsed;
     }
@@ -1778,7 +1848,7 @@ public sealed class IndustrialElsaComponent : Component
                 foreach (var date in dates) skippedDates.TryAdd(date, 0);
             },
             definitionJson: definitionJson, definitionHash: definitionHash,
-            snapshotRoot: SnapshotRoot);
+            snapshotRoot: SnapshotRoot, leaseHeartbeat: _leaseHeartbeat);
 
         // Every source node's resource gets its own credentialed session, and
         // all leases live until the whole workflow has finished.
@@ -1790,6 +1860,11 @@ public sealed class IndustrialElsaComponent : Component
         var productStatus = string.Equals(result.Status, "Finished", StringComparison.Ordinal)
             ? "Completed"
             : result.Status;
+        // Definitions without delivery nodes never trigger FinishRunIfComplete.
+        // Finalize from the ledger at the workflow boundary so a discovered
+        // file with no target is reported instead of leaving the run Running.
+        if (executor.RunId is not null && !executor.HasDeliveryNodes)
+            await ledger.FinalizeRunAsync(executor.RunId, ct);
         var ledgerRun = executor.RunId is null
             ? null : await ledger.GetRunAsync(executor.RunId, ct);
         var outcome = new RunOutcome(
@@ -1827,6 +1902,8 @@ public sealed class IndustrialElsaComponent : Component
         private readonly string _definitionJson;
         private readonly string _definitionHash;
         private readonly string _snapshotRoot;
+        private readonly TimeSpan _leaseHeartbeat;
+        private static readonly TimeSpan DeliveryLease = TimeSpan.FromMinutes(5);
         private readonly Dictionary<string, List<DiscoveredFile>> _files = new(StringComparer.Ordinal);
         private readonly Dictionary<string, CollectionFile> _ledgerFiles = new(StringComparer.Ordinal);
         private readonly List<string> _executed = [];
@@ -1836,6 +1913,8 @@ public sealed class IndustrialElsaComponent : Component
         private readonly string? _retryTargetId;
         private string _instanceId = string.Empty;
         private int _remainingConsequences;
+        private readonly bool _hasDeliveryNodes;
+        public bool HasDeliveryNodes => _hasDeliveryNodes;
         private int _anyFailure;
 
         public PublishedNodeExecutor(
@@ -1850,8 +1929,10 @@ public sealed class IndustrialElsaComponent : Component
             Action<IReadOnlyDictionary<DateOnly, int>>? onSourceDates = null,
             Action<IReadOnlySet<DateOnly>>? onSkippedDates = null,
             string? definitionJson = null, string? definitionHash = null,
-            string? snapshotRoot = null)
+            string? snapshotRoot = null, TimeSpan? leaseHeartbeat = null)
         {
+            _leaseHeartbeat = leaseHeartbeat is { } heartbeat && heartbeat > TimeSpan.Zero
+                ? heartbeat : TimeSpan.FromSeconds(60);
             _handlers = handlers;
             _onSourceDates = onSourceDates;
             _onSkippedDates = onSkippedDates;
@@ -1887,6 +1968,7 @@ public sealed class IndustrialElsaComponent : Component
                     Interlocked.Increment(ref _remainingConsequences);
                 }
             }
+            _hasDeliveryNodes = _remainingConsequences > 0;
         }
 
         public IReadOnlyList<string> Executed => _executed;
@@ -2159,6 +2241,20 @@ public sealed class IndustrialElsaComponent : Component
                 ? configuredRoot?.ToString() ?? string.Empty
                 : string.Empty;
             var plannedDates = PlannedDates(node.Config);
+            var bindingRun = node.Config.TryGetValue("bindingRun", out var bindingFlag) &&
+                             bool.TryParse(bindingFlag?.ToString(), out var isBindingRun) && isBindingRun;
+            if (bindingRun && plannedDates.Count == 0)
+            {
+                // A binding run with no planned business dates must not fall
+                // back to a wall-clock lookback: that would re-read files
+                // whose production window is still open.
+                _files[node.Id] = [];
+                View(node.Id).Files = 0;
+                await _stage.CommitAsync(_instanceId, node.Id, Fingerprint(node),
+                    new FileBatchRef($"batch-{Guid.NewGuid():N}", _instanceId, node.Id,
+                        Fingerprint(node), [], _runId), ct);
+                return;
+            }
             // A planned business date may arrive late: its file mtime is older
             // than the lookback but its encoded date is still in the window.
             var range = plannedDates.Count > 0
@@ -2444,10 +2540,15 @@ public sealed class IndustrialElsaComponent : Component
                 }
                 try
                 {
-                    var paced = WithLeaseRenewal(
-                        _stage.ReadAsync(datasets[sourceKey], ct), delivery.Id,
-                        claim.ClaimToken, TimeSpan.FromMinutes(5), 250, ct);
-                    var result = await sink.WriteAsync(ledgerFile.Id, paced, key, ct);
+                    // One time-based heartbeat covers the WHOLE write, not every
+                    // 250 records: a stalled or slow sink still keeps its claim.
+                    var result = await DeliveryLeaseHeartbeat.RunAsync(
+                        delivery.Id,
+                        token => sink.WriteAsync(ledgerFile.Id,
+                            _stage.ReadAsync(datasets[sourceKey], token), key, token),
+                        token => _ledger.RenewDeliveryLeaseAsync(
+                            delivery.Id, claim.ClaimToken, DeliveryLease, token),
+                        _leaseHeartbeat, ct);
                     await _ledger.CompleteDeliveryAsync(delivery.Id, claim.ClaimToken, result.Records, ct);
                     delivered += result.Records;
                 }
@@ -2509,7 +2610,18 @@ public sealed class IndustrialElsaComponent : Component
                 }
                 try
                 {
-                    await _archive.ArchiveAsync(file, key, ct);
+                    // Archive delivery uses the same single ledger lease and the
+                    // same time-based heartbeat as record delivery.
+                    await DeliveryLeaseHeartbeat.RunAsync(
+                        delivery.Id,
+                        async token =>
+                        {
+                            await _archive.ArchiveAsync(file, key, token);
+                            return 1;
+                        },
+                        token => _ledger.RenewDeliveryLeaseAsync(
+                            delivery.Id, claim.ClaimToken, DeliveryLease, token),
+                        _leaseHeartbeat, ct);
                     await _ledger.CompleteDeliveryAsync(delivery.Id, claim.ClaimToken, 1, ct);
                     archived++;
                 }
@@ -2548,24 +2660,6 @@ public sealed class IndustrialElsaComponent : Component
             }
         }
 
-        private async IAsyncEnumerable<RecordEnvelope> WithLeaseRenewal(
-            IAsyncEnumerable<RecordEnvelope> source, string deliveryId, string claimToken,
-            TimeSpan lease, int every,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
-        {
-            var index = 0;
-            await foreach (var record in source.WithCancellation(ct))
-            {
-                if (++index % every == 0 &&
-                    !await _ledger.RenewDeliveryLeaseAsync(deliveryId, claimToken, lease, ct))
-                {
-                    throw new InvalidOperationException(
-                        $"delivery '{deliveryId}' lost its lease while writing");
-                }
-                yield return record;
-            }
-        }
-
         private static async IAsyncEnumerable<RecordEnvelope> Stream(IEnumerable<RecordEnvelope> source)
         {
             foreach (var record in source)
@@ -2580,6 +2674,75 @@ public sealed class IndustrialElsaComponent : Component
             if (_runId is null || Interlocked.Decrement(ref _remainingConsequences) != 0) return;
             await _ledger.FinalizeRunAsync(_runId, ct);
         }
+    }
+}
+
+/// <summary>One time-based lease heartbeat for a single delivery claim. The
+/// renew delegate is the ledger's own fenced RenewDeliveryLeaseAsync, so no
+/// second ledger or recovery mechanism is introduced. A failed renewal cancels
+/// the operation's token and is surfaced as the delivery failure; caller
+/// cancellation still propagates as cancellation.</summary>
+public static class DeliveryLeaseHeartbeat
+{
+    public static async ValueTask<T> RunAsync<T>(
+        string deliveryId,
+        Func<CancellationToken, ValueTask<T>> operation,
+        Func<CancellationToken, ValueTask<bool>> renew,
+        TimeSpan interval,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(deliveryId);
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(renew);
+        if (interval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(interval));
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var heartbeatError = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async Task HeartbeatAsync()
+        {
+            try
+            {
+                while (true)
+                {
+                    await Task.Delay(interval, linked.Token);
+                    if (!await renew(linked.Token))
+                        throw new InvalidOperationException(
+                            $"delivery '{deliveryId}' lost its lease during delivery; operation aborted");
+                }
+            }
+            catch (OperationCanceledException) when (linked.IsCancellationRequested)
+            {
+                // Normal shutdown: the operation finished or the caller cancelled.
+            }
+            catch (Exception ex)
+            {
+                heartbeatError.TrySetResult(ex);
+                await linked.CancelAsync();
+            }
+        }
+
+        var loop = HeartbeatAsync();
+        Exception? operationError = null;
+        T result = default!;
+        try
+        {
+            result = await operation(linked.Token);
+        }
+        catch (Exception ex)
+        {
+            operationError = ex;
+        }
+
+        if (!linked.IsCancellationRequested) await linked.CancelAsync();
+        await loop;
+        heartbeatError.TrySetResult(null);
+        var failure = await heartbeatError.Task;
+        if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
+        if (operationError is not null) ExceptionDispatchInfo.Capture(operationError).Throw();
+        return result;
     }
 }
 

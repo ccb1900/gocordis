@@ -23,22 +23,36 @@ public sealed class BindingSchedulerTests
         var root = Path.Combine(Path.GetTempPath(), $"industrial-binding-scheduler-{Guid.NewGuid():N}");
         var sourceRoot = Path.Combine(root, "source");
         Directory.CreateDirectory(sourceRoot);
-        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "recent.csv"),
-            "record_id,reading\n1,42\n");
+        var completedDate = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1);
+        var sourceFile = Path.Combine(sourceRoot, $"{completedDate:yyyyMMdd}.csv");
+        await File.WriteAllTextAsync(sourceFile, "record_id,reading\n1,42\n");
+        File.SetLastWriteTimeUtc(sourceFile, DateTime.UtcNow.AddHours(-1));
         try
         {
             await using var runtime = CreateRuntime(root, sourceRoot, concurrency: 16,
                 out var api, out var nodes, out var ledger, out var bindings);
+            // Keep each run long enough for the semaphore's real concurrency
+            // to be observable; otherwise 800 trivial runs can serialize.
+            await runtime.LoadAsync(new SlowSinkHandlerComponent());
             await nodes.RegisterAsync(new NodeDescriptor(
                 "sched.source", "Source", "Source", "source", "Folder", "1.0.0", [],
                 [new NodePort("files", Industrial.Contracts.PortType.FileBatch, true)],
-                new Dictionary<string, object?>(), IndustrialActivityTypes.All[1], []));
+                new Dictionary<string, object?>(), IndustrialActivityTypes.All[1], [], "source"));
+            await nodes.RegisterAsync(new NodeDescriptor(
+                "sched.sink", "Slow sink", "Sink", "sink", "Database", "1.0.0",
+                [new NodePort("files", Industrial.Contracts.PortType.FileBatch, true)], [],
+                new Dictionary<string, object?>(), IndustrialActivityTypes.All[7], [], "sink"));
 
             var definition = new WorkflowDefinition(
                 "sched-template", "Scheduler template", 1,
-                [new WorkflowNode("src", "sched.source",
-                    new Dictionary<string, object?> { ["resourceId"] = "{{SourceResource}}" }, 0, 0)],
-                [], new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+                [
+                    new WorkflowNode("src", "sched.source",
+                        new Dictionary<string, object?> { ["resourceId"] = "{{SourceResource}}" }, 0, 0),
+                    new WorkflowNode("store", "sched.sink",
+                        new Dictionary<string, object?> { ["targetResourceId"] = "{{TargetResource}}" }, 100, 0),
+                ],
+                [new WorkflowEdge("src", "files", "store", "files")],
+                new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
                 ["{{SourceResource}}"], new Dictionary<string, object?>());
             Assert.True(await api.ExecuteAsync("industrial/save-workflow",
                 JsonSerializer.SerializeToNode(definition)));
@@ -52,11 +66,11 @@ public sealed class BindingSchedulerTests
             }));
             const string failingBinding = "b-sched-417";
             var csv = "id,name,machineId,workflowId,workflowVersion,fileProfileId," +
-                      "sourceResourceId,targetResourceIds,triggerKind,cron\n" +
+                      "sourceResourceId,targetResourceIds,triggerKind,cron,parameters\n" +
                       string.Join("\n", Enumerable.Range(0, 800).Select(index =>
                           $"b-sched-{index},Binding {index},machine-{index},sched-template,1," +
                           $"p-sched,{(index == 417 ? "missing-source" : "source-1")}," +
-                          "target-1,schedule,0 0 1 1 *")) + "\n";
+                          $"target-sched-{index},schedule,0 0 1 1 *,catchUpDays=1")) + "\n";
             Assert.True(await api.ExecuteAsync("industrial/import-bindings",
                 new JsonObject { ["csv"] = csv }));
             Assert.Equal(800, (await bindings.ListAsync()).Count);
@@ -133,6 +147,64 @@ public sealed class BindingSchedulerTests
         finally
         {
             try { Directory.Delete(root, true); } catch (IOException) { }
+        }
+    }
+
+    private sealed class SlowSinkHandler : IIndustrialNodeHandler
+    {
+        public string NodeType => "sched.sink";
+        public IndustrialNodeCompletion Completion => IndustrialNodeCompletion.Delivery;
+
+        public async ValueTask ExecuteAsync(
+            IndustrialNodeExecutionContext context, CancellationToken ct = default)
+        {
+            var file = (await context.Ledger.ListAllFilesAsync(ct)).LastOrDefault()
+                       ?? throw new InvalidOperationException("no source file");
+            var targetId = context.Node.Config.TryGetValue("targetResourceId", out var configured)
+                ? configured?.ToString() ?? "slow-sink"
+                : "slow-sink";
+            var delivery = await context.Ledger.StartDeliveryAsync(
+                file.Id, targetId, $"{file.Id}->{targetId}", "record", context.RunId, ct);
+            // Deterministic overlap window for the concurrency gate, even for
+            // a replay of an already-succeeded shared file delivery.
+            await Task.Delay(50, ct);
+            if (delivery.Status == CollectionStatus.Succeeded)
+            {
+                context.Complete(1, []);
+                return;
+            }
+            var claim = await context.Ledger.TryClaimDeliveryAsync(
+                context.RunId!, delivery.Id, TimeSpan.FromMinutes(5), ct);
+            // Concurrent replays of the same shared file are already covered
+            // by the first claim; they still count as a successful fire.
+            if (claim is not null)
+                await context.Ledger.CompleteDeliveryAsync(delivery.Id, claim.ClaimToken, 1, ct);
+            context.Complete(1, []);
+        }
+    }
+
+    private sealed class SlowSinkHandlerComponent : Component
+    {
+        public override string Name => "test.scheduler-slow-sink";
+
+        public override IReadOnlyList<ICapabilityKey> Inject() => [IndustrialKeys.NodeExecutionHandlers];
+
+        public override async ValueTask<Cleanup?> ApplyAsync(Context context)
+        {
+            var broker = context.Require(IndustrialKeys.NodeExecutionHandlers);
+            IDisposable? handle = null;
+            await context.EffectAsync(
+                () =>
+                {
+                    handle = broker.Register("sched.sink", new SlowSinkHandler());
+                    return ValueTask.CompletedTask;
+                },
+                () =>
+                {
+                    handle?.Dispose();
+                    return ValueTask.CompletedTask;
+                });
+            return null;
         }
     }
 

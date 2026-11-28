@@ -43,10 +43,18 @@ public sealed class IndustrialUiComponent : Component
     private readonly ConcurrentDictionary<string, JsonObject> _previewResults = new(StringComparer.Ordinal);
     private readonly ConcurrentQueue<string> _previewOrder = new();
     private const int MaxPreviewResults = 16;
+    // Named paged query variants keep the existing (unpaged) queries intact for
+    // the current UI. Page size is configurable but always bounded so a single
+    // request cannot materialise unbounded history.
+    private const int DefaultPageSize = 200;
+    private const int MaxPageSize = 1000;
+    private const int MaxPageVariants = 20;
     private JsonObject? _lastImportPreview;
     private JsonObject? _lastBindingPreview;
     private SnapshotCleanupReport? _lastSnapshotReport;
     private string? _snapshotMaintenanceError;
+    private StageCleanupReport? _lastStageReport;
+    private string? _stageMaintenanceError;
 
     public IndustrialUiComponent() : this(FromEnvironment()) { }
 
@@ -63,6 +71,18 @@ public sealed class IndustrialUiComponent : Component
         _config.TryGetValue(key, out var value) && value is not null && !string.IsNullOrWhiteSpace(value.ToString())
             ? value.ToString()!
             : fallback;
+
+    private int IndustrialPageSize => Math.Clamp(
+        int.TryParse(Setting("industrialPageSize", DefaultPageSize.ToString()), out var size)
+            ? size : DefaultPageSize, 1, MaxPageSize);
+
+    private static (int Skip, int Take) PageWindow(int? limit, int? offset)
+    {
+        // No limit means the legacy query's full history; a supplied limit is
+        // always clamped so a paged request cannot request unbounded rows.
+        var take = limit is null ? int.MaxValue : Math.Clamp(limit.Value, 1, MaxPageSize);
+        return (Math.Max(0, offset ?? 0), take);
+    }
 
     private string SnapshotRoot
     {
@@ -95,12 +115,8 @@ public sealed class IndustrialUiComponent : Component
         IndustrialKeys.WorkflowRegistry,
         IndustrialKeys.NodeCatalog,
         IndustrialKeys.CollectionLedger,
+        IndustrialKeys.StageOutputStore,
         IndustrialKeys.CredentialVault,
-        IndustrialKeys.CollectionCoordinator,
-        IndustrialKeys.HistoricalRangePlanner,
-        IndustrialKeys.RecordReader,
-        IndustrialKeys.RecordSink,
-        IndustrialKeys.ArchiveSink,
         TimerKeys.Service,
     ];
 
@@ -117,12 +133,11 @@ public sealed class IndustrialUiComponent : Component
         var workflows = context.Require(IndustrialKeys.WorkflowRegistry);
         var nodes = context.Require(IndustrialKeys.NodeCatalog);
         var ledger = context.Require(IndustrialKeys.CollectionLedger);
+        var stageStore = context.Require(IndustrialKeys.StageOutputStore) as StageOutputStore;
+        var stageRetention = TimeSpan.FromDays(Math.Clamp(
+            int.TryParse(Setting("stageRetentionDays", "7"), out var parsedDays) ? parsedDays : 7,
+            0, 365));
         var credentials = context.Require(IndustrialKeys.CredentialVault);
-        var coordinator = context.Require(IndustrialKeys.CollectionCoordinator);
-        var planner = context.Require(IndustrialKeys.HistoricalRangePlanner);
-        var reader = context.Require(IndustrialKeys.RecordReader);
-        var sink = context.Require(IndustrialKeys.RecordSink);
-        var archive = context.Require(IndustrialKeys.ArchiveSink);
         var owner = ContributionOwner.ForContext(context, "industrial.ui", "industrial-ui");
         var timers = context.Require(TimerKeys.Service);
         var maintenanceMinutes = int.TryParse(
@@ -142,6 +157,8 @@ public sealed class IndustrialUiComponent : Component
                 // Maintenance is best-effort and retryable on the next tick.
                 _snapshotMaintenanceError = ex.Message;
             }
+            // One maintenance failure must not suppress the other cleanup.
+            await RunStageMaintenanceAsync(ledger, stageStore, stageRetention, context.CancellationToken);
         });
 
         var pages = new[]
@@ -295,6 +312,92 @@ public sealed class IndustrialUiComponent : Component
                 page.Id, page.Order));
         }
 
+        // Shared projections for the default queries and their paged variants.
+        // A page variant is a bounded limit/offset window over the same rows;
+        // the underlying ledger is read-only and is never mutated by paging.
+        JsonNode? ExecutionCenter(int? limit = null, int? offset = null)
+        {
+            var (skip, take) = PageWindow(limit, offset);
+            return new JsonObject
+            {
+                ["runs"] = new JsonArray(ledger.ListRunsAsync().GetAwaiter().GetResult()
+                    .Skip(skip).Take(take)
+                    .Select(run => (JsonNode?)new JsonObject
+                    {
+                        ["id"] = run.Id,
+                        ["workflowId"] = run.WorkflowId,
+                        ["status"] = run.Status,
+                        ["startedAt"] = run.StartedAt.ToString("O"),
+                        ["finishedAt"] = run.FinishedAt?.ToString("O"),
+                        ["error"] = run.Error is null ? null : JsonValue.Create(run.Error),
+                    }).ToArray()),
+                ["deliveries"] = new JsonArray(ledger.ListAllDeliveriesAsync().GetAwaiter().GetResult()
+                    .Skip(skip).Take(take)
+                    .Select(delivery => (JsonNode?)new JsonObject
+                    {
+                        ["id"] = delivery.Id,
+                        ["collectionFileId"] = delivery.CollectionFileId,
+                        ["targetId"] = delivery.TargetId,
+                        ["targetKind"] = delivery.TargetKind,
+                        ["status"] = delivery.Status,
+                        ["attempts"] = delivery.Attempts,
+                        ["records"] = delivery.Records,
+                        ["error"] = delivery.Error is null ? null : JsonValue.Create(delivery.Error),
+                        ["diagnosis"] = Diagnosis(delivery.Error),
+                    }).ToArray()),
+            };
+        }
+
+        JsonNode? FileDetails(int? limit = null, int? offset = null)
+        {
+            var files = ledger.ListAllFilesAsync().GetAwaiter().GetResult();
+            // Load the delivery history once into a lookup. The former
+            // per-file ListAllDeliveriesAsync call was an N+1 over all history.
+            var byFile = ledger.ListAllDeliveriesAsync().GetAwaiter().GetResult()
+                .GroupBy(delivery => delivery.CollectionFileId, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
+            var (skip, take) = PageWindow(limit, offset);
+            return new JsonArray(files.Skip(skip).Take(take).Select(file =>
+            {
+                var rows = byFile.TryGetValue(file.Id, out var deliveries)
+                    ? deliveries.Select(delivery => (JsonNode?)new JsonObject
+                    {
+                        ["id"] = delivery.Id,
+                        ["targetId"] = delivery.TargetId,
+                        ["targetKind"] = delivery.TargetKind,
+                        ["status"] = delivery.Status,
+                        ["attempts"] = delivery.Attempts,
+                        ["records"] = delivery.Records,
+                        ["accepted"] = delivery.Accepted,
+                        ["rejected"] = delivery.Rejected,
+                        ["warnings"] = delivery.Warnings,
+                        ["error"] = delivery.Error is null ? null : JsonValue.Create(delivery.Error),
+                        ["diagnosis"] = Diagnosis(delivery.Error),
+                    }).ToArray()
+                    : Array.Empty<JsonNode?>();
+                return (JsonNode)new JsonObject
+                {
+                    ["id"] = file.Id,
+                    ["path"] = file.Identity.RelativePath,
+                    ["identityKey"] = file.Identity.Key,
+                    ["sourceResourceId"] = file.Identity.SourceResourceId,
+                    ["length"] = file.Identity.Length,
+                    ["sourceDate"] = file.SourceDate.ToString("O"),
+                    ["collectedAt"] = file.CollectedAt.ToString("O"),
+                    ["status"] = file.Status,
+                    ["deliveries"] = new JsonArray(rows),
+                };
+            }).ToArray());
+        }
+
+        JsonNode? Bindings(int? limit = null, int? offset = null)
+        {
+            var (skip, take) = PageWindow(limit, offset);
+            return new JsonArray(bindings.ListAsync().GetAwaiter().GetResult()
+                .Skip(skip).Take(take)
+                .Select(binding => JsonSerializer.SerializeToNode(binding, WireJson)).ToArray());
+        }
+
         var queries = new (string Name, Func<JsonNode?> Handler)[]
         {
             ("industrial/dashboard", () => new JsonObject
@@ -421,65 +524,8 @@ public sealed class IndustrialUiComponent : Component
                     ["type"] = resource.Type,
                     ["machineId"] = resource.MachineId,
                 }).ToArray())),
-            ("industrial/execution-center", () => new JsonObject
-            {
-                ["runs"] = new JsonArray(ledger.ListRunsAsync().GetAwaiter().GetResult()
-                    .Select(run => (JsonNode?)new JsonObject
-                    {
-                        ["id"] = run.Id,
-                        ["workflowId"] = run.WorkflowId,
-                        ["status"] = run.Status,
-                        ["startedAt"] = run.StartedAt.ToString("O"),
-                        ["finishedAt"] = run.FinishedAt?.ToString("O"),
-                        ["error"] = run.Error is null ? null : JsonValue.Create(run.Error),
-                    }).ToArray()),
-                ["deliveries"] = new JsonArray(ledger.ListAllDeliveriesAsync().GetAwaiter().GetResult()
-                    .Select(delivery => (JsonNode?)new JsonObject
-                    {
-                        ["id"] = delivery.Id,
-                        ["collectionFileId"] = delivery.CollectionFileId,
-                        ["targetId"] = delivery.TargetId,
-                        ["targetKind"] = delivery.TargetKind,
-                        ["status"] = delivery.Status,
-                        ["attempts"] = delivery.Attempts,
-                        ["records"] = delivery.Records,
-                        ["error"] = delivery.Error is null ? null : JsonValue.Create(delivery.Error),
-                        ["diagnosis"] = Diagnosis(delivery.Error),
-                    }).ToArray()),
-            }),
-            ("industrial/file-details", () => new JsonArray(ledger.ListAllFilesAsync()
-                .GetAwaiter().GetResult()
-                .Select(file =>
-                {
-                    var rows = ledger.ListAllDeliveriesAsync().GetAwaiter().GetResult()
-                        .Where(delivery => delivery.CollectionFileId == file.Id)
-                        .Select(delivery => (JsonNode?)new JsonObject
-                        {
-                            ["id"] = delivery.Id,
-                            ["targetId"] = delivery.TargetId,
-                            ["targetKind"] = delivery.TargetKind,
-                            ["status"] = delivery.Status,
-                            ["attempts"] = delivery.Attempts,
-                            ["records"] = delivery.Records,
-                            ["accepted"] = delivery.Accepted,
-                            ["rejected"] = delivery.Rejected,
-                            ["warnings"] = delivery.Warnings,
-                            ["error"] = delivery.Error is null ? null : JsonValue.Create(delivery.Error),
-                            ["diagnosis"] = Diagnosis(delivery.Error),
-                        }).ToArray();
-                    return (JsonNode)new JsonObject
-                    {
-                        ["id"] = file.Id,
-                        ["path"] = file.Identity.RelativePath,
-                        ["identityKey"] = file.Identity.Key,
-                        ["sourceResourceId"] = file.Identity.SourceResourceId,
-                        ["length"] = file.Identity.Length,
-                        ["sourceDate"] = file.SourceDate.ToString("O"),
-                        ["collectedAt"] = file.CollectedAt.ToString("O"),
-                        ["status"] = file.Status,
-                        ["deliveries"] = new JsonArray(rows),
-                    };
-                }).ToArray())),
+            ("industrial/execution-center", () => ExecutionCenter()),
+            ("industrial/file-details", () => FileDetails()),
             ("industrial/file-samples", () =>
             {
                 // Diagnostic preview only: never read an arbitrary configured
@@ -523,6 +569,25 @@ public sealed class IndustrialUiComponent : Component
                     ? null : JsonSerializer.SerializeToNode(_lastSnapshotReport, WireJson),
                 ["error"] = _snapshotMaintenanceError is null
                     ? null : JsonValue.Create(_snapshotMaintenanceError),
+                // Keep the snapshot fields above; stage lifecycle is a separate
+                // section so an operator can see counts/bytes/deletions/failures
+                // of both cleanups in the one maintenance status query.
+                ["stage"] = new JsonObject
+                {
+                    ["report"] = _lastStageReport is null
+                        ? null : JsonSerializer.SerializeToNode(_lastStageReport, WireJson),
+                    ["error"] = _stageMaintenanceError is null
+                        ? null : JsonValue.Create(_stageMaintenanceError),
+                    ["stageRows"] = _lastStageReport?.StageRows ?? 0,
+                    ["stageBytes"] = _lastStageReport?.StageBytes ?? 0L,
+                    ["candidates"] = _lastStageReport?.Candidates ?? 0,
+                    ["rowsDeleted"] = _lastStageReport?.RowsDeleted ?? 0,
+                    ["filesDeleted"] = _lastStageReport?.FilesDeleted ?? 0,
+                    ["deletedBytes"] = _lastStageReport?.DeletedBytes ?? 0L,
+                    ["failures"] = new JsonArray(_lastStageReport?.Failures
+                        .Select(failure => (JsonNode?)JsonValue.Create(failure)).ToArray()
+                        ?? Array.Empty<JsonNode?>()),
+                },
             }),
             ("industrial/file-profiles", () => new JsonArray(fileProfiles.ListAsync()
                 .GetAwaiter().GetResult()
@@ -562,9 +627,7 @@ public sealed class IndustrialUiComponent : Component
                         ["error"] = fire.Error is null ? null : JsonValue.Create(fire.Error),
                     }).Where(node => node!["bindingId"] is not null).ToArray()),
             }),
-            ("industrial/bindings", () => new JsonArray(bindings.ListAsync()
-                .GetAwaiter().GetResult()
-                .Select(binding => (JsonNode?)JsonSerializer.SerializeToNode(binding, WireJson)).ToArray())),
+            ("industrial/bindings", () => Bindings()),
             ("industrial/resource-tests", () => new JsonArray(_resourceTests
                 .Select(pair => (JsonNode?)new JsonObject
                 {
@@ -582,15 +645,40 @@ public sealed class IndustrialUiComponent : Component
                 () => { api.UnregisterQuery(owner, name); return ValueTask.CompletedTask; });
         }
 
+        // Named paged variants: a caller that needs history in windows can use
+        // "<query>/page/{n}" (0-based) with the bounded industrialPageSize.
+        // Registration is an effect too, so disabling withdraws every variant.
+        var pageSize = IndustrialPageSize;
+        foreach (var (name, project) in new (string Name, Func<int?, int?, JsonNode?> Project)[]
+        {
+            ("industrial/execution-center", ExecutionCenter),
+            ("industrial/file-details", FileDetails),
+            ("industrial/bindings", Bindings),
+        })
+        {
+            for (var page = 0; page <= MaxPageVariants; page++)
+            {
+                var pageName = $"{name}/page/{page}";
+                var offset = page * pageSize;
+                await context.EffectAsync(
+                    () =>
+                    {
+                        api.RegisterQuery(pageName, () => project(pageSize, offset), owner);
+                        return ValueTask.CompletedTask;
+                    },
+                    () => { api.UnregisterQuery(owner, pageName); return ValueTask.CompletedTask; });
+            }
+        }
+
         // One scoped effect installs both commands; its inverse removes only
         // this owner's registrations once.
         await context.EffectAsync(
             () =>
             {
-                api.RegisterCommand("industrial/run-collection", payload =>
-                    new ValueTask(RunAsync(payload, coordinator, planner, reader, sink, archive,
-                        Setting("workflowId", "daily-collection"),
-                        Setting("resourceId", "source-1")).AsTask()), owner);
+                // Collection execution lives ONLY in the Elsa command path
+                // (industrial/run-workflow, industrial/run-binding). This
+                // component contributes configuration/UI; it must never call
+                // CollectionCoordinator directly.
                 // Delivery retry is owned by the Elsa plugin: it must resume the
                 // original published workflow instead of bypassing transforms.
                 api.RegisterCommand("industrial/test-resource", payload =>
@@ -633,6 +721,9 @@ public sealed class IndustrialUiComponent : Component
                         ledger, SnapshotRoot, context.CancellationToken).GetAwaiter().GetResult();
                     return ValueTask.CompletedTask;
                 }, owner);
+                api.RegisterCommand("industrial/stage-maintenance", _ =>
+                    new ValueTask(RunStageMaintenanceAsync(
+                        ledger, stageStore, stageRetention, context.CancellationToken).AsTask()), owner);
                 api.RegisterCommand("industrial/import-file-profiles", payload =>
                     new ValueTask(ImportFileProfilesAsync(payload, fileProfiles).AsTask()), owner);
                 api.RegisterCommand("industrial/import-bindings", payload =>
@@ -671,6 +762,59 @@ public sealed class IndustrialUiComponent : Component
             () => { api.UnregisterAll(owner); return ValueTask.CompletedTask; });
 
         return null;
+    }
+
+    /// <summary>Stage cleanup is ledger-driven: the store owns files and stage
+    /// rows, the ledger decides which workflow instances are terminal. Locking
+    /// through the same ledger keeps cleanup from racing a workflow that is
+    /// about to reuse committed stages. Failures are published in the report;
+    /// maintenance itself never throws on a bad spool or row.</summary>
+    private async ValueTask RunStageMaintenanceAsync(
+        ICollectionLedger ledger, StageOutputStore? stageStore, TimeSpan retention, CancellationToken ct)
+    {
+        try
+        {
+            if (stageStore is null)
+            {
+                _stageMaintenanceError = "stage store does not support ledger-driven cleanup";
+                return;
+            }
+            var token = $"stage-cleanup-{Guid.NewGuid():N}";
+            if (!await ledger.TryClaimMaintenanceAsync(
+                    StageOutputStore.CleanupLockName, token, TimeSpan.FromMinutes(10), ct))
+            {
+                _lastStageReport = new StageCleanupReport(0, 0, 0, 0, 0, 0, [], [],
+                    true, DateTimeOffset.UtcNow);
+                _stageMaintenanceError = null;
+                return;
+            }
+            try
+            {
+                var runs = await ledger.ListRunsAsync(ct);
+                var active = runs.Where(run => run.InstanceId is not null &&
+                                               !CollectionStatus.IsTerminal(run.Status))
+                                 .Select(run => run.InstanceId!)
+                                 .ToHashSet(StringComparer.Ordinal);
+                var terminal = runs.Where(run => run.InstanceId is not null &&
+                                                 CollectionStatus.IsTerminal(run.Status))
+                                   .Select(run => run.InstanceId!)
+                                   .Where(id => !active.Contains(id))
+                                   .ToHashSet(StringComparer.Ordinal);
+                _lastStageReport = await stageStore.CleanupAsync(terminal, retention, ct);
+            }
+            finally
+            {
+                await ledger.ReleaseMaintenanceAsync(
+                    StageOutputStore.CleanupLockName, token, CancellationToken.None);
+            }
+            _stageMaintenanceError = _lastStageReport.Failures.Count == 0
+                ? null : string.Join("; ", _lastStageReport.Failures.Take(5));
+        }
+        catch (Exception ex)
+        {
+            // A maintenance tick is retryable; record it for snapshot-status.
+            _stageMaintenanceError = ex.Message;
+        }
     }
 
     private static string? Text(JsonObject? body, string key) =>
@@ -1838,28 +1982,6 @@ public sealed class IndustrialUiComponent : Component
         }
     }
 
-    private static async ValueTask RunAsync(
-        JsonNode? payload,
-        ICollectionCoordinator coordinator,
-        IHistoricalRangePlanner planner,
-        IRecordReader reader,
-        IRecordSink sink,
-        IArchiveSink archive,
-        string defaultWorkflowId,
-        string defaultResourceId)
-    {
-        var body = payload as JsonObject ?? new JsonObject();
-        var workflowId = body["workflowId"]?.GetValue<string>() ?? defaultWorkflowId;
-        var resourceId = body["resourceId"]?.GetValue<string>() ?? defaultResourceId;
-        if (string.IsNullOrWhiteSpace(workflowId) || string.IsNullOrWhiteSpace(resourceId))
-        {
-            throw new InvalidOperationException("workflowId and resourceId are required");
-        }
-
-        var range = planner.Plan(DateTimeOffset.UtcNow, TimeSpan.FromDays(1));
-        await coordinator.RunAsync(workflowId, resourceId, range, reader, [sink], archive);
-    }
-
     private static UiPageDefinition Page(
         string id, string title, string route, string renderer, string icon,
         string query, int order, string group,
@@ -1884,7 +2006,8 @@ public sealed class IndustrialUiComponent : Component
             id, title, route, renderer, icon, $"Industrial page: {title}", views,
             Actions:
             [
-                new UiPageAction("Run collection", "industrial/run-collection"),
+                // A published workflow is run only through the Elsa command path.
+                new UiPageAction("Run workflow", "industrial/run-workflow"),
                 new UiPageAction("Retry failed", "industrial/retry-failed"),
             ],
             Order: order, Group: group, Home: home);

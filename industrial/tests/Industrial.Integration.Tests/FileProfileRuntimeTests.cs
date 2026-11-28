@@ -23,7 +23,9 @@ public sealed class FileProfileRuntimeTests
         var root = Path.Combine(Path.GetTempPath(), $"industrial-file-profile-{Guid.NewGuid():N}");
         var sourceRoot = Path.Combine(root, "source");
         Directory.CreateDirectory(sourceRoot);
-        await File.WriteAllTextAsync(Path.Combine(sourceRoot, "recent.csv"),
+        var completedDate = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1);
+        var sourceFile = $"{completedDate:yyyyMMdd}.csv";
+        await File.WriteAllTextAsync(Path.Combine(sourceRoot, sourceFile),
             "record_id;reading\n1;42\n2;\n");
         await File.WriteAllTextAsync(Path.Combine(sourceRoot, "ignored.txt"), "record_id;reading\n9;99\n");
         var targetDb = Path.Combine(root, "target.db");
@@ -81,7 +83,7 @@ public sealed class FileProfileRuntimeTests
             }));
 
             var collections = Assert.IsType<JsonArray>(api.Query("industrial/collections"));
-            Assert.Contains(collections, row => row!["path"]!.GetValue<string>() == "recent.csv");
+            Assert.Contains(collections, row => row!["path"]!.GetValue<string>() == sourceFile);
             Assert.DoesNotContain(collections, row => row!["path"]!.GetValue<string>() == "ignored.txt");
 
             await using var connection = new SqliteConnection($"Data Source={targetDb}");

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Gocordis.Builtin.WebConsole;
 using Gocordis.Core;
@@ -92,7 +93,7 @@ public sealed class IndustrialUiPluginTests
     }
 
     [Fact]
-    public async Task RunCollectionCommandUsesTheSameLedgerAsTheDomainPlugin()
+    public async Task CollectionRunsGoThroughElsaAndTheSharedLedger()
     {
         using var temp = new TempDir();
         var sample = Path.Combine(temp.SourceRoot, "recent.csv");
@@ -122,9 +123,45 @@ public sealed class IndustrialUiPluginTests
             new Dictionary<string, object?> { ["root"] = temp.SourceRoot },
             null, 0, true, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch));
 
-        var executed = await console.Api.ExecuteAsync("industrial/run-collection", new JsonObject
+        // The old coordinator entry point must no longer exist as a product
+        // action: it would bypass snapshots, stage persistence and recovery.
+        Assert.False(await console.Api.ExecuteAsync("industrial/run-collection", new JsonObject
         {
             ["workflowId"] = "workflow-1",
+            ["resourceId"] = "source-1",
+        }));
+
+        await resources.RegisterAsync(new ResourceDefinition(
+            "target-1", "sqlite", "Target", "local",
+            new Dictionary<string, object?>
+            {
+                ["database"] = Path.Combine(temp.Root, "target.db"),
+                ["table"] = "IndustrialRecords",
+            },
+            null, 0, true, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch));
+        var definition = new WorkflowDefinition(
+            "workflow-1", "Elsa collection", 1,
+            [
+                new WorkflowNode("src", "industrial.filesystem.local",
+                    new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
+                new WorkflowNode("read", "industrial.reader.csv",
+                    new Dictionary<string, object?>(), 100, 0),
+                new WorkflowNode("store", "industrial.sink.sqlite",
+                    new Dictionary<string, object?> { ["targetResourceId"] = "target-1" }, 200, 0),
+            ],
+            [
+                new WorkflowEdge("src", "files", "read", "input"),
+                new WorkflowEdge("read", "records", "store", "records"),
+            ],
+            new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            ["source-1"], new Dictionary<string, object?>());
+        Assert.True(await console.Api.ExecuteAsync("industrial/save-workflow",
+            JsonSerializer.SerializeToNode(definition)));
+        Assert.True(await console.Api.ExecuteAsync("industrial/publish-workflow",
+            new JsonObject { ["workflowId"] = definition.WorkflowId }));
+        var executed = await console.Api.ExecuteAsync("industrial/run-workflow", new JsonObject
+        {
+            ["workflowId"] = definition.WorkflowId,
             ["resourceId"] = "source-1",
         });
         Assert.True(executed);

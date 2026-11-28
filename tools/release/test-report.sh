@@ -17,7 +17,7 @@ run() {
 }
 
 run platform-dotnet bash -c 'dotnet build Gocordis.sln --nologo -m:1 -v q && DOTNET_ROLL_FORWARD=LatestMajor dotnet test Gocordis.sln --nologo --no-build -m:1'
-run industrial-dotnet bash -c 'dotnet build industrial/Industrial.slnx --nologo -m:1 -v q && DOTNET_ROLL_FORWARD=LatestMajor dotnet test industrial/Industrial.slnx --nologo --no-build -m:1'
+run industrial-dotnet bash -c 'dotnet build industrial/Industrial.slnx --nologo -m:1 -v q && DOTNET_ROLL_FORWARD=LatestMajor dotnet test industrial/Industrial.slnx --nologo --no-build -m:1 --logger "console;verbosity=normal"'
 run industrial-frontend bash -c 'cd industrial/web && npm test -- --run && npx tsc --noEmit && npm run build'
 run industrial-browser-e2e bash industrial/e2e-browser.sh
 run industrial-user-flow bash industrial/e2e-user-flow.sh
@@ -42,9 +42,11 @@ import sys
 out = pathlib.Path(sys.argv[1])
 root = pathlib.Path(sys.argv[2])
 suites = []
+logs = {}
 for code_path in sorted(out.glob("*.code")):
     name = code_path.stem
     log = re.sub(r"\x1b\[[0-9;]*m", "", (out / f"{name}.log").read_text(errors="replace"))
+    logs[name] = log
     exit_code = int(code_path.read_text().strip())
     dotnet = [int(x) for x in re.findall(r"(?:Passed|Skipped)!\s+-\s+Failed:\s+\d+,\s+Passed:\s+(\d+)", log)]
     vitest = [int(x) for x in re.findall(r"Tests\s+(\d+)\s+passed", log)]
@@ -88,6 +90,78 @@ mysql_evidence = load_evidence("mysql-result.json", "artifacts/mysql-blocker.md"
 unc_browser_evidence = load_evidence("windows-unc-browser-result.json", "artifacts/windows-unc-browser-blocker.md")
 expected_suites = re.findall(r"^run (\S+)", (root / "tools/release/test-report.sh").read_text(), re.M)
 not_executed = [name for name in expected_suites if not (out / f"{name}.code").exists()]
+
+# Key business stories are mapped to concrete test names. The report marks a
+# mapped row passed only when ALL required tests appear as `Passed <FQN>` in the
+# industrial-dotnet normal-verbosity log AND that suite exited 0. With no parsed
+# passed-test lines the rows fail closed instead of falling back to exit codes.
+STORY_TESTS = {
+    "business-date": [
+        "BusinessDateLedgerTests.BusinessTimezoneBoundaryUsesLocalYesterdayAndValidatesOverrides",
+        "BusinessDateLedgerTests.AutomaticBindingRunNeverCollectsTheOpenBusinessDate",
+        "BusinessDateLedgerTests.PlannerUsesHolesKnownFailuresAndBoundedCatchUp",
+    ],
+    "immutable-snapshot": [
+        "ImmutableDataConsistencyTests.SnapshotRejectsAFileChangedAfterDiscovery",
+        "ImmutableDataConsistencyTests.ReaderSeesTheSnapshotBytesEvenWhenTheOriginalChanges",
+        "ImmutableDataConsistencyTests.MaintenanceLockIsExclusiveAndBlocksConcurrentCleanup",
+        "ImmutableDataConsistencyTests.OrphanSnapshotIsReclaimedAfterTheRetentionWindow",
+        "BindingRunIntegrityTests.RetryAfterOriginalFileDeletedUsesTheImmutableSnapshot",
+    ],
+    "run-path": [
+        "BindingRunIntegrityTests.RunCollectionCommandIsRemovedAndOnlyElsaRunsACollection",
+        "IndustrialUiPluginTests.CollectionRunsGoThroughElsaAndTheSharedLedger",
+    ],
+    "lease-heartbeat": [
+        "DeliveryHeartbeatTests.HeartbeatRenewsOnIntervalAndCompletesSlowOperation",
+        "DeliveryHeartbeatTests.FailedRenewalCancelsTheOperationAndSurfacesTheLoss",
+        "DeliveryHeartbeatTests.SlowSinkDeliveryKeepsItsLeaseValidAndCompletes",
+        "DeliveryHeartbeatTests.FailedRenewalAbortsTheSlowSinkAndLeavesTheClaimFenced",
+        "DeliveryLeaseTests.LeaseRenewalExtendsOnlyTheCurrentClaim",
+        "DeliveryLeaseTests.ConcurrentClaimsProduceExactlyOneValidToken",
+    ],
+    "stage-integrity": [
+        "StageOutputStoreTests.RoundTripReturnsExactlyTheCommittedRecordsWithAnIntegritySidecar",
+        "StageOutputStoreTests.TruncatedCommittedSpoolThrowsDuringEnumerationInsteadOfReturningFewerRecords",
+        "StageOutputStoreTests.CorruptedJsonLineThrowsWithItsLineNumber",
+        "StageOutputStoreTests.TerminalInstanceStageIsCleanedAfterRetention",
+        "StageOutputStoreTests.NonTerminalInstanceStageIsRetained",
+        "StageOutputStoreTests.MissingOrCorruptSpoolDoesNotBreakCleanup",
+    ],
+    "unc-session": [
+        "UncLeaseTests.TwoConsumersShareOneSessionUntilBothRelease",
+        "UncLeaseTests.CredentialConflictIsReportedExplicitly",
+        "UncLeaseTests.ConcurrentAcquireCannotReuseASessionWhoseCancelIsInFlight",
+        "ImmutableDataConsistencyTests.SourceSessionScopeLeasesEverySourceResource",
+        "ImmutableDataConsistencyTests.FailedLaterLeaseReleasesAlreadyAcquiredSessions",
+    ],
+}
+STORY_ROWS = {
+    "business-date ledger: bounded catch-up, known-failure/hole retry, no-data re-probe and succeeded-date finality": "business-date",
+    "long downtime recovery is bounded and never recollects terminal dates; exact retry reuses the persisted bound definition": "business-date",
+    "ledger identity describes the exact bytes read: immutable content-addressed snapshot is created before the file enters the ledger and survives recovery": "immutable-snapshot",
+    "snapshot hash is computed as a stream and snapshots are cleaned only from ledger-proven fully delivered files with no active runs": "immutable-snapshot",
+    "snapshot cleanup is coordinated with workflow start/recovery through the ledger maintenance lock; concurrent cleanup cannot delete a snapshot a new run will use": "immutable-snapshot",
+    "crash-orphaned snapshots are reclaimed after a safe retention window and maintenance runs automatically on the existing timer": "immutable-snapshot",
+    "local and UNC discovery use one quiet-period + hash + re-stat rule; credentialed SMB session spans the whole workflow": "unc-session",
+    "every source node resource gets its own workflow-scoped session and the profile-aware discovery contract cannot silently downgrade": "unc-session",
+    "partial source-session acquisition failure releases already-held leases; source nodes are identified by node contract": "unc-session",
+    "concurrent claims, lease renewal and staged-file identity guard": "lease-heartbeat",
+    "ledger claim/lease/retry state machine": "lease-heartbeat",
+    "stage output resume and EF migrations": "stage-integrity",
+}
+industrial_code = next((s["exitCode"] for s in suites if s["suite"] == "industrial-dotnet"), 1)
+# console;verbosity=normal prints "  Passed Namespace.Class.Method [duration]".
+passed_tests = set(re.findall(r"^\s*Passed\s+(\S+)", logs.get("industrial-dotnet", ""), re.M))
+
+def story_gate(key):
+    required = STORY_TESTS[key]
+    seen = [name for name in required
+            if any(name in passed for passed in passed_tests)]
+    ok = bool(passed_tests) and len(seen) == len(required) and industrial_code == 0
+    evidence = "industrial-dotnet.log; " + "; ".join(
+        f"{name}={'passed' if name in seen else 'MISSING'}" for name in required)
+    return ("passed" if ok else "failed"), evidence
 
 report = {
     "generatedAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
@@ -175,6 +249,21 @@ report = {
         {"requirement": "unified test report", "status": "passed", "evidence": "tools/release/test-report.sh"},
     ],
 }
+# Apply the named-test gates only to mapped stories; every other acceptance row
+# keeps its existing gate. Two stories that previously had no explicit row are
+# added with the same strict gate.
+for item in report["acceptance"]:
+    key = STORY_ROWS.get(item["requirement"])
+    if key is not None:
+        item["status"], item["evidence"] = story_gate(key)
+for key, requirement in [
+    ("run-path", "run path unification: legacy run-collection command is removed; collections run only through Elsa and the shared ledger"),
+    ("stage-integrity", "stage data lifecycle: terminal-instance stages are reclaimed after retention, non-terminal stages stay, and corrupt/missing spools do not break maintenance"),
+]:
+    status, evidence = story_gate(key)
+    report["acceptance"].append({
+        "requirement": requirement, "status": status, "evidence": evidence})
+
 (out / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
 lines = ["# Local test report", "", f"Generated by `{report['source']}`.", "",
          f"Tested commit: `{report['commit']}`", "",

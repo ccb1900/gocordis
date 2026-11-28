@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "runner": "ubuntu-latest",
+  "workflow": "database-evidence",
+  "job": "SQL Server + MySQL partial-failure recovery E2E",
+  "runId": 46147837073,
+  "jobId": 140987677342,
+  "url": "https://github.com/ccb1900/gocordis/actions/runs/46147837073",
+  "startedAt": "2026-11-28T13:05:13Z",
+  "completedAt": "2026-11-28T13:06:29Z",
+  "headSha": "6130306b4d4e78ce71217779c560d58f8506a660",
+  "conclusion": "success",
+  "test": "Industrial.Tests.CrashRecoveryTests.MultiTargetPartialFailureRetriesOnlyTheFailedRealDatabase",
+  "command": "GOCORDIS_SQLSERVER_CONNECTION=<real SQL Server 2019 service> GOCORDIS_MYSQL_CONNECTION=<real MySQL 8 service> dotnet test industrial/tests/Industrial.Integration.Tests/Industrial.Integration.Tests.csproj --nologo -m:1 --filter FullyQualifiedName~MultiTargetPartialFailureRetriesOnlyTheFailedRealDatabase",
+  "note": "Full Elsa chain Source -> Reader -> Mapping -> Stage -> real SQL Server + real MySQL + Archive. MySQL is intentionally unreachable; SQL Server and Archive succeed with one attempt each, then only MySQL is repaired and retried. Ledger attempt counts and real target rows are asserted. The MySQL sink honors the configured table name."
+}

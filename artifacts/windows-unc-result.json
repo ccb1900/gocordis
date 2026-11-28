@@ -3,15 +3,15 @@
   "runner": "windows-latest",
   "workflow": "windows-unc",
   "job": "unc-integration",
-  "runId": 46138628435,
-  "jobId": 140959419244,
-  "url": "https://github.com/ccb1900/gocordis/actions/runs/46138628435",
-  "startedAt": "2026-11-28T11:10:40Z",
-  "completedAt": "2026-11-28T11:12:24Z",
+  "runId": 46147837092,
+  "jobId": 140987677141,
+  "url": "https://github.com/ccb1900/gocordis/actions/runs/46147837092",
+  "startedAt": "2026-11-28T13:05:13Z",
+  "completedAt": "2026-11-28T13:06:42Z",
+  "headSha": "6130306b4d4e78ce71217779c560d58f8506a660",
+  "conclusion": "success",
   "test": "Industrial.Database.Tests.WindowsUncIntegrationTests.UncSourceDiscoversFilesThroughARealSessionLease",
   "command": "pwsh ./industrial/e2e-windows-unc.ps1",
   "share": "ephemeral real SMB share provisioned on the Windows runner by industrial/e2e-windows-unc.ps1",
-  "note": "Real Windows SMB client/server through UncConnectionLease; no mock or fake native seam was used.",
-  "headSha": "0b3c15b86347235e6e5183b85d21695a39c7be15",
-  "conclusion": "success"
+  "note": "Real Windows SMB client/server through UncConnectionLease; no mock or fake native seam was used."
 }

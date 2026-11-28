@@ -62,6 +62,57 @@ jobs:
           done
           echo "SQL Server integration failed after bounded retries" >&2
           exit 1
+  multi-target-recovery:
+    name: SQL Server + MySQL partial-failure recovery E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2019-latest
+        env:
+          ACCEPT_EULA: Y
+          SA_PASSWORD: Gocordis!2026Sql
+        ports:
+          - 1433:1433
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: Gocordis!2026MySql
+          MYSQL_DATABASE: gocordis
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -uroot -pGocordis!2026MySql"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Wait for SQL Server listener
+        run: |
+          for attempt in $(seq 1 60); do
+            if (exec 3<>/dev/tcp/127.0.0.1/1433) 2>/dev/null; then
+              echo "SQL Server is accepting connections"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "SQL Server did not become ready" >&2
+          exit 1
+      - name: Full Elsa multi-target partial-failure E2E
+        env:
+          GOCORDIS_SQLSERVER_CONNECTION: Server=127.0.0.1,1433;Database=master;User Id=sa;Password=Gocordis!2026Sql;TrustServerCertificate=True;Encrypt=False
+          GOCORDIS_MYSQL_CONNECTION: Server=127.0.0.1;Port=3306;Database=gocordis;Uid=root;Pwd=Gocordis!2026MySql;AllowUserVariables=True
+        run: |
+          set -o pipefail
+          GOCORDIS_SQLSERVER_CONNECTION="$GOCORDIS_SQLSERVER_CONNECTION" \
+          GOCORDIS_MYSQL_CONNECTION="$GOCORDIS_MYSQL_CONNECTION" \
+            dotnet test industrial/tests/Industrial.Integration.Tests/Industrial.Integration.Tests.csproj \
+              --nologo -m:1 --filter FullyQualifiedName~MultiTargetPartialFailureRetriesOnlyTheFailedRealDatabase \
+              2>&1 | tee /tmp/multi-target-recovery.log
   mysql:
     name: MySQL real-server integration
     runs-on: ubuntu-latest

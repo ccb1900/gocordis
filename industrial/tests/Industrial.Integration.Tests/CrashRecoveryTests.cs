@@ -11,7 +11,9 @@ using Industrial.Core;
 using Industrial.Elsa;
 using Industrial.Host;
 using Industrial.Persistence;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using MySqlConnector;
 
 namespace Industrial.Tests;
 
@@ -20,6 +22,192 @@ namespace Industrial.Tests;
 /// the original Elsa instance and retry only the incomplete delivery.</summary>
 public sealed class CrashRecoveryTests
 {
+    private sealed class RealMultiDatabaseFactAttribute : FactAttribute
+    {
+        public RealMultiDatabaseFactAttribute()
+        {
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GOCORDIS_SQLSERVER_CONNECTION")) ||
+                string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GOCORDIS_MYSQL_CONNECTION")))
+                Skip = "Set GOCORDIS_SQLSERVER_CONNECTION and GOCORDIS_MYSQL_CONNECTION to real servers";
+        }
+    }
+
+    [RealMultiDatabaseFact]
+    public async Task MultiTargetPartialFailureRetriesOnlyTheFailedRealDatabase()
+    {
+        var sqlConnectionString = new SqlConnectionStringBuilder(
+            Environment.GetEnvironmentVariable("GOCORDIS_SQLSERVER_CONNECTION")!)
+        {
+            InitialCatalog = $"IndustrialE2E_{Guid.NewGuid():N}",
+        }.ConnectionString;
+        var mySqlConnectionString = new MySqlConnectionStringBuilder(
+            Environment.GetEnvironmentVariable("GOCORDIS_MYSQL_CONNECTION")!)
+        {
+            Database = $"industrial_e2e_{Guid.NewGuid():N}".Replace('-', '_'),
+        }.ConnectionString;
+        var sqlServer = new SqlConnectionStringBuilder(sqlConnectionString);
+        var mySql = new MySqlConnectionStringBuilder(mySqlConnectionString);
+        var sqlTable = $"IndustrialRecords_{Guid.NewGuid():N}";
+        var mysqlTable = $"industrial_records_{Guid.NewGuid():N}".Replace('-', '_');
+
+        using var temp = new TempDir();
+        var sourceRoot = Path.Combine(temp.Root, "source");
+        Directory.CreateDirectory(sourceRoot);
+        var now = DateTimeOffset.UtcNow;
+        var csv = string.Join('\n', new[] { "record_id,reading" }
+            .Concat(Enumerable.Range(1, 3).Select(index => $"{index},{index * 10}")));
+        var sourceFile = Path.Combine(sourceRoot, $"{now:yyyyMMdd}.csv");
+        await File.WriteAllTextAsync(sourceFile, csv);
+        File.SetLastWriteTimeUtc(sourceFile, now.AddHours(-1).UtcDateTime);
+
+        var factories = new FactorySet(
+            Path.Combine(temp.Root, "unused.db"), Path.Combine(temp.Root, "unused-target.db"));
+        var definition = new WorkflowDefinition(
+            "real-multi-target-flow", "Real multi target flow", 1,
+            [
+                new WorkflowNode("src", "industrial.filesystem.local",
+                    new Dictionary<string, object?> { ["resourceId"] = "source-1" }, 0, 0),
+                new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
+                new WorkflowNode("map", "industrial.transform.mapping",
+                    new Dictionary<string, object?>
+                    {
+                        ["mapping"] = JsonSerializer.SerializeToElement(
+                            new Dictionary<string, string> { ["value"] = "reading" }),
+                    }, 200, 0),
+                new WorkflowNode("storeSql", "industrial.sink.sqlserver",
+                    new Dictionary<string, object?> { ["targetResourceId"] = "real-sqlserver" }, 300, 0),
+                new WorkflowNode("storeMySql", "industrial.sink.mysql",
+                    new Dictionary<string, object?> { ["targetResourceId"] = "real-mysql" }, 300, 100),
+                new WorkflowNode("storeArchive", "industrial.sink.archive",
+                    new Dictionary<string, object?>(), 300, 200),
+            ],
+            [
+                new WorkflowEdge("src", "files", "read", "input"),
+                new WorkflowEdge("read", "records", "map", "input"),
+                new WorkflowEdge("map", "output", "storeSql", "records"),
+                new WorkflowEdge("map", "output", "storeMySql", "records"),
+                new WorkflowEdge("map", "output", "storeArchive", "files"),
+            ],
+            new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            ["source-1"], new Dictionary<string, object?>());
+
+        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, vault, api) =>
+        {
+            await vault.PutAsync("real-sql-cred", "Real SQL Server credential", "username-password",
+                JsonSerializer.Serialize(new { username = sqlServer.UserID, password = sqlServer.Password }));
+            await vault.PutAsync("real-mysql-cred", "Real MySQL credential", "username-password",
+                JsonSerializer.Serialize(new { username = mySql.UserID, password = mySql.Password }));
+            var now = DateTimeOffset.UtcNow;
+            await resources.RegisterAsync(new ResourceDefinition(
+                "real-sqlserver", "sqlserver", "Real SQL Server", "sqlserver",
+                new Dictionary<string, object?>
+                {
+                    ["server"] = sqlServer.DataSource,
+                    ["database"] = sqlServer.InitialCatalog,
+                    ["table"] = sqlTable,
+                }, "real-sql-cred", 1, true, now, now));
+            // Intentionally unreachable on the first run: the other targets
+            // must still succeed and the failed target must be independently
+            // recoverable without re-running them.
+            await resources.RegisterAsync(new ResourceDefinition(
+                "real-mysql", "mysql", "Real MySQL", "mysql",
+                new Dictionary<string, object?>
+                {
+                    ["host"] = "127.0.0.1", ["port"] = "1",
+                    ["database"] = mySql.Database, ["table"] = mysqlTable,
+                }, "real-mysql-cred", 1, true, now, now));
+            Assert.True(await api.ExecuteAsync("industrial/save-workflow",
+                JsonSerializer.SerializeToNode(definition)));
+            Assert.True(await api.ExecuteAsync("industrial/publish-workflow",
+                new JsonObject { ["workflowId"] = definition.WorkflowId }));
+            Assert.True(await api.ExecuteAsync("industrial/run-workflow", new JsonObject
+            {
+                ["workflowId"] = definition.WorkflowId,
+                ["resourceId"] = "source-1",
+            }));
+
+            var sqlDelivery = (await ledger.ListAllDeliveriesAsync()).Single(
+                delivery => delivery.TargetId == "real-sqlserver");
+            var archiveDelivery = (await ledger.ListAllDeliveriesAsync()).Single(
+                delivery => delivery.TargetId == "archive");
+            var mysqlDelivery = (await ledger.ListAllDeliveriesAsync()).Single(
+                delivery => delivery.TargetId == "real-mysql");
+            Assert.Equal(CollectionStatus.Succeeded, sqlDelivery.Status);
+            Assert.Equal(CollectionStatus.Succeeded, archiveDelivery.Status);
+            Assert.Equal(CollectionStatus.Failed, mysqlDelivery.Status);
+            Assert.Equal(1, sqlDelivery.Attempts);
+            Assert.Equal(1, archiveDelivery.Attempts);
+        });
+
+        Assert.Equal(3, await CountSqlServerRowsAsync(sqlConnectionString, sqlTable));
+        var archiveFiles = Directory.GetFiles(Path.Combine(temp.Root, "archive"), "*.csv",
+            SearchOption.AllDirectories);
+        Assert.Single(archiveFiles);
+
+        // Repair only the failed target's connection, then retry its delivery.
+        await Compose(temp.Root, factories, async (_, _, resources, ledger, _, api) =>
+        {
+            var existing = await resources.GetAsync("real-mysql")
+                           ?? throw new InvalidOperationException("mysql resource disappeared");
+            var valid = new MySqlConnectionStringBuilder(mySqlConnectionString)
+            {
+                Database = mySql.Database,
+            };
+            await resources.RegisterAsync(existing with
+            {
+                Version = existing.Version + 1,
+                Configuration = new Dictionary<string, object?>
+                {
+                    ["host"] = valid.Server,
+                    ["port"] = valid.Port.ToString(),
+                    ["database"] = valid.Database,
+                    ["table"] = mysqlTable,
+                },
+            });
+            var failed = (await ledger.ListAllDeliveriesAsync()).Single(
+                delivery => delivery.TargetId == "real-mysql" &&
+                            delivery.Status == CollectionStatus.Failed);
+            Assert.True(await api.ExecuteAsync("industrial/retry-failed", new JsonObject
+            {
+                ["deliveryId"] = failed.Id,
+            }));
+        });
+
+        Assert.Equal(3, await CountMySqlRowsAsync(mySqlConnectionString, mysqlTable));
+        Assert.Single(archiveFiles);
+        await Compose(temp.Root, factories, async (_, _, _, ledger, _, _) =>
+        {
+            var deliveries = await ledger.ListAllDeliveriesAsync();
+            var sql = deliveries.Single(delivery => delivery.TargetId == "real-sqlserver");
+            var archive = deliveries.Single(delivery => delivery.TargetId == "archive");
+            var mysql = deliveries.Single(delivery => delivery.TargetId == "real-mysql");
+            Assert.Equal(CollectionStatus.Succeeded, sql.Status);
+            Assert.Equal(CollectionStatus.Succeeded, archive.Status);
+            Assert.Equal(CollectionStatus.Succeeded, mysql.Status);
+            Assert.Equal(1, sql.Attempts);
+            Assert.Equal(1, archive.Attempts);
+            Assert.Equal(2, mysql.Attempts);
+        });
+    }
+
+    private static async Task<int> CountSqlServerRowsAsync(string connectionString, string table)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT count(*) FROM [{table}]";
+        return Convert.ToInt32(await command.ExecuteScalarAsync());
+    }
+
+    private static async Task<int> CountMySqlRowsAsync(string connectionString, string table)
+    {
+        await using var connection = new MySqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT count(*) FROM `{table}`";
+        return Convert.ToInt32(await command.ExecuteScalarAsync());
+    }
+
     [Fact]
     public async Task TwoTargetMidWriteCrashResumesAndRetriesOnlyTheIncompleteTarget()
     {
@@ -66,7 +254,7 @@ public sealed class CrashRecoveryTests
 
         // First process: the second sink commits one row and then the process
         // vanishes before the delivery or the Elsa activity can complete.
-        await Compose(temp.Root, factories, async (catalog, workflows, resources, _, api) =>
+        await Compose(temp.Root, factories, async (catalog, workflows, resources, _, _, api) =>
         {
             await RegisterTargetAsync(resources, "target-a", DateTimeOffset.UtcNow);
             await RegisterTargetAsync(resources, "target-b", DateTimeOffset.UtcNow);
@@ -107,7 +295,7 @@ public sealed class CrashRecoveryTests
         // Second process: recovery runs as an effect of loading the same plugin,
         // not as a manual API call. Only target-b had an incomplete delivery.
         factories.CrashTargetB = false;
-        await Compose(temp.Root, factories, async (_, _, _, _, api) =>
+        await Compose(temp.Root, factories, async (_, _, _, _, _, api) =>
         {
             var recovery = Assert.IsType<JsonObject>(api.Query("industrial/recovery"));
             Assert.Equal(1, recovery["recovered"]?.GetValue<int>());
@@ -207,7 +395,7 @@ public sealed class CrashRecoveryTests
         // New process: startup recovery sees the orphaned Elsa instance and
         // resumes it from committed stages; only target-b still needs work.
         var factories = new FactorySet(targetA, targetB);
-        await Compose(temp.Root, factories, async (_, _, _, _, api) =>
+        await Compose(temp.Root, factories, async (_, _, _, _, _, api) =>
         {
             var recovery = Assert.IsType<JsonObject>(api.Query("industrial/recovery"));
             Assert.Equal(1, recovery["recovered"]?.GetValue<int>());
@@ -255,7 +443,8 @@ public sealed class CrashRecoveryTests
     private static async Task Compose(
         string root,
         FactorySet factories,
-        Func<INodeCatalog, IWorkflowRegistry, IResourceRegistry, ICollectionLedger, ApiGateway, Task> act)
+        Func<INodeCatalog, IWorkflowRegistry, IResourceRegistry, ICollectionLedger,
+            ICredentialVault, ApiGateway, Task> act)
     {
         await using var runtime = new Gocordis.Core.Runtime();
         var console = new ConsoleHost(runtime);
@@ -287,6 +476,7 @@ public sealed class CrashRecoveryTests
             runtime.RequireCapability(IndustrialKeys.WorkflowRegistry),
             runtime.RequireCapability(IndustrialKeys.ResourceRegistry),
             runtime.RequireCapability(IndustrialKeys.CollectionLedger),
+            runtime.RequireCapability(IndustrialKeys.CredentialVault),
             console.Api);
     }
 
@@ -338,7 +528,7 @@ public sealed class CrashRecoveryTests
             ["source-1"], new Dictionary<string, object?>());
 
         string failedDeliveryId = string.Empty;
-        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, api) =>
+        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, _, api) =>
         {
             var now = DateTimeOffset.UtcNow;
             foreach (var id in new[] { "target-a", "target-b" })
@@ -428,7 +618,7 @@ public sealed class CrashRecoveryTests
         string failedDeliveryId = string.Empty;
         string firstDeliveryId = string.Empty;
         string firstRunId = string.Empty;
-        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, api) =>
+        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, _, api) =>
         {
             var now = DateTimeOffset.UtcNow;
             foreach (var id in new[] { "target-a", "target-b" })
@@ -543,7 +733,7 @@ public sealed class CrashRecoveryTests
 
         string deliveryId = string.Empty;
         string lastRunId = string.Empty;
-        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, api) =>
+        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, _, api) =>
         {
             var registered = DateTimeOffset.UtcNow;
             await resources.RegisterAsync(new ResourceDefinition(
@@ -644,7 +834,7 @@ public sealed class CrashRecoveryTests
                 await Task.Delay(50, sampling.Token);
             }
         });
-        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, api) =>
+        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, _, api) =>
         {
             var registered = DateTimeOffset.UtcNow;
             await resources.RegisterAsync(new ResourceDefinition(
@@ -724,7 +914,7 @@ public sealed class CrashRecoveryTests
             new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
             ["source-1"], new Dictionary<string, object?>());
 
-        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, api) =>
+        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, _, api) =>
         {
             var registered = DateTimeOffset.UtcNow;
             await resources.RegisterAsync(new ResourceDefinition(
@@ -795,7 +985,7 @@ public sealed class CrashRecoveryTests
             new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
             ["source-1"], new Dictionary<string, object?>());
 
-        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, api) =>
+        await Compose(temp.Root, factories, async (_, workflows, resources, ledger, _, api) =>
         {
             var now = DateTimeOffset.UtcNow;
             foreach (var id in new[] { "target-a", "target-b" })

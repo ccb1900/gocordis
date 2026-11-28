@@ -304,6 +304,69 @@ public sealed class ImmutableDataConsistencyTests
         Assert.False(started);
     }
 
+    [Fact]
+    public async Task ConcurrentDisposeCannotSwallowHeartbeatLeaseLoss()
+    {
+        using var temp = new TempRoot();
+        var ledger = new CollectionLedger(() => IndustrialStore.Create(
+            Path.Combine(temp.Root, "ledger.db")));
+        await using var lease = await MaintenanceCoordination.BeginExecutionAsync(
+            ledger, "concurrent-dispose-workflow");
+        var heartbeat = lease.StartHeartbeat(
+            "concurrent-dispose-workflow", CancellationToken.None,
+            TimeSpan.FromMilliseconds(30));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var canceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var operation = Task.Run(async () =>
+        {
+            started.TrySetResult();
+            try { await Task.Delay(TimeSpan.FromSeconds(10), heartbeat.Token); }
+            catch (OperationCanceledException) { canceled.TrySetResult(); }
+        });
+
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(50);
+        await ledger.ReleaseMaintenanceAsync(lease.Name, lease.Token, CancellationToken.None);
+
+        // Dispose and the heartbeat's failure path overlap. Normal stopping
+        // must not overwrite the loss already observed by the renewal loop.
+        var dispose = heartbeat.DisposeAsync();
+        await canceled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await operation.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await dispose);
+        Assert.True(lease.Lost);
+        await lease.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task CallerCancellationIsNotReportedAsLeaseLoss()
+    {
+        using var temp = new TempRoot();
+        var ledger = new CollectionLedger(() => IndustrialStore.Create(
+            Path.Combine(temp.Root, "ledger.db")));
+        await using var lease = await MaintenanceCoordination.BeginExecutionAsync(
+            ledger, "caller-cancelled-workflow");
+        using var callerCts = new CancellationTokenSource();
+        await using var heartbeat = lease.StartHeartbeat(
+            "caller-cancelled-workflow", callerCts.Token, TimeSpan.FromMilliseconds(30));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var canceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var operation = Task.Run(async () =>
+        {
+            started.TrySetResult();
+            try { await Task.Delay(TimeSpan.FromSeconds(10), heartbeat.Token); }
+            catch (OperationCanceledException) { canceled.TrySetResult(); }
+        });
+
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await callerCts.CancelAsync();
+        await canceled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await heartbeat.DisposeAsync();
+
+        Assert.False(lease.Lost);
+        await lease.DisposeAsync();
+    }
+
     private static async Task<DateTimeOffset> LeaseExpiryAsync(string path, string name)
     {
         await using var db = IndustrialStore.Create(path);

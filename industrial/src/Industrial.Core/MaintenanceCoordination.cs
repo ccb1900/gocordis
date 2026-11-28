@@ -207,17 +207,25 @@ public sealed class MaintenanceHeartbeat : IAsyncDisposable
             while (true)
             {
                 await Task.Delay(interval, _linked.Token);
-                if (!await _lease.RenewAsync(_linked.Token))
+                // Renew without the stop token so a concurrent Dispose cannot
+                // turn an actual lease loss into an indistinguishable cancel.
+                if (!await _lease.RenewAsync(CancellationToken.None))
                     throw new InvalidOperationException(
                         $"execution lease for '{_owner}' was lost; operation aborted");
             }
         }
         catch (OperationCanceledException) when (_linked.IsCancellationRequested)
         {
-            // Normal completion or caller cancellation.
+            // Caller cancellation and Dispose can race a renewal. Make one
+            // final fenced renewal so cancellation cannot hide a lease loss.
+            if (_lease.Lost || !await _lease.RenewAsync(CancellationToken.None))
+                throw new InvalidOperationException(
+                    $"execution lease for '{_owner}' was lost; operation aborted");
         }
         catch (Exception ex)
         {
+            // Record first: Dispose may cancel concurrently, but a lease loss
+            // observed before stopping must survive and be surfaced.
             _failure.TrySetResult(ex);
             await _linked.CancelAsync();
         }
@@ -226,8 +234,8 @@ public sealed class MaintenanceHeartbeat : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (!_linked.IsCancellationRequested) await _linked.CancelAsync();
-        _failure.TrySetResult(null);
         await _loop;
+        _failure.TrySetResult(null);
         var failure = await _failure.Task;
         if (failure is not null)
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();

@@ -90,6 +90,7 @@ unc_evidence = load_evidence("windows-unc-result.json", "artifacts/windows-unc-b
 sqlserver_evidence = load_evidence("sqlserver-result.json", "artifacts/sqlserver-blocker.md")
 mysql_evidence = load_evidence("mysql-result.json", "artifacts/mysql-blocker.md")
 unc_browser_evidence = load_evidence("windows-unc-browser-result.json", "artifacts/windows-unc-browser-blocker.md")
+multi_target_evidence = load_evidence("multi-target-result.json", "artifacts/multi-target-blocker.md")
 expected_suites = re.findall(r"^run (\S+)", (root / "tools/release/test-report.sh").read_text(), re.M)
 not_executed = [name for name in expected_suites if not (out / f"{name}.code").exists()]
 
@@ -137,6 +138,13 @@ STORY_TESTS = {
         "StageOutputStoreTests.MissingOrCorruptSpoolDoesNotBreakCleanup",
         "StageOutputStoreTests.OrphanSpoolsAndPartialsAreReclaimedAfterSafetyWindow",
     ],
+    "multi-target-recovery": [
+        "CrashRecoveryTests.TwoTargetMidWriteCrashResumesAndRetriesOnlyTheIncompleteTarget",
+        "CrashRecoveryTests.DeliveryRetryReusesPublishedMappingAndValidation",
+        "LedgerCorrectnessTests.RetryCanTargetOneFailedDelivery",
+        "LedgerCorrectnessTests.SuccessfulRetryRollsUpFileStatus",
+        "CollectionPipelineTests.ArchiveFailureIsRetriedWithoutRepeatingDatabaseDelivery",
+    ],
     "unc-session": [
         "UncLeaseTests.TwoConsumersShareOneSessionUntilBothRelease",
         "UncLeaseTests.CredentialConflictIsReportedExplicitly",
@@ -166,6 +174,7 @@ STORY_ROWS = {
     "concurrent claims, lease renewal and staged-file identity guard": "lease-heartbeat",
     "ledger claim/lease/retry state machine": "lease-heartbeat",
     "stage output resume and EF migrations": "stage-integrity",
+    "multi-target partial failure retries only the failed target and preserves successful targets": "multi-target-recovery",
     "snapshot cleanup is coordinated with workflow start/recovery through the ledger maintenance lock; concurrent cleanup cannot delete a snapshot a new run will use": "maintenance-coordination",
     "partial source-session acquisition failure releases already-held leases; source nodes are identified by node contract": "unc-session",
     "business-date ledger: bounded catch-up, known-failure/hole retry, no-data re-probe and succeeded-date finality": "segmented-history",
@@ -202,6 +211,7 @@ report = {
     "sqlServer": sqlserver_evidence,
     "mySql": mysql_evidence,
     "windowsUncBrowser": unc_browser_evidence,
+    "multiTargetRecovery": multi_target_evidence,
     "acceptance": [
         {"requirement": "real-browser designer E2E", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log"},
         {"requirement": "blank-environment browser-only full flow (resources, graph, run, failure injection, repair, retry)", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-user-flow")["exitCode"] == 0 else "failed", "evidence": "industrial-user-flow.log; industrial/web/e2e/full-flow.spec.ts"},
@@ -268,6 +278,7 @@ report = {
         {"requirement": "concurrent claims, lease renewal and staged-file identity guard", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
         {"requirement": "ledger claim/lease/retry state machine", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
         {"requirement": "stage output resume and EF migrations", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
+        {"requirement": "multi-target partial failure retries only the failed target and preserves successful targets", "status": "passed" if multi_target_evidence.get("status") == "passed" and next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "passingResult": multi_target_evidence.get("url") if multi_target_evidence.get("status") == "passed" else None, "evidence": "industrial-dotnet.log; CrashRecoveryTests.TwoTargetMidWriteCrashResumesAndRetriesOnlyTheIncompleteTarget; CrashRecoveryTests.DeliveryRetryReusesPublishedMappingAndValidation; LedgerCorrectnessTests.RetryCanTargetOneFailedDelivery; LedgerCorrectnessTests.SuccessfulRetryRollsUpFileStatus; CollectionPipelineTests.ArchiveFailureIsRetriedWithoutRepeatingDatabaseDelivery; artifacts/multi-target-result.json; artifacts/multi-target-blocker.md"},
         {"requirement": "stage cleanup cannot bypass the unified cleanup lease; preflight and delivery share one immutable file handle; crash orphans are reclaimed", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; StageOutputStore.CleanupAsync requires MaintenanceLease; StageOutputStore.ReadAsync validate+deliver on one FileStream; StageOutputStoreTests.OrphanSpoolsAndPartialsAreReclaimedAfterSafetyWindow"},
         {"requirement": "disconnect and large-file recovery", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
         {"requirement": "unified test report", "status": "passed", "evidence": "tools/release/test-report.sh"},

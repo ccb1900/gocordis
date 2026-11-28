@@ -11,6 +11,7 @@ on:
     branches: [dotnet]
     paths:
       - 'industrial/**'
+      - 'tools/release/test-report.sh'
       - '.github/workflows/database-evidence.yml'
 
 permissions:

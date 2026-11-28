@@ -35,16 +35,10 @@ public sealed class CrashRecoveryTests
     [RealMultiDatabaseFact]
     public async Task MultiTargetPartialFailureRetriesOnlyTheFailedRealDatabase()
     {
-        var sqlConnectionString = new SqlConnectionStringBuilder(
-            Environment.GetEnvironmentVariable("GOCORDIS_SQLSERVER_CONNECTION")!)
-        {
-            InitialCatalog = $"IndustrialE2E_{Guid.NewGuid():N}",
-        }.ConnectionString;
-        var mySqlConnectionString = new MySqlConnectionStringBuilder(
-            Environment.GetEnvironmentVariable("GOCORDIS_MYSQL_CONNECTION")!)
-        {
-            Database = $"industrial_e2e_{Guid.NewGuid():N}".Replace('-', '_'),
-        }.ConnectionString;
+        // Use the databases already provisioned by the evidence workflow and
+        // isolate each run with unique table names instead of creating a DB.
+        var sqlConnectionString = Environment.GetEnvironmentVariable("GOCORDIS_SQLSERVER_CONNECTION")!;
+        var mySqlConnectionString = Environment.GetEnvironmentVariable("GOCORDIS_MYSQL_CONNECTION")!;
         var sqlServer = new SqlConnectionStringBuilder(sqlConnectionString);
         var mySql = new MySqlConnectionStringBuilder(mySqlConnectionString);
         var sqlTable = $"IndustrialRecords_{Guid.NewGuid():N}";
@@ -86,7 +80,7 @@ public sealed class CrashRecoveryTests
                 new WorkflowEdge("read", "records", "map", "input"),
                 new WorkflowEdge("map", "output", "storeSql", "records"),
                 new WorkflowEdge("map", "output", "storeMySql", "records"),
-                new WorkflowEdge("map", "output", "storeArchive", "files"),
+                new WorkflowEdge("src", "files", "storeArchive", "files"),
             ],
             new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
             ["source-1"], new Dictionary<string, object?>());

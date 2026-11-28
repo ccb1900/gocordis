@@ -199,6 +199,62 @@ public sealed class ImmutableDataConsistencyTests
         Assert.False(await ledger.IsMaintenanceActiveAsync(MaintenanceNames.Cleanup));
     }
 
+    [Fact]
+    public async Task ExecutionHeartbeatRenewsAndCompletesSlowWork()
+    {
+        using var temp = new TempRoot();
+        var ledger = new CollectionLedger(() => IndustrialStore.Create(
+            Path.Combine(temp.Root, "ledger.db")));
+        await using var lease = await MaintenanceCoordination.BeginExecutionAsync(
+            ledger, "slow-workflow");
+        var renewals = 0;
+        var completed = false;
+
+        var result = await MaintenanceCoordination.RunWithHeartbeatAsync(
+            lease, "slow-workflow",
+            async operationCt =>
+            {
+                await Task.Delay(150, operationCt);
+                renewals = (await ledger.ListRunsAsync()).Count; // small ledger probe
+                completed = true;
+                return 42;
+            },
+            heartbeatInterval: TimeSpan.FromMilliseconds(30));
+
+        Assert.Equal(42, result);
+        Assert.True(completed);
+        Assert.False(lease.Lost);
+    }
+
+    [Fact]
+    public async Task ExecutionHeartbeatLossCancelsSlowWorkAndSurfacesFailure()
+    {
+        using var temp = new TempRoot();
+        var ledger = new CollectionLedger(() => IndustrialStore.Create(
+            Path.Combine(temp.Root, "ledger.db")));
+        await using var lease = await MaintenanceCoordination.BeginExecutionAsync(
+            ledger, "fenced-workflow");
+        var canceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var run = MaintenanceCoordination.RunWithHeartbeatAsync(
+            lease, "fenced-workflow",
+            async operationCt =>
+            {
+                try { await Task.Delay(TimeSpan.FromSeconds(10), operationCt); }
+                catch (OperationCanceledException) { canceled.TrySetResult(); throw; }
+                return 1;
+            },
+            heartbeatInterval: TimeSpan.FromMilliseconds(30)).AsTask();
+        await Task.Delay(50);
+        await ledger.ReleaseMaintenanceAsync(lease.Name, lease.Token, CancellationToken.None);
+
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await run.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Contains("execution lease", failure.Message, StringComparison.Ordinal);
+        await canceled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(lease.Lost);
+    }
+
     private sealed class RecordingFileSource : IFileSource
     {
         public string? FailOn { get; init; }

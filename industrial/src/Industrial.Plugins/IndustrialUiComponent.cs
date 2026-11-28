@@ -799,7 +799,8 @@ public sealed class IndustrialUiComponent : Component
                                    .Select(run => run.InstanceId!)
                                    .Where(id => !active.Contains(id))
                                    .ToHashSet(StringComparer.Ordinal);
-                _lastStageReport = await stageStore.CleanupAsync(terminal, retention, ct, lease);
+                _lastStageReport = await stageStore.CleanupAsync(
+                    terminal, retention, lease, ct);
             }
             finally
             {

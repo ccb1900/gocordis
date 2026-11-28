@@ -119,6 +119,8 @@ STORY_TESTS = {
         "DeliveryHeartbeatTests.FailedRenewalCancelsTheOperationAndSurfacesTheLoss",
         "DeliveryHeartbeatTests.SlowSinkDeliveryKeepsItsLeaseValidAndCompletes",
         "DeliveryHeartbeatTests.FailedRenewalAbortsTheSlowSinkAndLeavesTheClaimFenced",
+        "ImmutableDataConsistencyTests.ExecutionHeartbeatRenewsAndCompletesSlowWork",
+        "ImmutableDataConsistencyTests.ExecutionHeartbeatLossCancelsSlowWorkAndSurfacesFailure",
         "DeliveryLeaseTests.LeaseRenewalExtendsOnlyTheCurrentClaim",
         "DeliveryLeaseTests.ConcurrentClaimsProduceExactlyOneValidToken",
     ],
@@ -129,6 +131,7 @@ STORY_TESTS = {
         "StageOutputStoreTests.TerminalInstanceStageIsCleanedAfterRetention",
         "StageOutputStoreTests.NonTerminalInstanceStageIsRetained",
         "StageOutputStoreTests.MissingOrCorruptSpoolDoesNotBreakCleanup",
+        "StageOutputStoreTests.OrphanSpoolsAndPartialsAreReclaimedAfterSafetyWindow",
     ],
     "unc-session": [
         "UncLeaseTests.TwoConsumersShareOneSessionUntilBothRelease",
@@ -147,6 +150,7 @@ STORY_TESTS = {
         "BusinessDateLedgerTests.BusinessTimezoneBoundaryUsesLocalYesterdayAndValidatesOverrides",
         "BusinessDateLedgerTests.AutomaticBindingRunNeverCollectsTheOpenBusinessDate",
         "BusinessDateLedgerTests.ManualHistoryRangeRunsInResumableChunksAcrossLongOutages",
+        "BusinessDateLedgerTests.LongHistoryRangeResumesAcrossRestartWithoutDuplicateDeliveries",
     ],
 }
 STORY_ROWS = {
@@ -159,7 +163,7 @@ STORY_ROWS = {
     "ledger claim/lease/retry state machine": "lease-heartbeat",
     "stage output resume and EF migrations": "stage-integrity",
     "snapshot cleanup is coordinated with workflow start/recovery through the ledger maintenance lock; concurrent cleanup cannot delete a snapshot a new run will use": "maintenance-coordination",
-    "partial source-session acquisition failure releases already-held leases; source nodes are identified by node contract": "maintenance-coordination",
+    "partial source-session acquisition failure releases already-held leases; source nodes are identified by node contract": "unc-session",
     "business-date ledger: bounded catch-up, known-failure/hole retry, no-data re-probe and succeeded-date finality": "segmented-history",
     "long downtime recovery is bounded and never recollects terminal dates; exact retry reuses the persisted bound definition": "segmented-history",
 }
@@ -227,7 +231,7 @@ report = {
         {"requirement": "partial source-session acquisition failure releases already-held leases; source nodes are identified by node contract", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; ImmutableDataConsistencyTests.FailedLaterLeaseReleasesAlreadyAcquiredSessions; IndustrialNodeKinds.IsSource; SourceSessionScope"},
         {"requirement": "snapshot hash is computed as a stream and snapshots are cleaned only from ledger-proven fully delivered files with no active runs", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; ImmutableFileSnapshot SHA256.HashDataAsync; SnapshotMaintenance; industrial/maintain-snapshots; industrial/snapshot-status; BindingRunIntegrityTests.LateFileInDatedDirectoryIsDiscoveredThroughTheRealSourcePath"},
         {"requirement": "snapshot cleanup is coordinated with workflow start/recovery through the ledger maintenance lock; concurrent cleanup cannot delete a snapshot a new run will use", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; CollectionLedger.TryClaimMaintenanceAsync/ReleaseMaintenanceAsync; MaintenanceCoordination gate/execution/cleanup leases; ImmutableDataConsistencyTests.MaintenanceLockIsExclusiveAndBlocksConcurrentCleanup"},
-        {"requirement": "one execution/cleanup protocol covers normal runs, recovery, retry, snapshot cleanup and stage cleanup; lost cleanup leases stop deletion", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; ImmutableDataConsistencyTests.ActiveExecutionBlocksCleanupAndIsReleasedWithTheLease; ImmutableDataConsistencyTests.ActiveCleanupBlocksExecutionUntilReleased; ImmutableDataConsistencyTests.CleanupLeaseLostWhenAnExecutionLeaseAppears; ElsaAdapter RunWorkflowAsync/RecoverAllAsync/RetryDeliveryAsync"},
+        {"requirement": "one execution/cleanup protocol covers normal runs, recovery, retry, snapshot cleanup and stage cleanup; execution leases heartbeat and lost leases abort execution; lost cleanup leases stop deletion", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; ImmutableDataConsistencyTests.ActiveExecutionBlocksCleanupAndIsReleasedWithTheLease; ImmutableDataConsistencyTests.ActiveCleanupBlocksExecutionUntilReleased; ImmutableDataConsistencyTests.CleanupLeaseLostWhenAnExecutionLeaseAppears; ImmutableDataConsistencyTests.ExecutionHeartbeatRenewsAndCompletesSlowWork; ImmutableDataConsistencyTests.ExecutionHeartbeatLossCancelsSlowWorkAndSurfacesFailure; ElsaAdapter RunWorkflowAsync/RecoverAllAsync/RetryDeliveryAsync"},
         {"requirement": "manual history backfill longer than one year is segmented and resumable without widening automatic catch-up", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; BusinessDateLedgerTests.ManualHistoryRangeRunsInResumableChunksAcrossLongOutages; BusinessDatePlanner.DefaultCatchUpDays=30; BusinessDatePlanner.MaxExplicitHistoryDays=366 per chunk"},
         {"requirement": "crash-orphaned snapshots are reclaimed after a safe retention window and maintenance runs automatically on the existing timer", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; SnapshotMaintenance orphan scan; ImmutableDataConsistencyTests.OrphanSnapshotIsReclaimedAfterTheRetentionWindow; IndustrialUiComponent TimerKeys.Service IntervalOwned"},
         {"requirement": "source nodes are identified by declared node-role contract rather than node type strings", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; NodeDescriptor.Role; IndustrialNodesComponent source/sink roles; SourceSessionScope.IsSourceNode"},
@@ -260,6 +264,7 @@ report = {
         {"requirement": "concurrent claims, lease renewal and staged-file identity guard", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
         {"requirement": "ledger claim/lease/retry state machine", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
         {"requirement": "stage output resume and EF migrations", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
+        {"requirement": "stage cleanup cannot bypass the unified cleanup lease; preflight and delivery share one immutable file handle; crash orphans are reclaimed", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; StageOutputStore.CleanupAsync requires MaintenanceLease; StageOutputStore.ReadAsync validate+deliver on one FileStream; StageOutputStoreTests.OrphanSpoolsAndPartialsAreReclaimedAfterSafetyWindow"},
         {"requirement": "disconnect and large-file recovery", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log"},
         {"requirement": "unified test report", "status": "passed", "evidence": "tools/release/test-report.sh"},
     ],

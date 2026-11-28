@@ -299,6 +299,87 @@ public sealed class BusinessDateLedgerTests
         Assert.All(dates, date => Assert.Equal(CollectionDateStatus.Succeeded, date.Status));
     }
 
+    [Fact]
+    public async Task LongHistoryRangeResumesAcrossRestartWithoutDuplicateDeliveries()
+    {
+        using var temp = new TempDir();
+        var from = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-400);
+        var firstChunkEnd = from.AddDays(199);
+        var to = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1);
+        foreach (var date in new[] { from, firstChunkEnd, to })
+            await WriteDatedFileAsync(temp.SourceRoot, date);
+        var targetDatabase = Path.Combine(temp.Root, "long-history-target.db");
+
+        await using (var first = CreateRuntime(temp.Root, temp.SourceRoot,
+            out var firstApi, out var firstLedger))
+        {
+            Assert.True(await firstApi.ExecuteAsync("industrial/save-resource", new JsonObject
+            {
+                ["id"] = "target", ["name"] = "Long history target", ["type"] = "sqlite",
+                ["provider"] = "local",
+                ["config"] = new JsonObject
+                {
+                    ["database"] = targetDatabase,
+                    ["table"] = "IndustrialRecords",
+                },
+                ["enabled"] = true,
+            }));
+            await SaveAndPublishAsync(firstApi, LongHistoryTemplate());
+            Assert.True(await firstApi.ExecuteAsync("industrial/import-bindings", new JsonObject
+            {
+                ["csv"] = "id,name,machineId,workflowId,workflowVersion,fileProfileId," +
+                          "sourceResourceId,targetResourceIds,triggerKind,cron,timezone\n" +
+                          "long-history,long history,date-machine,long-history-template,1,profile," +
+                          "source-1,target,manual,,UTC\n",
+            }));
+            Assert.True(await firstApi.ExecuteAsync("industrial/run-binding", new JsonObject
+            {
+                ["bindingId"] = "long-history",
+                ["historyFrom"] = from.ToString("yyyy-MM-dd"),
+                ["historyTo"] = to.ToString("yyyy-MM-dd"),
+                ["historyBatchDays"] = 200,
+            }));
+            Assert.Contains(await firstLedger.ListDatesAsync(),
+                date => date.BusinessDate == firstChunkEnd && date.Files == 1);
+        }
+
+        // A new process submits the same range. The date ledger skips all
+        // succeeded chunks, so deliveries remain at exactly one attempt.
+        await using (var second = CreateRuntime(temp.Root, temp.SourceRoot,
+            out var secondApi, out var secondLedger))
+        {
+            Assert.True(await secondApi.ExecuteAsync("industrial/run-binding", new JsonObject
+            {
+                ["bindingId"] = "long-history",
+                ["historyFrom"] = from.ToString("yyyy-MM-dd"),
+                ["historyTo"] = to.ToString("yyyy-MM-dd"),
+                ["historyBatchDays"] = 200,
+            }));
+
+            var dates = await secondLedger.ListDatesAsync();
+            Assert.Contains(dates, date => date.BusinessDate == from && date.Files == 1);
+            Assert.Contains(dates, date => date.BusinessDate == to && date.Files == 1);
+            Assert.All(await secondLedger.ListAllDeliveriesAsync(),
+                delivery => Assert.Equal(1, delivery.Attempts));
+        }
+    }
+
+    private static WorkflowDefinition LongHistoryTemplate() => new(
+        "long-history-template", "Long history template", 1,
+        [
+            new WorkflowNode("src", "industrial.filesystem.local",
+                new Dictionary<string, object?> { ["resourceId"] = "{{SourceResource}}" }, 0, 0),
+            new WorkflowNode("read", "industrial.reader.csv", new Dictionary<string, object?>(), 100, 0),
+            new WorkflowNode("store", "industrial.sink.sqlite",
+                new Dictionary<string, object?> { ["targetResourceId"] = "{{TargetResource}}" }, 200, 0),
+        ],
+        [
+            new WorkflowEdge("src", "files", "read", "input"),
+            new WorkflowEdge("read", "records", "store", "records"),
+        ],
+        new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+        ["{{SourceResource}}"], new Dictionary<string, object?>());
+
     private static async Task WriteDatedFileAsync(string root, DateOnly date)
     {
         Directory.CreateDirectory(root);

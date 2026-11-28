@@ -199,10 +199,19 @@ public sealed class StageOutputStore : IStageOutputStore
     public async IAsyncEnumerable<RecordEnvelope> ReadAsync(
         DatasetRef dataset, [EnumeratorCancellation] CancellationToken ct = default)
     {
-        await ValidateSpoolAsync(dataset, ct);
         var path = dataset.SpoolPath;
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException($"stage spool for {dataset.NodeId} is missing", path);
+        }
+
+        // One handle owns both preflight validation and delivery. This removes
+        // the validate/close/reopen window where external mutation could make
+        // the delivered bytes differ from the bytes that were verified.
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
             FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await ValidateSpoolAsync(dataset, path, stream, ct);
+        stream.Seek(0, SeekOrigin.Begin);
         using var reader = new StreamReader(stream, Encoding.UTF8, false, 64 * 1024, true);
         while (true)
         {
@@ -235,6 +244,14 @@ public sealed class StageOutputStore : IStageOutputStore
             throw new FileNotFoundException($"stage spool for {dataset.NodeId} is missing", path);
         }
 
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await ValidateSpoolAsync(dataset, path, stream, ct);
+    }
+
+    private async ValueTask ValidateSpoolAsync(
+        DatasetRef dataset, string path, FileStream stream, CancellationToken ct)
+    {
         var sidecarPath = IntegrityPath(path);
         DatasetIntegrity? integrity = null;
         if (File.Exists(sidecarPath))
@@ -250,9 +267,6 @@ public sealed class StageOutputStore : IStageOutputStore
         }
 
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
-            FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-
         var count = 0;
         var lineNumber = 0;
         await foreach (var line in ReadLinesAsync(stream, hash, ct))
@@ -320,25 +334,27 @@ public sealed class StageOutputStore : IStageOutputStore
     /// needs the committed stage to avoid re-reading/re-transforming input.</summary>
     public ValueTask<StageCleanupReport> CleanupAsync(
         IReadOnlySet<string> terminalInstanceIds, TimeSpan retention,
-        CancellationToken ct = default,
-        MaintenanceLease? lease = null, TimeSpan? orphanRetention = null)
+        MaintenanceLease lease, CancellationToken ct = default,
+        TimeSpan? orphanRetention = null)
     {
         ArgumentNullException.ThrowIfNull(terminalInstanceIds);
-        return CleanupAsync(id => terminalInstanceIds.Contains(id), retention, ct,
-            lease, orphanRetention);
+        ArgumentNullException.ThrowIfNull(lease);
+        return CleanupAsync(id => terminalInstanceIds.Contains(id), retention, lease,
+            ct, orphanRetention);
     }
 
-    /// <summary>Ledger-driven stage lifecycle. The caller supplies the terminal
-    /// instance predicate (this store has no ledger dependency) and the retention
-    /// window. A row is removable only when its instance is terminal AND the
-    /// commit is older than the window. Spool files are removed before their DB
-    /// row; a file failure keeps the row so the next pass can retry. Missing
-    /// spools are already-cleaned state and never fail the pass.</summary>
+    /// <summary>Ledger-driven stage lifecycle. The caller must hold the shared
+    /// cleanup lease: data deletion is never allowed outside the one execution/
+    /// maintenance protocol. A row is removable only when its instance is
+    /// terminal AND the commit is older than the window. Spool files are removed
+    /// before their DB row; a file failure keeps the row so the next pass can
+    /// retry. Missing spools are already-cleaned state and never fail the pass.</summary>
     public async ValueTask<StageCleanupReport> CleanupAsync(
-        Func<string, bool> isTerminal, TimeSpan retention, CancellationToken ct = default,
-        MaintenanceLease? lease = null, TimeSpan? orphanRetention = null)
+        Func<string, bool> isTerminal, TimeSpan retention, MaintenanceLease lease,
+        CancellationToken ct = default, TimeSpan? orphanRetention = null)
     {
         ArgumentNullException.ThrowIfNull(isTerminal);
+        ArgumentNullException.ThrowIfNull(lease);
         if (retention < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(retention));
 
         var at = DateTimeOffset.UtcNow;

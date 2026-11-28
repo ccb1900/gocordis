@@ -158,8 +158,11 @@ public sealed class StageOutputStoreTests
             "terminal.csv", "record_id,reading\n1,10\n");
         Backdate(fixture.Root, "instance-terminal", TimeSpan.FromDays(8));
 
+        var lease = await BeginCleanupAsync(fixture.Root);
         var report = await store.CleanupAsync(
-            new HashSet<string>(StringComparer.Ordinal) { "instance-terminal" }, TimeSpan.FromDays(7));
+            new HashSet<string>(StringComparer.Ordinal) { "instance-terminal" },
+            TimeSpan.FromDays(7), lease);
+        await lease.DisposeAsync();
 
         Assert.Equal(1, report.RowsDeleted);
         Assert.Equal(1, report.Candidates);
@@ -183,8 +186,10 @@ public sealed class StageOutputStoreTests
 
         // The ledger did not declare this instance terminal: a retry still
         // needs the committed spool even long after its commit timestamp.
+        var lease = await BeginCleanupAsync(fixture.Root);
         var report = await store.CleanupAsync(
-            new HashSet<string>(StringComparer.Ordinal), TimeSpan.FromDays(7));
+            new HashSet<string>(StringComparer.Ordinal), TimeSpan.FromDays(7), lease);
+        await lease.DisposeAsync();
 
         Assert.Equal(0, report.RowsDeleted);
         Assert.Equal(0, report.Candidates);
@@ -208,8 +213,10 @@ public sealed class StageOutputStoreTests
         Backdate(fixture.Root, "instance-missing", TimeSpan.FromDays(8));
         Backdate(fixture.Root, "instance-corrupt", TimeSpan.FromDays(8));
 
+        var lease = await BeginCleanupAsync(fixture.Root);
         var report = await store.CleanupAsync(
-            id => id is "instance-missing" or "instance-corrupt", TimeSpan.FromDays(7));
+            id => id is "instance-missing" or "instance-corrupt", TimeSpan.FromDays(7), lease);
+        await lease.DisposeAsync();
 
         Assert.Equal(2, report.RowsDeleted);
         Assert.Equal(2, report.Candidates);
@@ -240,18 +247,28 @@ public sealed class StageOutputStoreTests
         foreach (var path in new[] { orphanSpool, orphanSidecar, orphanPartial })
             File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddHours(-2));
 
+        var lease = await BeginCleanupAsync(fixture.Root);
         var report = await store.CleanupAsync(
-            new HashSet<string>(StringComparer.Ordinal), TimeSpan.FromDays(7),
-            default, orphanRetention: TimeSpan.FromHours(1));
+            new HashSet<string>(StringComparer.Ordinal), TimeSpan.FromDays(7), lease,
+            orphanRetention: TimeSpan.FromHours(1));
+        await lease.DisposeAsync();
 
         Assert.True(report.Orphans >= 3);
         Assert.True(report.OrphanBytes > 0);
-        Assert.Empty(report.OrphanFailures);
+        Assert.Empty(report.OrphanFailures ?? []);
         Assert.False(File.Exists(orphanSpool));
         Assert.False(File.Exists(orphanSidecar));
         Assert.False(File.Exists(orphanPartial));
         Assert.True(File.Exists(referenced.SpoolPath));
         Assert.True(File.Exists(referenced.SpoolPath + ".integrity.json"));
+    }
+
+    private static async Task<MaintenanceLease> BeginCleanupAsync(string root)
+    {
+        var ledger = new CollectionLedger(() => IndustrialStore.Create(Path.Combine(root, "cleanup-ledger.db")));
+        var lease = await MaintenanceCoordination.BeginCleanupAsync(ledger);
+        Assert.NotNull(lease);
+        return lease!;
     }
 
     private static void Backdate(string root, string instanceId, TimeSpan age)

@@ -711,9 +711,12 @@ public sealed class IndustrialElsaComponent : Component
         // replay, not only discovery.
         await using var sourceSessions = await SourceSessionScope.AcquireAsync(
             source, retryDefinition, resourceId, _nodeCatalog, ct);
-        var result = await ElsaPersistedExecution.RunAsync(published, executor, resourceId, ElsaDbPath,
-            instance.InstanceId, resume: true, definitionJson: effectiveJson,
-            definitionHash: effectiveHash, ct: ct);
+        var result = await MaintenanceCoordination.RunWithHeartbeatAsync(
+            executionLease, $"retry:{delivery.Id}",
+            runCt => ElsaPersistedExecution.RunAsync(published, executor, resourceId, ElsaDbPath,
+                instance.InstanceId, resume: true, definitionJson: effectiveJson,
+                definitionHash: effectiveHash, ct: runCt),
+            ct, _leaseHeartbeat);
         // Query fields only; no subsequent decision reads them.
         _lastInstanceId = result.InstanceId;
         _lastDefinitionId = result.DefinitionId;
@@ -1195,9 +1198,12 @@ public sealed class IndustrialElsaComponent : Component
                         snapshotRoot: SnapshotRoot, leaseHeartbeat: _leaseHeartbeat);
                     await using var sourceSessions = await SourceSessionScope.AcquireAsync(
                         source, definition, instance.ResourceId, _nodeCatalog, ct);
-                    var result = await ElsaPersistedExecution.RunAsync(published, executor, instance.ResourceId,
-                        ElsaDbPath, instance.InstanceId, resume: true, definitionJson: effectiveJson,
-                        definitionHash: effectiveHash, ct: ct);
+                    var result = await MaintenanceCoordination.RunWithHeartbeatAsync(
+                        executionLease, $"recovery:{instance.InstanceId}",
+                        runCt => ElsaPersistedExecution.RunAsync(published, executor, instance.ResourceId,
+                            ElsaDbPath, instance.InstanceId, resume: true, definitionJson: effectiveJson,
+                            definitionHash: effectiveHash, ct: runCt),
+                        ct, _leaseHeartbeat);
                     // Query-facing only: recovery outcome never decides another run.
                     _lastInstanceId = result.InstanceId;
                     _lastDefinitionId = result.DefinitionId;
@@ -1927,9 +1933,12 @@ public sealed class IndustrialElsaComponent : Component
         // all leases live until the whole workflow has finished.
         await using var sourceSessions = await SourceSessionScope.AcquireAsync(
             source, definition, resourceId, _nodeCatalog, ct);
-        var result = await ElsaPersistedExecution.RunAsync(
-            published, executor, resourceId, elsaDbPath, instanceId, resume,
-            definitionJson, definitionHash, ct);
+        var result = await MaintenanceCoordination.RunWithHeartbeatAsync(
+            executionLease, executionOwner,
+            runCt => ElsaPersistedExecution.RunAsync(
+                published, executor, resourceId, elsaDbPath, instanceId, resume,
+                definitionJson, definitionHash, runCt),
+            ct, _leaseHeartbeat);
         var productStatus = string.Equals(result.Status, "Finished", StringComparison.Ordinal)
             ? "Completed"
             : result.Status;

@@ -191,6 +191,11 @@ def story_gate(key):
     ok = bool(passed_tests) and len(seen) == len(required) and industrial_code == 0
     evidence = "industrial-dotnet.log; " + "; ".join(
         f"{name}={'passed' if name in seen else 'MISSING'}" for name in required)
+    if key == "multi-target-recovery":
+        bound = multi_target_evidence.get("status") == "passed" and multi_target_evidence.get("bound", False)
+        ok = ok and bound
+        evidence += (f"; multi-target-real-E2E={'passed' if bound else 'MISSING'}"
+                     f" ({multi_target_evidence.get('url', 'artifacts/multi-target-blocker.md')})")
     return ("passed" if ok else "failed"), evidence
 
 report = {

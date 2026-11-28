@@ -779,9 +779,8 @@ public sealed class IndustrialUiComponent : Component
                 _stageMaintenanceError = "stage store does not support ledger-driven cleanup";
                 return;
             }
-            var token = $"stage-cleanup-{Guid.NewGuid():N}";
-            if (!await ledger.TryClaimMaintenanceAsync(
-                    StageOutputStore.CleanupLockName, token, TimeSpan.FromMinutes(10), ct))
+            var lease = await MaintenanceCoordination.BeginCleanupAsync(ledger, ct);
+            if (lease is null)
             {
                 _lastStageReport = new StageCleanupReport(0, 0, 0, 0, 0, 0, [], [],
                     true, DateTimeOffset.UtcNow);
@@ -800,12 +799,11 @@ public sealed class IndustrialUiComponent : Component
                                    .Select(run => run.InstanceId!)
                                    .Where(id => !active.Contains(id))
                                    .ToHashSet(StringComparer.Ordinal);
-                _lastStageReport = await stageStore.CleanupAsync(terminal, retention, ct);
+                _lastStageReport = await stageStore.CleanupAsync(terminal, retention, ct, lease);
             }
             finally
             {
-                await ledger.ReleaseMaintenanceAsync(
-                    StageOutputStore.CleanupLockName, token, CancellationToken.None);
+                await lease.ReleaseAsync();
             }
             _stageMaintenanceError = _lastStageReport.Failures.Count == 0
                 ? null : string.Join("; ", _lastStageReport.Failures.Take(5));

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
@@ -598,6 +599,8 @@ public sealed class IndustrialElsaComponent : Component
         Broker<IRecordSinkFactory> factories, IRecordSink defaultSink, IArchiveSink archive,
         CancellationToken ct)
     {
+        await using var executionLease = await MaintenanceCoordination.BeginExecutionAsync(
+            ledger, $"retry:{deliveryId ?? targetId ?? Guid.NewGuid().ToString("N")}", ct);
         FileDelivery delivery;
         if (!string.IsNullOrWhiteSpace(deliveryId))
         {
@@ -1138,6 +1141,8 @@ public sealed class IndustrialElsaComponent : Component
         await _recoveryLock.WaitAsync(ct);
         try
         {
+            await using var executionLease = await MaintenanceCoordination.BeginExecutionAsync(
+                ledger, "recovery", ct);
             var expiredLeases = await ledger.RecoverExpiredLeasesAsync(DateTimeOffset.UtcNow);
             if (startup)
             {
@@ -1533,6 +1538,34 @@ public sealed class IndustrialElsaComponent : Component
         var zone = BusinessDatePlanner.ResolveBusinessZone(
             binding.Trigger.Config, binding.Parameters);
         var lastCompleted = BusinessDatePlanner.LastCompletedBusinessDate(zone);
+        var historyRange = ResolveHistoryRange(body, binding.Parameters, automatic, id, lastCompleted);
+        if (historyRange is not null)
+        {
+            // A long outage is replayed as bounded, resumable chunks. Each
+            // chunk still uses the date ledger and file-level idempotency, so
+            // a completed date is never re-delivered after a failed later chunk.
+            var (historyFrom, historyTo, historyBatchDays) = historyRange.Value;
+            RunOutcome? lastOutcome = null;
+            for (var start = historyFrom; start <= historyTo; start = start.AddDays(historyBatchDays))
+            {
+                var end = start.AddDays(historyBatchDays - 1) > historyTo
+                    ? historyTo
+                    : start.AddDays(historyBatchDays - 1);
+                var chunk = new JsonObject
+                {
+                    ["bindingId"] = id,
+                    ["businessDate"] = end.ToString("yyyy-MM-dd"),
+                    ["catchUpDays"] = historyBatchDays,
+                    ["datePolicy"] = "history",
+                };
+                if (body["lookbackDays"] is not null) chunk["lookbackDays"] = body["lookbackDays"]!.DeepClone();
+                lastOutcome = await RunBindingAsync(chunk, bindings, profiles, workflows,
+                    coordinator, ledger, resources, vault, planner, source, reader, stage,
+                    sinkFactories, sink, archive, elsaDbPath, ct);
+                if (!lastOutcome.Completed || lastOutcome.DeliveryFailed) return lastOutcome;
+            }
+            return lastOutcome ?? throw new InvalidOperationException("empty history range");
+        }
         object? parameterOverride = null;
         if (binding.Parameters is not null)
         {
@@ -1572,7 +1605,8 @@ public sealed class IndustrialElsaComponent : Component
         // override (or an explicit history policy on a manual run) may widen it.
         var explicitHistory = hasOverride || (!automatic && widePolicy);
         var target = hasOverride ? explicitDate : lastCompleted;
-        var catchUpDays = ResolveCatchUpDays(id, binding.Parameters, explicitHistory);
+        var catchUpDays = ResolveCatchUpDays(id, binding.Parameters, explicitHistory,
+            body["catchUpDays"]?.GetValue<int>());
         var businessDates = BusinessDatePlanner.Plan(
             await ledger.ListDatesAsync(ct), binding.Id, target, catchUpDays);
         var dateClaims = new List<(DateOnly Date, string Id, string Token)>();
@@ -1748,13 +1782,50 @@ public sealed class IndustrialElsaComponent : Component
     /// not widen it. A manual history backfill may request up to 366 days; an
     /// explicit date alone backfills just that date unless catchUpDays is set.
     /// </summary>
+    private static (DateOnly From, DateOnly To, int BatchDays)? ResolveHistoryRange(
+        JsonObject body, IReadOnlyDictionary<string, object?>? parameters,
+        bool automatic, string bindingId, DateOnly lastCompleted)
+    {
+        object? Raw(string key) => body[key] ??
+            parameters?.FirstOrDefault(pair =>
+                string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase)).Value;
+        var fromText = Raw("historyFrom")?.ToString() ?? Raw("fromDate")?.ToString();
+        var toText = Raw("historyTo")?.ToString() ?? Raw("toDate")?.ToString();
+        if (string.IsNullOrWhiteSpace(fromText) && string.IsNullOrWhiteSpace(toText)) return null;
+        if (automatic)
+            throw new InvalidOperationException(
+                $"binding '{bindingId}' historyFrom/historyTo is manual history backfill only");
+        if (!DateOnly.TryParseExact(fromText, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var from))
+            throw new InvalidOperationException(
+                $"binding '{bindingId}' historyFrom must use yyyy-MM-dd; got '{fromText}'");
+        if (!DateOnly.TryParseExact(toText, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var to))
+            throw new InvalidOperationException(
+                $"binding '{bindingId}' historyTo must use yyyy-MM-dd; got '{toText}'");
+        if (from > to)
+            throw new InvalidOperationException(
+                $"binding '{bindingId}' history range is reversed: {from:yyyy-MM-dd} > {to:yyyy-MM-dd}");
+        if (to > lastCompleted)
+            throw new InvalidOperationException(
+                $"binding '{bindingId}' historyTo {to:yyyy-MM-dd} is not a completed business date " +
+                $"in its timezone; latest completed date is {lastCompleted:yyyy-MM-dd}");
+        var batchDays = 30;
+        var rawBatch = Raw("historyBatchDays")?.ToString();
+        if (!string.IsNullOrWhiteSpace(rawBatch) &&
+            (!int.TryParse(rawBatch, out batchDays) || batchDays is < 1 or > 366))
+            throw new InvalidOperationException(
+                $"binding '{bindingId}' historyBatchDays must be between 1 and 366; got '{rawBatch}'");
+        return (from, to, batchDays);
+    }
+
     private static int ResolveCatchUpDays(
         string bindingId, IReadOnlyDictionary<string, object?>? parameters,
-        bool explicitHistory)
+        bool explicitHistory, int? payloadOverride = null)
     {
         var configured = parameters?.FirstOrDefault(pair =>
             string.Equals(pair.Key, "catchUpDays", StringComparison.OrdinalIgnoreCase));
-        var raw = configured?.Value;
+        var raw = payloadOverride is not null ? payloadOverride : configured?.Value;
         if (raw is null)
             return explicitHistory ? 1 : BusinessDatePlanner.DefaultCatchUpDays;
         var maximum = explicitHistory
@@ -1788,11 +1859,13 @@ public sealed class IndustrialElsaComponent : Component
         WorkflowDefinition? overrideDefinition = null,
         CancellationToken ct = default)
     {
-        // A snapshot cleanup holds this ledger lock while it deletes files.
-        // Starting/resuming a run waits for it so a starting consumer can
-        // never lose the snapshot it is about to reuse.
-        await ledger.WaitForMaintenanceClearAsync("snapshot-cleanup", TimeSpan.FromSeconds(30), ct);
         var body = payload as JsonObject ?? new JsonObject();
+        // Register an execution lease atomically with the cleanup check. A
+        // cleanup that starts later observes this lease and refuses to delete;
+        // an active cleanup makes the run wait before it can register.
+        var executionOwner = body["instanceId"]?.GetValue<string>() ?? $"new-{Guid.NewGuid():N}";
+        await using var executionLease = await MaintenanceCoordination.BeginExecutionAsync(
+            ledger, executionOwner, ct);
         var id = body["workflowId"]?.GetValue<string>()
                  ?? Environment.GetEnvironmentVariable("GOCORDIS_INDUSTRIAL_WORKFLOW") ?? "daily-collection";
         var resourceId = body["resourceId"]?.GetValue<string>()

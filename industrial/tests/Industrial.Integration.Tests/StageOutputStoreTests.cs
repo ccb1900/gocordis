@@ -220,6 +220,40 @@ public sealed class StageOutputStoreTests
         Assert.False(File.Exists(corrupt.SpoolPath));
     }
 
+    [Fact]
+    public async Task OrphanSpoolsAndPartialsAreReclaimedAfterSafetyWindow()
+    {
+        using var fixture = new Fixture();
+        var store = new StageOutputStore(() => IndustrialStore.CreateStages(fixture.Root), fixture.Root);
+        var referenced = await SpoolCsvAsync(store, fixture, "instance-referenced", "read",
+            "fp-referenced", "referenced.csv", "record_id,reading\n1,10\n");
+
+        var stageRoot = Path.Combine(fixture.Root, "stages");
+        var orphanDirectory = Path.Combine(stageRoot, "instance-orphan");
+        Directory.CreateDirectory(orphanDirectory);
+        var orphanSpool = Path.Combine(orphanDirectory, "orphan.jsonl");
+        var orphanSidecar = orphanSpool + ".integrity.json";
+        var orphanPartial = orphanSpool + ".partial";
+        await File.WriteAllTextAsync(orphanSpool, "record_id,reading\n9,90\n");
+        await File.WriteAllTextAsync(orphanSidecar, "{\"digest\":\"orphan\",\"recordCount\":1}");
+        await File.WriteAllTextAsync(orphanPartial, "partial");
+        foreach (var path in new[] { orphanSpool, orphanSidecar, orphanPartial })
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddHours(-2));
+
+        var report = await store.CleanupAsync(
+            new HashSet<string>(StringComparer.Ordinal), TimeSpan.FromDays(7),
+            default, orphanRetention: TimeSpan.FromHours(1));
+
+        Assert.True(report.Orphans >= 3);
+        Assert.True(report.OrphanBytes > 0);
+        Assert.Empty(report.OrphanFailures);
+        Assert.False(File.Exists(orphanSpool));
+        Assert.False(File.Exists(orphanSidecar));
+        Assert.False(File.Exists(orphanPartial));
+        Assert.True(File.Exists(referenced.SpoolPath));
+        Assert.True(File.Exists(referenced.SpoolPath + ".integrity.json"));
+    }
+
     private static void Backdate(string root, string instanceId, TimeSpan age)
     {
         using var db = IndustrialStore.CreateStages(root);

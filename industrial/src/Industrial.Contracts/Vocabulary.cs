@@ -691,6 +691,9 @@ public interface ICollectionLedger
     ValueTask<bool> ReleaseMaintenanceAsync(
         string name, string token, CancellationToken ct = default);
     ValueTask<bool> IsMaintenanceActiveAsync(string name, CancellationToken ct = default);
+    /// <summary>True when any lease name starts with <paramref name="prefix"/>;
+    /// used by cleanup to observe all active execution leases.</summary>
+    ValueTask<bool> HasActiveMaintenanceAsync(string prefix, CancellationToken ct = default);
     ValueTask WaitForMaintenanceClearAsync(
         string name, TimeSpan timeout, CancellationToken ct = default);
 

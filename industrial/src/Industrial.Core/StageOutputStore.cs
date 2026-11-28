@@ -21,7 +21,11 @@ public sealed record StageCleanupReport(
     IReadOnlyList<string> Retained,
     IReadOnlyList<string> Failures,
     bool MaintenanceBlocked,
-    DateTimeOffset At);
+    DateTimeOffset At,
+    int Orphans = 0,
+    long OrphanBytes = 0,
+    IReadOnlyList<string>? OrphanFailures = null,
+    bool LeaseLost = false);
 
 /// <summary>Cordis-owned data plane. Elsa keeps control flow; this store keeps
 /// stage outputs as small refs plus an NDJSON spool so a resumed Activity never
@@ -33,9 +37,10 @@ public sealed class StageOutputStore : IStageOutputStore
     /// <summary>Default age before a stage of a terminal instance is eligible.
     /// The window covers a retry/recovery that may still reuse committed stages.</summary>
     public static readonly TimeSpan DefaultRetention = TimeSpan.FromDays(7);
-    /// <summary>Separate lock from snapshot cleanup: both use the one ledger,
-    /// neither may delete data the other is still inspecting.</summary>
-    public const string CleanupLockName = "stage-cleanup";
+    /// <summary>Stage and snapshot cleaners own different data but share one
+    /// ledger cleanup lease, so execution coordination has a single protocol.</summary>
+    public const string CleanupLockName = MaintenanceNames.Cleanup;
+    public static readonly TimeSpan OrphanRetention = TimeSpan.FromHours(1);
     private readonly Func<IndustrialStageDbContext> _db;
     private readonly string _root;
 
@@ -188,8 +193,41 @@ public sealed class StageOutputStore : IStageOutputStore
     /// stage instead of letting the sink report partial data as success.
     /// Legacy refs without a sidecar still work but get count-only checking:
     /// an in-place edit that preserves the line count cannot be detected.</summary>
+    /// Integrity is verified BEFORE the first record is yielded. This costs a
+    /// second sequential read, but prevents a corrupted tail from producing
+    /// external sink writes before the failure is discovered.
     public async IAsyncEnumerable<RecordEnvelope> ReadAsync(
         DatasetRef dataset, [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        await ValidateSpoolAsync(dataset, ct);
+        var path = dataset.SpoolPath;
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var reader = new StreamReader(stream, Encoding.UTF8, false, 64 * 1024, true);
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var line = await reader.ReadLineAsync(ct);
+            if (line is null) break;
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            RecordEnvelope? record;
+            try
+            {
+                record = JsonSerializer.Deserialize<RecordEnvelope>(line, Json);
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidDataException(
+                    $"stage spool '{path}' line changed after preflight validation", ex);
+            }
+            if (record is null)
+                throw new InvalidDataException(
+                    $"stage spool '{path}' line changed after preflight validation");
+            yield return record;
+        }
+    }
+
+    private async ValueTask ValidateSpoolAsync(DatasetRef dataset, CancellationToken ct)
     {
         var path = dataset.SpoolPath;
         if (!File.Exists(path))
@@ -239,7 +277,6 @@ public sealed class StageOutputStore : IStageOutputStore
                     $"stage spool '{path}' line {lineNumber} is not a RecordEnvelope");
             }
             count++;
-            yield return record;
         }
 
         // EOF reached: every byte, including the last separator, has been hashed.
@@ -282,10 +319,13 @@ public sealed class StageOutputStore : IStageOutputStore
     /// terminal instance ids. A non-terminal id must never be passed: a retry
     /// needs the committed stage to avoid re-reading/re-transforming input.</summary>
     public ValueTask<StageCleanupReport> CleanupAsync(
-        IReadOnlySet<string> terminalInstanceIds, TimeSpan retention, CancellationToken ct = default)
+        IReadOnlySet<string> terminalInstanceIds, TimeSpan retention,
+        CancellationToken ct = default,
+        MaintenanceLease? lease = null, TimeSpan? orphanRetention = null)
     {
         ArgumentNullException.ThrowIfNull(terminalInstanceIds);
-        return CleanupAsync(id => terminalInstanceIds.Contains(id), retention, ct);
+        return CleanupAsync(id => terminalInstanceIds.Contains(id), retention, ct,
+            lease, orphanRetention);
     }
 
     /// <summary>Ledger-driven stage lifecycle. The caller supplies the terminal
@@ -295,7 +335,8 @@ public sealed class StageOutputStore : IStageOutputStore
     /// row; a file failure keeps the row so the next pass can retry. Missing
     /// spools are already-cleaned state and never fail the pass.</summary>
     public async ValueTask<StageCleanupReport> CleanupAsync(
-        Func<string, bool> isTerminal, TimeSpan retention, CancellationToken ct = default)
+        Func<string, bool> isTerminal, TimeSpan retention, CancellationToken ct = default,
+        MaintenanceLease? lease = null, TimeSpan? orphanRetention = null)
     {
         ArgumentNullException.ThrowIfNull(isTerminal);
         if (retention < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(retention));
@@ -309,13 +350,23 @@ public sealed class StageOutputStore : IStageOutputStore
 
         var retained = new List<string>();
         var failures = new List<string>();
+        var orphanFailures = new List<string>();
         var candidates = 0;
         var rowsDeleted = 0;
         var filesDeleted = 0;
         var deletedBytes = 0L;
+        var orphanCount = 0;
+        var orphanBytes = 0L;
+        var leaseLost = false;
 
         foreach (var row in rows)
         {
+            if (lease is not null && !await lease.EnsureValidAsync(ct))
+            {
+                leaseLost = true;
+                retained.Add("cleanup lease was lost or an execution lease appeared");
+                break;
+            }
             var label = $"{row.InstanceId}/{row.NodeId}";
             if (row.CommittedAt > cutoff)
             {
@@ -369,8 +420,61 @@ public sealed class StageOutputStore : IStageOutputStore
             }
         }
 
+        // Crash orphans: a formal spool/sidecar may exist before CommitAsync,
+        // and a hard exit can leave .partial files. Remove them only after a
+        // safety window, and only inside this store's own stage root.
+        if (lease is null || await lease!.EnsureValidAsync(ct))
+        {
+            var referenced = rows
+                .Where(row => string.Equals(row.Kind, nameof(DatasetRef), StringComparison.Ordinal))
+                .Select(row =>
+                {
+                    try
+                    {
+                        var dataset = JsonSerializer.Deserialize<DatasetRef>(row.PayloadJson, Json);
+                        return dataset is not null &&
+                               TryStagePath(row, dataset, stageRoot, out var path)
+                            ? [path, IntegrityPath(path)]
+                            : Array.Empty<string>();
+                    }
+                    catch (JsonException) { return Array.Empty<string>(); }
+                })
+                .SelectMany(paths => paths)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var stageDirectory = Directory.Exists(stageRoot)
+                ? Directory.GetFiles(stageRoot, "*", SearchOption.AllDirectories).ToArray()
+                : [];
+            foreach (var path in stageDirectory)
+            {
+                if (referenced.Contains(Path.GetFullPath(path))) continue;
+                if (DateTimeOffset.UtcNow - File.GetLastWriteTimeUtc(path) < (orphanRetention ?? OrphanRetention)) continue;
+                if (lease is not null && !await lease.EnsureValidAsync(ct))
+                {
+                    leaseLost = true;
+                    break;
+                }
+                var size = SafeLength(path);
+                try
+                {
+                    File.Delete(path);
+                    orphanCount++;
+                    orphanBytes += size;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    orphanFailures.Add($"{path}: {ex.Message}");
+                }
+            }
+        }
+        else
+        {
+            leaseLost = true;
+        }
+
         return new StageCleanupReport(rows.Count, stageBytes, candidates, rowsDeleted,
-            filesDeleted, deletedBytes, retained, failures, false, at);
+            filesDeleted, deletedBytes, retained, failures, false, at,
+            orphanCount, orphanBytes, orphanFailures, leaseLost);
     }
 
     private static string IntegrityPath(string spoolPath) => spoolPath + ".integrity.json";

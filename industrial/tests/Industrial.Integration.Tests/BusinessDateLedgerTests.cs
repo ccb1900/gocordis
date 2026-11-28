@@ -238,6 +238,67 @@ public sealed class BusinessDateLedgerTests
         Assert.Contains("catchUpDays", over.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ManualHistoryRangeRunsInResumableChunksAcrossLongOutages()
+    {
+        using var temp = new TempDir();
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var from = today.AddDays(-4);
+        var to = today.AddDays(-1);
+        foreach (var date in new[] { from, from.AddDays(1), from.AddDays(2), to })
+            await WriteDatedFileAsync(temp.SourceRoot, date);
+        await using var runtime = CreateRuntime(temp.Root, temp.SourceRoot, out var api, out var ledger);
+        Assert.True(await api.ExecuteAsync("industrial/save-resource", new JsonObject
+        {
+            ["id"] = "target", ["name"] = "History target", ["type"] = "sqlite",
+            ["provider"] = "local",
+            ["config"] = new JsonObject
+            {
+                ["database"] = Path.Combine(temp.Root, "history-target.db"),
+                ["table"] = "IndustrialRecords",
+            },
+            ["enabled"] = true,
+        }));
+        await SaveAndPublishAsync(api, new WorkflowDefinition(
+            "history-range-template", "History range template", 1,
+            [
+                new WorkflowNode("src", "industrial.filesystem.local",
+                    new Dictionary<string, object?> { ["resourceId"] = "{{SourceResource}}" }, 0, 0),
+                new WorkflowNode("read", "industrial.reader.csv",
+                    new Dictionary<string, object?>(), 100, 0),
+                new WorkflowNode("store", "industrial.sink.sqlite",
+                    new Dictionary<string, object?> { ["targetResourceId"] = "{{TargetResource}}" }, 200, 0),
+            ],
+            [
+                new WorkflowEdge("src", "files", "read", "input"),
+                new WorkflowEdge("read", "records", "store", "records"),
+            ],
+            new TriggerDefinition("manual", null, null, new Dictionary<string, object?>()),
+            ["{{SourceResource}}"], new Dictionary<string, object?>()));
+        Assert.True(await api.ExecuteAsync("industrial/import-bindings", new JsonObject
+        {
+            ["csv"] = "id,name,machineId,workflowId,workflowVersion,fileProfileId," +
+                      "sourceResourceId,targetResourceIds,triggerKind,cron,timezone\n" +
+                      "history-binding,History,date-machine,history-range-template,1,profile," +
+                      "source-1,target,manual,,UTC\n",
+        }));
+
+        Assert.True(await api.ExecuteAsync("industrial/run-binding", new JsonObject
+        {
+            ["bindingId"] = "history-binding",
+            ["historyFrom"] = from.ToString("yyyy-MM-dd"),
+            ["historyTo"] = to.ToString("yyyy-MM-dd"),
+            ["historyBatchDays"] = 2,
+        }));
+
+        var dates = await ledger.ListDatesAsync();
+        // Two two-day chunks cover the four-day outage. Only dates with files
+        // remain; NoData probes are log-only and are re-probed on a later run.
+        Assert.Contains(dates, date => date.BusinessDate == from);
+        Assert.Contains(dates, date => date.BusinessDate == to);
+        Assert.All(dates, date => Assert.Equal(CollectionDateStatus.Succeeded, date.Status));
+    }
+
     private static async Task WriteDatedFileAsync(string root, DateOnly date)
     {
         Directory.CreateDirectory(root);

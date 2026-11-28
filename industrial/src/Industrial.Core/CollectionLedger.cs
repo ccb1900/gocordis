@@ -203,6 +203,16 @@ public sealed class CollectionLedger : ICollectionLedger
         return rows.FirstOrDefault()?.Value > 0;
     }
 
+    public async ValueTask<bool> HasActiveMaintenanceAsync(
+        string prefix, CancellationToken ct = default)
+    {
+        await using var db = _db();
+        var rows = await db.Database.SqlQueryRaw<CountRow>(
+            "SELECT COUNT(*) AS Value FROM MaintenanceLocks WHERE Name LIKE {0} AND ExpiresAt >= {1};",
+            prefix + "%", DateTimeOffset.UtcNow.ToString("O")).ToListAsync(ct);
+        return rows.FirstOrDefault()?.Value > 0;
+    }
+
     public async ValueTask WaitForMaintenanceClearAsync(
         string name, TimeSpan timeout, CancellationToken ct = default)
     {

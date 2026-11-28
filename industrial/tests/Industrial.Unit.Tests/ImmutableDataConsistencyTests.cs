@@ -144,6 +144,61 @@ public sealed class ImmutableDataConsistencyTests
         Assert.Empty(report.OrphanFailures);
     }
 
+    [Fact]
+    public async Task ActiveExecutionBlocksCleanupAndIsReleasedWithTheLease()
+    {
+        using var temp = new TempRoot();
+        var ledger = new CollectionLedger(() => IndustrialStore.Create(
+            Path.Combine(temp.Root, "ledger.db")));
+
+        await using var execution = await MaintenanceCoordination.BeginExecutionAsync(
+            ledger, "instance-under-test");
+        Assert.True(await ledger.HasActiveMaintenanceAsync(MaintenanceNames.ExecutionPrefix));
+        Assert.Null(await MaintenanceCoordination.BeginCleanupAsync(ledger));
+
+        await execution.DisposeAsync();
+        Assert.False(await ledger.HasActiveMaintenanceAsync(MaintenanceNames.ExecutionPrefix));
+        Assert.NotNull(await MaintenanceCoordination.BeginCleanupAsync(ledger));
+    }
+
+    [Fact]
+    public async Task CleanupLeaseLostWhenAnExecutionLeaseAppears()
+    {
+        using var temp = new TempRoot();
+        var ledger = new CollectionLedger(() => IndustrialStore.Create(
+            Path.Combine(temp.Root, "ledger.db")));
+        var lease = await MaintenanceCoordination.BeginCleanupAsync(ledger);
+        Assert.NotNull(lease);
+        Assert.True(await lease!.EnsureValidAsync());
+
+        Assert.True(await ledger.TryClaimMaintenanceAsync(
+            "execution:late-workflow", "late", TimeSpan.FromMinutes(10)));
+
+        // The next maintenance check sees the late execution consumer and
+        // declares the cleanup lease lost: it must stop deleting immediately.
+        Assert.False(await lease.EnsureValidAsync());
+        await lease.ReleaseAsync();
+    }
+
+    [Fact]
+    public async Task ActiveCleanupBlocksExecutionUntilReleased()
+    {
+        using var temp = new TempRoot();
+        var ledger = new CollectionLedger(() => IndustrialStore.Create(
+            Path.Combine(temp.Root, "ledger.db")));
+        var cleanup = await MaintenanceCoordination.BeginCleanupAsync(ledger);
+        Assert.NotNull(cleanup);
+
+        var executionTask = MaintenanceCoordination.BeginExecutionAsync(
+            ledger, "waiting-workflow").AsTask();
+        await Task.Delay(100);
+        Assert.False(executionTask.IsCompleted);
+
+        await cleanup!.ReleaseAsync();
+        await using var execution = await executionTask.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(await ledger.IsMaintenanceActiveAsync(MaintenanceNames.Cleanup));
+    }
+
     private sealed class RecordingFileSource : IFileSource
     {
         public string? FailOn { get; init; }

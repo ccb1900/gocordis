@@ -137,20 +137,31 @@ STORY_TESTS = {
         "ImmutableDataConsistencyTests.SourceSessionScopeLeasesEverySourceResource",
         "ImmutableDataConsistencyTests.FailedLaterLeaseReleasesAlreadyAcquiredSessions",
     ],
+    "maintenance-coordination": [
+        "ImmutableDataConsistencyTests.MaintenanceLockIsExclusiveAndBlocksConcurrentCleanup",
+        "ImmutableDataConsistencyTests.ActiveExecutionBlocksCleanupAndIsReleasedWithTheLease",
+        "ImmutableDataConsistencyTests.ActiveCleanupBlocksExecutionUntilReleased",
+        "ImmutableDataConsistencyTests.CleanupLeaseLostWhenAnExecutionLeaseAppears",
+    ],
+    "segmented-history": [
+        "BusinessDateLedgerTests.BusinessTimezoneBoundaryUsesLocalYesterdayAndValidatesOverrides",
+        "BusinessDateLedgerTests.AutomaticBindingRunNeverCollectsTheOpenBusinessDate",
+        "BusinessDateLedgerTests.ManualHistoryRangeRunsInResumableChunksAcrossLongOutages",
+    ],
 }
 STORY_ROWS = {
-    "business-date ledger: bounded catch-up, known-failure/hole retry, no-data re-probe and succeeded-date finality": "business-date",
-    "long downtime recovery is bounded and never recollects terminal dates; exact retry reuses the persisted bound definition": "business-date",
     "ledger identity describes the exact bytes read: immutable content-addressed snapshot is created before the file enters the ledger and survives recovery": "immutable-snapshot",
     "snapshot hash is computed as a stream and snapshots are cleaned only from ledger-proven fully delivered files with no active runs": "immutable-snapshot",
-    "snapshot cleanup is coordinated with workflow start/recovery through the ledger maintenance lock; concurrent cleanup cannot delete a snapshot a new run will use": "immutable-snapshot",
     "crash-orphaned snapshots are reclaimed after a safe retention window and maintenance runs automatically on the existing timer": "immutable-snapshot",
     "local and UNC discovery use one quiet-period + hash + re-stat rule; credentialed SMB session spans the whole workflow": "unc-session",
     "every source node resource gets its own workflow-scoped session and the profile-aware discovery contract cannot silently downgrade": "unc-session",
-    "partial source-session acquisition failure releases already-held leases; source nodes are identified by node contract": "unc-session",
     "concurrent claims, lease renewal and staged-file identity guard": "lease-heartbeat",
     "ledger claim/lease/retry state machine": "lease-heartbeat",
     "stage output resume and EF migrations": "stage-integrity",
+    "snapshot cleanup is coordinated with workflow start/recovery through the ledger maintenance lock; concurrent cleanup cannot delete a snapshot a new run will use": "maintenance-coordination",
+    "partial source-session acquisition failure releases already-held leases; source nodes are identified by node contract": "maintenance-coordination",
+    "business-date ledger: bounded catch-up, known-failure/hole retry, no-data re-probe and succeeded-date finality": "segmented-history",
+    "long downtime recovery is bounded and never recollects terminal dates; exact retry reuses the persisted bound definition": "segmented-history",
 }
 industrial_code = next((s["exitCode"] for s in suites if s["suite"] == "industrial-dotnet"), 1)
 # console;verbosity=normal prints "  Passed Namespace.Class.Method [duration]".
@@ -215,7 +226,9 @@ report = {
         {"requirement": "every source node resource gets its own workflow-scoped session and the profile-aware discovery contract cannot silently downgrade", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; SourceSessionScope; ImmutableDataConsistencyTests.SourceSessionScopeLeasesEverySourceResource; IFileSource profile/businessDates overload is abstract"},
         {"requirement": "partial source-session acquisition failure releases already-held leases; source nodes are identified by node contract", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; ImmutableDataConsistencyTests.FailedLaterLeaseReleasesAlreadyAcquiredSessions; IndustrialNodeKinds.IsSource; SourceSessionScope"},
         {"requirement": "snapshot hash is computed as a stream and snapshots are cleaned only from ledger-proven fully delivered files with no active runs", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; ImmutableFileSnapshot SHA256.HashDataAsync; SnapshotMaintenance; industrial/maintain-snapshots; industrial/snapshot-status; BindingRunIntegrityTests.LateFileInDatedDirectoryIsDiscoveredThroughTheRealSourcePath"},
-        {"requirement": "snapshot cleanup is coordinated with workflow start/recovery through the ledger maintenance lock; concurrent cleanup cannot delete a snapshot a new run will use", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; CollectionLedger.TryClaimMaintenanceAsync/ReleaseMaintenanceAsync; ElsaAdapter.WaitForMaintenanceClearAsync; ImmutableDataConsistencyTests.MaintenanceLockIsExclusiveAndBlocksConcurrentCleanup"},
+        {"requirement": "snapshot cleanup is coordinated with workflow start/recovery through the ledger maintenance lock; concurrent cleanup cannot delete a snapshot a new run will use", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; CollectionLedger.TryClaimMaintenanceAsync/ReleaseMaintenanceAsync; MaintenanceCoordination gate/execution/cleanup leases; ImmutableDataConsistencyTests.MaintenanceLockIsExclusiveAndBlocksConcurrentCleanup"},
+        {"requirement": "one execution/cleanup protocol covers normal runs, recovery, retry, snapshot cleanup and stage cleanup; lost cleanup leases stop deletion", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; ImmutableDataConsistencyTests.ActiveExecutionBlocksCleanupAndIsReleasedWithTheLease; ImmutableDataConsistencyTests.ActiveCleanupBlocksExecutionUntilReleased; ImmutableDataConsistencyTests.CleanupLeaseLostWhenAnExecutionLeaseAppears; ElsaAdapter RunWorkflowAsync/RecoverAllAsync/RetryDeliveryAsync"},
+        {"requirement": "manual history backfill longer than one year is segmented and resumable without widening automatic catch-up", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; BusinessDateLedgerTests.ManualHistoryRangeRunsInResumableChunksAcrossLongOutages; BusinessDatePlanner.DefaultCatchUpDays=30; BusinessDatePlanner.MaxExplicitHistoryDays=366 per chunk"},
         {"requirement": "crash-orphaned snapshots are reclaimed after a safe retention window and maintenance runs automatically on the existing timer", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; SnapshotMaintenance orphan scan; ImmutableDataConsistencyTests.OrphanSnapshotIsReclaimedAfterTheRetentionWindow; IndustrialUiComponent TimerKeys.Service IntervalOwned"},
         {"requirement": "source nodes are identified by declared node-role contract rather than node type strings", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-dotnet")["exitCode"] == 0 else "failed", "evidence": "industrial-dotnet.log; NodeDescriptor.Role; IndustrialNodesComponent source/sink roles; SourceSessionScope.IsSourceNode"},
         {"requirement": "Credential secret inputs are password controls and never render typed secrets", "status": "passed" if next(s for s in suites if s["suite"] == "industrial-browser-e2e")["exitCode"] == 0 else "failed", "evidence": "industrial-browser-e2e.log; industrial/web/e2e/user-stories.spec.ts; CredentialConsole Input.Password"},

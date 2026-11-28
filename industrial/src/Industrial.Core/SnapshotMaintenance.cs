@@ -25,9 +25,8 @@ public sealed record SnapshotCleanupReport(
 /// never change business state.</summary>
 public static class SnapshotMaintenance
 {
-    public const string LockName = "snapshot-cleanup";
+    public const string LockName = MaintenanceNames.Cleanup;
     public static readonly TimeSpan OrphanRetention = TimeSpan.FromHours(1);
-    private static readonly TimeSpan LockLease = TimeSpan.FromMinutes(10);
 
     public static async ValueTask<SnapshotCleanupReport> RunAsync(
         ICollectionLedger ledger, string snapshotRoot, CancellationToken ct = default,
@@ -35,23 +34,23 @@ public static class SnapshotMaintenance
     {
         var at = DateTimeOffset.UtcNow;
         var root = Path.GetFullPath(snapshotRoot);
-        var token = $"cleanup-{Guid.NewGuid():N}";
-        if (!await ledger.TryClaimMaintenanceAsync(LockName, token, LockLease, ct))
+        var lease = await MaintenanceCoordination.BeginCleanupAsync(ledger, ct);
+        if (lease is null)
             return new SnapshotCleanupReport(0, 0, 0, 0, 0, 0, 0, [], [], [],
                 false, true, at);
         try
         {
-            return await CleanAsync(ledger, root, at,
+            return await CleanAsync(lease, ledger, root, at,
                 orphanRetention ?? OrphanRetention, ct);
         }
         finally
         {
-            await ledger.ReleaseMaintenanceAsync(LockName, token, CancellationToken.None);
+            await lease.ReleaseAsync();
         }
     }
 
     private static async ValueTask<SnapshotCleanupReport> CleanAsync(
-        ICollectionLedger ledger, string root, DateTimeOffset at,
+        MaintenanceLease lease, ICollectionLedger ledger, string root, DateTimeOffset at,
         TimeSpan retention, CancellationToken ct)
     {
         var existing = Directory.Exists(root)
@@ -99,17 +98,22 @@ public static class SnapshotMaintenance
                 continue;
             }
             candidates++;
+            if (!await lease.EnsureValidAsync(ct)) break;
             Delete(path, root, failures, ref deleted, ref deletedBytes);
         }
 
         var orphanCount = 0;
         var orphanBytes = 0L;
-        foreach (var path in existing)
+        if (await lease.EnsureValidAsync(ct))
         {
-            if (referencedPaths.Contains(path)) continue;
-            if (at - File.GetLastWriteTimeUtc(path) < retention) continue;
-            if (!IsUnderRoot(path, root)) continue;
-            Delete(path, root, orphanFailures, ref orphanCount, ref orphanBytes);
+            foreach (var path in existing)
+            {
+                if (referencedPaths.Contains(path)) continue;
+                if (at - File.GetLastWriteTimeUtc(path) < retention) continue;
+                if (!IsUnderRoot(path, root)) continue;
+                if (!await lease.EnsureValidAsync(ct)) break;
+                Delete(path, root, orphanFailures, ref orphanCount, ref orphanBytes);
+            }
         }
 
         return new SnapshotCleanupReport(existing.Length, totalBytes, candidates,

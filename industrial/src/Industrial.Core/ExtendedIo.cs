@@ -137,12 +137,14 @@ public sealed class PostgreSqlRecordSink : IRecordSink
 public sealed class MySqlRecordSink : IRecordSink
 {
     private readonly string _connectionString;
+    private readonly string _table;
     private readonly SinkWriteOptions _options;
 
     public MySqlRecordSink(string connectionString, string? targetId = null,
-        SinkWriteOptions? options = null)
+        SinkWriteOptions? options = null, string? table = null)
     {
         _connectionString = connectionString;
+        _table = SqlIdentifier.QuoteMySqlTable(table ?? "industrial_records");
         TargetId = targetId ?? "mysql";
         _options = options ?? SinkWriteOptions.From(null);
     }
@@ -160,8 +162,8 @@ public sealed class MySqlRecordSink : IRecordSink
             : null;
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = """
-            CREATE TABLE IF NOT EXISTS industrial_records (
+        command.CommandText = $"""
+            CREATE TABLE IF NOT EXISTS {_table} (
                 record_id VARCHAR(256) PRIMARY KEY, source_identity VARCHAR(512) NOT NULL,
                 record_time DATETIME(6) NOT NULL, payload JSON NOT NULL);
             """;
@@ -176,23 +178,23 @@ public sealed class MySqlRecordSink : IRecordSink
             {
                 command.Parameters.Clear();
                 command.Parameters.AddWithValue("@source", record.Source.Key);
-                command.CommandText = "DELETE FROM industrial_records WHERE source_identity = @source;";
+                command.CommandText = $"DELETE FROM {_table} WHERE source_identity = @source;";
                 await command.ExecuteNonQueryAsync(ct);
             }
             command.CommandText = _options.WriteMode switch
             {
-                "upsert" => """
-                    INSERT INTO industrial_records(record_id, source_identity, record_time, payload)
+                "upsert" => $"""
+                    INSERT INTO {_table}(record_id, source_identity, record_time, payload)
                     VALUES (@id, @source, @time, @payload)
                     ON DUPLICATE KEY UPDATE source_identity = VALUES(source_identity),
                         record_time = VALUES(record_time), payload = VALUES(payload);
                     """,
-                "replace" => """
-                    INSERT INTO industrial_records(record_id, source_identity, record_time, payload)
+                "replace" => $"""
+                    INSERT INTO {_table}(record_id, source_identity, record_time, payload)
                     VALUES (@id, @source, @time, @payload);
                     """,
-                _ => """
-                    INSERT IGNORE INTO industrial_records(record_id, source_identity, record_time, payload)
+                _ => $"""
+                    INSERT IGNORE INTO {_table}(record_id, source_identity, record_time, payload)
                     VALUES (@id, @source, @time, @payload);
                     """,
             };

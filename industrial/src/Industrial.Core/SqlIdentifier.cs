@@ -5,7 +5,11 @@ namespace Industrial.Core;
 /// resource configuration as part of the table name.</summary>
 public static class SqlIdentifier
 {
-    public static string QuoteTable(string? value)
+    public static string QuoteTable(string? value) => $"dbo.[{Validate(value)}]";
+
+    public static string QuoteMySqlTable(string? value) => $"`{Validate(value)}`";
+
+    private static string Validate(string? value)
     {
         if (string.IsNullOrWhiteSpace(value) ||
             !value.All(ch => char.IsLetterOrDigit(ch) || ch == '_') ||
@@ -14,6 +18,6 @@ public static class SqlIdentifier
             throw new InvalidOperationException(
                 $"invalid SQL table identifier '{value}'; use letters, digits and '_' only");
         }
-        return $"dbo.[{value}]";
+        return value;
     }
 }

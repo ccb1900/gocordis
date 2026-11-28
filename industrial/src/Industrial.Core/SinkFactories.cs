@@ -128,10 +128,13 @@ public sealed class MySqlSinkFactory : IRecordSinkFactory
 
     public async ValueTask<IRecordSink> CreateAsync(
         ResourceDefinition resource, ICredentialVault vault,
-        IReadOnlyDictionary<string, object?>? nodeConfig = null, CancellationToken ct = default) =>
-        new MySqlRecordSink(
+        IReadOnlyDictionary<string, object?>? nodeConfig = null, CancellationToken ct = default)
+    {
+        var table = ResourceConnection.Value(resource, "table") ?? "industrial_records";
+        return new MySqlRecordSink(
             await BuildConnectionStringAsync(resource, vault, ct), resource.Id,
-            SinkWriteOptions.From(nodeConfig));
+            SinkWriteOptions.From(nodeConfig), table);
+    }
 }
 
 public sealed class SqliteSinkFactory(Func<IndustrialTargetDbContext> fallback) : IRecordSinkFactory
